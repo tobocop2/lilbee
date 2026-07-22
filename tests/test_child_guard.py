@@ -51,8 +51,28 @@ class TestPlatformDispatch:
         result = child_guard.spawn_llama_swap(["/x/llama-swap"], stdout=7)
 
         assert result == "proc"
-        assert captured["kwargs"]["preexec_fn"] is child_guard._set_pdeathsig
+        assert callable(captured["kwargs"]["preexec_fn"])  # the death-signal preexec
         assert captured["kwargs"]["stdout"] == 7
+
+    def test_keep_warm_spawns_plainly_so_the_engine_outlives_the_process(self, monkeypatch):
+        # bind_lifetime=False is the keep_engine_warm path: no death binding on any
+        # platform, so a clean exit leaves the warm engine running.
+        monkeypatch.setattr(child_guard, "_libc", mock.MagicMock())
+        monkeypatch.setattr(child_guard.sys, "platform", "win32")
+        assigned: list[int] = []
+        monkeypatch.setattr(child_guard, "_assign_to_kill_on_close_job", assigned.append)
+        captured: dict[str, object] = {}
+
+        def _spawn(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            return mock.MagicMock(pid=99)
+
+        monkeypatch.setattr(child_guard._spawner, "spawn", _spawn)
+
+        child_guard.spawn_llama_swap(["/x/llama-swap"], bind_lifetime=False)
+
+        assert "preexec_fn" not in captured["kwargs"]
+        assert assigned == []  # no job object either
 
     def test_macos_spawns_plainly_with_no_binding(self, monkeypatch):
         monkeypatch.setattr(child_guard.sys, "platform", "darwin")
@@ -73,6 +93,50 @@ class TestPlatformDispatch:
 
         assert result is proc
         assert assigned == [4321]
+
+
+class _Exited(Exception):
+    """Stand-in for os._exit, which never returns, so a test can observe the exit."""
+
+
+def _raise_exit(code: int) -> None:
+    raise _Exited(code)
+
+
+class TestTheDeathSignalPreexec:
+    """The post-fork preexec: bind to the parent's death, but not to a live pid-1 parent."""
+
+    def _arm(self, monkeypatch, *, getppid: int) -> None:
+        monkeypatch.setattr(child_guard, "_libc", mock.MagicMock())
+        monkeypatch.setattr(child_guard.os, "getppid", lambda: getppid)
+        monkeypatch.setattr(child_guard.os, "_exit", _raise_exit)
+
+    def test_absent_libc_yields_no_preexec(self, monkeypatch):
+        monkeypatch.setattr(child_guard, "_libc", None)
+
+        assert child_guard._make_pdeathsig_preexec(1234) is None
+
+    def test_a_reparented_child_exits(self, monkeypatch):
+        self._arm(monkeypatch, getppid=1)
+
+        preexec = child_guard._make_pdeathsig_preexec(parent_pid=1234)
+        with pytest.raises(_Exited) as exc:
+            preexec()
+
+        assert exc.value.args[0] == 1
+        child_guard._libc.prctl.assert_called_once()
+
+    def test_a_child_whose_parent_is_alive_stays(self, monkeypatch):
+        self._arm(monkeypatch, getppid=1234)
+
+        child_guard._make_pdeathsig_preexec(parent_pid=1234)()  # parent alive: must not exit
+
+    def test_a_legitimate_pid_1_parent_is_not_mistaken_for_a_dead_one(self, monkeypatch):
+        # lilbee running as pid 1 (a container with no init shim): the child's parent
+        # is 1 and alive, so the old getppid()==1 check would wrongly kill the engine.
+        self._arm(monkeypatch, getppid=1)
+
+        child_guard._make_pdeathsig_preexec(parent_pid=1)()  # must not exit
 
 
 class TestFailureNeverFailsASpawn:

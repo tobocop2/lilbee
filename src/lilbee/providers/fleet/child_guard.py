@@ -64,19 +64,28 @@ _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
 
 
-def _set_pdeathsig() -> None:  # pragma: no cover - Linux child, runs post-fork
-    """Ask the kernel to send SIGTERM to this child when its parent thread dies.
+def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
+    """A preexec that binds the child's death to *parent_pid*, or None if libc is absent.
 
-    Runs in the forked child before exec. Touches only pre-resolved handles (libc
-    and os are loaded in the parent), since a fork in a threaded process must
-    neither allocate nor take a lock a sibling thread may hold. A parent that
-    already died between fork and here leaves getppid at 1 (reparented to init),
-    so the child exits rather than linger.
+    *parent_pid* is this process's pid, captured before the fork. The child asks
+    the kernel to signal it when its parent thread dies, then exits if it has
+    already been reparented (its parent is no longer *parent_pid*): comparing
+    against the real pid, not against 1, so a lilbee running legitimately as pid 1
+    (a container without an init shim) is not mistaken for a dead parent.
     """
-    if _libc is not None:
-        _libc.prctl(_PR_SET_PDEATHSIG, _PDEATHSIG, 0, 0, 0)
-    if os.getppid() == 1:
-        os._exit(1)
+    if _libc is None:
+        return None
+    libc = _libc
+
+    def _set_pdeathsig() -> None:
+        # Runs in the forked child before exec. Touches only pre-resolved handles
+        # (libc, os, the captured pid), since a fork in a threaded process must
+        # neither allocate nor take a lock a sibling thread may hold.
+        libc.prctl(_PR_SET_PDEATHSIG, _PDEATHSIG, 0, 0, 0)
+        if os.getppid() != parent_pid:
+            os._exit(1)
+
+    return _set_pdeathsig
 
 
 class _LifetimeSpawner:
@@ -171,22 +180,21 @@ def _assign_to_kill_on_close_job(pid: int) -> None:  # pragma: no cover - Window
         kernel32.CloseHandle(handle)
 
 
-def _pdeathsig_preexec() -> Callable[[], None] | None:
-    """The Linux death-signal preexec, or None where it does not apply.
+def spawn_llama_swap(
+    argv: list[str], *, bind_lifetime: bool = True, **popen_kwargs: Any
+) -> subprocess.Popen[Any]:
+    """Spawn llama-swap, by default bound to this process's lifetime.
 
-    None when libc did not resolve, so the spawn is plain and the reap covers it.
+    With ``bind_lifetime`` a crash cannot orphan the engine; the binding is
+    best-effort, so an unavailable platform primitive falls back to a plain spawn
+    and the stale-engine reap on the next launch is the backstop. ``bind_lifetime``
+    is False when the engine is meant to outlive this process on purpose
+    (``keep_engine_warm``), where that same reap is the only cleanup wanted.
     """
-    return _set_pdeathsig if _libc is not None else None
+    if not bind_lifetime:
+        return _spawner.spawn(argv, **popen_kwargs)
 
-
-def spawn_llama_swap(argv: list[str], **popen_kwargs: Any) -> subprocess.Popen[Any]:
-    """Spawn llama-swap bound to this process's lifetime, falling back to a plain spawn.
-
-    The binding is best-effort: if the platform primitive is unavailable, the
-    child is spawned anyway and the stale-engine reap on the next launch remains
-    the backstop.
-    """
-    preexec = _pdeathsig_preexec()
+    preexec = _make_pdeathsig_preexec(os.getpid())
     if preexec is not None:
         try:
             return _spawner.spawn(argv, preexec_fn=preexec, **popen_kwargs)

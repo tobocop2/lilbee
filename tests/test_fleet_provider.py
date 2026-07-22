@@ -54,12 +54,14 @@ class _FakeSwap:
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
+        self.bound = True
 
     def reap_stale(self) -> None:
         self.reaps += 1
 
-    def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+    def start(self, launches: list, **kwargs: object) -> None:
         self.started.append(launches)
+        self.bound = bool(kwargs.get("bind_lifetime", True))
         self.running = True
 
     def endpoint(self) -> str:
@@ -1200,7 +1202,7 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
     started = {"swaps": 0}
 
     class _CountingSwap(_FakeSwap):
-        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+        def start(self, launches: list, **_kw: object) -> None:
             started["swaps"] += 1
             super().start(launches)
 
@@ -1299,13 +1301,25 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
     assert len(swap.started) == 1  # routing the first chat started the swap
+    assert swap.bound is True  # bound to this process by default so a crash cannot orphan it
+
+
+def test_keep_engine_warm_starts_the_swap_unbound(monkeypatch) -> None:
+    """A warm engine must outlive lilbee, so it is spawned without the death binding."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.started  # the fleet was built
+    assert swap.bound is False  # keep_engine_warm: not bound to this process
 
 
 def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     starts = {"n": 0}
 
     class _SlowSwap(_FakeSwap):
-        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+        def start(self, launches: list, **_kw: object) -> None:
             starts["n"] += 1
             time.sleep(0.05)  # widen the race window
             super().start(launches)
@@ -1404,7 +1418,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
     release = threading.Event()
 
     class _SlowSwap(_FakeSwap):
-        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+        def start(self, launches: list, **_kw: object) -> None:
             started.set()
             release.wait(timeout=5.0)
             super().start(launches)
@@ -1424,7 +1438,7 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
     release = threading.Event()
 
     class _GatedSwap(_FakeSwap):
-        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+        def start(self, launches: list, **_kw: object) -> None:
             starts["n"] += 1
             in_start.set()
             release.wait(timeout=5.0)
@@ -2478,7 +2492,7 @@ class TestReloadSingleFlight:
 
     def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
-            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+            def start(self, launches: list, **_kw: object) -> None:
                 raise RuntimeError("respawn failed")
 
         plans: list[int] = []
@@ -2505,7 +2519,7 @@ class TestReloadSingleFlight:
         built: list[_FakeSwap] = []
 
         class _FlakyFirstSwap(_FakeSwap):
-            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+            def start(self, launches: list, **_kw: object) -> None:
                 if len(built) == 1:  # only the first fresh manager fails its spawn
                     raise RuntimeError("first pass failed")
                 super().start(launches)
@@ -2536,7 +2550,7 @@ class TestReloadSingleFlight:
 
     def test_final_pass_failure_drops_the_dead_swap(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
-            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+            def start(self, launches: list, **_kw: object) -> None:
                 self.running = False  # the failed restart tore the process down
                 raise RuntimeError("respawn failed")
 
@@ -2902,7 +2916,7 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     built: list[_FakeSwap] = []
 
     class _SecondExplodes(_FakeSwap):
-        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
+        def start(self, launches: list, **_kw: object) -> None:
             if len(built) > 1:
                 raise RuntimeError("second group failed")
             super().start(launches)

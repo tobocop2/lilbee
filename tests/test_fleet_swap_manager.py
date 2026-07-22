@@ -128,6 +128,25 @@ class TestStart:
         mgr.shutdown()
         assert mgr._log_file is None
 
+    def test_bind_lifetime_is_forwarded_to_the_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A keep-warm fleet spawns with the death binding off so it outlives lilbee."""
+        captured: dict[str, object] = {}
+
+        def _capturing_popen(*_args: object, **kwargs: object) -> _FakeProc:
+            captured.update(kwargs)
+            return _FakeProc(poll_result=None)
+
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        monkeypatch.setattr(sm, "spawn_llama_swap", _capturing_popen)
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+
+        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)], bind_lifetime=False)
+
+        assert captured["bind_lifetime"] is False
+
     def test_raises_when_process_exits_before_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

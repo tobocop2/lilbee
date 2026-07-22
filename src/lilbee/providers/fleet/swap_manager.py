@@ -156,13 +156,18 @@ class SwapManager:
         self._port: int | None = None
         self._member_ports: list[int] = []
 
-    def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
+    def start(
+        self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0, bind_lifetime: bool = True
+    ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
         The proxy and every member get a freshly allocated free port; a fixed
         member port range would collide with a previous instance's server that
         is still shutting down (the new llama-server then fails its bind and
         llama-swap reports it only as "exited prematurely").
+
+        ``bind_lifetime`` binds the engine to this process so a crash cannot orphan
+        it; it is False for a keep-warm fleet that is meant to outlive lilbee.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
@@ -195,6 +200,7 @@ class SwapManager:
                 _LISTEN_FLAG,
                 f"{_HOST}:{self._port}",
             ],
+            bind_lifetime=bind_lifetime,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
