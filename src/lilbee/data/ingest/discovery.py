@@ -44,6 +44,13 @@ def resolve_source_path(filename: str) -> Path:
     The path is returned whether or not it still exists: a source whose file was
     moved or deleted keeps its index entry, and the dead path surfaces only when
     something tries to open it.
+
+    A registered label owns its whole key namespace: if an owned ``documents_dir``
+    subtree of the same top-level name is created after the root is registered,
+    its files resolve to the root, not the owned copy. ``discover_files`` walks
+    the root after the owned tree and so keys the same file identically, keeping
+    resolution and discovery in agreement; ``add`` blocks the reverse collision
+    (registering a label that shadows an existing owned entry).
     """
     config = active_config()
     first, _, rest = filename.partition("/")
