@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from lilbee.core.config import active_config
-from lilbee.core.system import is_ignored_dir
+from lilbee.core.system import is_ignored_dir, is_link
 from lilbee.data.code_chunker import is_code_file
 from lilbee.data.ingest.types import DOCUMENT_EXTENSION_MAP
 
@@ -35,12 +35,13 @@ def classify_file(path: Path) -> str | None:
 
 
 def _linked_roots(documents_dir: Path) -> dict[str, Path]:
-    """Top-level symlink entries under *documents_dir*, mapped label -> resolved target.
+    """Top-level link entries under *documents_dir*, mapped label -> resolved target.
 
-    ``add`` links a prepared source into the knowledge base as a symlink rather
-    than copying it. These are the roots discovery follows, and the only escapes
-    the containment guard permits. A dangling link is skipped (its documents are
-    then marked removed by the next sync).
+    ``add`` links a prepared source into the knowledge base (a symlink, or a
+    junction on unprivileged Windows) rather than copying it. These are the roots
+    discovery follows, and the only escapes the containment guard permits. A
+    dangling link is skipped (its documents are then marked removed by the next
+    sync).
     """
     roots: dict[str, Path] = {}
     try:
@@ -48,7 +49,7 @@ def _linked_roots(documents_dir: Path) -> dict[str, Path]:
     except OSError:
         return roots
     for entry in entries:
-        if entry.is_symlink():
+        if is_link(entry):
             try:
                 roots[entry.name] = entry.resolve(strict=True)
             except OSError:
@@ -62,16 +63,21 @@ def _walk_into(
     label: str | None,
     allowed: tuple[Path, ...],
     ignore_dirs: frozenset[str],
+    skip_dirs: frozenset[str] = frozenset(),
 ) -> None:
     """Walk *base*, recording supported files under *label* that stay within *allowed*.
 
     A file whose real location resolves outside every allowed root is an escaping
     symlink and is skipped with a warning; this is the containment guard, applied
     per file so a sneaky link nested inside a linked corpus cannot smuggle an
-    outside path into the index.
+    outside path into the index. Top-level directories named in *skip_dirs* are
+    not descended (they are the linked roots, walked separately under their label,
+    which also stops os.walk from following a junction into a linked tree twice).
     """
     for root, dirs, filenames in os.walk(base, topdown=True):
         dirs[:] = [d for d in dirs if not is_ignored_dir(d, ignore_dirs)]
+        if Path(root) == base:
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
         for fname in filenames:
             if fname.startswith("."):
                 continue
@@ -89,11 +95,11 @@ def discover_files() -> dict[str, Path]:
     """Scan documents/ recursively, return {relative_name: absolute_path}.
 
     Real files under documents/ are keyed by their path relative to it. Top-level
-    symlinks that ``add`` created are followed: each links to a source living
-    elsewhere on disk, whose files are keyed under the link's label so the name
-    stays documents_dir-relative and every downstream consumer is unchanged. A
-    symlink that resolves outside documents/ and outside these linked roots is an
-    escape and is skipped.
+    links that ``add`` created (a symlink, or a junction on Windows) are followed:
+    each links to a source living elsewhere on disk, whose files are keyed under
+    the link's label so the name stays documents_dir-relative and every downstream
+    consumer is unchanged. A symlink that resolves outside documents/ and outside
+    these linked roots is an escape and is skipped.
     """
     config = active_config()
     documents_dir = config.documents_dir
@@ -102,10 +108,11 @@ def discover_files() -> dict[str, Path]:
     linked = _linked_roots(documents_dir)
     allowed = (documents_dir.resolve(), *linked.values())
     files: dict[str, Path] = {}
-    # os.walk does not follow symlinks, so the top-level linked dirs are skipped
-    # by this pass and walked below under their labels; top-level file symlinks
-    # are listed among filenames here and recorded against the guard directly.
-    _walk_into(files, documents_dir, None, allowed, config.ignore_dirs)
+    # Skip the top-level linked dirs in the main pass: a symlink would not be
+    # descended anyway, and a junction would be, so pruning both keeps each linked
+    # root walked exactly once below (under its label). Top-level file links are
+    # listed among filenames here and recorded against the guard directly.
+    _walk_into(files, documents_dir, None, allowed, config.ignore_dirs, skip_dirs=frozenset(linked))
     for label, target in linked.items():
         if target.is_dir():
             _walk_into(files, target, label, allowed, config.ignore_dirs)

@@ -3362,3 +3362,33 @@ class TestDetectMoves:
         moves = pipeline._detect_moves(files, added, ["old/a.txt", "old/b.txt"], existing)
         assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
         assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
+
+
+class TestLinkedRootHelpers:
+    def test_unlink_linked_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
+        import os as _os
+
+        from lilbee.app.ingest import _unlink_linked_roots
+        from lilbee.core.config import cfg
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        _os.symlink(source, cfg.documents_dir / "corpus")
+
+        # A nested name is left alone; the top-level link is detached.
+        removed = _unlink_linked_roots(["corpus/a.txt", "corpus"], cfg.documents_dir)
+
+        assert removed == ["corpus"]
+        assert not (cfg.documents_dir / "corpus").exists()
+        assert source.exists()  # target untouched
+
+    def test_linked_roots_tolerates_unreadable_dir(self, isolated_env, monkeypatch):
+        from pathlib import Path
+
+        from lilbee.data.ingest import discovery
+
+        def _boom(self):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "iterdir", _boom)
+        assert discovery._linked_roots(discovery.active_config().documents_dir) == {}

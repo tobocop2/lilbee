@@ -81,6 +81,22 @@ def is_ignored_dir(name: str, ignore_dirs: frozenset[str]) -> bool:
     return name.startswith(".") or name in ignore_dirs or name.endswith(".egg-info")
 
 
+def is_link(path: Path) -> bool:
+    """Whether *path* is a symlink or a Windows directory junction.
+
+    ``add`` links a source into the knowledge base as a symlink where privileged,
+    or a junction on unprivileged Windows. ``Path.is_symlink`` is False for a
+    junction and ``Path.is_junction`` only exists on 3.12+, so both are detected
+    via ``os.readlink``, which returns a target for either and raises for a
+    regular file or directory (so a plain file/dir reads as not a link).
+    """
+    try:
+        os.readlink(path)
+    except OSError:
+        return False
+    return True
+
+
 _CTX_TIER_FLOOR = 8192
 _CTX_TIER_TABLE: tuple[tuple[int, int], ...] = (
     # (total_bytes_threshold, target)
