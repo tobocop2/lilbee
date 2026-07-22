@@ -2729,9 +2729,12 @@ async def test_chat_slash_delete_with_match(mock_svc):
 
     Awaits the worker before asserting so the dispatch lands first.
     """
+    from lilbee.data.store.types import RemoveResult
+
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
+    mock_svc.store.remove_documents.return_value = RemoveResult(removed=["notes.md"], not_found=[])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         # Re-inject mock after mount (model bar events may call reset_services)
@@ -2739,7 +2742,11 @@ async def test_chat_slash_delete_with_match(mock_svc):
         app.screen._cmd_delete("notes.md")
         await app.screen.workers.wait_for_complete()
         await _pilot.pause()
-        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+        # /delete routes through remove_documents_durably, so the store is called
+        # with the durable signature (delete_files, documents_dir) rather than
+        # bare positional names.
+        mock_svc.store.remove_documents.assert_called_once()
+        assert mock_svc.store.remove_documents.call_args.args[0] == ["notes.md"]
 
 
 async def test_chat_slash_delete_not_found(mock_svc):
