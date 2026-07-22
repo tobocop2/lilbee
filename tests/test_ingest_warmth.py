@@ -59,6 +59,18 @@ class TestKeepFleetWarm:
         cfg.ingest_max_inflight = 48
         assert _max_concurrent() == 48
 
+    def test_max_inflight_lifts_the_worker_pool_ceiling(self, monkeypatch):
+        # In adaptive mode the admission gate's permit_max is max_workers(), so
+        # the override must raise the pool too or a multi-GPU fleet stays clamped
+        # at 32. An explicit LILBEE_INGEST_MAX_WORKERS still wins.
+        from lilbee.data.ingest.offload import _max_workers
+
+        monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
+        cfg.ingest_max_inflight = 0
+        assert _max_workers() <= 32  # default cap
+        cfg.ingest_max_inflight = 96
+        assert _max_workers() == 96
+
     def test_signal_propagates_into_a_worker_thread(self):
         # to_ingest_thread copies the context, so the fleet (which spawns on an
         # ingest worker thread) sees the hold. Emulate that with copy_context.

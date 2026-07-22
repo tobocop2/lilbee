@@ -52,7 +52,15 @@ def _max_workers() -> int:
             _MAX_WORKERS_ENV,
             override,
         )
-    return min(32, (os.cpu_count() or 4) + 4)
+    default = min(32, (os.cpu_count() or 4) + 4)
+    # ingest_max_inflight is the admission ceiling; the pool (and thus the
+    # adaptive controller's permit_max, which is this value) must be able to feed
+    # it, or in adaptive mode the gate clamps back to 32 and a multi-GPU fleet
+    # stays starved. A set override above wins; otherwise raise the pool to match.
+    from lilbee.core.config import active_config
+
+    inflight = active_config().ingest_max_inflight
+    return max(default, inflight) if inflight > 0 else default
 
 
 def max_workers() -> int:
