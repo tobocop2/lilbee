@@ -463,3 +463,23 @@ class TestPullModel:
     def test_refused_for_read_only_lm_studio(self, backend: LlmSdkBackend) -> None:
         with pytest.raises(ProviderError, match="LM Studio"):
             backend.pull_model("m", base_url="http://localhost:1234/v1")
+
+
+def test_response_format_is_sent_best_effort(backend: LlmSdkBackend) -> None:
+    """A provider without structured-output support must drop the field and
+    answer normally rather than refuse the call: callers parse the reply
+    defensively either way, so refusing would cost an answer to gain nothing."""
+    req = CompletionRequest(
+        ref=parse_model_ref("ollama/m"),
+        messages=[{"role": "user", "content": "hi"}],
+        api_base="http://localhost:11434",
+        options={"response_format": {"type": "json_object"}},
+    )
+    kwargs = backend._completion_kwargs(req, stream=False)
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["drop_params"] is True
+
+
+def test_drop_params_is_not_set_without_response_format(backend: LlmSdkBackend) -> None:
+    kwargs = backend._completion_kwargs(_completion_request(), stream=False)
+    assert "drop_params" not in kwargs

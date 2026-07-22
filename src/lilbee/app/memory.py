@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.llm_json import json_reply_format
 from lilbee.data.store import (
     LOCAL_OWNER,
     MemoryKind,
@@ -158,7 +159,9 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     services = get_services()
 
     def _chat_text(messages: list[dict[str, str]], **_kwargs: object) -> str:
-        return services.provider.chat(messages, stream=False).text
+        return services.provider.chat(
+            messages, stream=False, options={"response_format": json_reply_format()}
+        ).text
 
     extracted = extract_memories(question, answer, _chat_text)
     stored: list[SavedMemory] = []

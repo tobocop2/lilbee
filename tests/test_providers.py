@@ -2346,6 +2346,24 @@ class TestLLMOptions:
         assert result["temperature"] == 0.5
         assert result["seed"] == 42
 
+    def test_response_format_survives_the_allowlist(self) -> None:
+        """The allowlist drops unknown keys silently, so a structured-output
+        request that is not a declared field never reaches the provider and the
+        caller is left parsing prose while believing it asked for JSON."""
+        from lilbee.providers.base import filter_options, normalize_generation_options
+
+        opts = {"num_predict": 64, "response_format": {"type": "json_object"}}
+        assert filter_options(opts)["response_format"] == {"type": "json_object"}
+        assert normalize_generation_options(opts)["response_format"] == {"type": "json_object"}
+
+    def test_credentials_are_still_rejected(self) -> None:
+        """Widening the allowlist must not widen it to sensitive parameters."""
+        from lilbee.providers.base import filter_options
+
+        assert filter_options({"api_key": "secret", "api_base": "http://x", "seed": 1}) == {
+            "seed": 1
+        }
+
 
 class TestFilterOptions:
     def test_filters_valid_options(self) -> None:
