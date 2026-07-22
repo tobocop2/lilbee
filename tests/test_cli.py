@@ -3795,6 +3795,43 @@ class TestSelfCheck:
             setup._download_self_check_model("repo/x", "f.gguf")
         assert not d.exists()
 
+    def test_a_leg_reclaims_its_fleet_when_the_request_is_interrupted(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A SIGTERM handler raises KeyboardInterrupt (below); the leg must tear the
+        # fleet down and remove its temp dir on that exception, not orphan them.
+        from lilbee.cli.commands import setup
+
+        work = tmp_path / "wd"
+        work.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(work))
+        fake_swap = mock.MagicMock()
+        fake_client = mock.MagicMock()
+        fake_client.chat.side_effect = KeyboardInterrupt
+        monkeypatch.setattr(
+            setup, "_self_check_server", lambda *a, **k: (fake_swap, fake_client, work)
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            setup._self_check_chat(tmp_path / "chat.gguf", max_tokens=5)
+
+        fake_swap.shutdown.assert_called_once()
+        assert not work.exists()
+
+    def test_sigterm_becomes_an_interrupt_and_the_handler_is_restored(self) -> None:
+        import signal
+        import sys
+
+        from lilbee.cli.commands import setup
+
+        if sys.platform == "win32":
+            pytest.skip("SIGTERM is not delivered on Windows")
+
+        before = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(KeyboardInterrupt), setup._teardown_on_sigterm():
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is before
+
     def test_self_check_server_cleans_work_dir_on_start_failure(
         self, tmp_path: Path, monkeypatch
     ) -> None:
