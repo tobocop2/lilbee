@@ -236,9 +236,7 @@ class TestFormatSource:
         def _raise(_source: str):
             raise OSError("cannot resolve")
 
-        monkeypatch.setattr(
-            "lilbee.data.ingest.discovery.resolve_source_path", _raise
-        )
+        monkeypatch.setattr("lilbee.data.ingest.discovery.resolve_source_path", _raise)
         r = _make_result(source="doc.md", content_type="text")
         assert format_source(r) == "doc.md"
 

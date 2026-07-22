@@ -104,9 +104,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="b.md", citation_key="src2"),
             make_citation(source_filename="c.md", citation_key="src3"),
         ]
-        assert not _check_cluster_below_threshold(
-            "wiki/synthesis/topic.md", store
-        )
+        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
 
     def test_non_synthesis_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
@@ -128,9 +126,7 @@ class TestCheckClusterBelowThreshold:
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
-        assert not _check_cluster_below_threshold(
-            "wiki/synthesis/topic.md", store
-        )
+        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
 
 
 class TestCheckStaleMajority:
