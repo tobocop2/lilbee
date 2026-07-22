@@ -111,6 +111,8 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "flash_attention": cfg.flash_attention,
         "kv_cache_type": cfg.kv_cache_type.value,
         "n_gpu_layers": cfg.n_gpu_layers,
+        "cpu_moe": cfg.cpu_moe,
+        "n_cpu_moe": cfg.n_cpu_moe,
         "main_gpu": cfg.main_gpu,
         "gpu_devices": cfg.gpu_devices,
     }
@@ -140,7 +142,12 @@ def _self_check_server(
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
-    from lilbee.providers.fleet.planning import chat_cache_type_flags, flash_attn_flag
+    from lilbee.providers.fleet.planning import (
+        chat_cache_type_flags,
+        expert_offload_all,
+        expert_offload_layers,
+        flash_attn_flag,
+    )
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -168,6 +175,12 @@ def _self_check_server(
         cache_type_k=None if is_embed else cache_type_k,
         cache_type_v=None if is_embed else cache_type_v,
         batch_size=ctx if is_embed else None,
+        # Expert offload is role-agnostic in the fleet, so it is here too: an MoE
+        # embedding model with offload configured must get the same command line
+        # from the diagnostic, or the check fails a full-VRAM load the fleet
+        # would have offloaded.
+        cpu_moe=expert_offload_all(meta),
+        n_cpu_moe=expert_offload_layers(meta),
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     launch = InstanceLaunch(
