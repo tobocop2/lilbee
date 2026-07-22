@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+import anyio.to_thread
 from litestar import Litestar
 from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
@@ -109,6 +111,75 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Below this soft open-file limit a large agent fleet meets the limit as
+# connection failures before it saturates the machine.
+_FD_SOFT_LIMIT_NUDGE = 4096
+
+
+def _warn_if_few_file_descriptors() -> None:
+    """Log an advisory when the open-file limit is low enough to cap the agent fleet."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - Windows has no resource module
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft >= _FD_SOFT_LIMIT_NUDGE:
+        return
+    log.info(
+        "Open-file limit is %d. Each connected agent holds a socket, so a large "
+        "fleet will hit this before it saturates the machine; raise it with "
+        "'ulimit -n %d' before starting the server (this shell allows up to %s).",
+        soft,
+        _FD_SOFT_LIMIT_NUDGE,
+        "unlimited" if hard == resource.RLIM_INFINITY else hard,
+    )
+
+
+def _raise_thread_pool_ceiling() -> None:
+    """Set anyio's shared thread-pool size to ``mcp_tool_threads``.
+
+    Resizes anyio's own default limiter, not a private one, so every offload in
+    the process is lifted (Litestar and MCP sync handlers included), not only ours.
+    Must run on the server event loop, where the default limiter lives.
+    """
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    if limiter.total_tokens != cfg.mcp_tool_threads:
+        limiter.total_tokens = cfg.mcp_tool_threads
+
+
+class _ServerLoop:
+    """Holds the running server's event loop so a config change off the loop can reach it.
+
+    A settings write from a worker thread (the MCP handler) needs the loop to
+    resize its thread pool there; nothing is held when no server runs (CLI/TUI).
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        self._loop = loop
+
+    def running(self) -> asyncio.AbstractEventLoop | None:
+        loop = self._loop
+        return loop if loop is not None and not loop.is_closed() else None
+
+
+_server_loop = _ServerLoop()
+
+
+def reapply_thread_pool_ceiling() -> None:
+    """Resize the running server's thread pool after ``mcp_tool_threads`` changes.
+
+    Marshalled onto the server loop, so it is safe from the HTTP handler (on the
+    loop) and the MCP handler (a worker thread) alike. With no server running the
+    new value simply takes effect at the next start.
+    """
+    loop = _server_loop.running()
+    if loop is not None:
+        loop.call_soon_threadsafe(_raise_thread_pool_ceiling)
+
+
 def _log_embedding_model_state(embedder: Embedder) -> None:
     """Report whether embeddings will work, without letting that check stop startup.
 
@@ -132,6 +203,9 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
+    _raise_thread_pool_ceiling()
+    _server_loop.set(asyncio.get_running_loop())
+    _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
 
     inject_provider_keys()
@@ -146,6 +220,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        _server_loop.set(None)
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
         # outlive the server (e.g. on parent-death shutdown in managed mode).
