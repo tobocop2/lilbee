@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -25,6 +26,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
+from lilbee.providers.fleet.child_guard import spawn_llama_swap
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
@@ -187,7 +189,9 @@ class SwapManager:
         # never writes state, never reaps, and never signals engine processes.
         self._bound = False
 
-    def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
+    def start(
+        self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0, bind_lifetime: bool = True
+    ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
         The proxy and every member get a freshly allocated free port, which is
@@ -203,6 +207,9 @@ class SwapManager:
         on the box may take it in between. Nothing in llama-swap offers a
         spawn-time probe to close that window; warming the roles up front
         shortens it for the roles that are warmed.
+
+        ``bind_lifetime`` binds the engine to this process so a crash cannot orphan
+        it; it is False for a keep-warm fleet that is meant to outlive lilbee.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
@@ -229,7 +236,7 @@ class SwapManager:
         self._close_log()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
-        self._proc = subprocess.Popen(  # noqa: S603 - argv[0] is the resolved llama-swap
+        self._proc = spawn_llama_swap(
             [
                 str(resolve_llama_swap()),
                 _CONFIG_FLAG,
@@ -237,6 +244,7 @@ class SwapManager:
                 _LISTEN_FLAG,
                 f"{_HOST}:{self._port}",
             ],
+            bind_lifetime=bind_lifetime,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -459,6 +467,22 @@ def _await_killed(procs: list[psutil.Process]) -> None:
         log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
+def _processes_named(needle: str) -> Iterator[psutil.Process]:
+    """Live processes whose executable name contains *needle*.
+
+    ``name()`` is a cheap field (comm/proc_name); ``cmdline()`` reads the full
+    argument vector and on macOS blocks on entitlement-protected binaries. So the
+    name is the pre-filter and callers pay for ``cmdline()`` only on a match,
+    which keeps a full-process-table scan from stalling on an unrelated process.
+    """
+    for proc in psutil.process_iter(["name"]):
+        # process_iter already skips processes that vanish mid-scan and, per its
+        # ad_value contract, leaves ``name`` as None where it could not be read.
+        name = proc.info["name"] or ""
+        if needle in name:
+            yield proc
+
+
 def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     """Every live llama-swap (any owner) running against *config_path*.
 
@@ -469,7 +493,7 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     """
     target = str(config_path)
     swaps: list[psutil.Process] = []
-    for proc in psutil.process_iter():
+    for proc in _processes_named(_LLAMA_SWAP_PROCESS_NAME):
         try:
             cmdline = proc.cmdline()
         except (
@@ -483,8 +507,8 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
             # binaries (sysctl KERN_PROCARGS2), leaking a raw PermissionError or a
             # C-extension SystemError instead of an AccessDenied.
             continue
-        binary = Path(next(iter(cmdline), "")).name
-        if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:
+        # Identity is the -config path; _processes_named already gated on comm.
+        if target in cmdline:
             swaps.append(proc)
     return swaps
 
@@ -786,14 +810,13 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
         return []
     targets = {str(port) for port in ports}
     orphans: list[psutil.Process] = []
-    for proc in psutil.process_iter():
+    for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):
         try:
             cmdline = proc.cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        binary = Path(next(iter(cmdline), "")).name
-        if _LLAMA_SERVER_PROCESS_NAME not in binary:
-            continue
+        # Identity is the --port value plus the absence of a live swap parent;
+        # _processes_named already gated on the executable name (comm).
         if _port_argument(cmdline) in targets and not _has_live_swap_parent(proc):
             orphans.append(proc)
     return orphans
