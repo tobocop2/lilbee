@@ -17,13 +17,19 @@ resources:
   # A real, registry-verified runpod/pytorch tag -- a guessed tag makes RunPod
   # grab a box, fail the image pull, and release it (endless provisioning churn).
   image_id: docker:runpod/pytorch:1.0.7-rc.138-cu1281-torch271-ubuntu2404
-  disk_size: 400
-  # One card for the smoke: the discovery/chunk feed is single-threaded, so more
-  # GPUs may just starve. Measure one card's docs/sec first, then decide whether
-  # the full run scales to four (embedding is data-parallel, ~linear if it does).
+  # ~144GB of 4096-dim FP32 vectors for 8.8M passages, plus documents, the
+  # ir_datasets corpus cache, and LanceDB index-build headroom.
+  disk_size: 500
+  # Embedding is data-parallel: one embed replica per card, ~8 concurrent
+  # requests each (max(cpu_quota, replicas)), so throughput scales ~linearly with
+  # cards. The 50k smoke measured ~30 docs/sec on one A100 (GPU launch-bound on
+  # tiny per-passage batches, not compute-bound), so four cards ~= 120 docs/sec
+  # ~= 20h for the full 8.8M. The ladder falls to two cards rather than fail.
   ordered:
-    - accelerators: A100-80GB-SXM:1
-    - accelerators: A100-80GB:1
+    - accelerators: A100-80GB-SXM:4
+    - accelerators: A100-80GB:4
+    - accelerators: A100-80GB-SXM:2
+    - accelerators: A100-80GB:2
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
