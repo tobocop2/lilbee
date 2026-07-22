@@ -99,10 +99,20 @@ def _lint_citation(
     """Check a single citation record against the filesystem.
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
-    from lilbee.data.ingest.discovery import resolve_source_path
+    from lilbee.data.ingest.discovery import resolve_source_path_checked
 
-    source_path = resolve_source_path(rec["source_filename"])
     wiki_source = rec["wiki_source"]
+    # A registered root legitimately lives outside documents_dir, so containment
+    # is checked against every allowed root: a key that climbs out of all of them
+    # (a crafted ``../`` citation) is rejected before any file is read.
+    source_path = resolve_source_path_checked(rec["source_filename"])
+    if source_path is None:
+        return LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.ERROR,
+            message=f"Source path escapes its root: {rec['source_filename']}",
+            issue_type=IssueType.PATH_TRAVERSAL,
+        )
 
     if not source_path.exists():
         return LintIssue(
