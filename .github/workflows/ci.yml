@@ -144,6 +144,12 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      # Pin ollama instead of installing latest every run. The warm-up
+      # ('ollama run qwen3:0.6b') intermittently segfaults in ollama's own
+      # runner on the unpinned latest (0.32.x); pin to the last 0.31 stable so
+      # the version stops drifting and a bad release can't land mid-run. Bump
+      # deliberately after checking a release is stable.
+      OLLAMA_PIN: "0.31.2"
     strategy:
       fail-fast: false
       matrix:
@@ -267,7 +273,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-v1
+          key: ollama-bin-${{ runner.os }}-${{ env.OLLAMA_PIN }}
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
@@ -329,12 +335,12 @@ jobs:
 
       - name: Install Ollama (Linux)
         if: runner.os == 'Linux'
-        run: curl -fsSL https://ollama.com/install.sh | sh
+        run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${OLLAMA_PIN}" sh
 
       - name: Install Ollama (macOS)
         if: runner.os == 'macOS'
         run: |
-          curl -fsSL https://ollama.com/download/Ollama-darwin.zip -o /tmp/ollama.zip
+          curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_PIN}/Ollama-darwin.zip" -o /tmp/ollama.zip
           unzip -q /tmp/ollama.zip -d /tmp/ollama
           sudo mv /tmp/ollama/Ollama.app /Applications/
           sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
@@ -344,7 +350,7 @@ jobs:
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://ollama.com/download/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
+          Invoke-WebRequest -Uri "https://github.com/ollama/ollama/releases/download/v$env:OLLAMA_PIN/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
           Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
 
       - name: Save Ollama binary cache (Windows)
@@ -352,7 +358,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-v1
+          key: ollama-bin-${{ runner.os }}-${{ env.OLLAMA_PIN }}
 
       # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
       # past ollama's 5-minute default unload, and a cold reload plus first
