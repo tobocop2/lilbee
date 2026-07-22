@@ -32,10 +32,17 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
 
 
 def _fake_launch(
-    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0, replica: int = 0
+    role: WorkerRole,
+    *,
+    model: str = "",
+    slots: int = 1,
+    ctx: int = 0,
+    weights_bytes: int = 0,
+    replica: int = 0,
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
+    launch.model = model or f"model-{role.value}"
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
@@ -500,6 +507,12 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
     monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: "m-rerank" if role is WorkerRole.RERANK else "",
+    )
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
         planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
     )
@@ -1417,7 +1430,9 @@ def test_ensure_fleet_reaps_stale_swaps_before_planning(monkeypatch) -> None:
         planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
     )
     FleetProvider()._ensure_fleet()
-    assert order == ["reap", "plan"]
+    # A placeable-set plan precedes the reap (it reads total VRAM, reap-independent);
+    # the sizing plan that sees free VRAM still runs after the reap.
+    assert order[-2:] == ["reap", "plan"]
 
 
 def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
@@ -1787,6 +1802,13 @@ def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatc
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+    # The placeable-set query plans too; give it a fleet so the build proceeds to
+    # the wedged clean-box snapshot, which is what must surface.
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
 
     def _wedged() -> None:
         raise ProviderError("The GPU device probe did not respond", kind=ProviderErrorKind.SERVER)
@@ -1807,10 +1829,29 @@ def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> Non
     def _no_binary() -> None:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
+    # A missing binary surfaces first when the placeable set is planned; nothing
+    # is placeable, so the ladder serves nothing without ever reaching a build.
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
     assert p._ensure_fleet() is False
     assert p._swaps == {}
+
+
+def test_plan_and_spawn_serves_nothing_if_the_binary_vanishes_before_the_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The placeable-set plan and _can_build_engine both confirmed the binary, so
+    # this NOT_FOUND guard fires only if it is removed before the clean-box
+    # snapshot; it must serve nothing, not raise.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _no_binary() -> None:
+        raise ProviderError("binary vanished", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+
+    assert FleetProvider()._plan_and_spawn(tmp_path) is False
 
 
 def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> None:
@@ -3252,7 +3293,10 @@ class TestPlanProbeLifecycle:
         order: list[str] = []
         self._wire(monkeypatch, tmp_path, order)
         FleetProvider()._ensure_fleet()
-        assert order == ["reap", "capture", "plan"]
+        # The clean-box snapshot and the sizing plan it feeds still follow the reap;
+        # a placeable-set plan (total-VRAM, reap-independent) may precede it.
+        assert order[-3:] == ["reap", "capture", "plan"]
+        assert "capture" not in order[: order.index("reap")]
 
     def test_reload_with_a_loaded_fleet_reuses_the_snapshot(
         self, monkeypatch, tmp_path: Path
@@ -3911,8 +3955,17 @@ def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
             super().shutdown()
 
     swap = _SecondBindFails()
+    # The placeable set (from the plan) is what the ladder tries to bind, so the
+    # plan carries both roles the state files below serve.
     _swap, machine, _built = _install_ladder(
-        monkeypatch, tmp_path, launches=[], swap=swap, pin="pin-a"
+        monkeypatch,
+        tmp_path,
+        launches=[
+            _fake_launch(WorkerRole.CHAT, model="m-chat"),
+            _fake_launch(WorkerRole.EMBED, model="m-embed"),
+        ],
+        swap=swap,
+        pin="pin-a",
     )
     monkeypatch.setattr(
         prov_mod,
@@ -4073,6 +4126,90 @@ def _connection_error() -> Exception:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+
+
+def test_placeable_wanted_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
+    # A role dropped by co-placement gets no launch, so it is not wanted; bind
+    # then matches a running engine instead of rebuilding it every start. Chat is
+    # configured but the plan below places only embed+rerank (chat could not
+    # co-tenant), so chat is excluded despite being configured.
+    models = {"chat": "m-chat", "embed": "m-embed", "rerank": "m-rerank"}
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: models.get(role.value, ""))
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (
+                _fake_launch(WorkerRole.EMBED, model="m-embed"),
+                _fake_launch(WorkerRole.RERANK, model="m-rerank"),
+            )
+        ),
+    )
+
+    assert prov_mod._placeable_wanted() == {
+        (WorkerRole.EMBED, "m-embed"),
+        (WorkerRole.RERANK, "m-rerank"),
+    }  # chat placed nowhere -> not wanted
+
+
+def test_placeable_wanted_is_empty_without_an_engine_binary(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _no_binary() -> planning_mod.FleetPlan:
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
+
+    assert prov_mod._placeable_wanted() == set()
+
+
+def test_placeable_wanted_propagates_a_real_planning_failure(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _wedged() -> planning_mod.FleetPlan:
+        raise ProviderError("wedged probe", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
+
+    with pytest.raises(ProviderError, match="wedged"):
+        prov_mod._placeable_wanted()
+
+
+def test_release_holds_drops_membership_without_stopping_engines(monkeypatch) -> None:
+    # The rediscover path drops this process's memberships so it does not count
+    # itself a live user and overflow; it must never stop an engine to do so.
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold, Path("/e2"): MagicMock()}
+
+    p._release_holds()
+
+    assert p._engine_holds == {}
+    hold.release_and_check_last.assert_called_once()
+    assert stopped == []
+
+
+def test_rediscover_releases_holds_before_the_retry(monkeypatch) -> None:
+    # A retained self-hold makes the machine slot look in use, overflowing the
+    # rebuild to a private engine; rediscover must release it before retrying.
+    p = FleetProvider()
+    order: list[str] = []
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
+    monkeypatch.setattr(p, "_release_holds", lambda: order.append("release"))
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        order.append("retry")
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert order == ["drop", "release", "retry"]  # holds dropped before the retry
 
 
 def test_rediscover_does_not_close_a_client_a_reader_is_using() -> None:

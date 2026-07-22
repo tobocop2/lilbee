@@ -667,19 +667,33 @@ def _configured_model_for(role: WorkerRole) -> str:
 def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
     """Configured (role, model) pairs a fresh plan would actually serve.
 
-    Filters the raw config down to what the planner would place, so the
-    acquisition ladder binds and replaces against an engine's real contents. A
-    configured-but-unplaceable role (model not installed, weights over VRAM)
-    left in the set keeps bind from ever matching a running engine, restarting
-    the shared engine on every process start.
+    A configured role is wanted only when the planner would place it. The plan
+    is the co-placement authority: a role that fits alone but cannot co-tenant (a
+    unified-memory box past its budget) gets no launch, so it is dropped here too,
+    and bind matches a running engine instead of judging it a partial cover and
+    restarting the shared engine on every process start. The per-role check stays
+    as the cheap gate for the reasons in its own docstring. Empty when no engine
+    binary resolves: nothing is placeable, so the ladder serves nothing.
     """
-    from lilbee.providers.fleet.planning import placeable_total_vram, role_model_placeable
+    from lilbee.providers.fleet.planning import (
+        placeable_total_vram,
+        plan_all_launches,
+        role_model_placeable,
+    )
 
+    try:
+        placed = {launch.role for launch in plan_all_launches().launches}
+    except ProviderError as exc:
+        if exc.kind is ProviderErrorKind.NOT_FOUND:
+            return set()
+        raise
     total_vram = placeable_total_vram()
     return {
         (role, model)
         for role in WorkerRole
-        if (model := _configured_model_for(role)) and role_model_placeable(role, model, total_vram)
+        if role in placed
+        and (model := _configured_model_for(role))
+        and role_model_placeable(role, model, total_vram)
     }
 
 
@@ -1178,6 +1192,7 @@ class FleetProvider:
                 raise
             log.info("Engine unreachable; rediscovering before one retry")
             self._drop_swap_refs()
+            self._release_holds()
             return call()
 
     def _rebuild_role(self, role: WorkerRole) -> None:
@@ -1317,6 +1332,21 @@ class FleetProvider:
                     log.info("Engine left warm at %s (last user out)", engine_dir)
                 elif config_changed:
                     log.info("Engine left running at %s (still in use by peers)", engine_dir)
+        self._engine_holds = {}
+
+    def _release_holds(self) -> None:
+        """Drop this process's engine memberships without stopping any engine.
+
+        The rediscover retry re-runs the acquisition ladder. A retained membership
+        would make this process count itself as a live user of the machine slot, so
+        the ladder would judge the slot in use and overflow to a private engine
+        instead of rebinding a recovered engine or rebuilding a dead one -- N
+        private engines and N times the VRAM after the shared engine first dies.
+        Nothing is stopped here: a live engine is rebound by the retry, and a dead
+        one is cleared by the rebuild that retry triggers.
+        """
+        for hold in list(self._engine_holds.values()):
+            hold.release_and_check_last()
         self._engine_holds = {}
 
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:

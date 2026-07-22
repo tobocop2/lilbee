@@ -116,16 +116,18 @@ def _binary_signature(path: Path) -> str:
 
 
 def _load_config_signature() -> str:
-    """A deterministic digest of the settings that require an engine reload.
+    """A deterministic digest of the settings an engine bakes in at launch.
 
-    These are the same ``LOAD_AFFECTING_KEYS`` a single process reloads on; across
-    processes they decide sharing, since an engine launched with one set cannot
-    serve a peer that configured another.
+    These decide cross-process sharing, since an engine launched with one set
+    cannot serve a peer that configured another: the ``LOAD_AFFECTING_KEYS`` a
+    single process reloads on, plus the placement keys that fix which devices a
+    launch uses, so a peer with different placement binds its own engine.
     """
     from lilbee.core.config import cfg
-    from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+    from lilbee.core.config.keys import LOAD_AFFECTING_KEYS, PLACEMENT_PIN_KEYS
 
-    return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(LOAD_AFFECTING_KEYS))
+    keys = LOAD_AFFECTING_KEYS | PLACEMENT_PIN_KEYS
+    return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(keys))
 
 
 def resolve_engine_tool(tool: EngineTool) -> Path:

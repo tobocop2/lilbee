@@ -211,6 +211,28 @@ class TestEnginePin:
         finally:
             cfg.llama_server_path = original
 
+    def test_placement_is_part_of_the_load_signature(self) -> None:
+        # A process with a manual GPU placement must not adopt an engine placed
+        # differently, so placement flows into the pin's load signature.
+        original = cfg.placement
+        try:
+            cfg.placement = None
+            base = binary_mod._load_config_signature()
+            cfg.placement = '{"chat": {"devices": [1]}}'
+            assert binary_mod._load_config_signature() != base
+        finally:
+            cfg.placement = original
+
+    def test_gpu_devices_is_part_of_the_load_signature(self) -> None:
+        original = cfg.gpu_devices
+        try:
+            cfg.gpu_devices = None
+            base = binary_mod._load_config_signature()
+            cfg.gpu_devices = "1"
+            assert binary_mod._load_config_signature() != base
+        finally:
+            cfg.gpu_devices = original
+
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

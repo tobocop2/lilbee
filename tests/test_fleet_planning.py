@@ -2361,6 +2361,13 @@ def test_role_model_placeable_false_when_weights_exceed_vram(monkeypatch) -> Non
     assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
 
 
+def test_role_model_placeable_false_for_a_remote_ref(monkeypatch) -> None:
+    # A remote (SDK-routed) ref is never placed on the local engine.
+    _ref = type("R", (), {"is_remote": True})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "openrouter/gpt", 80 * 1024**3)
+
+
 def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
     _dev = type("D", (), {"total_bytes": 40 * 1024**3})
     probe = type("P", (), {"devices": [_dev(), _dev()]})()
