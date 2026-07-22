@@ -26,16 +26,19 @@ _MAX_CITE_RANGE = 32
 # start of the text as well as to a preceding newline, so an answer that is
 # nothing but a fabricated block (heading at position 0) is still stripped.
 _CITE_HEADING = (
-    r"(?:\n{1,3}|\A)(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*"
+    r"(?:\n{1,3}|\A)[ \t]*(?:#+\s*)?"
+    r"(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*"
 )
 # One list line: a bullet, arrow, "[1]" or "1." marker and the rest of its line.
 _CITE_LIST_LINE = r"[ \t]*(?:[-*•→\[]|\d+[.)])[^\n]*"
 
 # A heading line followed by a list. The list is required so prose discussing
 # such a heading is not clipped; the match ends with the list, not end-of-text,
-# so an answer resuming after its citations keeps the continuation.
+# so an answer resuming after its citations keeps the continuation. Items may be
+# blank-line separated, which markdown does routinely; stopping at the first
+# blank line would leave the rest of a fabricated list in the answer.
 _LLM_CITATION_BLOCK_RE = re.compile(
-    _CITE_HEADING + r"\n\s*" + _CITE_LIST_LINE + r"(?:\n" + _CITE_LIST_LINE + r")*",
+    _CITE_HEADING + r"\n\s*" + _CITE_LIST_LINE + r"(?:\n+" + _CITE_LIST_LINE + r")*",
     re.IGNORECASE,
 )
 

@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.llm_json import json_reply_format
 from lilbee.data.store import (
     ChunkType,
     MemoryKind,
@@ -1208,7 +1209,10 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": INTENT_CLASSIFY_MAX_TOKENS},
+                options={
+                    "num_predict": INTENT_CLASSIFY_MAX_TOKENS,
+                    "response_format": json_reply_format(),
+                },
             )
         except Exception:
             log.debug("LLM intent classification failed; using pattern result", exc_info=True)
@@ -1335,7 +1339,13 @@ class Searcher:
             )
         raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))
+        # Citations are read off the prose only: a model that echoes its own
+        # Sources list would otherwise mark every retrieved file cited.
+        return AskResult(
+            answer=clean,
+            sources=results,
+            cited_sources=cited_subset(strip_llm_citations(clean), results),
+        )
 
     def ask(
         self,
