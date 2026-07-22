@@ -44,12 +44,16 @@ resources:
 file_mounts:
   /opt/evals: ./evals
 envs:
-  BRANCH: feat/kreuzberg-5
+  BRANCH: kz5-fleet-merge
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
   DATASET_ID: msmarco-passage
   # 0 = full 8.8M corpus. A smoke run overrides this (--env SMOKE_N=50000).
   SMOKE_N: "0"
+  # Fleet saturation knobs. 0 = auto admission (replicas x 8); bump only if
+  # validation shows GPUs under ~90%% util. batch 64 = the smoke saturating value.
+  INGEST_MAX_INFLIGHT: "0"
+  EMBED_BATCH_SEQUENCES: "64"
   LILBEE_POD_HOURLY_USD: "3.20"
 setup: |
   set -euo pipefail
@@ -81,7 +85,7 @@ setup: |
   uv pip install -q --python "$VPY" --no-deps --reinstall \
     "git+https://github.com/tobocop2/lilbee@${BRANCH}"
   uv pip install -q --python "$VPY" --prerelease=allow "xberg>=1.0.0rc30"
-  uv pip install -q --python "$VPY" ir_datasets pyarrow
+  uv pip install -q --python "$VPY" ir_datasets pyarrow tomli-w cachetools
 
   ENGINE_BIN="$($VPY -c 'import lilbee_engine; print(lilbee_engine.get_llama_server_path())')"
   test -x "$ENGINE_BIN" || { echo "FATAL: no engine at $ENGINE_BIN (stub wheel?)"; exit 1; }
@@ -109,7 +113,7 @@ run: |
   export LILBEE_LOG_LEVEL=INFO
   export WORK_DIR=/root MIN_DISK_GB=120
   export LILBEE_BIN=/root/lilbee_venv/bin/lilbee PYBIN=/root/lilbee_venv/bin/python
-  export EMBED_MODEL DATASET_ID SMOKE_N BACKEND
+  export EMBED_MODEL DATASET_ID SMOKE_N BACKEND INGEST_MAX_INFLIGHT EMBED_BATCH_SEQUENCES
   # One embed server per detected card. Pinned to the real count (not lilbee's
   # VRAM auto-guess, which reserves room for a query fleet this run never calls).
   export LILBEE_EMBED_REPLICAS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"

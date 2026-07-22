@@ -39,12 +39,27 @@ log() { printf '[ingest %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 # ---------------------------------------------------------------- config.toml
 # The embedder mechanism. Written into the data root that lilbee loads.
-cat > "$LILBEE_DATA/config.toml" <<CFG
-embedding_model = "$EMBED_MODEL"
-embedding_dim = 4096
-enable_ocr = false
-CFG
-log "config.toml -> embedding_model=$EMBED_MODEL embedding_dim=4096 ocr=off"
+#
+# Fleet/saturation knobs (from the embed-fleet-during-ingest fix):
+#   - ingest_max_inflight: files in their compute phase at once. 0 = AUTO, which
+#     sizes to replicas x 8 (the per-replica in-flight that saturated one card in
+#     the smoke). Left auto so it scales with whatever GPU count the ladder lands
+#     (64 on 8 cards, 32 on 4) -- a hardcode would starve or overrun. Override via
+#     INGEST_MAX_INFLIGHT only if validation shows GPUs under ~90% util.
+#   - embed_batch_sequences: passages packed per embed request; 64 keeps the
+#     engine's continuous-batching slots full (the smoke's saturating value).
+#   The fleet is also held resident (llama-swap ttl 0) for the whole sync by
+#   lilbee's keep_fleet_warm(), so idle replicas no longer unload and collapse.
+: "${INGEST_MAX_INFLIGHT:=0}"
+: "${EMBED_BATCH_SEQUENCES:=64}"
+{
+  echo "embedding_model = \"$EMBED_MODEL\""
+  echo "embedding_dim = 4096"
+  echo "enable_ocr = false"
+  echo "embed_batch_sequences = $EMBED_BATCH_SEQUENCES"
+  [ "${INGEST_MAX_INFLIGHT:-0}" -gt 0 ] 2>/dev/null && echo "ingest_max_inflight = $INGEST_MAX_INFLIGHT"
+} > "$LILBEE_DATA/config.toml"
+log "config.toml -> embedder=$EMBED_MODEL dim=4096 ocr=off batch_seq=$EMBED_BATCH_SEQUENCES inflight=${INGEST_MAX_INFLIGHT:-auto}"
 
 # ---------------------------------------------------------------- materialise
 # Stream passages straight from ir_datasets into documents/ as one .txt per
