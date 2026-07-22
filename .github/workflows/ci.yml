@@ -111,6 +111,31 @@ jobs:
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          # Backstop for the xdist worker wedge (ProactorEventLoop /
+          # reactive-timing thread-accumulation), which pytest-timeout's thread
+          # method cannot break on Windows: its callback is Python and never runs
+          # while the GIL is held. Above the 60s per-test pytest-timeout so this
+          # only fires when that fails; faulthandler's C watchdog dumps every
+          # thread and _exits the worker, so a wedge fails fast with a traceback
+          # instead of hanging to timeout-minutes. See tests/_hang_watchdog.py.
+          LILBEE_TEST_HANG_DUMP_S: "90"
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+
+      - name: Surface hang-watchdog stack dumps
+        # Runs even when the test step failed/was killed: the wedged worker
+        # cannot print its own dump. Empty dirs/files mean no wedge fired.
+        if: always()
+        shell: bash
+        run: |
+          dir="${{ runner.temp }}/hang-dumps"
+          found=""
+          for f in "$dir"/hang-*.txt; do
+            [ -s "$f" ] || continue
+            found=1
+            echo "===== $f ====="
+            cat "$f"
+          done
+          [ -n "$found" ] || echo "no hang-watchdog dumps (no worker wedged)"
 
   integration:
     timeout-minutes: 120

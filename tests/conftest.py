@@ -34,6 +34,9 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
+# Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
+pytest_plugins = ["tests._hang_watchdog"]
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
