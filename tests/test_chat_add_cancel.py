@@ -29,10 +29,12 @@ def isolated_documents(tmp_path):
 
 class TestUnregisterAddedRoots:
     def test_unregisters_root_without_touching_source(self, isolated_documents, tmp_path):
+        from lilbee.core import settings
+
         source = tmp_path / "corpus"
         source.mkdir()
         (source / "a.txt").write_text("keep me")
-        cfg.linked_roots = {"corpus": str(source)}
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
 
         unregister_added_roots(["corpus"])
 
@@ -45,7 +47,13 @@ class TestUnregisterAddedRoots:
         assert cfg.linked_roots == {}
 
     def test_leaves_other_roots_alone(self, isolated_documents, tmp_path):
-        cfg.linked_roots = {"keep": str(tmp_path / "keep"), "drop": str(tmp_path / "drop")}
+        from lilbee.core import settings
+
+        settings.set_value(
+            cfg.data_root,
+            "linked_roots",
+            {"keep": str(tmp_path / "keep"), "drop": str(tmp_path / "drop")},
+        )
         unregister_added_roots(["drop"])
         assert "keep" in cfg.linked_roots
         assert "drop" not in cfg.linked_roots

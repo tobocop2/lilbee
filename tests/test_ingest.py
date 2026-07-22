@@ -368,6 +368,29 @@ class TestSync:
         assert result.removed == []
         assert "temp.txt" in {s["filename"] for s in get_services().store.get_sources()}
 
+    async def test_registered_root_reindexes_edited_file(self, mock_extract_file, isolated_env):
+        # Editing a file inside a registered root re-ingests it in place: it is
+        # reported updated (not added) and the store's recorded hash reflects the
+        # edit, proving a real reindex rather than a no-op.
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import file_hash, sync
+
+        corpus = isolated_env.parent / "corpus"
+        corpus.mkdir()
+        (corpus / "f.txt").write_text("first version of the content")
+        cfg.linked_roots = {"corpus": str(corpus)}
+
+        first = await sync()
+        assert "corpus/f.txt" in first.added
+
+        (corpus / "f.txt").write_text("a second, edited version of the content")
+        second = await sync()
+        assert "corpus/f.txt" in second.updated
+        assert "corpus/f.txt" not in second.added
+        rec = next(s for s in get_services().store.get_sources() if s["filename"] == "corpus/f.txt")
+        assert rec["file_hash"] == file_hash(corpus / "f.txt")
+
     async def test_unchanged_file_skipped(self, mock_extract_file, isolated_env):
         (isolated_env / "stable.txt").write_text("I stay the same")
         from lilbee.data.ingest import sync
@@ -3392,12 +3415,12 @@ class TestDetectMoves:
 
 class TestRegisteredRootHelpers:
     def test_unregister_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
-        from lilbee.app.ingest import unregister_roots
+        from lilbee.app.ingest import register_sources, unregister_roots
         from lilbee.core.config import cfg
 
         source = tmp_path / "corpus"
         source.mkdir()
-        cfg.linked_roots = {"corpus": str(source)}
+        register_sources([source])  # persists the root, mirroring real usage
 
         # A nested name is not a root and is left alone; the label is un-registered.
         removed = unregister_roots(["corpus/a.txt", "corpus"])
@@ -3407,10 +3430,12 @@ class TestRegisteredRootHelpers:
         assert source.exists()  # source bytes untouched
 
     def test_unregister_roots_ignores_unknown_label(self, isolated_env, tmp_path):
-        from lilbee.app.ingest import unregister_roots
+        from lilbee.app.ingest import register_sources, unregister_roots
         from lilbee.core.config import cfg
 
-        cfg.linked_roots = {"corpus": str(tmp_path / "corpus")}
+        source = tmp_path / "corpus"
+        source.mkdir()
+        register_sources([source])
         assert unregister_roots(["not-a-root"]) == []
         assert "corpus" in cfg.linked_roots
 
@@ -3459,11 +3484,14 @@ class TestRegisterSources:
 
     def test_dangling_root_relinks_without_force(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
         from lilbee.core.config import cfg
 
         # A root registered to a path that no longer exists (the source moved):
         # re-adding the new location re-points the label, no force needed.
-        cfg.linked_roots = {"corpus": str(tmp_path / "old" / "corpus")}
+        settings.set_value(
+            cfg.data_root, "linked_roots", {"corpus": str(tmp_path / "old" / "corpus")}
+        )
         moved = tmp_path / "new" / "corpus"
         moved.mkdir(parents=True)
         result = register_sources([moved])
@@ -3491,3 +3519,72 @@ class TestRegisterSources:
         register_sources([corpus])
         persisted = settings.load(cfg.data_root)
         assert persisted.get("linked_roots") == {"corpus": str(corpus.resolve())}
+
+    def test_register_merges_with_concurrently_persisted_root(self, isolated_env, tmp_path):
+        # Another process persisted a root to config.toml while our in-memory view
+        # is stale; register must merge, not clobber it (no lost update).
+        from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        other = tmp_path / "a" / "other"
+        other.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"other": str(other)})
+        cfg.linked_roots = {}  # stale snapshot: does not know about "other"
+
+        mine = tmp_path / "b" / "mine"
+        mine.mkdir(parents=True)
+        register_sources([mine])
+
+        expected = {"other": str(other), "mine": str(mine.resolve())}
+        assert settings.load(cfg.data_root)["linked_roots"] == expected
+        assert cfg.linked_roots == expected
+
+    def test_rejects_root_nested_under_existing_root(self, isolated_env, tmp_path):
+        # Registering a child of an existing root would walk (and index) the same
+        # file under two keys; it is skipped.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        (corpus / "papers").mkdir(parents=True)
+        register_sources([corpus])
+        result = register_sources([corpus / "papers"])
+        assert result.registered == []
+        assert result.skipped == ["papers"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_rejects_root_containing_existing_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        child = tmp_path / "data" / "corpus"
+        child.mkdir(parents=True)
+        register_sources([child])
+        result = register_sources([tmp_path / "data"])  # a parent of the existing root
+        assert result.registered == []
+        assert cfg.linked_roots == {"corpus": str(child.resolve())}
+
+    def test_rejects_root_that_is_ancestor_of_documents_dir(self, isolated_env, tmp_path):
+        # documents_dir lives under tmp_path; registering tmp_path would re-index
+        # every owned file a second time under the parent label.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        result = register_sources([cfg.documents_dir.parent])
+        assert result.registered == []
+        assert cfg.linked_roots == {}
+
+    def test_force_never_shadows_owned_documents_entry(self, isolated_env, tmp_path):
+        # An owned top-level entry must never be shadowed by a same-named root,
+        # even under --force, or resolve_source_path would disagree with discovery.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        (cfg.documents_dir / "reports").mkdir(parents=True)
+        external = tmp_path / "reports"
+        external.mkdir()
+        result = register_sources([external], force=True)
+        assert result.registered == []
+        assert result.skipped == ["reports"]
+        assert cfg.linked_roots == {}

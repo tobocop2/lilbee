@@ -22,31 +22,49 @@ class RegisterResult:
     skipped: list[str] = field(default_factory=list)
 
 
-def _persist_roots(roots: dict[str, str]) -> None:
-    """Point the in-process registry at *roots* and persist it to config.toml."""
-    config = active_config()
-    config.linked_roots = roots
-    settings.set_value(config.data_root, "linked_roots", roots)
-
-
 def _resolve_label(
     base: str, roots: dict[str, str], docs_resolved: Path, *, force: bool
 ) -> str | None:
     """Choose the source-key label for a new root, or None when the name is taken.
 
-    Reuses the label when a root of that name was registered before but its path
-    has since vanished (the source moved: re-register in place, no ``--force``
-    needed) or when *force* overwrites it. A live root or an owned top-level entry
-    of the same name is a genuine collision and blocks the label unless forced.
+    An owned ``documents_dir`` top-level entry of the same name always wins and is
+    never shadowed, even under ``force`` -- a label that shadows it would make
+    resolve_source_path disagree with how discovery keyed the owned file. Reuses
+    the label when a root of that name was registered before but its path has since
+    vanished (the source moved: re-register in place, no ``--force`` needed) or
+    when ``force`` overwrites a live registered root of the same name.
     """
+    if (docs_resolved / base).exists():
+        return None  # an owned entry holds this name; never shadow it
     existing = roots.get(base)
     if existing is not None and not Path(existing).exists():
         return base  # dangling root; the source moved, re-point it to the new path
     if force:
         return base
-    if base in roots or (docs_resolved / base).exists():
+    if base in roots:
         return None
     return base
+
+
+def _overlaps_existing(src: Path, docs_resolved: Path, roots: dict[str, str]) -> bool:
+    """Whether *src* overlaps ``documents_dir`` or a live registered root.
+
+    Two roots covering the same tree would walk the same file twice and index it
+    under two keys (double-index). The caller already rejects *src* inside
+    ``documents_dir``; this rejects *src* being an ANCESTOR of it, and *src*
+    nesting under or over any live registered root. A vanished root cannot
+    double-index, so it is ignored.
+    """
+    if docs_resolved.is_relative_to(src):
+        return True
+    for target in roots.values():
+        root = Path(target)
+        if not root.exists():
+            continue
+        root = root.resolve()
+        if src.is_relative_to(root) or root.is_relative_to(src):
+            return True
+    return False
 
 
 def source_label_taken(name: str) -> bool:
@@ -77,28 +95,39 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
     docs_resolved = documents_dir.resolve()
-    roots = dict(config.linked_roots)
-    by_target = {target: label for label, target in roots.items()}
     result = RegisterResult()
-    for p in paths:
-        src = p.resolve()
-        if src == docs_resolved or docs_resolved in src.parents:
-            result.skipped.append(p.name)  # already owned by the knowledge base
-            continue
-        already = by_target.get(str(src))
-        if already is not None:
-            result.skipped.append(already)  # this exact source is already registered
-            continue
-        label = _resolve_label(src.name, roots, docs_resolved, force=force)
-        if label is None:
-            result.skipped.append(src.name)  # name taken; --force to overwrite
-            continue
-        roots[label] = str(src)
-        by_target[str(src)] = label
-        result.registered.append(label)
-    if result.registered:
-        _persist_roots(roots)
-    return result
+    if not paths:
+        return result
+
+    def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], RegisterResult]:
+        # Read the registry from config.toml INSIDE the lock (not the possibly
+        # stale in-memory copy) so two processes registering roots concurrently
+        # cannot lose each other's entry.
+        roots = dict(persisted or {})
+        by_target = {target: label for label, target in roots.items()}
+        for p in paths:
+            src = p.resolve()
+            if src == docs_resolved or docs_resolved in src.parents:
+                result.skipped.append(p.name)  # already owned by the knowledge base
+                continue
+            already = by_target.get(str(src))
+            if already is not None:
+                result.skipped.append(already)  # this exact source is already registered
+                continue
+            if _overlaps_existing(src, docs_resolved, roots):
+                result.skipped.append(p.name)  # nests under/over another root; would double-index
+                continue
+            label = _resolve_label(src.name, roots, docs_resolved, force=force)
+            if label is None:
+                result.skipped.append(src.name)  # name taken; --force to overwrite
+                continue
+            roots[label] = str(src)
+            by_target[str(src)] = label
+            result.registered.append(label)
+        config.linked_roots = roots  # refresh the in-process view (picks up merges)
+        return roots, result
+
+    return settings.mutate_value(config.data_root, "linked_roots", _mutate)
 
 
 _REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
@@ -168,17 +197,23 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
     are not roots and are left alone.
     """
     config = active_config()
-    roots = dict(config.linked_roots)
+    labels = list(names)
     removed: list[str] = []
-    for name in names:
-        label = name.strip("/")
-        if "/" in label or label not in roots:
-            continue
-        del roots[label]
-        removed.append(label)
-    if removed:
-        _persist_roots(roots)
-    return removed
+    if not labels:
+        return removed
+
+    def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], list[str]]:
+        roots = dict(persisted or {})
+        for name in labels:
+            label = name.strip("/")
+            if "/" in label or label not in roots:
+                continue
+            del roots[label]
+            removed.append(label)
+        config.linked_roots = roots  # refresh the in-process view
+        return roots, removed
+
+    return settings.mutate_value(config.data_root, "linked_roots", _mutate)
 
 
 def remove_documents_durably(names: list[str], targets: list[str] | None = None) -> RemoveResult:

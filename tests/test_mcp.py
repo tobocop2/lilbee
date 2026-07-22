@@ -686,9 +686,11 @@ class TestAdd:
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
         # A live root already holds the "exist" label; a same-basename source is
         # skipped without force.
+        from lilbee.core import settings
+
         one = tmp_path / "a" / "exist"
         one.mkdir(parents=True)
-        cfg.linked_roots = {"exist": str(one)}
+        settings.set_value(cfg.data_root, "linked_roots", {"exist": str(one)})
         two = tmp_path / "b" / "exist"
         two.mkdir(parents=True)
 
@@ -700,9 +702,11 @@ class TestAdd:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_with_force(self, mock_sync, tmp_path):
+        from lilbee.core import settings
+
         one = tmp_path / "a" / "exist"
         one.mkdir(parents=True)
-        cfg.linked_roots = {"exist": str(one)}
+        settings.set_value(cfg.data_root, "linked_roots", {"exist": str(one)})
         two = tmp_path / "b" / "exist"
         two.mkdir(parents=True)
 

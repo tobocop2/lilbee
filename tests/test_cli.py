@@ -238,23 +238,6 @@ class TestAdd:
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
 
-    def test_add_reindexes_edited_source(self, isolated_env, tmp_path):
-        """Editing a tracked source and re-adding picks up the new content in place."""
-        src_dir = tmp_path / "source" / "docs"
-        src_dir.mkdir(parents=True)
-        (src_dir / "file1.txt").write_text("Version 1")
-
-        runner.invoke(app, ["add", str(src_dir)])
-
-        # Edit the tracked file and re-add: the root is unchanged, and the sync
-        # add triggers picks up the new content since the file is indexed in place.
-        (src_dir / "file1.txt").write_text("Version 2")
-        result = runner.invoke(app, ["add", str(src_dir)])
-        assert result.exit_code == 0
-        from lilbee.data.ingest.discovery import resolve_source_path
-
-        assert resolve_source_path("docs/file1.txt").read_text() == "Version 2"
-
     def test_add_warns_on_existing(self, isolated_env, tmp_path):
         """Re-adding a source that is already registered warns."""
         src_file = tmp_path / "source" / "manual.txt"
@@ -1545,12 +1528,13 @@ class TestRemove:
     def test_remove_unregisters_a_root_and_keeps_source(self, isolated_env, mock_svc, tmp_path):
         # A directory registered as a source root: removing it un-registers the
         # root (discovery stops finding it) and never touches the source bytes.
+        from lilbee.core import settings
         from lilbee.data.store import RemoveResult
 
         source = tmp_path / "corpus"
         source.mkdir()
         (source / "a.txt").write_text("keep")
-        cfg.linked_roots = {"corpus": str(source)}
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
 
         mock_svc.store.get_sources.return_value = [{"filename": "corpus/a.txt"}]
         mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(

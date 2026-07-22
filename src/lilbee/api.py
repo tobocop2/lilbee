@@ -28,11 +28,11 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# app.ingest stays at module top: it is a thin wrapper over the symlink helper +
-# the config singleton (~50ms cumulative beyond core.config). data.ingest is
-# deferred at each callsite below because it transitively imports spaCy via
-# the wiki package and adds ~3s on first touch.
-from lilbee.app.ingest import register_sources
+# app.ingest stays at module top: registering source roots is a locked
+# config.toml read-modify-write over the config singleton (no copy, no symlink),
+# cheap to import. data.ingest is deferred at each callsite below because it
+# transitively imports spaCy via the wiki package and adds ~3s on first touch.
+from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.services import build_services, services_scope
 from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
@@ -146,8 +146,6 @@ class Lilbee:
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept)."""
-        from lilbee.app.ingest import remove_documents_durably
-
         with config_scope(self._config), services_scope(self._services):
             remove_documents_durably([name])
 

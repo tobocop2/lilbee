@@ -14,7 +14,12 @@ if TYPE_CHECKING:
 
     from lilbee.runtime.progress import DetailedProgressCallback
 
-from lilbee.app.ingest import RegisterResult, register_sources
+from lilbee.app.ingest import (
+    RegisterResult,
+    expand_remove_targets,
+    register_sources,
+    remove_documents_durably,
+)
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.cli import theme
@@ -602,8 +607,6 @@ def remove(
     files on disk are never deleted.
     """
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
-    from lilbee.app.ingest import expand_remove_targets, remove_documents_durably
 
     known = [s["filename"] for s in get_services().store.get_sources()]
     targets = expand_remove_targets(names, known=known)

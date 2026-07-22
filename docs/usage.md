@@ -432,7 +432,7 @@ lilbee --json self-check                       # runtime + model self-check
 **Write (LLM calls or long ops):**
 
 ```bash
-lilbee --json add ~/docs ~/notes               # link files / dirs in, indexes in one call
+lilbee --json add ~/docs ~/notes               # register files / dirs, index them in place
 lilbee --json add https://example.com/page     # URL becomes a markdown source
 lilbee --json sync                             # re-index after edits to the documents directory
 lilbee --json rebuild                          # nuke the index and re-ingest everything

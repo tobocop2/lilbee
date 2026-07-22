@@ -42,9 +42,11 @@ class TestRegisterPaths:
     def test_prints_warning_for_skipped(self, tmp_path):
         # A different corpus already holds the "corpus" label; a second one with
         # the same basename is skipped without --force and the user is warned.
+        from lilbee.core import settings
+
         one = tmp_path / "a" / "corpus"
         one.mkdir(parents=True)
-        cfg.linked_roots = {"corpus": str(one)}
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(one)})
         two = tmp_path / "b" / "corpus"
         two.mkdir(parents=True)
         con = Console(quiet=True)
