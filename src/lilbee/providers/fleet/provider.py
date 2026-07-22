@@ -1032,7 +1032,11 @@ class FleetProvider:
         try:
             for group, group_launches in by_group.items():
                 swap = SwapManager(data_dir, group)
-                swap.start(list(group_launches), ttl_seconds=_warm_ttl_seconds())
+                swap.start(
+                    list(group_launches),
+                    ttl_seconds=_warm_ttl_seconds(),
+                    bind_lifetime=not cfg.keep_engine_warm,
+                )
                 started[group] = swap
         except BaseException:
             for swap in started.values():
@@ -2276,7 +2280,11 @@ class FleetProvider:
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
                     swap = SwapManager(reload_dir, group)
-                    swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
+                    swap.start(
+                        group_launches,
+                        ttl_seconds=_warm_ttl_seconds(),
+                        bind_lifetime=not cfg.keep_engine_warm,
+                    )
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)
                         self._group_dirs[group] = reload_dir
