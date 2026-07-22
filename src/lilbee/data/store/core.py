@@ -7,7 +7,6 @@ import math
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
@@ -25,7 +24,6 @@ from lilbee.core.config import (
     SOURCES_TABLE,
     Config,
 )
-from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .fusion import fuse_arms, normalized_bm25, vector_similarity
@@ -1130,23 +1128,16 @@ class Store:
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
-    def remove_documents(
-        self,
-        names: list[str],
-        *,
-        delete_files: bool = False,
-        documents_dir: Path | None = None,
-    ) -> RemoveResult:
+    def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
-        Looks up known sources, deletes chunks and source records for each.
-        If *delete_files* is True, resolves the path and verifies it is
-        contained within *documents_dir* before unlinking (path traversal guard).
+
+        Looks up known sources and deletes their chunks and source records. Never
+        touches files on disk: source bytes are the user's, and a linked-in corpus
+        must never be deleted. Durable, file-aware removal (skip-markers, unlinking
+        a top-level link) lives in :func:`lilbee.app.ingest.remove_documents_durably`.
 
         Returns a RemoveResult with removed and not_found lists.
         """
-        if documents_dir is None:
-            documents_dir = self._config.documents_dir
-
         known = {s["filename"] for s in self.get_sources()}
         removed = [name for name in names if name in known]
         not_found = [name for name in names if name not in known]
@@ -1158,16 +1149,6 @@ class Store:
             with self._write_lock():
                 self._remove_many_unlocked(removed)
             self._invalidate_source_cache()
-
-        if delete_files:
-            for name in removed:
-                try:
-                    path = validate_path_within(documents_dir / name, documents_dir)
-                except ValueError:
-                    log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
-                    continue
-                if path.exists():
-                    path.unlink()
 
         return RemoveResult(removed=removed, not_found=not_found)
 

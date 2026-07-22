@@ -1146,15 +1146,15 @@ class TestNavBindings:
 class TestNoRichConsoleInTui:
     """B2: Verify the /add implementation doesn't pull Rich Console into the TUI."""
 
-    def test_chat_add_uses_copy_files_not_copy_paths(self) -> None:
+    def test_chat_add_uses_link_files_not_link_paths(self) -> None:
         import inspect
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         source = inspect.getsource(ChatScreen._do_add)
         assert "from lilbee.cli.app import console" not in source
-        assert "copy_paths" not in source
-        assert "copy_files" in source
+        assert "link_paths" not in source
+        assert "link_files" in source
 
 
 class TestLoginCommand:

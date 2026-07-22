@@ -364,23 +364,42 @@ class TestRemove:
         result = remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    def test_delete_files_removes_from_disk(self, mock_svc):
+    def test_folder_name_expands_to_members(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
-        result = remove(["a.md"], delete_files=True)
-        assert result["removed"] == ["a.md"]
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.md"},
+            {"filename": "docs/b.md"},
+            {"filename": "other.md"},
+        ]
+        captured: dict = {}
 
-    def test_delete_files_path_traversal_skipped(self, mock_svc):
-        """Path traversal names are caught and skipped during delete_files."""
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = remove(["docs"])
+        assert set(captured["names"]) == {"docs/a.md", "docs/b.md"}
+        assert set(result["removed"]) == {"docs/a.md", "docs/b.md"}
+
+    def test_glob_pattern_expands_to_matches(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        traversal_name = "../../etc/passwd"
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=[traversal_name], not_found=[]
-        )
-        result = remove([traversal_name], delete_files=True)
-        assert result["removed"] == [traversal_name]
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.log"},
+            {"filename": "b.log"},
+            {"filename": "c.md"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = remove(["*.log"])
+        assert set(result["removed"]) == {"a.log", "b.log"}
 
 
 class TestListDocuments:

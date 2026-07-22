@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from lilbee.runtime.progress import DetailedProgressCallback
 
-from lilbee.app.ingest import CopyResult, copy_files
+from lilbee.app.ingest import LinkResult, link_files
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.cli import theme
@@ -462,12 +462,12 @@ def _crawl_urls_step(
 
 
 def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: bool) -> None:
-    """Run the JSON-mode finish: copy files, sync, emit one structured result."""
+    """Run the JSON-mode finish: link files, sync, emit one structured result."""
     from lilbee.data.ingest import sync
 
-    copy_result = CopyResult()
+    copy_result = LinkResult()
     if file_paths:
-        copy_result = copy_files(file_paths, force=force)
+        copy_result = link_files(file_paths, force=force)
     # Headless one-shot ingest: only the embed server is needed, so suppress eager
     # start (matching the interactive path) instead of warming every role's VRAM.
     cfg.worker_pool_eager_start = False
@@ -475,7 +475,7 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     json_output(
         {
             "command": "add",
-            "copied": copy_result.copied,
+            "copied": copy_result.linked,
             "skipped": copy_result.skipped,
             "crawled": len(crawled_paths),
             "sync": sync_result_to_json(result),
@@ -575,11 +575,11 @@ def chunks(
 
 
 _remove_names_argument = typer.Argument(
-    ..., help="Source name(s) to remove from the knowledge base."
+    ..., help="Source name(s), folder(s), or glob pattern(s) to remove from the knowledge base."
 )
 
-_delete_file_option = typer.Option(
-    False, "--delete", help="Also delete the file from the documents directory."
+_remove_yes_option = typer.Option(
+    False, "--yes", "-y", help="Skip the confirmation prompt when a name expands to many documents."
 )
 
 
@@ -587,14 +587,26 @@ def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    delete_file: bool = _delete_file_option,
+    yes: bool = _remove_yes_option,
 ) -> None:
-    """Remove documents from the knowledge base by source name."""
+    """Remove documents from the knowledge base by source name, folder, or glob pattern.
+
+    A folder name removes every document indexed beneath it; a glob pattern
+    (containing ``*``, ``?``, or ``[]``) removes every source it matches. Source
+    files on disk are never deleted.
+    """
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    result = get_services().store.remove_documents(
-        names, delete_files=delete_file, documents_dir=cfg.documents_dir
-    )
+    from lilbee.app.ingest import expand_remove_targets, remove_documents_durably
+
+    targets = expand_remove_targets(names)
+    expanded = sorted(set(targets)) != sorted(set(names))
+    if expanded and not yes and not cfg.json_mode:
+        typer.confirm(
+            f"Remove {len(targets)} document(s)? Source files on disk are kept.", abort=True
+        )
+
+    result = remove_documents_durably(names)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

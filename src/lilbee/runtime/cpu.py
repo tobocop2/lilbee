@@ -13,6 +13,7 @@ limits, not local CPU.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -65,10 +66,8 @@ def available_cpu_count() -> int:
     """
     limits = [os.cpu_count() or 1]
     if hasattr(os, "sched_getaffinity"):
-        try:
+        with contextlib.suppress(OSError):
             limits.append(len(os.sched_getaffinity(0)))
-        except OSError:
-            pass
     quota = _cgroup_cpu_quota()
     if quota is not None:
         limits.append(quota)

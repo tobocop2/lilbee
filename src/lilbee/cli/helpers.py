@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console, RenderableType
 from rich.table import Table
 
-from lilbee.app.ingest import copy_files
+from lilbee.app.ingest import link_files
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
@@ -130,15 +130,15 @@ def render_status(con: Console) -> None:
         con.print(renderable)
 
 
-def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
-    """Copy *paths* into the documents directory. Returns list of copied names."""
-    result = copy_files(paths, force=force)
+def link_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
+    """Symlink *paths* into the documents directory. Returns list of linked names."""
+    result = link_files(paths, force=force)
     for name in result.skipped:
         con.print(
             f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {name} already exists in knowledge base "
             f"(use --force to overwrite)"
         )
-    return result.copied
+    return result.linked
 
 
 def add_paths(
@@ -151,18 +151,18 @@ def add_paths(
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[], object] | None = None,
 ) -> None:
-    """Copy *paths* into the knowledge base and sync (human output).
+    """Link *paths* into the knowledge base and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
-    and this function returns immediately after copying files. *run_sync*
+    and this function returns immediately after linking files. *run_sync*
     overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
     runner); it defaults to a plain ``asyncio.run(sync())``.
     """
-    copied = copy_paths(paths, con, force=force)
+    linked = link_paths(paths, con, force=force)
     if chat_mode:
-        print(f"Copied {len(copied)} path(s) to {cfg.documents_dir}")
+        print(f"Linked {len(linked)} path(s) into {cfg.documents_dir}")
     else:
         con.print(
-            f"[{theme.MUTED}]Copied {len(copied)} path(s) to {cfg.documents_dir}[/{theme.MUTED}]"
+            f"[{theme.MUTED}]Linked {len(linked)} path(s) into {cfg.documents_dir}[/{theme.MUTED}]"
         )
 
     if background:

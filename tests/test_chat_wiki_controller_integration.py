@@ -102,9 +102,9 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.app.ingest import CopyResult
+        from lilbee.app.ingest import LinkResult
 
-        copy_result = CopyResult(copied=[str(src)], skipped=[])
+        copy_result = LinkResult(linked=[str(src)], skipped=[])
 
         import threading as _th
 
@@ -115,7 +115,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                    patch("lilbee.app.ingest.link_files", return_value=copy_result),
                     patch("lilbee.data.ingest.sync", new=MagicMock(return_value=None)),
                     patch(
                         "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
@@ -136,7 +136,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
+async def test_do_add_force_propagates_to_link_files(tmp_path: Path) -> None:
     """After overwrite-confirm ``_do_add`` must pass ``force=True`` through."""
 
     src = tmp_path / "doc.pdf"
@@ -149,9 +149,9 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.app.ingest import CopyResult
+        from lilbee.app.ingest import LinkResult
 
-        copy_result = CopyResult(copied=[str(src)], skipped=[])
+        copy_result = LinkResult(linked=[str(src)], skipped=[])
 
         import threading as _th
 
@@ -161,7 +161,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.link_files", new=mock_copy),
                     patch(
                         "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
@@ -189,7 +189,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -> None:
-    """_do_add observes copy_files' skipped list and keeps running."""
+    """_do_add observes link_files' skipped list and keeps running."""
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
@@ -201,9 +201,9 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.app.ingest import CopyResult
+        from lilbee.app.ingest import LinkResult
 
-        copy_result = CopyResult(copied=[str(src)], skipped=["exists.pdf"])
+        copy_result = LinkResult(linked=[str(src)], skipped=["exists.pdf"])
 
         import threading as _th
 
@@ -213,7 +213,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.link_files", new=mock_copy),
                     patch(
                         "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
@@ -230,7 +230,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
         t = _th.Thread(target=_worker, daemon=True)
         t.start()
         # Worker may block on call_from_thread (app loop is pinned in the
-        # test harness); we only need to confirm copy_files was reached.
+        # test harness); we only need to confirm link_files was reached.
         for _ in range(40):
             await pilot.pause()
             if mock_copy.called:
@@ -778,9 +778,9 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.app.ingest import CopyResult
+    from lilbee.app.ingest import LinkResult
 
-    copy_result = CopyResult(copied=[str(src)], skipped=[])
+    copy_result = LinkResult(linked=[str(src)], skipped=[])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False):
         on_progress(
@@ -794,7 +794,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
-                patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                patch("lilbee.app.ingest.link_files", return_value=copy_result),
                 patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add([src], reporter)
@@ -828,9 +828,9 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.app.ingest import CopyResult
+    from lilbee.app.ingest import LinkResult
 
-    copy_result = CopyResult(copied=[str(src)], skipped=[])
+    copy_result = LinkResult(linked=[str(src)], skipped=[])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False):
         # Per-page rasterization progress fires while the file is being
@@ -858,7 +858,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     def _worker() -> None:
         screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
         with (
-            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.app.ingest.link_files", return_value=copy_result),
             patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             # Run the coroutine inline so on_progress fires; bypass asyncio_loop
             # which may not be primed inside this worker thread (Windows CI).
@@ -898,9 +898,9 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.app.ingest import CopyResult
+    from lilbee.app.ingest import LinkResult
 
-    copy_result = CopyResult(copied=[str(src)], skipped=[])
+    copy_result = LinkResult(linked=[str(src)], skipped=[])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False):
         # Three files start concurrently. The pipeline emits FILE_START for each.
@@ -936,7 +936,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
     def _worker() -> None:
         screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
         with (
-            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.app.ingest.link_files", return_value=copy_result),
             patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
@@ -1012,21 +1012,21 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.app.ingest import CopyResult
+    from lilbee.app.ingest import LinkResult
 
-    copy_result = CopyResult(copied=[str(src)], skipped=[])
+    copy_result = LinkResult(linked=[str(src)], skipped=[])
     captured: list[Exception] = []
 
     def _worker() -> None:
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
-                patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                patch("lilbee.app.ingest.link_files", return_value=copy_result),
                 patch(
                     "lilbee.runtime.asyncio_loop.run",
                     new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
                 ),
-                patch("lilbee.cli.tui.screens.chat.remove_copied_files"),
+                patch("lilbee.cli.tui.screens.chat.remove_linked_sources"),
             ):
                 screen._do_add([src], reporter)
         except Exception as e:

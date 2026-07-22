@@ -134,23 +134,26 @@ def remember_from_input(raw: str) -> RememberOutcome:
     return RememberOutcome(msg.CMD_REMEMBER_SUCCESS.format(kind=kind.value))
 
 
-def remove_copied_files(names: list[str]) -> None:
-    """Delete files previously copied into documents/ by a /add invocation.
+def remove_linked_sources(names: list[str]) -> None:
+    """Remove documents/ entries a /add invocation created, for cancel/failure cleanup.
 
     Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync. Silently tolerates missing entries;
-    the user may have removed them concurrently, and the goal is just to
-    prevent accidental indexing.
+    re-appear on the next sync. A symlink (the normal add) is unlinked as the
+    link itself, never following it to the source bytes behind it. Silently
+    tolerates missing entries; the user may have removed them concurrently, and
+    the goal is just to prevent accidental indexing.
     """
     for name in names:
         target = cfg.documents_dir / name
         try:
-            if target.is_dir():
+            if target.is_symlink():
+                target.unlink()
+            elif target.is_dir():
                 shutil.rmtree(target, ignore_errors=True)
             elif target.exists():
                 target.unlink()
         except OSError:
-            log.debug("Could not remove copied file %s", target, exc_info=True)
+            log.debug("Could not remove linked source %s", target, exc_info=True)
 
 
 def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:

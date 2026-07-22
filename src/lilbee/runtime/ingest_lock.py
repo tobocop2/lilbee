@@ -51,7 +51,7 @@ class IngestLockRegistry:
     def canonical_source_name(p_str: str) -> str:
         """Basename of *p_str*, for callers that flatten into ``documents_dir``.
 
-        ``copy_files`` writes server-side paths by basename, so /api/add locks
+        ``link_files`` links server-side paths in by basename, so /api/add locks
         on that. Uploads keep their relative layout and pass the relative path
         instead, which is why the caller picks the key rather than this class.
         """

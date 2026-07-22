@@ -193,14 +193,14 @@ class TestRebuild:
 
 class TestAdd:
     def test_add_single_file(self, isolated_env, tmp_path):
-        """Adding a single file copies it and ingests it."""
+        """Adding a single file links it and ingests it."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Engine oil capacity is 5 quarts.")
 
         result = runner.invoke(app, ["add", str(src_file)])
         assert result.exit_code == 0
-        assert "Copied 1" in result.output
+        assert "Linked 1" in result.output
         assert (cfg.documents_dir / "manual.txt").exists()
 
     def test_add_directory(self, isolated_env, tmp_path):
@@ -225,7 +225,7 @@ class TestAdd:
 
         result = runner.invoke(app, ["add", str(f1), str(f2)])
         assert result.exit_code == 0
-        assert "Copied 2" in result.output
+        assert "Linked 2" in result.output
 
     def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
@@ -263,7 +263,7 @@ class TestAdd:
 
 class TestAddIgnoresDirs:
     def test_add_directory_skips_git_and_node_modules(self, isolated_env, tmp_path):
-        """Adding a directory filters out .git/ and node_modules/."""
+        """Adding a directory links it; discovery filters .git/ and node_modules/."""
         src_dir = tmp_path / "source" / "project"
         src_dir.mkdir(parents=True)
         (src_dir / "readme.txt").write_text("Real content")
@@ -277,11 +277,18 @@ class TestAddIgnoresDirs:
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
 
+        # The whole tree is linked in one symlink; discovery is what filters the
+        # ignored directories, so they exist on disk through the link but are
+        # never indexed.
+        from lilbee.data.ingest import discover_files
+
         dest = cfg.documents_dir / "project"
-        assert (dest / "readme.txt").exists()
-        assert not (dest / ".git").exists()
-        assert not (dest / "node_modules").exists()
-        assert not (dest / "__pycache__").exists()
+        assert dest.is_symlink()
+        found = discover_files()
+        assert "project/readme.txt" in found
+        assert not any(name.startswith("project/.git/") for name in found)
+        assert not any("node_modules" in name for name in found)
+        assert not any("__pycache__" in name for name in found)
 
 
 class TestAsk:
@@ -543,7 +550,7 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.link_paths", return_value=[src]),
         ):
             add_paths([src], con, background=True)
             mock_bg.assert_called_once()
@@ -559,11 +566,11 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.link_paths", return_value=[src]),
         ):
             add_paths([src], con, chat_mode=True)
             captured = capsys.readouterr()
-            assert "Copied 1 path(s)" in captured.out
+            assert "Linked 1 path(s)" in captured.out
 
 
 class TestChat:
@@ -1452,22 +1459,57 @@ class TestRemove:
         assert "Removed" in result.output
         assert "Not found" in result.output
 
-    def test_remove_with_delete_flag(self, isolated_env, mock_svc):
+    def test_remove_keeps_source_file(self, isolated_env, mock_svc):
+        # Removal is index-only: the source file on disk is never deleted.
         from lilbee.data.store import RemoveResult
 
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt"}]
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["test.txt"], not_found=[]
         )
-        mock_svc.store.remove_documents.side_effect = lambda names, **kw: (
-            doc.unlink() or RemoveResult(removed=["test.txt"], not_found=[])
-            if kw.get("delete_files")
-            else RemoveResult(removed=["test.txt"], not_found=[])
-        )
-        result = runner.invoke(app, ["remove", "--delete", "test.txt"])
+        result = runner.invoke(app, ["remove", "test.txt"])
         assert result.exit_code == 0
-        assert not doc.exists()
+        assert doc.exists()
+
+    def test_remove_folder_expands_to_members(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+            {"filename": "other.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "docs"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"docs/a.txt", "docs/b.txt"}
+
+    def test_remove_glob_pattern(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.log"},
+            {"filename": "b.log"},
+            {"filename": "c.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "*.log"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"a.log", "b.log"}
 
     def test_remove_json(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
@@ -1493,16 +1535,25 @@ class TestRemove:
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
 
-    def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
-        """Path traversal in name with --delete is caught and skipped."""
+    def test_remove_never_deletes_a_linked_source(self, isolated_env, mock_svc, tmp_path):
+        # A directory linked into the KB: removing it de-indexes and unlinks the
+        # symlink, but the real source tree is left completely intact.
         from lilbee.data.store import RemoveResult
 
-        traversal_name = "../../etc/passwd"
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=[traversal_name], not_found=[]
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "a.txt").write_text("keep")
+        link = cfg.documents_dir / "corpus"
+        link.symlink_to(source)
+
+        mock_svc.store.get_sources.return_value = [{"filename": "corpus/a.txt"}]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
         )
-        result = runner.invoke(app, ["remove", "--delete", traversal_name])
+        result = runner.invoke(app, ["remove", "--yes", "corpus"])
         assert result.exit_code == 0
+        assert not link.exists()  # link removed
+        assert (source / "a.txt").read_text() == "keep"  # source untouched
 
 
 class TestChunks:

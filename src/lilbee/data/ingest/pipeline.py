@@ -313,6 +313,40 @@ def _plan_workers() -> int:
     return configured if configured > 0 else available_cpu_count()
 
 
+def _classify_changes(
+    items: list[tuple[str, Path]],
+    existing_sources: dict[str, SourceRecord],
+    skip_markers: dict[str, str],
+    cancel: threading.Event | None,
+) -> dict[str, _FileChangeVerdict]:
+    """Classify each file (stat + hash) by name, fanning across a thread pool.
+
+    Independent per file and side-effect-free, so pooled classification matches a
+    serial pass; ``hashlib`` releases the GIL during digest, giving real speedup
+    on a large corpus. Returns name -> verdict; a set ``cancel`` stops submission.
+    """
+    def _classify(name: str, path: Path) -> _FileChangeVerdict:
+        return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+
+    verdicts: dict[str, _FileChangeVerdict] = {}
+    workers = _plan_workers()
+    if workers <= 1 or len(items) <= 1:
+        for name, path in items:
+            if cancel and cancel.is_set():
+                break
+            verdicts[name] = _classify(name, path)
+        return verdicts
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lilbee-plan") as pool:
+        futures: dict[Future[_FileChangeVerdict], str] = {}
+        for name, path in items:
+            if cancel and cancel.is_set():
+                break
+            futures[pool.submit(_classify, name, path)] = name
+        for future in as_completed(futures):
+            verdicts[futures[future]] = future.result()
+    return verdicts
+
+
 def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
@@ -328,34 +362,13 @@ def _plan_file_changes(
     attempt) is treated as unchanged so we don't retry every sync. Edit the file
     or run ``/sync --force-rebuild`` to clear the marker and try again.
 
-    Per-file classification is independent (stat + hash, no shared state), so it
-    fans across a thread pool; the plan is then assembled from the results in the
-    original sorted order, making the output identical to a serial pass. Hashing
-    a multi-million-file corpus is the single-core stall this parallelizes;
-    ``hashlib`` releases the GIL during digest, so threads give real speedup.
+    Classification fans across a thread pool (see :func:`_classify_changes`); the
+    plan is assembled from the results in the original sorted order, making the
+    output identical to a serial pass regardless of completion order or cancel.
     """
     skip_markers = skip_markers or {}
     items = sorted(disk_files.items())
-
-    def _classify(name: str, path: Path) -> _FileChangeVerdict:
-        return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
-
-    verdicts: dict[str, _FileChangeVerdict] = {}
-    workers = _plan_workers()
-    if workers <= 1 or len(items) <= 1:
-        for name, path in items:
-            if cancel and cancel.is_set():
-                break
-            verdicts[name] = _classify(name, path)
-    else:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lilbee-plan") as pool:
-            futures: dict[Future[_FileChangeVerdict], str] = {}
-            for name, path in items:
-                if cancel and cancel.is_set():
-                    break
-                futures[pool.submit(_classify, name, path)] = name
-            for future in as_completed(futures):
-                verdicts[futures[future]] = future.result()
+    verdicts = _classify_changes(items, existing_sources, skip_markers, cancel)
 
     files_to_process: list[FileToProcess] = []
     added: dict[str, None] = {}

@@ -3116,22 +3116,20 @@ class TestDeleteDocuments:
         assert result.removed == []
         assert result.not_found == ["missing.md"]
 
-    async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
+    async def test_removal_keeps_source_file(self, mock_svc, tmp_path):
         from lilbee.data.store import RemoveResult
 
         cfg.documents_dir = tmp_path
         f = tmp_path / "a.md"
         f.write_text("content")
 
-        def fake_remove(names, *, delete_files=False):
-            if delete_files and f.exists():
-                f.unlink()
-            return RemoveResult(removed=["a.md"], not_found=[])
-
-        mock_svc.store.remove_documents.side_effect = fake_remove
-        result = await handlers.delete_documents(["a.md"], delete_files=True)
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
+        )
+        result = await handlers.delete_documents(["a.md"])
         assert result.removed == ["a.md"]
-        assert not f.exists()
+        assert f.exists()  # index-only removal never deletes the source
 
 
 class TestUpdateConfig:
@@ -4379,11 +4377,11 @@ class TestAddHandlerCancel:
         sse = SseStream()
         sse.cancel.set()
 
-        copy_result = MagicMock()
-        copy_result.copied = ["test.txt"]
-        copy_result.skipped = []
+        link_result = MagicMock()
+        link_result.linked = ["test.txt"]
+        link_result.skipped = []
 
-        with patch("lilbee.server.handlers.ingest.copy_files", return_value=copy_result):
+        with patch("lilbee.server.handlers.ingest.link_files", return_value=link_result):
             result = await _ingest_h._run_add(
                 paths=[],
                 force=False,

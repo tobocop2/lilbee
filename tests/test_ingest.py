@@ -1969,43 +1969,82 @@ class TestClassifyNewFormats:
 
 class TestDiscoverSymlinkEscape:
     @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_symlink_escaping_docs_dir_skipped(self, isolated_env):
-        """Symlinks that resolve outside the documents directory are skipped."""
+    def test_top_level_symlink_is_a_linked_root_and_followed(self, isolated_env, tmp_path):
+        """A top-level symlink is an intentional linked root, so its files index."""
         import os
 
         from lilbee.data.ingest import discover_files
 
-        outside_file = isolated_env.parent / "secret.txt"
-        outside_file.write_text("secret data")
-        link_path = isolated_env / "escaped.txt"
-        os.symlink(outside_file, link_path)
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        os.symlink(source, isolated_env / "corpus")
 
         found = discover_files()
-        assert "escaped.txt" not in found
-        outside_file.unlink()
+        assert "corpus/doc.md" in found
 
-    def test_path_validation_failure_skipped(self, isolated_env):
-        """Files that fail path validation are skipped (covers Windows too)."""
-        from unittest.mock import patch
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+    def test_top_level_file_symlink_is_followed(self, isolated_env, tmp_path):
+        """A top-level file symlink (a single linked file) is indexed."""
+        import os
 
         from lilbee.data.ingest import discover_files
 
-        (isolated_env / "normal.md").write_text("# Normal")
+        outside_file = tmp_path / "linked.md"
+        outside_file.write_text("# Linked")
+        os.symlink(outside_file, isolated_env / "linked.md")
 
-        original = __import__(
-            "lilbee.data.ingest.discovery", fromlist=["validate_path_within"]
-        ).validate_path_within
+        found = discover_files()
+        assert "linked.md" in found
 
-        def strict_validate(path, base):
-            if "normal" in str(path):
-                raise ValueError("blocked")
-            return original(path, base)
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+    def test_nested_symlink_escaping_is_skipped(self, isolated_env, tmp_path):
+        """A symlink nested inside the tree that escapes the allowed roots is skipped."""
+        import os
 
-        with patch(
-            "lilbee.data.ingest.discovery.validate_path_within", side_effect=strict_validate
-        ):
-            found = discover_files()
-        assert "normal.md" not in found
+        from lilbee.data.ingest import discover_files
+
+        subdir = isolated_env / "real_sub"
+        subdir.mkdir()
+        (subdir / "keep.md").write_text("# Keep")
+        secret = tmp_path / "secret.md"
+        secret.write_text("secret")
+        os.symlink(secret, subdir / "escaped.md")
+
+        found = discover_files()
+        assert "real_sub/keep.md" in found
+        assert "real_sub/escaped.md" not in found
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+    def test_symlink_escaping_inside_a_linked_root_is_skipped(self, isolated_env, tmp_path):
+        """A sneaky symlink inside a linked corpus that points outside it is skipped."""
+        import os
+
+        from lilbee.data.ingest import discover_files
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        secret = tmp_path / "outside.md"
+        secret.write_text("secret")
+        os.symlink(secret, source / "evil.md")
+        os.symlink(source, isolated_env / "corpus")
+
+        found = discover_files()
+        assert "corpus/doc.md" in found
+        assert "corpus/evil.md" not in found
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+    def test_dangling_top_level_symlink_is_skipped(self, isolated_env, tmp_path):
+        """A linked root whose target no longer exists is skipped, not an error."""
+        import os
+
+        from lilbee.data.ingest import discover_files
+
+        os.symlink(tmp_path / "gone", isolated_env / "gone")
+
+        found = discover_files()
+        assert found == {} or "gone" not in found
 
 
 class TestDiscoverNewFormats:

@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from lilbee.app.ingest import copy_files
+from lilbee.app.ingest import link_files
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
@@ -96,12 +96,12 @@ async def _run_add(
             else:
                 valid.append(p)
 
-        copy_result = copy_files(valid, force=force)
+        link_result = link_files(valid, force=force)
 
         if sse.cancel.is_set():
-            return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
+            return AddSummary(copied=link_result.linked, skipped=link_result.skipped, errors=errors)
 
-        if not copy_result.copied and not copy_result.skipped:
+        if not link_result.linked and not link_result.skipped:
             # Nothing reached the corpus, and sync() is a whole-vault pass
             # holding the ingest lock. A *skipped* file is not this case: it is
             # already in the documents dir but may never have been indexed.
@@ -111,8 +111,8 @@ async def _run_add(
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
-            copied=copy_result.copied,
-            skipped=copy_result.skipped,
+            copied=link_result.linked,
+            skipped=link_result.skipped,
             errors=errors,
             sync=SyncSummary(**sync_result.model_dump()),
         )

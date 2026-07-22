@@ -28,11 +28,11 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# app.ingest stays at module top: it is a thin wrapper over shutil + the
-# config singleton (~50ms cumulative beyond core.config). data.ingest is
+# app.ingest stays at module top: it is a thin wrapper over the symlink helper +
+# the config singleton (~50ms cumulative beyond core.config). data.ingest is
 # deferred at each callsite below because it transitively imports spaCy via
 # the wiki package and adds ~3s on first touch.
-from lilbee.app.ingest import copy_files
+from lilbee.app.ingest import link_files
 from lilbee.app.services import build_services, services_scope
 from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
@@ -134,20 +134,22 @@ class Lilbee:
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
-        Copies each path into the documents directory, then syncs.
+        Symlinks each path into the documents directory, then syncs.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
         with config_scope(self._config), services_scope(self._services):
-            copy_files(resolved, force=True)
+            link_files(resolved, force=True)
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:
-        """Remove a document from the index by source name."""
+        """Remove a document from the index by source name (source bytes are kept)."""
+        from lilbee.app.ingest import remove_documents_durably
+
         with config_scope(self._config), services_scope(self._services):
-            self._services.store.remove_documents([name], delete_files=True)
+            remove_documents_durably([name])
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""

@@ -1023,48 +1023,26 @@ class TestRemoveDocuments:
             assert result.removed == []
             assert result.not_found == ["missing.md"]
 
-    def test_deletes_physical_file(self, store, tmp_path):
+    def test_never_deletes_physical_file(self, store, tmp_path):
+        # Store removal is index-only; the source file on disk is never touched.
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
             mock.patch.object(store, "_remove_many_unlocked"),
         ):
             f = tmp_path / "a.md"
             f.write_text("content")
-            result = store.remove_documents(["a.md"], delete_files=True, documents_dir=tmp_path)
+            result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
-            assert not f.exists()
+            assert f.exists()
 
-    def test_blocks_path_traversal(self, store, tmp_path):
-        with (
-            mock.patch.object(
-                store, "get_sources", return_value=[{"filename": "../../../etc/passwd"}]
-            ),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
-            secret = tmp_path.parent / "secret.txt"
-            secret.write_text("don't delete me")
-            result = store.remove_documents(
-                ["../../../etc/passwd"], delete_files=True, documents_dir=tmp_path
-            )
-            assert result.removed == ["../../../etc/passwd"]
-            assert secret.exists()
-
-    def test_nonexistent_file_still_removes_from_store(self, store, tmp_path):
+    def test_nonexistent_file_still_removes_from_store(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
             mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
-            result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
+            result = store.remove_documents(["gone.md"])
             assert result.removed == ["gone.md"]
             mock_del.assert_called_once()
-
-    def test_uses_default_documents_dir(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
-            result = store.remove_documents(["a.md"])
-            assert result.removed == ["a.md"]
 
     def test_chunk_and_source_deleted_under_single_lock(self, store):
         """Both deletes for one document run inside one write_lock acquisition.
