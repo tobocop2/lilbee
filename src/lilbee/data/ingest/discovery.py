@@ -61,7 +61,7 @@ def _walk_into(
     base: Path,
     label: str | None,
     allowed: tuple[Path, ...],
-    ignore_dirs: object,
+    ignore_dirs: frozenset[str],
 ) -> None:
     """Walk *base*, recording supported files under *label* that stay within *allowed*.
 

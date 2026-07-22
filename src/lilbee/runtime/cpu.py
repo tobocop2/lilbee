@@ -63,6 +63,9 @@ def available_cpu_count() -> int:
     machine). Fold in the process's scheduling affinity and the cgroup CFS quota
     so a container-bound run sizes to its real budget rather than the host's.
     Always at least 1.
+
+    ``os.process_cpu_count()`` folds these in for us, but it landed in 3.13 and
+    the project floor is 3.11, so the cgroup read is done by hand here.
     """
     limits = [os.cpu_count() or 1]
     if hasattr(os, "sched_getaffinity"):
