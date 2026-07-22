@@ -443,10 +443,14 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
-        # `TabbedContent(initial=...)` is unusable under `with TabPane(...)`: the
-        # strip composes empty so the id never resolves, and it still arms
-        # `Tabs._on_mount`'s unguarded forced-active set, which raises "No Tab
-        # with id" when the tab children mount late. Activate Chat here instead.
+        # Force Chat as the initial active tab. Deliberately not
+        # `TabbedContent(initial=...)`: that arms `Tabs._on_mount` to assign the
+        # active tab unconditionally, and when the app tears down mid-mount
+        # Textual's `mount_all` no-ops, so the strip has no Tab children yet and
+        # the assignment raises `ValueError: No Tab with id`. Setting it here via
+        # call_after_refresh also lets the TabActivated cascade settle first.
+        # Chat is the most common landing destination; users opt into
+        # Discover via keyboard shortcut.
         self.call_after_refresh(self._activate_initial_tab)
         self.add_class("-grid-view")
 

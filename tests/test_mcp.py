@@ -53,10 +53,12 @@ def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
     snapshot = cfg.model_copy()
 
+    cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.linked_roots = {}
 
     yield tmp_path
 
@@ -164,6 +166,19 @@ class TestSearch:
         call_kwargs = mock_svc.searcher.search.call_args.kwargs
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
+
+    def test_non_positive_top_k_falls_back_to_the_default(self, mock_svc, caplog):
+        """Same lenient stance as the scope fallback: a model passing top_k=0
+        or a negative still gets a search with the configured default instead
+        of a negative limit reaching the store."""
+        import logging
+
+        mock_svc.searcher.search.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
+            result = search("q", top_k=-3)
+        assert result == []
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == cfg.top_k
+        assert any("not positive" in record.message for record in caplog.records)
 
     def test_returns_searcher_results_unfiltered(self, mock_svc):
         """The relevance cutoff lives in Searcher.search (with the
@@ -351,23 +366,42 @@ class TestRemove:
         result = remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    def test_delete_files_removes_from_disk(self, mock_svc):
+    def test_folder_name_expands_to_members(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
-        result = remove(["a.md"], delete_files=True)
-        assert result["removed"] == ["a.md"]
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.md"},
+            {"filename": "docs/b.md"},
+            {"filename": "other.md"},
+        ]
+        captured: dict = {}
 
-    def test_delete_files_path_traversal_skipped(self, mock_svc):
-        """Path traversal names are caught and skipped during delete_files."""
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = remove(["docs"])
+        assert set(captured["names"]) == {"docs/a.md", "docs/b.md"}
+        assert set(result["removed"]) == {"docs/a.md", "docs/b.md"}
+
+    def test_glob_pattern_expands_to_matches(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        traversal_name = "../../etc/passwd"
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=[traversal_name], not_found=[]
-        )
-        result = remove([traversal_name], delete_files=True)
-        assert result["removed"] == [traversal_name]
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.log"},
+            {"filename": "b.log"},
+            {"filename": "c.md"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = remove(["*.log"])
+        assert set(result["removed"]) == {"a.log", "b.log"}
 
 
 class TestListDocuments:
@@ -473,13 +507,27 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    def test_init_retunes_search_scope_for_new_vault(self, tmp_path):
-        """Switching vaults re-tunes the search-tool scope hint for the new corpus."""
+    async def test_init_switches_search_scope_hint_to_the_new_vault(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
+        """After a vault switch, a live server advertises the new corpus's scopes.
+
+        The hint is computed per list_tools call from current config, so the
+        overlay ``init`` applies is on the wire without a re-tune step.
+        """
+        from lilbee.mcp_server import build_mcp_server
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        server = build_mcp_server()
+
         target = tmp_path / "proj"
         target.mkdir()
-        with mock.patch("lilbee.mcp_server._tune_search_scope_for_corpus") as mock_tune:
-            init(str(target))
-        mock_tune.assert_called_once()
+        (target / "config.toml").write_text("wiki = true\n")
+        init(str(target))
+
+        assert cfg.wiki is True
+        search = next(t for t in await server.list_tools() if t.name == "search")
+        assert "No wiki layer here" not in (search.description or "")
 
     def test_bare_name_tag_rejected_after_init(self, tmp_path):
         """The cfg validator rejects bare ``name:tag`` shapes."""
@@ -617,7 +665,8 @@ class TestAdd:
         assert "test.txt" in result["copied"]
         assert result["errors"] == []
         assert result["skipped"] == []
-        assert (cfg.documents_dir / "test.txt").read_text() == "hello world"
+        # Registered in place, not copied into documents_dir.
+        assert cfg.linked_roots == {"test.txt": str(src.resolve())}
         mock_sync.assert_awaited_once()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -635,27 +684,37 @@ class TestAdd:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
-        (cfg.documents_dir / "exist.txt").write_text("old")
-        src = tmp_path / "exist.txt"
-        src.write_text("new")
+        # A live root already holds the "exist" label; a same-basename source is
+        # skipped without force.
+        from lilbee.core import settings
 
-        result = await add([str(src)])
+        one = tmp_path / "a" / "exist"
+        one.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"exist": str(one)})
+        two = tmp_path / "b" / "exist"
+        two.mkdir(parents=True)
 
-        assert "exist.txt" in result["skipped"]
+        result = await add([str(two)])
+
+        assert "exist" in result["skipped"]
         assert result["copied"] == []
-        assert (cfg.documents_dir / "exist.txt").read_text() == "old"
+        assert cfg.linked_roots == {"exist": str(one)}  # unchanged
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_with_force(self, mock_sync, tmp_path):
-        (cfg.documents_dir / "exist.txt").write_text("old")
-        src = tmp_path / "exist.txt"
-        src.write_text("new")
+        from lilbee.core import settings
 
-        result = await add([str(src)], force=True)
+        one = tmp_path / "a" / "exist"
+        one.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"exist": str(one)})
+        two = tmp_path / "b" / "exist"
+        two.mkdir(parents=True)
 
-        assert "exist.txt" in result["copied"]
+        result = await add([str(two)], force=True)
+
+        assert "exist" in result["copied"]
         assert result["skipped"] == []
-        assert (cfg.documents_dir / "exist.txt").read_text() == "new"
+        assert cfg.linked_roots == {"exist": str(two.resolve())}  # re-pointed
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_directory(self, mock_sync, tmp_path):
@@ -666,7 +725,7 @@ class TestAdd:
         result = await add([str(src_dir)])
 
         assert "mydir" in result["copied"]
-        assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
+        assert cfg.linked_roots == {"mydir": str(src_dir.resolve())}
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_with_enable_ocr(self, mock_sync, tmp_path):
@@ -712,17 +771,17 @@ class TestAdd:
 
 
 class TestMain:
-    @mock.patch("lilbee.mcp_server.mcp")
-    def test_main_calls_run(self, mock_mcp):
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_main_calls_run(self, mock_build):
         main()
-        mock_mcp.run.assert_called_once()
+        mock_build.return_value.run.assert_called_once()
 
-    @mock.patch("lilbee.mcp_server.mcp")
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
-    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_mcp):
-        """A crash in the pre-warm path falls through to mcp.run() instead of aborting."""
+    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
+        """A crash in the pre-warm path falls through to run() instead of aborting."""
         main()
-        mock_mcp.run.assert_called_once()
+        mock_build.return_value.run.assert_called_once()
 
 
 class TestAddWithUrls:
@@ -1737,34 +1796,21 @@ class TestToolsSchemaSize:
     reviewers can scrutinise.
     """
 
-    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
-        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
-        returns a pass-through so the function stays importable but isn't on
-        the MCP wire. Cleans up after itself so the test doesn't pollute the
-        shared FastMCP server with a sentinel tool.
-        """
+    def test_tool_if_rejects_a_pre_evaluated_condition(self) -> None:
+        """``_tool_if(cfg.flag)`` freezes the gate at import; the decorator
+        demands a callable so the mistake fails at decoration, not as a stale
+        tool surface after a config change."""
         from lilbee.mcp_server import _tool_if
-        from lilbee.mcp_server import mcp as _mcp
 
-        sentinel_name = "_schema_size_test_sentinel"
-
-        def _schema_size_test_sentinel() -> None: ...
-
-        gated_off = _tool_if(False)(_schema_size_test_sentinel)
-        assert gated_off is _schema_size_test_sentinel
-        assert sentinel_name not in _mcp._tool_manager._tools
-
-        gated_on = _tool_if(True)(_schema_size_test_sentinel)
-        try:
-            assert callable(gated_on)
-            assert sentinel_name in _mcp._tool_manager._tools
-        finally:
-            _mcp._tool_manager._tools.pop(sentinel_name, None)
+        with pytest.raises(TypeError, match="zero-arg callable"):
+            _tool_if(True)  # type: ignore[arg-type]
 
     async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
         """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
         from lilbee.core.config import cfg as _cfg
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         assert _cfg.wiki is False
         tools = await _mcp.list_tools()
@@ -1778,7 +1824,9 @@ class TestToolsSchemaSize:
         lands here first, named, instead of surfacing as a byte overflow in
         whichever job happens to register the most tools.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         registered = {t.name for t in tools if not t.name.startswith(_AMBIENT_TOOL_PREFIXES)}
@@ -1793,12 +1841,14 @@ class TestToolsSchemaSize:
     async def test_default_tools_schema_under_budget(self) -> None:
         """The pinned default surface must stay under the cap so small-context
         (16K) chat models keep room for the user's actual content.
-        ``_strip_schema_noise`` removes title / default / null-arm-anyOf /
+        The ``LilbeeMCP`` wire transform removes title / default / null-arm-anyOf /
         additionalProperties=true noise.
         """
         import json as _json
 
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         payload = [
@@ -1819,10 +1869,12 @@ class TestToolsSchemaSize:
         )
 
     async def test_no_title_noise_in_input_schema(self) -> None:
-        """``_strip_schema_noise`` keeps FastMCP-auto-generated title fields
+        """The wire transform keeps FastMCP-auto-generated title fields
         off the wire. Adding a tool whose schema contains a title fails here.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1834,11 +1886,13 @@ class TestToolsSchemaSize:
                     )
 
     async def test_descriptions_have_no_indented_body_lines(self) -> None:
-        """_strip_schema_noise flattens docstring indentation before it ships. A
+        """The wire transform flattens docstring indentation before it ships. A
         triple-quoted docstring indents every continuation line; textwrap.dedent
         alone left those 4-space prefixes in place because the summary line's zero
         indent makes the common prefix empty."""
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1860,7 +1914,9 @@ class TestToolsSchemaSize:
         """The model picks tools from name + description; ``default`` values
         on properties are server-side trivia that cost tokens at every dispatch.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1875,7 +1931,9 @@ class TestToolsSchemaSize:
         """``T | None`` should serialize as ``{type: T}``, not a two-arm
         ``anyOf`` with a null branch the model gains nothing from.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1895,7 +1953,9 @@ class TestToolsSchemaSize:
         """``additionalProperties: true`` is JSON Schema's default; serializing
         it explicitly is bytes for nothing.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:

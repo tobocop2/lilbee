@@ -372,6 +372,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cachetools"
+version = "7.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/8b/0d3945a13955303b81272f759a0331e54c5c793da455e6f5706b89d2639c/cachetools-7.1.4.tar.gz", hash = "sha256:437f55a4e0c1b01a4f3077cc470e6991d47430970e36fbcb77e2be0df4fc1cd6", size = 40085 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/7b/1fc1c09cc0756cf25861a3be10565915953876da48bb228fb9a672b20a42/cachetools-7.1.4-py3-none-any.whl", hash = "sha256:323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54", size = 16761 },
+]
+
+[[package]]
 name = "catalogue"
 version = "2.0.10"
 source = { registry = "https://pypi.org/simple" }
@@ -1722,6 +1731,7 @@ name = "lilbee"
 version = "0.6.90b420.dev724"
 source = { editable = "." }
 dependencies = [
+    { name = "cachetools" },
     { name = "diskcache" },
     { name = "filelock" },
     { name = "gguf" },
@@ -1739,6 +1749,7 @@ dependencies = [
     { name = "regex" },
     { name = "textual" },
     { name = "tiktoken" },
+    { name = "tomli-w" },
     { name = "tree-sitter-language-pack" },
     { name = "typer" },
     { name = "typing-extensions" },
@@ -1784,11 +1795,13 @@ dev = [
     { name = "pytest-xdist" },
     { name = "reportlab" },
     { name = "ruff" },
+    { name = "types-cachetools" },
     { name = "types-pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cachetools", specifier = ">=7.1.4" },
     { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.9.0" },
     { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock" },
@@ -1814,6 +1827,7 @@ requires-dist = [
     { name = "spacy", marker = "extra == 'graph'", specifier = ">=3.8" },
     { name = "textual", specifier = ">=0.75" },
     { name = "tiktoken" },
+    { name = "tomli-w", specifier = ">=1.0" },
     { name = "tree-sitter-language-pack", specifier = ">=1.8.0,<2.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
@@ -1837,6 +1851,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "reportlab" },
     { name = "ruff", specifier = ">=0.15.4" },
+    { name = "types-cachetools", specifier = ">=7.0.0.20260713" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 
@@ -4416,6 +4431,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tomli-w"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675 },
+]
+
+[[package]]
 name = "tqdm"
 version = "4.68.4"
 source = { registry = "https://pypi.org/simple" }
@@ -4509,6 +4533,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/37/78/fda3361b56efc27944f24225f6ecd13d96d6fcfe37bd0eb34e2f4c63f9fc/typer-0.27.0.tar.gz", hash = "sha256:629bd12ea5d13a17148125d9a264f949eb171fb3f120f9b04d85873cab054fa5", size = 203430 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/03/26a383c9e58c213199d1aad1c3d353cfc22d4444ec6d2c0bf8ad02523843/typer-0.27.0-py3-none-any.whl", hash = "sha256:6f4b27631e47f077871b7dc30e933ec0131c1390fbe0e387ea5574b5bac9ccf1", size = 122716 },
+]
+
+[[package]]
+name = "types-cachetools"
+version = "7.0.0.20260713"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/64/66d7efdb36ecf6826aca5415e59fe2df96e97d24157147e53acfbe8dda11/types_cachetools-7.0.0.20260713.tar.gz", hash = "sha256:f1acf079e9c66a81e096a897ef0b261a82117cf856834e37b4bd0c9a116a076a", size = 10199 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/c7/d3525c9dbdc1be7786bad46655ef051b6e7993f656d304719ec40079c91c/types_cachetools-7.0.0.20260713-py3-none-any.whl", hash = "sha256:6db9bcc7a3840d39e91c04117d85a9d0937eacc9d14d12a873e2b01a2d24a71d", size = 9615 },
 ]
 
 [[package]]

@@ -289,14 +289,31 @@ flowchart LR
   GPU-driver I/O is killed (and abandoned if unkillable) and surfaces as a named
   error through the warm tracker, health, and the TUI, never as an empty device
   list or a silent never-ready fleet.
-- **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
-  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
-  environment presets another order), ROCm via
-  `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
-  When the parent environment already restricts a visible-devices var (a pod preset
-  like `CUDA_VISIBLE_DEVICES=2,3`), the probe's indices are relative to that list,
-  so the child env maps them back through it (integer or UUID entries) and keeps
-  naming the same physical cards the probe saw.
+- **Pinning**: per backend, never by a foreign index, and in two shapes depending on
+  whether the backend's environment variable speaks the same space `--list-devices`
+  numbers.
+  - By name, via `--device` (`planning._device_names`): **Vulkan** and **SYCL**.
+    `GGML_VK_VISIBLE_DEVICES` indexes the raw loader enumeration, not ggml's
+    filtered list, and setting it also disables ggml's device-type filter, its
+    `storageBuffer16BitAccess` support check and its same-UUID dedup.
+    `ONEAPI_DEVICE_SELECTOR` is a selector over a backend runtime rather than an
+    index list, so a device the engine calls `SYCL1` need not be Level Zero
+    ordinal 1. `--device` names devices exactly as `--list-devices` printed them,
+    which is where the indices came from. Devices synthesized by the Vulkan
+    fallback are never pinned: they carry raw loader ordinals, so the engine is
+    left to select for itself.
+  - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
+    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    (never both: ROCr filters first and HIP re-indexes within the survivors, so
+    writing both double-filters). When the parent environment already restricts a
+    visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's
+    indices are relative to that list, so the child env maps them back through it
+    (integer or UUID entries) and keeps naming the same physical cards the probe
+    saw.
+  - When the engine listed GPUs and placement refused all of them, the launch
+    carries `--device none`: dropping a device from lilbee's view does not stop
+    ggml choosing it, and its fallback takes the first non-CPU adapter.
 - **VRAM estimation** (`vram.py`): each instance's footprint comes from
   **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
   subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
@@ -943,9 +960,13 @@ All chat-generating endpoints (`/api/ask`, `/api/chat`, both their `/stream` var
 
 ### Auth model
 
-All network surfaces, the `/v1/*` model runtime, the `/api/*` REST routes, and the `/mcp` streamable-http endpoint, share **one** bearer session token. The daemon generates it on startup, persists it to `server.json` (mode `0600`), and hands it to local clients through `lilbee agent-config` / `lilbee launch`. Clients send `Authorization: Bearer <token>`; `AuthMiddleware` (`src/lilbee/server/auth.py`) checks it on every mutating request.
+All network surfaces, the `/v1/*` model runtime, the `/api/*` REST routes, and the `/mcp` streamable-http endpoint, share **one** bearer session token. The daemon generates it on startup, persists it to `server.json` (mode `0600`), and hands it to local clients through `lilbee agent-config` / `lilbee launch`. Clients send `Authorization: Bearer <token>`; `AuthMiddleware` (`src/lilbee/server/auth.py`) checks it on **every** request, reads included. There is no unauthenticated route, `GET /api/health` included: health reports the chat engine's last error, which carries model paths and loader failures, so an open liveness probe would hand out the most useful reconnaissance on the box. A local probe runs as the user and reads the token out of `server.json` like every other local client.
+
+`/v1/models` and `/v1/chat/completions` are the only routes the middleware skips, and they are not exempt: they check the same token inside the handler so a bad one comes back in the OpenAI error envelope rather than Litestar's 401 shape. `tests/server/test_every_route_is_authenticated.py` walks the live route table and asserts every path answers 401 without a token, so a new route cannot quietly opt out.
 
 This is deliberately a single, unscoped token rather than a per-client or per-scope system. lilbee is a local-first, single-user tool: the daemon binds localhost only (with DNS-rebinding protection), and any process running as the user can read `server.json` regardless, so a per-agent token would not add a boundary that the filesystem doesn't already remove. The token exists to keep out other local users and drive-by browser requests, not to isolate the user's own agents from each other.
+
+That purpose is why reads are gated too. Reads used to be open on the reasoning that they only exposed local state, but `server.json` is `0600` precisely so another local user cannot act as the daemon, and leaving `GET /api/export` open handed that same user the entire corpus without it. The boundary only means something if it covers the data.
 
 The tradeoff is that the token is all-or-nothing: a client trusted with retrieval also gets generation and the mutating tools (`reset`, `remove`, `model_rm`, `settings_set`). That is acceptable for the user's own agents on localhost. Giving retrieval-only access to a less-trusted client would require a scoped token, which lilbee does not have today.
 
@@ -1005,7 +1026,7 @@ tools (~10% of a 32K context, ~35% of Gemma 4's 7K).
   `cfg.wiki` is on or `lilbee[crawler]` is installed.
 - Tool docstrings stay at one or two sentences (FastMCP turns them
   into per-parameter schema descriptions).
-- `_strip_schema_noise` in `mcp_server.py` drops the FastMCP/Pydantic
+- `LilbeeMCP.list_tools` in `mcp_server.py` drops the FastMCP/Pydantic
   auto-generated `title` keys before the tools hit the wire.
 - `tests/test_mcp.py::TestToolsSchemaSize` caps the schema at 7 KB; new
   tools or doc bloat trip the cap and force a deliberate review.

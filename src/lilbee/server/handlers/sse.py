@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
@@ -51,7 +51,12 @@ def sse_error(
     return sse_event(SseEvent.ERROR, payload)
 
 
-_OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
+# Phrases that describe an allocation failure. "llama_context" alone used to be
+# here, but that is the prefix llama.cpp stamps on every context-subsystem
+# diagnostic, so n_ctx-over-training-context and KV-cache rejections were all
+# reported as "model too large", pointing at a smaller model when the fix is a
+# config change.
+_OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "failed to allocate")
 _NOT_INSTALLED_MARKERS = ("is not installed", "is not available", "pull it first")
 
 
@@ -93,6 +98,10 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
 # stream sheds the oldest progress event rather than buffering millions.
 SSE_QUEUE_MAX_EVENTS = 1000
 
+# Poll ceiling once the producer task has finished, for the case where the
+# queue drains empty without the sentinel ever arriving.
+_FINISHED_PRODUCER_POLL_S = 1.0
+
 # Progress-class event types: high-frequency, safe to coalesce under
 # backpressure. Everything else (done, errors, crawl/setup lifecycle) must land.
 _DROPPABLE_EVENT_TYPES: frozenset[EventType | SseEvent] = frozenset(
@@ -133,6 +142,9 @@ class SseEventQueue(asyncio.Queue[str | None]):
         self._max_events = max_events
         self._put_droppable = False
         self.dropped_events = 0
+        # Set once the queue is full of undroppable events, i.e. the consumer
+        # has stopped reading. See put_nowait.
+        self.stalled = False
 
     def _put(self, item: str | None) -> None:
         self._queue.append(_QueuedEvent(item, self._put_droppable))
@@ -141,17 +153,27 @@ class SseEventQueue(asyncio.Queue[str | None]):
         return self._queue.popleft().payload
 
     def _evict_oldest_droppable(self) -> bool:
-        """Shed the queue head when it is a progress event; True when a slot freed."""
-        if self._queue and self._queue[0].droppable:
-            self._queue.popleft()
-            self.dropped_events += 1
-            return True
+        """Shed the oldest progress event anywhere in the queue; True when one went.
+
+        Scans rather than checking only the head. A stream that interleaves
+        tokens with progress puts a non-droppable event at the head almost
+        immediately, and head-only eviction then reported "nothing to shed"
+        while the queue still held progress events it was allowed to drop.
+        """
+        for index, event in enumerate(self._queue):
+            if event.droppable:
+                del self._queue[index]
+                self.dropped_events += 1
+                return True
         return False
 
     def put_nowait(self, item: str | None) -> None:
         """Enqueue an always-delivered event, evicting old progress when full."""
-        if self.qsize() >= self._max_events:
-            self._evict_oldest_droppable()
+        if self.qsize() >= self._max_events and not self._evict_oldest_droppable():
+            # Full of undroppable events (chat and RAG tokens come through
+            # here) and the consumer has taken none in _max_events: a stalled
+            # or gone client. The alternative is unbounded growth.
+            self.stalled = True
         self._put_droppable = False
         super().put_nowait(item)
 
@@ -191,7 +213,21 @@ class SseStream:
         producer running under ``run_in_executor`` therefore hands the put back
         to the loop instead of mutating the queue directly.
         """
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, item)
+        self.loop.call_soon_threadsafe(self._put_and_check_stall, item)
+
+    def _put_and_check_stall(self, item: str | None) -> None:
+        """Enqueue on the loop thread, cancelling the producer if it has stalled.
+
+        A consumer that has taken nothing in a full queue's worth is gone;
+        cancelling is the same signal a detected disconnect sends.
+        """
+        self.queue.put_nowait(item)
+        if self.queue.stalled and not self.cancel.is_set():
+            log.warning(
+                "SSE consumer stalled with %d undroppable events queued; cancelling the producer.",
+                self.queue.qsize(),
+            )
+            self.cancel.set()
 
     def _build_callback(self) -> DetailedProgressCallback:
         """Create a progress callback that serializes events into the queue.
@@ -226,6 +262,47 @@ class SseStream:
             if leftover is not None:
                 yield leftover
 
+    def terminal_frame(
+        self,
+        task: asyncio.Task[Any] | asyncio.Future[Any],
+        payload: Callable[[Any], dict[str, Any]],
+    ) -> str | None:
+        """The final SSE frame for a finished producer, or None if there is none.
+
+        Shared by all five streaming handlers, which used to carry their own
+        copy of this and had drifted: one skipped the cancel check and emitted
+        a done frame to a client that had already disconnected.
+        """
+        if self.cancel.is_set() or not task.done() or task.cancelled():
+            return None
+        exc = task.exception()
+        if exc is not None:
+            return sse_error(str(exc))
+        return sse_done(payload(task.result()))
+
+    @staticmethod
+    def _drain_waiters(
+        getter: asyncio.Future[str | None],
+        task: asyncio.Task[Any] | asyncio.Future[Any],
+    ) -> set[asyncio.Future[Any]]:
+        """Futures the drain loop waits on. A finished task is left out or it
+        would resolve the wait instantly every pass and spin the loop."""
+        return {getter} if task.done() else {getter, task}
+
+    @staticmethod
+    def _drain_timeout(task: asyncio.Task[Any] | asyncio.Future[Any]) -> float | None:
+        """How long one drain pass may sleep.
+
+        While the producer runs the timeout only serves the heartbeat, since
+        the task itself is in the wait set; a disabled heartbeat can wait
+        indefinitely. Once it finishes it leaves the wait set, so this bounds
+        the remaining case: a queue emptying without the sentinel arriving.
+        """
+        if task.done():
+            return _FINISHED_PRODUCER_POLL_S
+        interval = cfg.sse_heartbeat_interval
+        return interval if interval > 0 else None
+
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
@@ -235,9 +312,13 @@ class SseStream:
         idle longer than ``cfg.sse_heartbeat_interval`` seconds so
         clients that enforce a stream-idle timeout don't abort.
 
-        The pending ``queue.get`` survives across poll rounds (``asyncio.wait``,
-        not ``wait_for``): cancelling a completed get on the timeout boundary
-        would drop the event it already popped from the queue.
+        The pending ``queue.get`` survives across rounds (``asyncio.wait``, not
+        ``wait_for``): cancelling a completed get on the timeout boundary would
+        drop the event it already popped.
+
+        *task* is in the wait set, so a producer dying without a sentinel wakes
+        the loop directly. That is what lets the timeout be the seconds-scale
+        heartbeat interval instead of a 10Hz tick.
         """
         last_yielded = time.monotonic()
         getter: asyncio.Future[str | None] | None = None
@@ -245,8 +326,12 @@ class SseStream:
             while True:
                 if getter is None:
                     getter = asyncio.ensure_future(self.queue.get())
-                done, _ = await asyncio.wait({getter}, timeout=0.1)
-                if not done:
+                done, _ = await asyncio.wait(
+                    self._drain_waiters(getter, task),
+                    timeout=self._drain_timeout(task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if getter not in done:
                     now = time.monotonic()
                     heartbeat_interval = cfg.sse_heartbeat_interval
                     if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:

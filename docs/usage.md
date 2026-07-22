@@ -432,12 +432,13 @@ lilbee --json self-check                       # runtime + model self-check
 **Write (LLM calls or long ops):**
 
 ```bash
-lilbee --json add ~/docs ~/notes               # copy files / dirs in, indexes in one call
+lilbee --json add ~/docs ~/notes               # register files / dirs, index them in place
 lilbee --json add https://example.com/page     # URL becomes a markdown source
 lilbee --json sync                             # re-index after edits to the documents directory
 lilbee --json rebuild                          # nuke the index and re-ingest everything
-lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
-lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
+lilbee --json remove manual.pdf                # drop chunks (source files are always kept)
+lilbee --json remove reports/2024              # a folder: remove everything indexed beneath it
+lilbee --json remove '**/*.log'                # a glob: remove every matching source
 lilbee --json ask "question"                   # full local RAG (local llama-server fleet or remote backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
@@ -593,8 +594,9 @@ lilbee ask "Explain this" --model qwen3
 
 | Command | Description |
 |---------|-------------|
-| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
-| `lilbee remove manual.pdf --delete` | Remove and delete the source file |
+| `lilbee remove manual.pdf` | Remove from the index (source files are always kept) |
+| `lilbee remove reports/2024` | Remove every document indexed under a folder |
+| `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
@@ -670,13 +672,15 @@ lilbee serve --port 8080               # fixed port
 lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1)
 ```
 
-The surface covers search (with SSE streaming variants for `ask` and `chat`),
+Every route needs the session token, reads included, `GET /api/health` among
+them; the daemon writes the token to `server.json` (mode `0600`) next to the
+port file, and `lilbee agent-config` hands it to local clients. The surface
+covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary; reads work with a read-only token,
-writes need a full one), configuration (including a defaults endpoint
-that powers per-setting reset), and status/health. The
+delete, and the compaction summary), configuration (including a defaults
+endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the

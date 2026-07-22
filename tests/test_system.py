@@ -251,3 +251,12 @@ class TestStderrSuppressed:
             original_stat.st_dev,
             original_stat.st_ino,
         )
+
+
+def test_stderr_suppressed_can_nest():
+    """A suppressed block can re-enter this, directly or via a native helper
+    that wraps its own stderr. A plain Lock self-deadlocked there."""
+    from lilbee.core.system import stderr_suppressed
+
+    with stderr_suppressed(), stderr_suppressed():
+        pass

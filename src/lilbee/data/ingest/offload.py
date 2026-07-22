@@ -24,6 +24,32 @@ _R = TypeVar("_R")
 
 _MAX_WORKERS_ENV = "LILBEE_INGEST_MAX_WORKERS"
 
+# Files per embed replica to keep in flight during ingest. A replica interleaves
+# its file's extraction with embedding, so a handful of files per card must be
+# admitted at once or the GPU sits idle between requests. Scaling admission by
+# the detected replica count auto-sizes a multi-GPU fleet with no manual cap,
+# instead of the CPU-bound default that pins an 8-GPU box at ~4 files/card.
+# Tuned against the 8x A100 MS MARCO fleet; override per run with
+# ``ingest_max_inflight`` / ``LILBEE_INGEST_MAX_INFLIGHT``.
+_EMBED_INFLIGHT_PER_REPLICA = 8
+
+
+def embed_inflight_target() -> int:
+    """Admission that keeps every embed replica fed, from the detected fleet size.
+
+    ``embed replicas x _EMBED_INFLIGHT_PER_REPLICA`` when a multi-replica fleet is
+    resolvable, else 0 (single card or no fleet: the CPU-bound sizing already
+    fits). Never raises -- a fleet that cannot be probed yet returns 0.
+    """
+    try:
+        from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+        from lilbee.providers.roles import WorkerRole
+
+        slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
+    except Exception:
+        return 0
+    return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0
+
 
 @functools.cache
 def max_workers() -> int:
@@ -59,7 +85,16 @@ def max_workers() -> int:
             _MAX_WORKERS_ENV,
             override,
         )
-    return min(32, (os.cpu_count() or 4) + 4)
+    default = min(32, (os.cpu_count() or 4) + 4)
+    # The pool (and thus the adaptive controller's permit_max, which is this
+    # value) must be able to feed the admission ceiling, or in adaptive mode the
+    # gate clamps back to 32 and a multi-GPU fleet stays starved. Size it to the
+    # explicit ingest_max_inflight override, else auto-scale with the detected
+    # embed fleet so no manual cap is needed on a multi-GPU box.
+    from lilbee.core.config import active_config
+
+    inflight = active_config().ingest_max_inflight or embed_inflight_target()
+    return max(default, inflight)
 
 
 @functools.cache

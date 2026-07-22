@@ -60,16 +60,18 @@ def _chunk(source: str, index: int, text: str) -> SearchChunk:
 
 
 class TestHashExistingSources:
-    def test_skips_missing_files(self, tmp_path: Path) -> None:
+    def test_skips_missing_files(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "documents_dir", tmp_path)
         (tmp_path / "present.txt").write_text("hello")
-        result = hash_existing_sources(["present.txt", "missing.txt"], tmp_path)
+        result = hash_existing_sources(["present.txt", "missing.txt"])
         assert "present.txt" in result
         assert "missing.txt" not in result
 
-    def test_returns_hashes_for_existing(self, tmp_path: Path) -> None:
+    def test_returns_hashes_for_existing(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "documents_dir", tmp_path)
         (tmp_path / "a.txt").write_text("alpha")
         (tmp_path / "b.txt").write_text("beta")
-        result = hash_existing_sources(["a.txt", "b.txt"], tmp_path)
+        result = hash_existing_sources(["a.txt", "b.txt"])
         assert set(result) == {"a.txt", "b.txt"}
         assert result["a.txt"] != result["b.txt"]
 

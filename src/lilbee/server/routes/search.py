@@ -1,4 +1,7 @@
-"""Search, ask, ask_stream, chat, and chat_stream route handlers."""
+"""Search, ask, ask_stream, chat, and chat_stream route handlers.
+
+Every route needs the token: these return the user's own documents.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from lilbee.data.store import EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
+from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     ChatSlotGuard,
@@ -120,7 +123,15 @@ async def _gated_stream(
             yield chunk
     except Exception as exc:
         log.exception("streaming chat handler failed")
-        yield sse_error(str(exc))
+        # Same mapper as the non-streaming sibling: without a code the stream
+        # flattened unknown-model, no-tool-support and context-overflow into
+        # one message, so a client could not tell "pull the model" from
+        # "shorten the prompt". It also redacts the backend-failure kinds.
+        classified = classify_provider_error(exc)
+        if classified is None:
+            yield sse_error(str(exc))
+        else:
+            yield sse_error(classified.message, code=classified.code)
     finally:
         await guard.release()
 
@@ -135,10 +146,9 @@ def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) 
 
 
 @get("/api/search")
-@read_only
 async def search_route(
     q: str = Parameter(query="q"),
-    top_k: int = Parameter(query="top_k", default=5, le=100),
+    top_k: int = Parameter(query="top_k", default=5, ge=1, le=100),
     chunk_type: str | None = Parameter(query="chunk_type", default=None),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
@@ -149,11 +159,22 @@ async def search_route(
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
-        raise _embedding_mismatch_http(exc) from exc
+        # ``adoptable`` is a bare yes/no on whether switching embedder alone
+        # fixes the index, which is what a client renders its hint from. The
+        # embedder names stay out of the generic 503.
+        raise HTTPException(
+            status_code=409,
+            detail="The index was built with a different embedding model than the one configured.",
+            extra={"adoptable": exc.dims_match},
+        ) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # str(exc) here routinely carries data-root paths, LanceDB table names,
+        # and model ids. Log the real cause for the operator; return a generic
+        # message on the wire.
+        log.exception("Search failed")
+        raise HTTPException(status_code=503, detail="Search is temporarily unavailable.") from exc
 
 
 @post("/api/ask")
@@ -169,9 +190,10 @@ async def ask_route(data: AskRequest) -> AskResponse:
         )
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
-    except ValueError as exc:
-        raise ValidationException(str(exc)) from exc
     except Exception as exc:
+        # No separate ValueError arm: _raise_chat_http_error is the single
+        # translation point and its first branch is ValueError -> 422, which is
+        # what chat_route relies on. Two copies drift.
         _raise_chat_http_error(exc)
     finally:
         await release_chat_slot()

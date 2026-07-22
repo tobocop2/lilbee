@@ -10,12 +10,13 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from lilbee.app.ingest import copy_files
+from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
@@ -69,12 +70,9 @@ async def sync_stream(
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-        yield sse_done(task.result().model_dump())
+    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    if frame is not None:
+        yield frame
 
 
 async def _run_add(
@@ -98,17 +96,25 @@ async def _run_add(
             else:
                 valid.append(p)
 
-        copy_result = copy_files(valid, force=force)
+        reg_result = register_sources(valid, force=force)
 
         if sse.cancel.is_set():
-            return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
+            return AddSummary(
+                copied=reg_result.registered, skipped=reg_result.skipped, errors=errors
+            )
+
+        if not reg_result.registered and not reg_result.skipped:
+            # Nothing reached the corpus, and sync() is a whole-vault pass
+            # holding the ingest lock. A *skipped* file is not this case: it is
+            # already in the documents dir but may never have been indexed.
+            return AddSummary(copied=[], skipped=[], errors=errors)
 
         with temporary_ocr_config(enable_ocr, ocr_timeout):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
-            copied=copy_result.copied,
-            skipped=copy_result.skipped,
+            copied=reg_result.registered,
+            skipped=reg_result.skipped,
             errors=errors,
             sync=SyncSummary(**sync_result.model_dump()),
         )
@@ -128,7 +134,13 @@ def validate_add_paths(
     # your-codebase use case (hundreds of small files).
 
     for p_str in paths:
-        validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
+        # The basename becomes the source root's label (its key prefix). It must
+        # be a clean single segment: Path(x).name cannot traverse, so this only
+        # rejects an empty name ("/", "a/") that would name no root.
+        name = Path(p_str).name
+        if not name:
+            raise ValueError(f"{p_str!r} does not name a file")
+        validate_path_within(cfg.documents_dir / name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
     enable_ocr, ocr_timeout = _parse_ocr_params(data)
@@ -156,9 +168,11 @@ async def _ingest_stream(
     Shared by /api/add (server paths) and /api/add/upload (uploaded content).
     Each item is ``(lock_key, payload)``: the key is the source identifier used
     for the per-source ingest lock; the payload is what ``run`` receives for the
-    subset whose lock was acquired. Contended sources emit ``already_ingesting``
-    and the stream closes without a ``done`` event, signalling the client to wait
-    rather than retry.
+    subset whose lock was acquired. Contended sources emit ``already_ingesting``.
+    When every source is contended the stream closes with no ``done`` event,
+    signalling the client to wait rather than retry. When only some are, the
+    acquired subset still runs and the ``done`` summary names the contended ones
+    in ``already_ingesting``, so a partial batch never reads as a full success.
     """
     registry = get_services().ingest_lock_registry
     acquired, busy = await registry.acquire([key for key, _payload in items])
@@ -171,23 +185,19 @@ async def _ingest_stream(
             return
 
         acquired_names = {name for name, _lock in acquired}
-        locked = [
-            payload
-            for key, payload in items
-            if registry.canonical_source_name(key) in acquired_names
-        ]
+        locked = [payload for key, payload in items if key in acquired_names]
         sse = SseStream()
         task = asyncio.create_task(run(locked, sse))
         try:
             async for event in sse.drain(task, label):
                 yield event
-            if not sse.cancel.is_set() and task.done() and not task.cancelled():
-                exc = task.exception()
-                if exc is not None:
-                    yield sse_error(str(exc))
-                    return
-                summary = task.result()
-                yield sse_done(summary.model_dump())
+            # already_ingesting names the sources this run never attempted, so
+            # a client reading only the terminal event still sees a partial batch.
+            frame = sse.terminal_frame(
+                task, lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump()
+            )
+            if frame is not None:
+                yield frame
         finally:
             if not task.done():
                 task.cancel()
@@ -210,7 +220,7 @@ async def add_files_stream(
     request dict is decoded once.
     """
     async for event in _ingest_stream(
-        [(p, p) for p in paths],
+        [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
         lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, sse),
         "Add files stream",
     ):
@@ -237,17 +247,24 @@ def _clean_upload_name(name: str) -> str:
     return relative
 
 
-def validate_uploads(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
-    """Validate uploaded (filename, content) pairs. Raises ValueError on bad input.
+def validate_upload_names(names: list[str | None]) -> list[str]:
+    """Validate uploaded filenames, returning the cleaned relative paths.
 
-    Filenames keep their relative path, validated to stay inside
-    ``cfg.documents_dir``, so an uploaded source tree preserves its layout
-    instead of colliding on basenames. There is no file-count cap; the
-    resource guard is the app's size-based request_max_body_size.
+    Names only, deliberately: the route validates before reading any part's
+    bytes, so a request that will be rejected never costs a full copy of the
+    payload in the server's own memory. Filenames keep their relative path,
+    validated to stay inside ``cfg.documents_dir``, so an uploaded source tree
+    preserves its layout instead of colliding on basenames. There is no
+    file-count cap; the resource guard is the app's request_max_body_size.
+
+    Raises ValueError on bad input.
     """
-    if not files:
+    if not names:
         raise ValueError("no files uploaded")
-    return [(_clean_upload_name(name), content) for name, content in files]
+    # A multipart part is allowed to carry no filename at all; that is not a
+    # file upload, and the cleaner's message should name it as missing rather
+    # than crash on None.
+    return [_clean_upload_name(name if name is not None else "") for name in names]
 
 
 async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSummary:
@@ -313,9 +330,6 @@ async def import_stream(data: bytes, fmt: str) -> AsyncGenerator[str, None]:
     task = asyncio.create_task(_run_import_with_sentinel(sse, data, fmt))
     async for event in sse.drain(task, "Import stream"):
         yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-        yield sse_done(task.result().model_dump())
+    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    if frame is not None:
+        yield frame

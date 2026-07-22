@@ -50,10 +50,12 @@ def _completion_request(model: str = "ollama/m") -> CompletionRequest:
     )
 
 
-def _embedding_request(model: str = "ollama/m") -> EmbeddingRequest:
+def _embedding_request(
+    model: str = "ollama/m", inputs: list[str] | None = None
+) -> EmbeddingRequest:
     return EmbeddingRequest(
         ref=parse_model_ref(model),
-        inputs=["x"],
+        inputs=inputs if inputs is not None else ["x"],
         api_base="http://localhost:11434",
     )
 
@@ -291,8 +293,34 @@ class TestEmbedReturnsEmbeddingResult:
             "model": "x",
         }
         with mock.patch.dict(sys.modules, {"litellm": fake}):
-            result = backend.embed(_embedding_request())
+            result = backend.embed(_embedding_request(inputs=["x", "y"]))
         assert result.vectors == [[0.0], [1.0]]
+
+    def test_short_embedding_batch_is_refused(self, backend: LlmSdkBackend) -> None:
+        """A dropped item still sorts cleanly but breaks the positional pairing.
+
+        Every later chunk would be stored against the wrong vector, silently
+        corrupting the index, so the batch is refused instead.
+        """
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {"data": [{"embedding": [0.0], "index": 0}], "model": "x"}
+        with mock.patch.dict(sys.modules, {"litellm": fake}), pytest.raises(ProviderError) as err:
+            backend.embed(_embedding_request(inputs=["x", "y"]))
+        assert "incomplete or misindexed" in str(err.value)
+
+    def test_duplicate_embedding_index_is_refused(self, backend: LlmSdkBackend) -> None:
+        """A repeated index yields the right count and the wrong pairing."""
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {
+            "data": [
+                {"embedding": [0.0], "index": 0},
+                {"embedding": [1.0], "index": 0},
+            ],
+            "model": "x",
+        }
+        with mock.patch.dict(sys.modules, {"litellm": fake}), pytest.raises(ProviderError) as err:
+            backend.embed(_embedding_request(inputs=["x", "y"]))
+        assert "incomplete or misindexed" in str(err.value)
 
     def test_embed_error_is_wrapped(self, backend: LlmSdkBackend) -> None:
         fake = mock.MagicMock()

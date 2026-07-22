@@ -172,6 +172,12 @@ class TestSync:
         assert "bad.txt" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["sync", "--max-cpus", "3"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 3
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_retry_skipped_flag(self, mock_sync):
         """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
         result = runner.invoke(app, ["sync", "--retry-skipped"])
@@ -193,18 +199,20 @@ class TestRebuild:
 
 class TestAdd:
     def test_add_single_file(self, isolated_env, tmp_path):
-        """Adding a single file copies it and ingests it."""
+        """Adding a single file registers it as a root and ingests it in place."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Engine oil capacity is 5 quarts.")
 
         result = runner.invoke(app, ["add", str(src_file)])
         assert result.exit_code == 0
-        assert "Copied 1" in result.output
-        assert (cfg.documents_dir / "manual.txt").exists()
+        assert "Registered 1" in result.output
+        # No copy into documents_dir: the file is tracked where it lives.
+        assert cfg.linked_roots == {"manual.txt": str(src_file.resolve())}
+        assert not (cfg.documents_dir / "manual.txt").exists()
 
     def test_add_directory(self, isolated_env, tmp_path):
-        """Adding a directory recursively copies it."""
+        """Adding a directory registers it as a root; its files index under the label."""
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
         (src_dir / "file1.txt").write_text("Content 1")
@@ -212,8 +220,12 @@ class TestAdd:
 
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
-        assert (cfg.documents_dir / "docs" / "file1.txt").exists()
-        assert (cfg.documents_dir / "docs" / "file2.txt").exists()
+        assert cfg.linked_roots == {"docs": str(src_dir.resolve())}
+        from lilbee.data.ingest import discover_files
+
+        found = discover_files()
+        assert "docs/file1.txt" in found
+        assert "docs/file2.txt" in found
 
     def test_add_multiple_paths(self, isolated_env, tmp_path):
         """Adding multiple paths works."""
@@ -225,34 +237,29 @@ class TestAdd:
 
         result = runner.invoke(app, ["add", str(f1), str(f2)])
         assert result.exit_code == 0
-        assert "Copied 2" in result.output
+        assert "Registered 2" in result.output
 
     def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
 
-    def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
-        """Re-adding a directory with --force updates content."""
-        src_dir = tmp_path / "source" / "docs"
-        src_dir.mkdir(parents=True)
-        (src_dir / "file1.txt").write_text("Version 1")
-
-        runner.invoke(app, ["add", "--force", str(src_dir)])
-
-        # Update content and re-add with --force
-        (src_dir / "file1.txt").write_text("Version 2")
-        result = runner.invoke(app, ["add", "--force", str(src_dir)])
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src), "--max-cpus", "2"])
         assert result.exit_code == 0
-        assert (cfg.documents_dir / "docs" / "file1.txt").read_text() == "Version 2"
+        assert cfg.ingest_workers == 2
 
     def test_add_warns_on_existing(self, isolated_env, tmp_path):
-        """Adding a file that already exists warns without --force."""
+        """Re-adding a source that is already registered warns."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Original content")
 
-        runner.invoke(app, ["add", "--force", str(src_file)])
+        runner.invoke(app, ["add", str(src_file)])
 
         src_file.write_text("New content")
         result = runner.invoke(app, ["add", str(src_file)])
@@ -263,7 +270,7 @@ class TestAdd:
 
 class TestAddIgnoresDirs:
     def test_add_directory_skips_git_and_node_modules(self, isolated_env, tmp_path):
-        """Adding a directory filters out .git/ and node_modules/."""
+        """Adding a directory registers it; discovery filters .git/ and node_modules/."""
         src_dir = tmp_path / "source" / "project"
         src_dir.mkdir(parents=True)
         (src_dir / "readme.txt").write_text("Real content")
@@ -277,11 +284,16 @@ class TestAddIgnoresDirs:
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
 
-        dest = cfg.documents_dir / "project"
-        assert (dest / "readme.txt").exists()
-        assert not (dest / ".git").exists()
-        assert not (dest / "node_modules").exists()
-        assert not (dest / "__pycache__").exists()
+        # The tree is registered as one root; discovery filters the ignored
+        # directories, so they stay on disk but are never indexed.
+        from lilbee.data.ingest import discover_files
+
+        assert cfg.linked_roots == {"project": str(src_dir.resolve())}
+        found = discover_files()
+        assert "project/readme.txt" in found
+        assert not any(name.startswith("project/.git/") for name in found)
+        assert not any("node_modules" in name for name in found)
+        assert not any("__pycache__" in name for name in found)
 
 
 class TestAsk:
@@ -543,7 +555,7 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
         ):
             add_paths([src], con, background=True)
             mock_bg.assert_called_once()
@@ -559,11 +571,11 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
         ):
             add_paths([src], con, chat_mode=True)
             captured = capsys.readouterr()
-            assert "Copied 1 path(s)" in captured.out
+            assert "Registered 1 source(s)" in captured.out
 
 
 class TestChat:
@@ -1230,6 +1242,12 @@ class TestSearch:
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
 
+    def test_search_rejects_non_positive_top_k(self, mock_svc):
+        for bad in ("0", "-3"):
+            result = runner.invoke(app, ["search", "q", "--top-k", bad])
+            assert result.exit_code != 0
+        mock_svc.searcher.search.assert_not_called()
+
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
         assert result.exit_code != 0
@@ -1446,22 +1464,73 @@ class TestRemove:
         assert "Removed" in result.output
         assert "Not found" in result.output
 
-    def test_remove_with_delete_flag(self, isolated_env, mock_svc):
+    def test_remove_keeps_source_file(self, isolated_env, mock_svc):
+        # Removal is index-only: the source file on disk is never deleted.
         from lilbee.data.store import RemoveResult
 
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt"}]
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["test.txt"], not_found=[]
         )
-        mock_svc.store.remove_documents.side_effect = lambda names, **kw: (
-            doc.unlink() or RemoveResult(removed=["test.txt"], not_found=[])
-            if kw.get("delete_files")
-            else RemoveResult(removed=["test.txt"], not_found=[])
-        )
-        result = runner.invoke(app, ["remove", "--delete", "test.txt"])
+        result = runner.invoke(app, ["remove", "test.txt"])
         assert result.exit_code == 0
-        assert not doc.exists()
+        assert doc.exists()
+
+    def test_remove_folder_expands_to_members(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+            {"filename": "other.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "docs"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"docs/a.txt", "docs/b.txt"}
+
+    def test_remove_folder_confirms_before_removing(self, isolated_env, mock_svc):
+        # Without --yes, a folder that expands to several docs prompts for confirm.
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+        ]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
+        )
+        with mock.patch("typer.confirm", return_value=True) as confirm:
+            result = runner.invoke(app, ["remove", "docs"])
+        assert result.exit_code == 0
+        confirm.assert_called_once()
+
+    def test_remove_glob_pattern(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.log"},
+            {"filename": "b.log"},
+            {"filename": "c.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "*.log"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"a.log", "b.log"}
 
     def test_remove_json(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
@@ -1487,16 +1556,25 @@ class TestRemove:
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
 
-    def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
-        """Path traversal in name with --delete is caught and skipped."""
+    def test_remove_unregisters_a_root_and_keeps_source(self, isolated_env, mock_svc, tmp_path):
+        # A directory registered as a source root: removing it un-registers the
+        # root (discovery stops finding it) and never touches the source bytes.
+        from lilbee.core import settings
         from lilbee.data.store import RemoveResult
 
-        traversal_name = "../../etc/passwd"
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=[traversal_name], not_found=[]
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "a.txt").write_text("keep")
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
+
+        mock_svc.store.get_sources.return_value = [{"filename": "corpus/a.txt"}]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
         )
-        result = runner.invoke(app, ["remove", "--delete", traversal_name])
+        result = runner.invoke(app, ["remove", "--yes", "corpus"])
         assert result.exit_code == 0
+        assert "corpus" not in cfg.linked_roots  # root un-registered
+        assert (source / "a.txt").read_text() == "keep"  # source untouched
 
 
 class TestChunks:
@@ -3813,6 +3891,49 @@ class TestSelfCheck:
             setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
         assert not d.exists()
         fake_swap.shutdown.assert_called_once()
+
+    def test_self_check_chat_uses_the_planners_flash_and_kv_decision(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The self-check exists to exercise the flags a real request drives.
+
+        The flash-attention value and the KV cache types are one decision (a
+        quantized V cache is invalid without flash attention), so this path asks
+        the planner rather than rebuilding the rule and drifting from it.
+        """
+        from lilbee.cli.commands import setup
+        from lilbee.core.config.enums import KvCacheType
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.roles import WorkerRole
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(tmp_path / "wd"))
+        (tmp_path / "wd").mkdir()
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        captured: dict[str, list[str]] = {}
+
+        class _Swap:
+            def start(self, launches):
+                captured["argv"] = launches[0].argv
+                raise RuntimeError("stop here")
+
+            def shutdown(self, *_a, **_k):
+                pass
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: _Swap()
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+
+        argv = captured["argv"]
+        assert argv[argv.index("--flash-attn") + 1] == "auto"
+        assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+        assert "--cache-type-v" not in argv
 
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"

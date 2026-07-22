@@ -15,7 +15,7 @@ from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
 # leaked env var cannot disable validation in production.
 _SKIP_MODEL_TASK_VALIDATION_ENV = "LILBEE_SKIP_MODEL_TASK_VALIDATION"
 
-_MODEL_FIELD_TO_TASK: dict[str, str] = {
+MODEL_FIELD_TO_TASK: dict[str, str] = {
     "chat_model": "chat",
     "embedding_model": "embedding",
     "vision_model": "vision",
@@ -103,7 +103,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     """
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
-    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
+    want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
     entry = find_catalog_entry(ref)
     if entry is not None:
         return _canonical_featured_ref(ref, entry, want)

@@ -117,6 +117,40 @@ class TestSetValue:
         assert settings.get(tmp_path, "chat_model") == "mistral"
 
 
+class TestMutateValue:
+    def test_reads_persisted_value_inside_the_lock(self, tmp_path):
+        settings.set_value(tmp_path, "linked_roots", {"a": "/x"})
+
+        seen = {}
+
+        def _fn(current):
+            seen["current"] = current
+            return {**(current or {}), "b": "/y"}, "done"
+
+        result = settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert seen["current"] == {"a": "/x"}  # the persisted value, not None
+        assert result == "done"
+        assert settings.load(tmp_path)["linked_roots"] == {"a": "/x", "b": "/y"}
+
+    def test_passes_none_when_key_absent(self, tmp_path):
+        captured = {}
+
+        def _fn(current):
+            captured["current"] = current
+            return {"only": "/z"}, None
+
+        settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert captured["current"] is None
+        assert settings.load(tmp_path)["linked_roots"] == {"only": "/z"}
+
+    def test_preserves_sibling_keys(self, tmp_path):
+        settings.set_value(tmp_path, "chat_model", "keep-me")
+        settings.mutate_value(tmp_path, "linked_roots", lambda cur: ({"a": "/x"}, None))
+        loaded = settings.load(tmp_path)
+        assert loaded["chat_model"] == "keep-me"
+        assert loaded["linked_roots"] == {"a": "/x"}
+
+
 class TestDeleteValue:
     def test_delete_existing_key(self, tmp_path):
         settings.set_value(tmp_path, "temperature", "0.5")
@@ -169,15 +203,49 @@ class TestTomlEscaping:
         settings.set_value(tmp_path, "key", "")
         assert settings.get(tmp_path, "key") == ""
 
-    def test_escape_toml_string_function(self):
-        from lilbee.core.settings import _escape_toml_string
+    @pytest.mark.parametrize(
+        ("label", "value"),
+        [
+            ("escape", "before\x1bafter"),
+            ("nul", "before\x00after"),
+            ("vertical_tab", "before\x0bafter"),
+            ("bell", "before\x07after"),
+            ("delete", "before\x7fafter"),
+            ("every_c0", "".join(chr(c) for c in range(0x20))),
+        ],
+    )
+    def test_control_characters_round_trip(self, tmp_path, label, value):
+        """TOML forbids raw control characters; writing one used to break the whole file."""
+        settings.set_value(tmp_path, label, value)
+        assert settings.get(tmp_path, label) == value
 
-        assert _escape_toml_string('say "hi"') == r"say \"hi\""
-        assert _escape_toml_string(r"C:\path") == r"C:\\path"
-        assert _escape_toml_string("a\nb") == r"a\nb"
-        assert _escape_toml_string("a\tb") == r"a\tb"
-        assert _escape_toml_string("normal") == "normal"
-        assert _escape_toml_string("") == ""
+    def test_one_control_character_does_not_discard_the_rest_of_the_config(self, tmp_path):
+        """A parse failure makes the reader drop every setting, not just the bad key."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", "rank\x1bthese")
+        assert settings.load(tmp_path) == {"model": "qwen3:8b", "reranker_prompt": "rank\x1bthese"}
+
+    @pytest.mark.parametrize(
+        "value",
+        ['say "hi"', r"C:\path", "a\nb", "a\tb", "normal", "", "a\x1bb", "a\x00b", "a\x7fb"],
+    )
+    def test_a_value_survives_the_round_trip_verbatim(self, tmp_path, value):
+        """Escaping is only correct if the reader gives the string back unchanged."""
+        settings.set_value(tmp_path, "reranker_prompt", value)
+        assert settings.load(tmp_path)["reranker_prompt"] == value
+
+    def test_a_list_value_round_trips_as_a_list(self, tmp_path):
+        """The hand-rolled emitter stringified anything non-scalar, so a list
+        was persisted as the quoted repr "['a', 'b']" and read back as text."""
+        settings.set_value(tmp_path, "exclude", ["a", "b"])
+        assert settings.load(tmp_path)["exclude"] == ["a", "b"]
+
+    def test_a_none_value_is_dropped_rather_than_written_as_text(self, tmp_path):
+        """It used to land as the string "None", which then read back as a
+        truthy setting rather than an absent one."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", None)
+        assert settings.load(tmp_path) == {"model": "qwen3:8b"}
 
 
 class TestRerankerConfig:
@@ -544,9 +612,9 @@ class TestUtf8RoundTrip:
         decoded = raw.decode("utf-8")
         assert "key" in decoded
 
-    def test_win32_platform_sim_does_not_break_save(self, tmp_path, monkeypatch) -> None:
-        """Simulate Windows platform: write_text with encoding= must still work."""
-        monkeypatch.setattr("lilbee.core.settings.sys.platform", "win32")
+    def test_overwriting_an_existing_file_round_trips_unicode(self, tmp_path) -> None:
+        """The atomic replace must not lose the UTF-8 encoding on a rewrite."""
+        settings.save(tmp_path, {"key": "value"})
         settings.save(tmp_path, {"key": "value", "unicode": "é"})
         result = settings.load(tmp_path)
         assert result["unicode"] == "é"
@@ -575,3 +643,58 @@ class TestTitleSearchSettings:
 
         assert "title_search" in WRITABLE_CONFIG_FIELDS
         assert "title_search_weight" in WRITABLE_CONFIG_FIELDS
+class TestConcurrentConfigWrites:
+    """A server, a CLI run, and an MCP process share one data root."""
+
+    def test_a_second_process_does_not_drop_the_first_processes_key(self, tmp_path):
+        """Cross-process read-modify-write must serialize, not interleave.
+
+        A threading.Lock only covers one interpreter, so two processes could
+        both load the same snapshot and each save it back without the other's
+        key. This drives real subprocesses, which a thread test cannot.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        # Each process holds the read-modify-write open for a beat. Under the
+        # lock they queue up and every key survives; without it they all load
+        # the same snapshot and the last writer wins.
+        script = textwrap.dedent(
+            f"""
+            import sys, time
+            from pathlib import Path
+            from lilbee.core import settings
+
+            real_save = settings.save
+            def slow_save(root, values):
+                time.sleep(0.3)
+                real_save(root, values)
+            settings.save = slow_save
+
+            settings.set_value(Path({str(tmp_path)!r}), sys.argv[1], sys.argv[1])
+            """
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", script, f"key{i}"]) for i in range(4)]
+        for proc in procs:
+            assert proc.wait(timeout=120) == 0
+
+        result = settings.load(tmp_path)
+        assert sorted(result) == [f"key{i}" for i in range(4)]
+
+    def test_a_stale_lock_does_not_block_the_write(self, tmp_path, monkeypatch, caplog):
+        """Losing an update to an abandoned lock file is worse than the race."""
+        from filelock import FileLock
+
+        from lilbee.core import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            with caplog.at_level("WARNING"):
+                settings.set_value(tmp_path, "key", "value")
+        finally:
+            held.release()
+        assert settings.get(tmp_path, "key") == "value"
+        assert "Timed out waiting" in caplog.text

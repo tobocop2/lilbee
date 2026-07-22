@@ -7313,7 +7313,9 @@ async def test_cmd_add_error_in_background(tmp_path):
         test_file = tmp_path / "doc.txt"
         test_file.write_text("hello")
 
-        with patch("lilbee.app.ingest.copy_files", side_effect=RuntimeError("copy failed")):
+        with patch(
+            "lilbee.app.ingest.register_sources", side_effect=RuntimeError("register failed")
+        ):
             app.screen._handle_slash(f"/add {test_file}")
             await _pilot.pause()
             while app.screen.workers:
@@ -7406,10 +7408,10 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
         reporter = MagicMock(spec=ProgressReporter)
 
         with (
-            patch("lilbee.app.ingest.copy_files") as mock_copy,
+            patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
 
             def _run_worker() -> None:
                 app.screen._do_add([test_file], reporter)
@@ -7418,7 +7420,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             thread.start()
             thread.join(timeout=5)
 
-        # Three reporter.update calls in order: copy banner, EXTRACT,
+        # Three reporter.update calls in order: register banner, EXTRACT,
         # EMBED. Assert at least the EMBED + EXTRACT messages reached
         # the reporter.
         update_calls = [c for c in reporter.update.call_args_list]
@@ -7461,10 +7463,10 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
                 captured["exc"] = exc
 
         with (
-            patch("lilbee.app.ingest.copy_files") as mock_copy,
+            patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
             thread = threading.Thread(target=_run_worker)
             thread.start()
             thread.join(timeout=5)

@@ -14,12 +14,6 @@ from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventT
 
 log = logging.getLogger(__name__)
 
-# Sequences per embed request, matching the local engine's per-request packing
-# cap so app-level batches feed full server batches. The engine re-splits by
-# exact token counts anyway; for remote SDK providers the resulting char budget
-# (~chunk_size-dependent, ~128 KiB at defaults) stays a safe request-size cap.
-EMBED_BATCH_TARGET_SEQUENCES = 64
-
 
 def _name_base(ref: ProviderModelRef) -> str:
     return ref.name.split(":")[0].lower().replace(" ", "-")
@@ -82,8 +76,13 @@ class Embedder:
 
     @property
     def batch_char_budget(self) -> int:
-        """Per-request char cap: a full packed batch of maximum-size chunks."""
-        return EMBED_BATCH_TARGET_SEQUENCES * self._config.chunk_size * CHARS_PER_TOKEN
+        """Per-request char cap: a full packed batch of maximum-size chunks.
+
+        The target sequences-per-request is ``embed_batch_sequences`` (tunable to
+        keep a multi-GPU fleet's batching slots full); the engine still re-splits
+        to its physical batch, so it is an upper bound, not a guarantee.
+        """
+        return self._config.embed_batch_sequences * self._config.chunk_size * CHARS_PER_TOKEN
 
     @property
     def truncated_total(self) -> int:

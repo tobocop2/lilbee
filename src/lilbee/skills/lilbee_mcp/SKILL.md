@@ -77,7 +77,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_status()` | Indexed sources, total chunks, active model refs. First call of any session. |
 | `lilbee_list_documents()` | All indexed sources with chunk counts. |
 | `lilbee_init(path)` | Create a `.lilbee/` in the given dir and switch the session to it. |
-| `lilbee_remove(names, delete_files)` | Remove documents from the index, optionally deleting the source files. |
+| `lilbee_remove(names)` | Remove documents from the index by name, folder, or glob (source files are kept). |
 | `lilbee_crawl_status(task_id)` | Poll a non-blocking crawl: `pending` / `running` / `done` / `failed`. |
 | `lilbee_model_list(source, task)` | Locally-installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
@@ -222,10 +222,10 @@ afterward, so the next question gets the unmodified defaults.
 ### 6. User wants to delete or replace content
 
 ```
-lilbee_list_documents                                # find the source name
-lilbee_remove(["old-manual.pdf"], delete_files=False) # keep the file, drop chunks
-# or
-lilbee_remove(["old-manual.pdf"], delete_files=True)  # delete file + chunks
+lilbee_list_documents                     # find the source name
+lilbee_remove(["old-manual.pdf"])         # drop its chunks (source file kept)
+lilbee_remove(["reports/2024"])           # a folder: remove everything indexed beneath it
+lilbee_remove(["**/*.log"])               # a glob: remove every matching source
 ```
 
 For a clean slate: `lilbee_reset(confirm=true)` via the worker.

@@ -8,7 +8,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.chunk import CHARS_PER_TOKEN
-from lilbee.retrieval.embedder import EMBED_BATCH_TARGET_SEQUENCES, Embedder
+from lilbee.retrieval.embedder import Embedder
 
 
 @pytest.fixture()
@@ -102,13 +102,13 @@ class TestEmbedBatch:
         """The app-layer cap allows a full packed batch of max-size chunks."""
         assert (
             embedder.batch_char_budget
-            == EMBED_BATCH_TARGET_SEQUENCES * cfg.chunk_size * CHARS_PER_TOKEN
+            == cfg.embed_batch_sequences * cfg.chunk_size * CHARS_PER_TOKEN
         )
 
     def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
         """A typical bulk-ingest batch of default-size chunks lands in one embed request."""
         chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
-        texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
+        texts = ["x" * (chunk_chars // 2) for _ in range(cfg.embed_batch_sequences)]
         mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]
         embedder.embed_batch(texts)
         assert mock_provider.embed.call_count == 1
