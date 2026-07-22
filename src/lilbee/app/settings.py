@@ -329,6 +329,11 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.app.services import reset_services
 
         reset_services()
+    if "mcp_tool_threads" in changed_keys:
+        # Resize the running server's thread pool now instead of only at startup.
+        from lilbee.server.app import reapply_thread_pool_ceiling
+
+        reapply_thread_pool_ceiling()
 
 
 def apply_settings_update(
