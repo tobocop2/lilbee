@@ -28,19 +28,17 @@ resources:
   # B200 is deliberately absent: it is Blackwell (sm_100) and the cu124 engine
   # ships kernels only for sm_70..90, so it would have none for a B200. The
   # ladder falls to A100 and to four cards rather than fail to provision.
-  # H100 in EUR-IS-3: the msmarco-index volume is pinned there. EUR-IS-3 has H100
-  # (HBM3) + volume support, and it is deep off-peak in Europe (~02:00), so 4-pack
-  # windows are far more frequent than CA-MTL-3 (evening) or Asia (business hours).
-  # H100 speed AND the persistent volume. Minimum 4 GPUs.
+  # Multi-region, no volume: every volume-capable DC (EU-RO-1, CA-MTL-3, EUR-IS-3)
+  # was dry for 4-packs -- pinning one DC for the volume stalled provisioning for
+  # over an hour. Volume-free lets --retry-until-up catch a window across ~25 DCs,
+  # which lands in seconds. The index builds on local NVMe; preservation (tar to a
+  # volume once capacity frees, or a stopped-pod disk) is handled during the run.
+  # Minimum 4 GPUs, H100 first.
   ordered:
     - accelerators: H100:8
     - accelerators: H100:4
-# The index volume (300Gi, EUR-IS-3). The index builds on local NVMe -- MooseFS is
-# ~1000x slower per-file and a LanceDB build on it once cost hours with idle GPUs
-# -- then finalize tars it to the volume as one sequential file (which MooseFS
-# handles fine), so the 144GB index survives teardown for later grading.
-volumes:
-  /workspace: msmarco-index
+    - accelerators: A100-80GB-SXM:8
+    - accelerators: A100-80GB-SXM:4
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
