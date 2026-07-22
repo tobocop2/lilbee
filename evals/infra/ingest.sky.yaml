@@ -27,16 +27,15 @@ resources:
   # B200 is deliberately absent: it is Blackwell (sm_100) and the cu124 engine
   # ships kernels only for sm_70..90, so it would have none for a B200. The
   # ladder falls to A100 and to four cards rather than fail to provision.
-  # A100-SXM in EU-RO-1: the msmarco-index network volume is pinned there (the
-  # proven lilbeekreuzbergstein region), so the pod must run in EU-RO-1, which
-  # offers A100-SXM (+ PCIe), not H100. The volume is what makes the index
-  # survive power-off for later grading, so persistence pins the region and
-  # trades H100 speed for it. Try an 8-pack, fall to the 4-pack that lands.
+  # H100-first in CA-MTL-3: the msmarco-index volume is pinned there, and CA-MTL-3
+  # offers H100 (PCIe) + A100 (PCIe) + volume support -- a 4x H100 landed here in
+  # seconds earlier. So the pod gets H100 speed AND the persistent volume that
+  # makes the index survive power-off. Try H100 (8 then 4), fall to A100.
   ordered:
-    - accelerators: A100-80GB-SXM:8
-    - accelerators: A100-80GB-SXM:4
+    - accelerators: H100:8
+    - accelerators: H100:4
     - accelerators: A100-80GB:4
-# The index volume (300Gi, EU-RO-1). The index builds on local NVMe -- MooseFS is
+# The index volume (300Gi, CA-MTL-3). The index builds on local NVMe -- MooseFS is
 # ~1000x slower per-file and a LanceDB build on it once cost hours with idle GPUs
 # -- then finalize tars it to the volume as one sequential file (which MooseFS
 # handles fine), so the 144GB index survives teardown for later grading.
