@@ -120,4 +120,46 @@ SRC=$(grep -oE "SOURCES: [0-9]+" "$LOG_DIR/counts.txt" | awk '{print $2}')
 PAGES=$(grep -oE "PAGES: [0-9]+" "$LOG_DIR/counts.txt" | awk '{print $2}')
 DPS=$(python3 -c "print(f'{${SRC:-0} / max($SECS,1):.1f}')" 2>/dev/null || echo "?")
 log "RESULT: input_docs=$DOCS landed_sources=${SRC:-0} pages=${PAGES:-0} | ${DPS} docs/sec first-pass (${SECS}s)"
+
+# ---------------------------------------------------------------- finalize
+# The lilbeekreuzbergstein pattern: snapshot the whole index to the network
+# volume as ONE sequential tar (MooseFS handles large sequential I/O fine), so
+# the 144GB index survives teardown for later grading. Then export _page_texts
+# to parquet + jsonl.gz + SHA256SUMS -- the small text artifacts that get version
+# controlled via Git LFS. Both land on the volume so nothing is lost at power-off.
+WORKSPACE="${WORKSPACE:-/workspace}"
+EXPORTS=/root/exports
+mkdir -p "$EXPORTS"
+if [ -d "$WORKSPACE" ]; then
+  log "snapshotting index -> $WORKSPACE/msmarco-index.tar (this is large; sequential)"
+  tar -C "$LILBEE_DATA" -cf "$WORKSPACE/msmarco-index.tar" data \
+    && log "index tar: $(du -h "$WORKSPACE/msmarco-index.tar" | cut -f1)" \
+    || log "WARN: index tar to volume failed"
+else
+  log "WARN: no $WORKSPACE volume mounted; index NOT snapshotted (would be lost at teardown)"
+fi
+
+log "exporting _page_texts -> parquet + jsonl.gz + SHA256SUMS (for Git LFS)"
+EXPORTS="$EXPORTS" LILBEE_DATA="$LILBEE_DATA" DATASET_ID="$DATASET_ID" "$PYBIN" - <<'PY' || log "WARN: export failed"
+import os, gzip, json, hashlib, pathlib, lancedb
+import pyarrow.parquet as pq
+out = pathlib.Path(os.environ["EXPORTS"]); out.mkdir(parents=True, exist_ok=True)
+db = lancedb.connect(os.path.join(os.environ["LILBEE_DATA"], "data/lancedb"))
+t = db.open_table("_page_texts").to_arrow()
+t = t.select([c for c in ("source", "page", "text") if c in t.column_names])
+stem = os.environ["DATASET_ID"].replace("/", "_")
+written = []
+pq.write_table(t, out / f"{stem}.parquet"); written.append(out / f"{stem}.parquet")
+with gzip.open(out / f"{stem}.jsonl.gz", "wt") as fh:
+    for row in t.to_pylist():
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+written.append(out / f"{stem}.jsonl.gz")
+(out / "SHA256SUMS").write_text(
+    "\n".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}" for p in written) + "\n"
+)
+print(f"exported {t.num_rows:,} pages -> {[p.name for p in written]}")
+PY
+# Copy the small text artifacts onto the volume too (retrievable even after teardown).
+if [ -d "$WORKSPACE" ]; then cp -f "$EXPORTS"/* "$WORKSPACE/" 2>/dev/null && log "exports copied to volume"; fi
+log "export sizes: $(du -sh "$EXPORTS" 2>/dev/null | cut -f1) at $EXPORTS"
 log "DONE"
