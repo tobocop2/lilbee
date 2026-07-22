@@ -64,11 +64,9 @@ def _apply_data_root(root: Path) -> None:
     """Point cfg paths at *root*, export ``LILBEE_DATA``, overlay config.toml.
 
     Exporting the env var keeps spawn-context worker subprocesses on the
-    same data root after their fresh ``import lilbee``.
-
-    Canonicalized here because this bypasses ``Config._resolve_defaults`` and
-    derives its own children, so a symlinked or relative ``--data-dir`` would
-    otherwise key a different lock than another process on the same directory.
+    same data root after their fresh ``import lilbee``. The root is
+    canonicalized so a symlinked or relative ``--data-dir`` keys the same lock
+    as another process on the same directory.
     """
     from lilbee.core.system import canonical_data_root
 

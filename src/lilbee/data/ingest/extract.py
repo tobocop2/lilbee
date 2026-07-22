@@ -540,11 +540,8 @@ async def _handle_image(
     not lost to the stem fallback.
     """
     if _effective_enable_ocr() is False:
-        # OCR explicitly disabled: an image has no text layer, so skip it rather
-        # than paying the full Tesseract cost the config says is turned off. The
-        # metadata read is skipped with it -- a file that contributes no text
-        # needs no title beyond its stem, and an image-heavy library would pay
-        # one extraction per skipped file for nothing.
+        # OCR disabled: an image has no text layer, so skip it. The metadata
+        # read is skipped too; a file that adds no text needs only a stem title.
         log.info("OCR disabled; skipping image OCR for %s", source_name)
         return [], SourceMeta(title=derive_title(source_name))
     meta = await to_ingest_thread(_image_meta, path, source_name)

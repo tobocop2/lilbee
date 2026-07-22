@@ -178,9 +178,8 @@ class ConceptGraph:
         """Boost search results whose chunks overlap with query concepts.
 
         One batched chunk_concepts query serves the whole result set, grouped
-        back per chunk in Python -- the same batching get_related_concepts
-        uses per depth level. The table has no scalar index, so a per-result
-        predicate would be one full table scan per result.
+        back per chunk in Python, so the boost costs one query rather than one
+        per result.
         """
         if not query_concepts or not results:
             return results

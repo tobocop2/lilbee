@@ -21,15 +21,10 @@ if TYPE_CHECKING:
 def _overlap_chars(left: str, right: str) -> int:
     """Length of the longest suffix of *left* that is a prefix of *right*.
 
-    Adjacent chunks carry the chunker's overlap verbatim (both cuts come from
-    the same document text), so the longest match IS the shared region. A
-    fully contained text matches whole, which is what makes merging an
-    already-widened passage idempotent instead of duplicating its neighbors.
-
-    Longest length first, so the first match wins. A prefix-function scan is
-    the better complexity on paper but measured slower here on every input
-    shape tried: each ``endswith`` rejects on its first differing character in
-    C, while the linear version pays per-character interpreter overhead.
+    Adjacent chunks share the chunker's overlap verbatim, so the longest match
+    is the shared region. A fully contained text matches whole, which keeps a
+    re-merge of an already-widened passage idempotent. Longest length first,
+    so the first match wins.
     """
     for k in range(min(len(left), len(right)), 0, -1):
         if left.endswith(right[:k]):
@@ -151,10 +146,8 @@ def _widen(
     center = result.chunk_index
     current = rows.get((result.source, center))
     if current is not None and current.chunk != result.chunk:
-        # The document was re-ingested between the search and this fetch (reads
-        # take no lock and the store's read-consistency window is seconds), so
-        # the neighbor rows belong to a different chunking of the file. Splicing
-        # them would invent text and a page span that existed in no version.
+        # Re-ingested since the search: the neighbor rows are a different
+        # chunking, so splicing them would invent text and a page span.
         return result, 0
     left = _neighbor_run(result, rows, claimed, -1, radius)
     right = _neighbor_run(result, rows, claimed, +1, radius)

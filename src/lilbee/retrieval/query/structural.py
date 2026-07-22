@@ -44,8 +44,7 @@ def _is_toc(nonempty: list[str]) -> bool:
 
 def _is_cover_page(text: str) -> bool:
     """A cover/title page: short, almost no sentences, shouting-case dominated,
-    and carrying a classification banner. Real prose has many sentence stops and
-    fails the sentence gate, so it is never flagged."""
+    and carrying a classification banner."""
     if not _CLASSIFICATION.search(text):
         return False
     words = text.split()

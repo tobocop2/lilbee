@@ -147,9 +147,8 @@ def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> b
 def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
     """Return True when a scalar index on *column* already exists.
 
-    lilbee only builds scalar indexes on ``source`` and ``chunk_type``, and
-    never an FTS or vector index on those columns, so any index touching the
-    column is the scalar one.
+    lilbee builds only scalar indexes on the columns it prefilters by, never an
+    FTS or vector index, so any index touching *column* is the scalar one.
     """
     try:
         return any(column in idx.columns for idx in table.list_indices())

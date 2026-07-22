@@ -75,13 +75,6 @@ def adaptive_weight_scale(vector_rows: list[SearchChunk], margin_scale: float) -
     return 1.0 - confidence
 
 
-def adaptive_lexical_weight(
-    vector_rows: list[SearchChunk], base_weight: float, margin_scale: float
-) -> float:
-    """The lexical arm's *base_weight* scaled by :func:`adaptive_weight_scale`."""
-    return base_weight * adaptive_weight_scale(vector_rows, margin_scale)
-
-
 def normalized_bm25(scores: list[float]) -> list[float]:
     """Scale raw BM25 scores against the list maximum, into (0, 1].
 

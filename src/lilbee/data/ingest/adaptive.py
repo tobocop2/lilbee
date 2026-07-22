@@ -280,11 +280,8 @@ def decide(
     )
     climbed, direction = _hill_climb(profile, permits, state.direction, delta, new_ewma, clamp)
     if vetoed and climbed > permits:
-        # The veto is against climbing, not against retreating: the hill-climb's
-        # step down on falling throughput is the controller's only graceful
-        # decrease, and suppressing it too would pin the limit past the knee
-        # under sustained soft pressure until a critical threshold forced a 50%
-        # cut -- the oscillation the dead band and slew limit exist to avoid.
+        # The veto blocks climbing, not retreating: a step down on falling
+        # throughput is the only graceful decrease, so it must still pass.
         return out(permits, state.direction, cool_down)
     return out(climbed, direction, cool_down)
 
@@ -295,16 +292,8 @@ class ResizableGate:
     Same ``async with`` shape as ``asyncio.Semaphore``, plus ``set_limit``: growing
     wakes blocked acquirers, shrinking lowers the ceiling and lets the surplus drain
     as active holders release. The limit never drops below one, so a shrink can never
-    deadlock a run.
-
-    Kept hand-rolled rather than adopting ``anyio.CapacityLimiter``, whose
-    settable ``total_tokens`` covers the same resizing need, for two reasons.
-    The caller treats this as a drop-in for ``asyncio.Semaphore`` (the ingest
-    permit is typed as either), and the ingest path is otherwise plain
-    asyncio. And CapacityLimiter is a per-borrower token model: it raises if
-    one task takes a second token, whereas this is a plain counting gate.
-    Revisit if a third resizing need appears, rather than growing a second
-    hand-rolled primitive.
+    deadlock a run. A plain counting gate, unlike ``anyio.CapacityLimiter``'s
+    per-borrower token model.
     """
 
     def __init__(self, limit: int) -> None:

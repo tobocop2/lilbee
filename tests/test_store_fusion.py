@@ -4,7 +4,7 @@ import pytest
 
 from lilbee.data.store import SearchChunk
 from lilbee.data.store.fusion import (
-    adaptive_lexical_weight,
+    adaptive_weight_scale,
     fuse_arms,
     normalized_bm25,
     vector_similarity,
@@ -150,39 +150,35 @@ class TestWeightTotalNormalization:
         assert no_arg[0].score == pytest.approx(explicit[0].score)
 
 
-class TestAdaptiveLexicalWeight:
-    """Per-query lexical weight gated by the vector arm's confidence."""
+class TestAdaptiveWeightScale:
+    """Per-query weight scale gated by the vector arm's confidence."""
 
     def test_peaked_dense_silences_lexical(self):
-        # top similarity 1.0 (distance 0), field ~0.3: a wide margin => weight ~0.
+        # top similarity 1.0 (distance 0), field ~0.3: a wide margin => scale ~0.
         rows = [_chunk("a.md", 0, distance=0.0)] + [
             _chunk("b.md", i, distance=0.7) for i in range(1, 5)
         ]
-        assert adaptive_lexical_weight(rows, 1.0, 0.3) == pytest.approx(0.0)
+        assert adaptive_weight_scale(rows, 0.3) == pytest.approx(0.0)
 
     def test_flat_dense_keeps_full_weight(self):
-        # every row equally similar: zero margin => the arm keeps base_weight.
+        # every row equally similar: zero margin => full scale.
         rows = [_chunk("a.md", i, distance=0.5) for i in range(5)]
-        assert adaptive_lexical_weight(rows, 1.0, 0.3) == pytest.approx(1.0)
+        assert adaptive_weight_scale(rows, 0.3) == pytest.approx(1.0)
 
     def test_scales_linearly_between(self):
         # top sim 0.6, field 0.3, margin 0.3, scale 0.6 => confidence 0.5 => half.
         rows = [_chunk("a.md", 0, distance=0.4)] + [
             _chunk("b.md", i, distance=0.7) for i in range(1, 4)
         ]
-        assert adaptive_lexical_weight(rows, 1.0, 0.6) == pytest.approx(0.5)
+        assert adaptive_weight_scale(rows, 0.6) == pytest.approx(0.5)
 
-    def test_respects_base_weight(self):
-        rows = [_chunk("a.md", i, distance=0.5) for i in range(3)]
-        assert adaptive_lexical_weight(rows, 0.5, 0.3) == pytest.approx(0.5)
-
-    def test_too_few_rows_returns_base(self):
-        assert adaptive_lexical_weight([_chunk("a.md", 0, distance=0.1)], 1.0, 0.3) == 1.0
-        assert adaptive_lexical_weight([], 1.0, 0.3) == 1.0
+    def test_too_few_rows_returns_full(self):
+        assert adaptive_weight_scale([_chunk("a.md", 0, distance=0.1)], 0.3) == 1.0
+        assert adaptive_weight_scale([], 0.3) == 1.0
 
     def test_non_positive_margin_scale_disables(self):
         rows = [_chunk("a.md", 0, distance=0.0), _chunk("b.md", 1, distance=0.9)]
-        assert adaptive_lexical_weight(rows, 1.0, 0.0) == 1.0
+        assert adaptive_weight_scale(rows, 0.0) == 1.0
 
     def test_ignores_rows_without_distance(self):
         # lexical-only rows carry no distance; they must not enter the signal.
@@ -191,8 +187,8 @@ class TestAdaptiveLexicalWeight:
             _chunk("b.md", 1, distance=0.6),
             _chunk("c.md", 2, bm25=9.0),
         ]
-        both = adaptive_lexical_weight(rows, 1.0, 0.4)
-        two = adaptive_lexical_weight(rows[:2], 1.0, 0.4)
+        both = adaptive_weight_scale(rows, 0.4)
+        two = adaptive_weight_scale(rows[:2], 0.4)
         assert both == pytest.approx(two)
 
 

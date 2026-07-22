@@ -176,10 +176,8 @@ def chunk_code(file_path: Path, source_name: str | None = None) -> list[CodeChun
             structure=True,
             symbols=True,
             docstrings=True,
-            # tree-sitter documents chunk_max_size in bytes; cfg.chunk_size is
-            # a token budget, so it converts exactly like the text path's char
-            # budget. Without this, code split ~4x smaller than prose and the
-            # parser and fallback paths disagreed for the same file.
+            # tree-sitter's chunk_max_size is bytes; cfg.chunk_size is tokens,
+            # so convert with the same char budget the text path uses.
             chunk_max_size=cfg.chunk_size * CHARS_PER_TOKEN,
         )
         result = process(source_text, config)  # type: ignore[arg-type]  # tslp 1.8.0 typing bug, see init() above

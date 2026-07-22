@@ -224,11 +224,10 @@ class Config(BaseSettings):
     adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
 
     # Drop tables-of-contents and classification-banner cover/title pages from
-    # search results. OFF by default: an evaluation A/B on a government-document
-    # corpus found the filter net-negative, because its cover-page heuristic also
-    # fires on short banner-carrying body pages. When on, a query-matched or
-    # top-ranked page is never dropped (searcher.search), so removal is limited to
-    # structural chunks the query did not hit. Re-validate per corpus before use.
+    # search results. OFF by default; validate per corpus, since the cover-page
+    # heuristic can also fire on short banner-carrying body pages. A query-matched
+    # or top-ranked page is never dropped, so removal is limited to structural
+    # chunks the query did not hit.
     filter_structural_chunks: bool = ConfigField(default=False, writable=True)
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index
