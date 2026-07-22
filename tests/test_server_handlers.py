@@ -1468,7 +1468,7 @@ class TestSyncStreamDoneDelivery:
 
         counts_done = json.loads(done_events[0].split("data: ")[1].strip())
         lists_done = json.loads(done_events[1].split("data: ")[1].strip())
-        assert counts_done == {"added": 1, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
+        assert counts_done == {"added": 1, "updated": 0, "removed": 0, "failed": 0, "skipped": 0, "relocated": 0}
         assert lists_done["added"] == ["fast.txt"]
 
     async def test_done_event_delivered_on_noop_sync(self):
@@ -1490,7 +1490,7 @@ class TestSyncStreamDoneDelivery:
         done_events = [e for e in events if e.startswith("event: done")]
         assert len(done_events) == 2
         counts = json.loads(done_events[0].split("data: ")[1].strip())
-        assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
+        assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0, "skipped": 0, "relocated": 0}
 
     async def test_put_threadsafe_defers_enqueue_to_loop(self):
         """put_threadsafe schedules the enqueue on the loop instead of mutating

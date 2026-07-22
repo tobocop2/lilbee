@@ -48,15 +48,20 @@ def link_files(paths: list[Path], *, force: bool = False) -> LinkResult:
             continue
         dest = documents_dir / p.name
         if dest.is_symlink() or dest.exists():
-            already_linked = dest.is_symlink() and dest.resolve() == src
-            if already_linked or not force:
+            already_linked = dest.is_symlink() and dest.exists() and dest.resolve() == src
+            # A dangling link (its old target is gone) means the source moved:
+            # relink to the new path without demanding --force, since there is
+            # nothing behind the dead link to protect. Sync recognizes the move
+            # by content hash and repoints the index in place.
+            dangling = dest.is_symlink() and not dest.exists()
+            if already_linked or (not force and not dangling):
                 result.skipped.append(p.name)
                 continue
             if dest.is_dir() and not dest.is_symlink():
                 # A real copied directory holds this name; force won't clobber it.
                 result.skipped.append(p.name)
                 continue
-            dest.unlink()  # replace a stale symlink or file on force
+            dest.unlink()  # replace a stale/dangling symlink or a file on force
         dest.symlink_to(src, target_is_directory=src.is_dir())
         result.linked.append(p.name)
     return result

@@ -126,6 +126,11 @@ _PER_SOURCE_TABLES = (
     (ENTITIES_TABLE, "source"),
 )
 
+# (table, source column) pairs re-keyed when a source is relocated (moved on
+# disk, same content). Extends the per-source set with the wiki citation's raw
+# source_filename so citations keep pointing at the source after a move.
+_RELOCATABLE_TABLES = (*_PER_SOURCE_TABLES, (CITATIONS_TABLE, "source_filename"))
+
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
@@ -1127,6 +1132,34 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
+
+    def relocate_sources(self, moves: list[tuple[str, str, SourceStat | None]]) -> None:
+        """Re-key moved sources from old filename to new, preserving their chunks.
+
+        A source whose file moved (same content hash, new path) keeps its chunks
+        and embeddings; only its filename key and disk stat change. Each per-source
+        table's source column, the citation source_filename, and the sources row are
+        updated in place under one write lock, so a move costs no re-extraction or
+        re-embedding. ``moves`` is ``(old_name, new_name, new_stat)`` tuples.
+        """
+        if not moves:
+            return
+        with self._write_lock():
+            for old, new, stat in moves:
+                where_old = f"= '{escape_sql_string(old)}'"
+                for table_name, column in _RELOCATABLE_TABLES:
+                    table = self.open_table(table_name)
+                    if table is not None:
+                        table.update(where=f"{column} {where_old}", values={column: new})
+                sources = self.open_table(SOURCES_TABLE)
+                if sources is not None:
+                    values: dict[str, object] = {"filename": new}
+                    if stat is not None:
+                        values["size_bytes"] = stat.size_bytes
+                        values["mtime_ns"] = stat.mtime_ns
+                        values["stat_captured_ns"] = stat.captured_ns
+                    sources.update(where=f"filename {where_old}", values=values)
+        self._invalidate_source_cache()
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.

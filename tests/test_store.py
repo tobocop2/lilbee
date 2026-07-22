@@ -2174,3 +2174,31 @@ class TestAnnNprobesScaling:
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
         assert _ann_nprobes(-5) == _ANN_NPROBES_FLOOR
+
+
+class TestRelocateSources:
+    def test_relocate_rekeys_chunks_and_source_preserving_vectors(self, store):
+        from lilbee.data.store import SourceType
+        from lilbee.data.store.types import SourceStat
+
+        records = _make_records(n=2)
+        for r in records:
+            r["source"] = "old/a.md"
+        store.add_chunks(records)
+        store.upsert_source("old/a.md", "hash123", 2, SourceType.DOCUMENT)
+        before = store.get_chunks_by_source("old/a.md")
+        assert len(before) == 2
+
+        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(10, 20, 30))])
+
+        assert store.get_chunks_by_source("old/a.md") == []
+        after = store.get_chunks_by_source("new/a.md")
+        assert len(after) == 2  # chunks (and their vectors) carried over, not rebuilt
+        names = {s["filename"] for s in store.get_sources()}
+        assert "new/a.md" in names
+        assert "old/a.md" not in names
+        moved = next(s for s in store.get_sources() if s["filename"] == "new/a.md")
+        assert moved["file_hash"] == "hash123"  # same content, hash unchanged
+
+    def test_relocate_empty_is_noop(self, store):
+        store.relocate_sources([])  # must not raise or acquire the lock

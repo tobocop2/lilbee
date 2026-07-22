@@ -206,6 +206,33 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
+    async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
+        import shutil
+
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "a.txt").write_text("Hello world. This document will move.")
+        first = await sync()
+        assert "a.txt" in first.added
+
+        # Move it: same content, new key. Sync must relocate, not re-ingest.
+        (isolated_env / "sub").mkdir()
+        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+        mock_extract_file.reset_mock()
+        store = get_services().store
+        store.relocate_sources.reset_mock()
+
+        second = await sync()
+
+        assert second.relocated == ["sub/a.txt"]
+        assert second.added == []
+        assert second.removed == []  # a move is not a removal
+        mock_extract_file.assert_not_called()  # no re-extraction/re-embedding
+        store.relocate_sources.assert_called_once()
+        moves = store.relocate_sources.call_args.args[0]
+        assert [(old, new) for old, new, _stat in moves] == [("a.txt", "sub/a.txt")]
+
     async def test_adaptive_mode_ingests_and_stops_controller(
         self, mock_extract_file, isolated_env, monkeypatch
     ):
@@ -3279,3 +3306,59 @@ class TestRemoveDocumentsDurably:
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
         remove_documents_durably(["gone"])
         assert load_skip_markers(cfg.data_root) == {}
+
+
+class TestDetectMoves:
+    def _entry(self, name, fhash):
+        from lilbee.data.ingest.types import FileToProcess
+
+        return FileToProcess(name, Path(name), "text", fhash, needs_cleanup=True, stat=None)
+
+    def _record(self, name, fhash):
+        return {"filename": name, "file_hash": fhash}
+
+    def test_matches_new_file_to_removed_source_by_hash(self):
+        from lilbee.data.ingest import pipeline
+
+        entry = self._entry("new/a.txt", "h1")
+        files = [entry]
+        added = {"new/a.txt": None}
+        to_remove = ["old/a.txt"]
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+
+        moves = pipeline._detect_moves(files, added, to_remove, existing)
+        assert len(moves) == 1
+        assert moves[0].old == "old/a.txt"
+        assert moves[0].new == "new/a.txt"
+
+    def test_changed_content_is_not_a_move(self):
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry("new/a.txt", "h2")]
+        added = {"new/a.txt": None}
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+
+        moves = pipeline._detect_moves(files, added, ["old/a.txt"], existing)
+        assert moves == []
+
+    def test_update_is_not_a_move(self):
+        from lilbee.data.ingest import pipeline
+
+        # Same name (an update, not in `added`) is never a move even on hash match.
+        files = [self._entry("a.txt", "h1")]
+        existing = {"a.txt": self._record("a.txt", "h1")}
+        moves = pipeline._detect_moves(files, {}, [], existing)
+        assert moves == []
+
+    def test_duplicate_hash_pairs_one_to_one(self):
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry("new/a.txt", "h1"), self._entry("new/b.txt", "h1")]
+        added = {"new/a.txt": None, "new/b.txt": None}
+        existing = {
+            "old/a.txt": self._record("old/a.txt", "h1"),
+            "old/b.txt": self._record("old/b.txt", "h1"),
+        }
+        moves = pipeline._detect_moves(files, added, ["old/a.txt", "old/b.txt"], existing)
+        assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
+        assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}

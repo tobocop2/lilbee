@@ -764,6 +764,12 @@ class ChatScreen(Screen[None]):
         if sync_result.skipped:
             remove_linked_sources(linked)
             raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
+        if sync_result.relocated:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_ADD_RELOCATED.format(count=len(sync_result.relocated)),
+            )
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(linked)))
 
     def _cmd_cancel(self, _args: str) -> None:

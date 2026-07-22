@@ -88,6 +88,29 @@ class TestLinkFiles:
         assert (link / "a.txt").read_text() == "a"
         assert (link / "b.txt").read_text() == "b"
 
+    def test_dangling_link_auto_relocates_without_force(self, tmp_path):
+        import shutil
+
+        # A prior add's link whose target moved away is dangling; re-adding the
+        # source at its new path must relink silently, not demand --force.
+        a = tmp_path / "a" / "corpus"
+        a.mkdir(parents=True)
+        (a / "x.txt").write_text("content")
+        link_files([a])
+        assert (cfg.documents_dir / "corpus").resolve() == a.resolve()
+
+        b = tmp_path / "b" / "corpus"
+        b.parent.mkdir()
+        shutil.move(str(a), str(b))  # move breaks the link, keeping the basename
+        assert (cfg.documents_dir / "corpus").is_symlink()
+        assert not (cfg.documents_dir / "corpus").exists()  # dangling
+
+        result = link_files([b], force=False)
+
+        assert result.linked == ["corpus"]
+        assert result.skipped == []
+        assert (cfg.documents_dir / "corpus").resolve() == b.resolve()
+
     def test_source_already_inside_documents_dir_is_skipped(self, tmp_path):
         inside = cfg.documents_dir / "already.txt"
         inside.write_text("here")
