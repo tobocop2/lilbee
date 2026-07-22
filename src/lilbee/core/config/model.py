@@ -213,10 +213,10 @@ class Config(BaseSettings):
 
     # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
     # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
-    # lexical, a flat one keeps it). On by default. lexical_fusion_weight is the
-    # ceiling the rule scales down from. Set adaptive_fusion=false to pin the
-    # fixed weight.
-    adaptive_fusion: bool = ConfigField(default=True, writable=True)
+    # lexical, a flat one keeps it). OFF by default, pending a benchmark run to
+    # confirm it beats the fixed weight. lexical_fusion_weight is the ceiling the
+    # rule scales down from. Set adaptive_fusion=true to enable it.
+    adaptive_fusion: bool = ConfigField(default=False, writable=True)
 
     # Vector-similarity margin at which the lexical arm is fully silenced; smaller
     # = more aggressive downweighting. 0 disables adaptation entirely (the lexical

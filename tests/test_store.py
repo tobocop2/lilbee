@@ -845,11 +845,11 @@ class TestHybridSearch:
         assert all(0.0 <= s <= 1.0 for s in scores)
 
     def test_adaptive_fusion_feeds_a_derived_weight_to_fusion(self, store, test_config):
-        """With adaptive_fusion on (the default), the per-query factor from
-        adaptive_weight_scale -- fed the configured margin -- scales the lexical
-        weight reaching fuse_arms, not the fixed config value. Deleting the
-        adaptive branch would fail this, unlike a smoke test on the score range."""
-        assert test_config.adaptive_fusion is True  # shipped default
+        """With adaptive_fusion on, the per-query factor from adaptive_weight_scale
+        -- fed the configured margin -- scales the lexical weight reaching
+        fuse_arms, not the fixed config value. Deleting the adaptive branch would
+        fail this, unlike a smoke test on the score range."""
+        test_config.adaptive_fusion = True
         test_config.adaptive_fusion_margin = 0.42
         store.add_chunks(_make_records())
         store.ensure_fts_index()
@@ -2628,7 +2628,7 @@ class TestTitleSearch:
         would re-admit the signal adaptive fusion just silenced)."""
         test_config.title_search = True
         test_config.title_search_weight = 0.5
-        assert test_config.adaptive_fusion is True
+        test_config.adaptive_fusion = True
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
         query_vec = [0.1] * test_config.embedding_dim

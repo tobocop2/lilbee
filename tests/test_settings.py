@@ -262,7 +262,7 @@ class TestRerankerConfig:
         shipped defaults, so a dropped or typo'd entry fails CI."""
 
         assert get_default("lexical_fusion_weight") == 1.0
-        assert get_default("adaptive_fusion") is True
+        assert get_default("adaptive_fusion") is False
         assert get_default("adaptive_fusion_margin") == 0.15
         assert get_default("filter_structural_chunks") is False
         for key in (
