@@ -27,13 +27,15 @@ resources:
   # B200 is deliberately absent: it is Blackwell (sm_100) and the cu124 engine
   # ships kernels only for sm_70..90, so it would have none for a B200. The
   # ladder falls to A100 and to four cards rather than fail to provision.
-  # Maximum GPUs: 8-packs only. RunPod caps a pod at 8 GPUs, and the full 8.8M
-  # embed wants every card. 8-packs are the scarce tier in 'Low' stock, so this
-  # leans on --retry-until-up cycling regions until an 8-card box frees up.
+  # Prefer an 8-pack (max throughput) but never get stuck on it: 8-packs are not
+  # grabbable from the current 'Low' stock (every region returned none), while a
+  # 4x H100 lands in seconds. Try 8-packs first each cycle, then fall to 4x H100
+  # (faster per card than A100) so the run is actually embedding, not churning.
   ordered:
-    - accelerators: H100:8            # fastest 8-pack (Hopper sm_90, no recompile)
+    - accelerators: H100:8
     - accelerators: A100-80GB-SXM:8
-    - accelerators: A100-80GB:8
+    - accelerators: H100:4
+    - accelerators: A100-80GB-SXM:4
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
