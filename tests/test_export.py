@@ -9,6 +9,7 @@ from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.export import (
     DatasetFormat,
+    _source_meta_from_rows,
     build_page_dataset,
     import_dataset,
     load_page_dataset,
@@ -98,6 +99,30 @@ class TestWriteRoundTrip:
             ("a.pdf", 1, "hello"),
             ("a.pdf", 2, "world"),
         ]
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_round_trip_preserves_source_metadata(self, tmp_path, fmt):
+        # The export denormalizes title/authors/created_at onto every page row;
+        # the file round trip must carry them back so import restores the source.
+        table = pa.Table.from_pylist(
+            [
+                {
+                    **_page("a.pdf", 1, "hello"),
+                    "title": "Alpha Paper",
+                    "authors": "Ada, Bob",
+                    "created_at": "2020-01-01",
+                }
+            ]
+        )
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(table, path, fmt)
+        loaded = load_page_dataset(path, fmt)
+        meta = _source_meta_from_rows(loaded, "a.pdf")
+        assert (meta.title, meta.authors, meta.created_at) == (
+            "Alpha Paper",
+            "Ada, Bob",
+            "2020-01-01",
+        )
 
     def test_load_missing_file(self, tmp_path):
         with pytest.raises(ValueError, match="Dataset not found"):

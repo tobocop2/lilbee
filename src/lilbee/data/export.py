@@ -172,9 +172,13 @@ def write_dataset(table: pa.Table, path: Path, fmt: DatasetFormat) -> None:
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:
-    """Validate one raw dataset row into a `PageTextRecord`."""
+    """Validate one raw dataset row into a `PageTextRecord`.
+
+    The denormalized source metadata (title/authors/created_at) is carried
+    through when present so a file export/import cycle preserves it.
+    """
     try:
-        return PageTextRecord(
+        row = PageTextRecord(
             source=str(raw["source"]),
             page=int(raw["page"]),
             text=str(raw["text"]),
@@ -182,6 +186,13 @@ def _coerce_row(raw: dict) -> PageTextRecord:
         )
     except (KeyError, TypeError, ValueError):
         raise ValueError("Dataset row is missing required source/page/text fields") from None
+    if raw.get("title") is not None:
+        row["title"] = str(raw["title"])
+    if raw.get("authors") is not None:
+        row["authors"] = str(raw["authors"])
+    if raw.get("created_at") is not None:
+        row["created_at"] = str(raw["created_at"])
+    return row
 
 
 def _deserialize_parquet(data: bytes) -> list[PageTextRecord]:
