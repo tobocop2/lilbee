@@ -90,6 +90,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      - name: Install py-spy (Windows hang watchdog)
+        # External native profiler for the Windows wedge: it reads the frozen
+        # worker's memory from outside, so it captures a native stack where the
+        # in-process faulthandler watchdog cannot (a continuous GIL hold blocks
+        # even faulthandler's own dump). No admin needed for a same-user process
+        # on Windows. Into the venv so `uv run` finds it on PATH.
+        if: runner.os == 'Windows'
+        run: uv pip install py-spy
+
       - name: Run unit tests
         # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
         # the run, so they run with pytest-forked (one subprocess per
@@ -104,13 +113,24 @@ jobs:
           if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
           elif [ "${{ runner.os }}" = "Windows" ]; then
-            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
+            # Wrap the wedge-prone Windows run in the external py-spy watchdog:
+            # on an output stall it dumps every worker's native stack and kills
+            # the run, so a wedge fails fast with the frozen frame instead of
+            # hanging to timeout-minutes. Passthrough when the stall var is unset.
+            uv run python scripts/qa/hang_watchdog.py -- \
+              make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
           else
             make test-ci
           fi
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          # External py-spy watchdog (Windows only): fires on a total output
+          # stall well past the 60s pytest-timeout and 90s faulthandler, so it
+          # is the last-resort native capture. Writes into the same dir the
+          # surface step prints. See scripts/qa/hang_watchdog.py.
+          LILBEE_HANG_WATCHDOG_STALL_S: ${{ runner.os == 'Windows' && '240' || '0' }}
+          LILBEE_HANG_WATCHDOG_DIR: ${{ runner.temp }}/hang-dumps
           # Backstop for the xdist worker wedge (ProactorEventLoop /
           # reactive-timing thread-accumulation), which pytest-timeout's thread
           # method cannot break on Windows: its callback is Python and never runs
@@ -129,7 +149,7 @@ jobs:
         run: |
           dir="${{ runner.temp }}/hang-dumps"
           found=""
-          for f in "$dir"/hang-*.txt; do
+          for f in "$dir"/hang-*.txt "$dir"/pyspy-*.txt; do
             [ -s "$f" ] || continue
             found=1
             echo "===== $f ====="
