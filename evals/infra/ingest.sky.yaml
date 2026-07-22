@@ -17,9 +17,10 @@ resources:
   # A real, registry-verified runpod/pytorch tag -- a guessed tag makes RunPod
   # grab a box, fail the image pull, and release it (endless provisioning churn).
   image_id: docker:runpod/pytorch:1.0.7-rc.138-cu1281-torch271-ubuntu2404
-  # ~144GB of 4096-dim FP32 vectors for 8.8M passages, plus documents, the
-  # ir_datasets corpus cache, and LanceDB index-build headroom.
-  disk_size: 500
+  # ~144GB of 4096-dim FP32 vectors + documents + ir_datasets cache on local
+  # NVMe (the index tar goes to the volume, not local). 350 is enough and a
+  # smaller disk qualifies more instances in a scarce single datacentre.
+  disk_size: 350
   # Embedding is data-parallel: one embed replica per card, so throughput scales
   # ~linearly with cards. The 50k smoke measured ~30 docs/sec on one A100. Eight
   # H100s cut the full 8.8M from ~20h to a few hours: 8x the cards, and H100's
@@ -35,6 +36,8 @@ resources:
     - accelerators: H100:8
     - accelerators: H100:4
     - accelerators: A100-80GB:4
+    - accelerators: H100:2
+    - accelerators: A100-80GB:2
 # The index volume (300Gi, CA-MTL-3). The index builds on local NVMe -- MooseFS is
 # ~1000x slower per-file and a LanceDB build on it once cost hours with idle GPUs
 # -- then finalize tars it to the volume as one sequential file (which MooseFS
