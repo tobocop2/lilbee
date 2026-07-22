@@ -1,0 +1,95 @@
+{
+  "healthCheckTimeout": 600,
+  "logLevel": "info",
+  "models": {
+    "embed-0": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 47959",
+      "proxy": "http://127.0.0.1:47959",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=0",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-1": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 40089",
+      "proxy": "http://127.0.0.1:40089",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=1",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-2": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 34127",
+      "proxy": "http://127.0.0.1:34127",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=2",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-3": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 51435",
+      "proxy": "http://127.0.0.1:51435",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=3",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-4": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 60067",
+      "proxy": "http://127.0.0.1:60067",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=4",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-5": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 37019",
+      "proxy": "http://127.0.0.1:37019",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=5",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-6": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 48221",
+      "proxy": "http://127.0.0.1:48221",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=6",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    },
+    "embed-7": {
+      "cmd": "/root/lilbee_venv/lib/python3.12/site-packages/lilbee_engine/bin/llama-server --model /root/.local/share/lilbee/models/models--Qwen--Qwen3-Embedding-8B-GGUF/blobs/d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 2056 --batch-size 2056 --ubatch-size 2056 --embeddings --pooling last --port 38179",
+      "proxy": "http://127.0.0.1:38179",
+      "ttl": 300,
+      "env": [
+        "CUDA_VISIBLE_DEVICES=7",
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      ]
+    }
+  },
+  "groups": {
+    "lilbee": {
+      "swap": false,
+      "exclusive": false,
+      "persistent": true,
+      "members": [
+        "embed-0",
+        "embed-1",
+        "embed-2",
+        "embed-3",
+        "embed-4",
+        "embed-5",
+        "embed-6",
+        "embed-7"
+      ]
+    }
+  }
+}

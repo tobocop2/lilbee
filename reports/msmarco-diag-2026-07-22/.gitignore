@@ -1,0 +1,8 @@
+# huge raw logs kept local only (inspect from here, not in git)
+*.tar.gz
+diag/ingest.log
+diag/sync.pass0.log
+diag/sync.retry*.log
+diag/*llama-swap-embed.log
+diag/srv_*llama-swap-embed.log
+diag/ingest_trace.log.gz
