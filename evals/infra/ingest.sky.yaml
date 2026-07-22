@@ -32,12 +32,12 @@ resources:
   # offers H100 (PCIe) + A100 (PCIe) + volume support -- a 4x H100 landed here in
   # seconds earlier. So the pod gets H100 speed AND the persistent volume that
   # makes the index survive power-off. Try H100 (8 then 4), fall to A100.
+  # Minimum 4 GPUs -- wait for a 4-pack window rather than accept fewer. CA-MTL-3
+  # has given 4x H100 before, so the window exists; --retry-until-up holds for it.
   ordered:
     - accelerators: H100:8
     - accelerators: H100:4
     - accelerators: A100-80GB:4
-    - accelerators: H100:2
-    - accelerators: A100-80GB:2
 # The index volume (300Gi, CA-MTL-3). The index builds on local NVMe -- MooseFS is
 # ~1000x slower per-file and a LanceDB build on it once cost hours with idle GPUs
 # -- then finalize tars it to the volume as one sequential file (which MooseFS
