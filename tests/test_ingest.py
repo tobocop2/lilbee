@@ -353,14 +353,20 @@ class TestSync:
         f.write_text("Version 2, different content now")
         assert "changing.txt" in (await sync()).updated
 
-    async def test_deleted_file_removed(self, mock_extract_file, isolated_env):
+    async def test_deleted_file_stays_indexed(self, mock_extract_file, isolated_env):
+        # A vanished file is a dead path-link, not a removal: sync leaves it in
+        # the index (searchable), and the user only discovers it is gone when
+        # they try to open it.
         f = isolated_env / "temp.txt"
         f.write_text("Temporary")
+        from lilbee.app.services import get_services
         from lilbee.data.ingest import sync
 
         await sync()
         f.unlink()
-        assert "temp.txt" in (await sync()).removed
+        result = await sync()
+        assert result.removed == []
+        assert "temp.txt" in {s["filename"] for s in get_services().store.get_sources()}
 
     async def test_unchanged_file_skipped(self, mock_extract_file, isolated_env):
         (isolated_env / "stable.txt").write_text("I stay the same")
@@ -1183,7 +1189,7 @@ class TestDetectPending:
 
         assert detect_pending() == 0
 
-    def test_counts_added_updated_and_removed(self, isolated_env, mock_svc):
+    def test_counts_added_and_updated_not_absent(self, isolated_env, mock_svc):
         from lilbee.data.ingest import detect_pending, file_hash
 
         new_file = isolated_env / "new.md"
@@ -1194,11 +1200,12 @@ class TestDetectPending:
         mock_svc.store.upsert_source("existing.md", file_hash(existing), 1, source_type="document")
         existing.write_text("v2")  # hash now diverges from store
 
-        # A row in the store with no matching disk file = removed.
+        # A row whose disk file is gone is NOT pending: sync leaves it indexed,
+        # so it is not counted as work to do.
         mock_svc.store.upsert_source("gone.md", "deadbeef", 1, source_type="document")
 
-        # 1 added (new.md) + 1 updated (existing.md) + 1 removed (gone.md) = 3
-        assert detect_pending() == 3
+        # 1 added (new.md) + 1 updated (existing.md); gone.md does not count.
+        assert detect_pending() == 2
 
     def test_returns_zero_when_in_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import detect_pending, file_hash
@@ -1527,19 +1534,21 @@ class TestRemovableSources:
             "source_type": source_type,
         }
 
-    def test_keeps_imported_drops_missing_document(self):
+    def test_absent_set_keeps_imported_drops_missing_document(self):
         from pathlib import Path
 
-        from lilbee.data.ingest.pipeline import _removable_sources
+        from lilbee.data.ingest.pipeline import _absent_sources
         from lilbee.data.store import SourceType
 
+        # The absent set drives move detection only (a missing file is never
+        # removed on its own). An import has no backing file, so it is excluded.
         sources = [
             self._src("gone.md", SourceType.DOCUMENT),
             self._src("present.md", SourceType.DOCUMENT),
             self._src("shared.pdf", SourceType.IMPORTED),
         ]
         disk_files = {"present.md": Path("present.md")}
-        assert _removable_sources(sources, disk_files) == ["gone.md"]
+        assert _absent_sources(sources, disk_files) == ["gone.md"]
 
 
 class TestDiscoverFiles:
@@ -2022,57 +2031,57 @@ class TestClassifyNewFormats:
         assert classify_file(Path(filename)) == expected
 
 
-class TestDiscoverSymlinkEscape:
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_top_level_symlink_is_a_linked_root_and_followed(self, isolated_env, tmp_path):
-        """A top-level symlink is an intentional linked root, so its files index."""
-        import os
-
+class TestDiscoverRegisteredRoots:
+    def test_registered_dir_root_indexed_under_label(self, isolated_env, tmp_path):
+        """A registered directory root indexes its files keyed under the label."""
         from lilbee.data.ingest import discover_files
 
         source = tmp_path / "corpus"
         source.mkdir()
         (source / "doc.md").write_text("# Doc")
-        os.symlink(source, isolated_env / "corpus")
+        cfg.linked_roots = {"corpus": str(source)}
 
         found = discover_files()
-        assert "corpus/doc.md" in found
+        assert found["corpus/doc.md"] == source / "doc.md"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_top_level_file_symlink_is_followed(self, isolated_env, tmp_path):
-        """A top-level file symlink (a single linked file) is indexed."""
-        import os
-
+    def test_registered_file_root_indexed_by_label(self, isolated_env, tmp_path):
+        """A registered single-file root indexes as one entry keyed by the label."""
         from lilbee.data.ingest import discover_files
 
         outside_file = tmp_path / "linked.md"
         outside_file.write_text("# Linked")
-        os.symlink(outside_file, isolated_env / "linked.md")
+        cfg.linked_roots = {"linked.md": str(outside_file)}
 
         found = discover_files()
-        assert "linked.md" in found
+        assert found["linked.md"] == outside_file
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_nested_symlink_escaping_is_skipped(self, isolated_env, tmp_path):
-        """A symlink nested inside the tree that escapes the allowed roots is skipped."""
-        import os
-
+    def test_owned_files_and_roots_coexist(self, isolated_env, tmp_path):
+        """documents_dir files and a registered root are both discovered."""
         from lilbee.data.ingest import discover_files
 
-        subdir = isolated_env / "real_sub"
-        subdir.mkdir()
-        (subdir / "keep.md").write_text("# Keep")
-        secret = tmp_path / "secret.md"
-        secret.write_text("secret")
-        os.symlink(secret, subdir / "escaped.md")
+        (isolated_env / "owned.md").write_text("# Owned")
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        cfg.linked_roots = {"corpus": str(source)}
 
         found = discover_files()
-        assert "real_sub/keep.md" in found
-        assert "real_sub/escaped.md" not in found
+        assert "owned.md" in found
+        assert "corpus/doc.md" in found
+
+    def test_vanished_root_contributes_nothing(self, isolated_env, tmp_path):
+        """A registered root whose path is gone yields nothing, not an error."""
+        from lilbee.data.ingest import discover_files
+
+        cfg.linked_roots = {"gone": str(tmp_path / "gone")}
+
+        found = discover_files()
+        assert "gone" not in found
+        assert not any(name.startswith("gone/") for name in found)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_symlink_escaping_inside_a_linked_root_is_skipped(self, isolated_env, tmp_path):
-        """A sneaky symlink inside a linked corpus that points outside it is skipped."""
+    def test_directory_symlink_inside_root_is_not_followed(self, isolated_env, tmp_path):
+        """os.walk runs with followlinks=False, so a nested dir symlink is not descended."""
         import os
 
         from lilbee.data.ingest import discover_files
@@ -2080,26 +2089,15 @@ class TestDiscoverSymlinkEscape:
         source = tmp_path / "corpus"
         source.mkdir()
         (source / "doc.md").write_text("# Doc")
-        secret = tmp_path / "outside.md"
-        secret.write_text("secret")
-        os.symlink(secret, source / "evil.md")
-        os.symlink(source, isolated_env / "corpus")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("secret")
+        os.symlink(outside, source / "escape")
+        cfg.linked_roots = {"corpus": str(source)}
 
         found = discover_files()
         assert "corpus/doc.md" in found
-        assert "corpus/evil.md" not in found
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_dangling_top_level_symlink_is_skipped(self, isolated_env, tmp_path):
-        """A linked root whose target no longer exists is skipped, not an error."""
-        import os
-
-        from lilbee.data.ingest import discover_files
-
-        os.symlink(tmp_path / "gone", isolated_env / "gone")
-
-        found = discover_files()
-        assert found == {} or "gone" not in found
+        assert not any("secret.md" in name for name in found)
 
 
 class TestDiscoverNewFormats:
@@ -3392,31 +3390,104 @@ class TestDetectMoves:
         assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
 
 
-class TestLinkedRootHelpers:
-    def test_unlink_linked_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
-        import os as _os
-
-        from lilbee.app.ingest import _unlink_linked_roots
+class TestRegisteredRootHelpers:
+    def test_unregister_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import unregister_roots
         from lilbee.core.config import cfg
 
         source = tmp_path / "corpus"
         source.mkdir()
-        _os.symlink(source, cfg.documents_dir / "corpus")
+        cfg.linked_roots = {"corpus": str(source)}
 
-        # A nested name is left alone; the top-level link is detached.
-        removed = _unlink_linked_roots(["corpus/a.txt", "corpus"], cfg.documents_dir)
+        # A nested name is not a root and is left alone; the label is un-registered.
+        removed = unregister_roots(["corpus/a.txt", "corpus"])
 
         assert removed == ["corpus"]
-        assert not (cfg.documents_dir / "corpus").exists()
-        assert source.exists()  # target untouched
+        assert "corpus" not in cfg.linked_roots
+        assert source.exists()  # source bytes untouched
 
-    def test_linked_roots_tolerates_unreadable_dir(self, isolated_env, monkeypatch):
-        from pathlib import Path
+    def test_unregister_roots_ignores_unknown_label(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import unregister_roots
+        from lilbee.core.config import cfg
 
-        from lilbee.data.ingest import discovery
+        cfg.linked_roots = {"corpus": str(tmp_path / "corpus")}
+        assert unregister_roots(["not-a-root"]) == []
+        assert "corpus" in cfg.linked_roots
 
-        def _boom(self):
-            raise OSError("permission denied")
 
-        monkeypatch.setattr(Path, "iterdir", _boom)
-        assert discovery._linked_roots(discovery.active_config().documents_dir) == {}
+class TestRegisterSources:
+    def test_registers_dir_root_by_basename(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        result = register_sources([corpus])
+        assert result.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_reregistering_same_path_is_idempotent(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        register_sources([corpus])
+        result = register_sources([corpus])
+        assert result.registered == []
+        assert result.skipped == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_label_collision_needs_force(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+        register_sources([one])
+        # Same basename, different live path: skipped without force.
+        result = register_sources([two])
+        assert result.registered == []
+        assert result.skipped == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(one.resolve())}
+        # force overwrites the label.
+        forced = register_sources([two], force=True)
+        assert forced.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(two.resolve())}
+
+    def test_dangling_root_relinks_without_force(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        # A root registered to a path that no longer exists (the source moved):
+        # re-adding the new location re-points the label, no force needed.
+        cfg.linked_roots = {"corpus": str(tmp_path / "old" / "corpus")}
+        moved = tmp_path / "new" / "corpus"
+        moved.mkdir(parents=True)
+        result = register_sources([moved])
+        assert result.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(moved.resolve())}
+
+    def test_path_inside_documents_dir_left_to_owned_walk(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        inside = cfg.documents_dir / "sub"
+        inside.mkdir()
+        result = register_sources([inside])
+        assert result.registered == []
+        assert result.skipped == ["sub"]
+        assert cfg.linked_roots == {}
+
+    def test_registration_persists_to_config_toml(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        register_sources([corpus])
+        persisted = settings.load(cfg.data_root)
+        assert persisted.get("linked_roots") == {"corpus": str(corpus.resolve())}

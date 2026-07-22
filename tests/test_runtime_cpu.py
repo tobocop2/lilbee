@@ -84,7 +84,9 @@ def test_cgroup_absent_is_none(tmp_path) -> None:
 def test_available_cpu_count_takes_min_of_signals() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=128),
-        mock.patch("lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(64)), create=True),
+        mock.patch(
+            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(64)), create=True
+        ),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=8),
     ):
         assert available_cpu_count() == 8
@@ -93,7 +95,9 @@ def test_available_cpu_count_takes_min_of_signals() -> None:
 def test_available_cpu_count_ignores_absent_quota() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=16),
-        mock.patch("lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(16)), create=True),
+        mock.patch(
+            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(16)), create=True
+        ),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=None),
     ):
         assert available_cpu_count() == 16

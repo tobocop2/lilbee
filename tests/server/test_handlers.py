@@ -558,7 +558,7 @@ class TestAddIngestMutex:
         b.release()
 
     async def test_canonical_name_matches_basename(self, isolated_env):
-        """Canonical source names match what ``link_files`` links on disk."""
+        """Canonical source names match the label a registered root keys under."""
         from lilbee.runtime.ingest_lock import IngestLockRegistry
 
         assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
@@ -675,9 +675,9 @@ class TestAddIngestMutex:
         """Two uploads that land at different paths must not share one lock.
 
         The registry reduced every key to its basename. That is right for
-        /api/add, where link_files links into documents_dir, but uploads
-        keep their relative layout, so src/util.py and tests/util.py are
-        different files that were being serialized against each other.
+        /api/add, where register_sources keys a root by its basename, but
+        uploads keep their relative layout, so src/util.py and tests/util.py
+        are different files that were being serialized against each other.
         """
         from lilbee.app.services import get_services
 

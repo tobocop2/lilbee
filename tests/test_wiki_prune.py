@@ -66,7 +66,7 @@ class TestCheckAllSourcesDeleted:
         store.get_citations_for_wiki.return_value = [
             make_citation(source_filename="gone.md"),
         ]
-        assert _check_all_sources_deleted("wiki/summaries/doc.md", store, cfg.documents_dir)
+        assert _check_all_sources_deleted("wiki/summaries/doc.md", store)
 
     def test_some_still_exist(self, tmp_path: Path):
         write_source(tmp_path, "alive.md", "content")
@@ -75,12 +75,12 @@ class TestCheckAllSourcesDeleted:
             make_citation(source_filename="gone.md"),
             make_citation(source_filename="alive.md", citation_key="src2"),
         ]
-        assert not _check_all_sources_deleted("wiki/summaries/doc.md", store, cfg.documents_dir)
+        assert not _check_all_sources_deleted("wiki/summaries/doc.md", store)
 
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
-        assert not _check_all_sources_deleted("wiki/summaries/doc.md", store, cfg.documents_dir)
+        assert not _check_all_sources_deleted("wiki/summaries/doc.md", store)
 
 
 class TestCheckClusterBelowThreshold:
@@ -92,7 +92,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
-        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg.documents_dir)
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
 
     def test_concepts_page_above_threshold(self, tmp_path: Path):
         write_source(tmp_path, "a.md", "content a")
@@ -105,7 +105,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="c.md", citation_key="src3"),
         ]
         assert not _check_cluster_below_threshold(
-            "wiki/synthesis/topic.md", store, cfg.documents_dir
+            "wiki/synthesis/topic.md", store
         )
 
     def test_non_synthesis_page_skipped(self, tmp_path: Path):
@@ -113,7 +113,7 @@ class TestCheckClusterBelowThreshold:
         store.get_citations_for_wiki.return_value = [
             make_citation(source_filename="gone.md"),
         ]
-        assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store, cfg.documents_dir)
+        assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store)
 
     def test_synthesis_page_below_threshold(self, tmp_path: Path):
         write_source(tmp_path, "a.md", "content a")
@@ -123,13 +123,13 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
-        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg.documents_dir)
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
 
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
         assert not _check_cluster_below_threshold(
-            "wiki/synthesis/topic.md", store, cfg.documents_dir
+            "wiki/synthesis/topic.md", store
         )
 
 
