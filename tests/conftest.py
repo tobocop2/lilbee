@@ -72,6 +72,32 @@ def _patch_executor_daemon_threads() -> None:
 _patch_executor_daemon_threads()
 
 
+def _use_selector_loop_on_windows() -> None:
+    """Run the Windows test process on the selector loop, not the proactor one.
+
+    The proactor loop's transport teardown leaks resources across the many
+    Textual ``run_test`` app cycles this suite drives; they pile up on the
+    xdist worker until it wedges holding the GIL, and the job hangs to
+    timeout-minutes (Windows py3.12/3.13; 3.11 is worse and runs serially).
+    The selector loop that Linux and macOS already use does not accumulate.
+
+    Safe here because the proactor loop's one hard advantage, asyncio
+    subprocess support, is never exercised by the tests: the sole caller
+    (``crawler.bootstrap``) is monkeypatched to a fake in every test that
+    reaches it. Production Windows keeps the proactor loop for real crawler
+    subprocesses; this touches the test process only. Set at import, before
+    any loop is created, so every xdist worker inherits it.
+    """
+    if sys.platform != "win32":
+        return
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_use_selector_loop_on_windows()
+
+
 # Silence stray lancedb thread shutdown errors globally so they can't wedge
 # the test runner via threading.excepthook propagation on ubuntu 3.11.
 if sys.version_info < (3, 12):
