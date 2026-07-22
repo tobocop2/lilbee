@@ -611,9 +611,7 @@ def remove(
     if expanded and not yes and not cfg.json_mode:
         # Count only what actually exists; not-found names are kept in targets.
         removable = sum(1 for t in targets if t in set(known))
-        typer.confirm(
-            f"Remove {removable} document(s)? Source files on disk are kept.", abort=True
-        )
+        typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
     result = remove_documents_durably(names, targets=targets)
 

@@ -181,9 +181,7 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
     return removed
 
 
-def remove_documents_durably(
-    names: list[str], targets: list[str] | None = None
-) -> RemoveResult:
+def remove_documents_durably(names: list[str], targets: list[str] | None = None) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
     Never deletes source bytes. A folder or glob argument expands to every
