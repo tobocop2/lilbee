@@ -7,12 +7,15 @@ probe reads the token from server.json like every other local client.
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 from typing import Any
 
-from litestar import Response, get, patch
+from litestar import Response, get, patch, post
+from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import NotFoundException, ValidationException
 from litestar.response import Stream
+from litestar.status_codes import HTTP_202_ACCEPTED
 from pydantic import ValidationError
 
 from lilbee.server import handlers
@@ -20,6 +23,7 @@ from lilbee.server.models import (
     ConfigResponse,
     ConfigUpdateResponse,
     HealthResponse,
+    ShutdownResponse,
     SourceContentResponse,
     StatusResponse,
 )
@@ -41,6 +45,21 @@ async def warm_stream_route() -> Stream:
 async def status_route() -> StatusResponse:
     """Current configuration, indexed document sources, and chunk counts."""
     return await handlers.status()
+
+
+@post("/api/shutdown", status_code=HTTP_202_ACCEPTED)
+async def shutdown_route() -> Response[ShutdownResponse]:
+    """Gracefully stop the server, exactly as an external SIGTERM would.
+
+    The signal rides a background task so it is raised after the response has
+    been handed to the transport, rather than after a guessed delay that a
+    slow flush could lose.
+    """
+    return Response(
+        await handlers.shutdown(),
+        status_code=HTTP_202_ACCEPTED,
+        background=BackgroundTask(signal.raise_signal, signal.SIGTERM),
+    )
 
 
 @get("/api/config")

@@ -50,20 +50,24 @@ from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
-# A tensor-split chat fills its cards with one full-context sequence; concurrent
-# slots are for a chat that fits a single GPU, not a multi-card giant.
+# Slots the PLACEMENT estimate reserves KV for on a tensor-split chat: one full
+# window, the minimum any split must hold. The launch may serve more than this
+# (see _resolve_split_chat_slots) when the cards measurably have room for several
+# full windows, so this is a planning floor, not the served slot count.
 _SPLIT_CHAT_SLOTS = 1
 # Floor context the PLACEMENT estimate reserves KV for, so a large model is never
 # single-carded into a KV corner too small for real use (a 17GB model on a 24GB
 # card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
 # placement reserve against this floor forces a tensor-split when one card cannot
 # hold weights + a usable context; the served ctx is then grown by resolve_chat_ctx
-# (single) / fit_split_ctx (split) toward the cards' real headroom, capped at the
-# working-context target so the launch never over-commits past the reserve.
+# (single) / fit_split_ctx (split) toward the cards' real headroom, with each
+# sequence capped at the working-context target. A split may then serve several
+# such sequences, so the served total can exceed the single-window reserve; the
+# per-device headroom test in fit_split_ctx is what bounds it.
 _MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
 # A tensor-split needs at least this many GPUs; below it the chat context objective
@@ -192,6 +196,39 @@ def _slots_for(
     return _AUX_SLOTS
 
 
+def _resolve_split_chat_slots(fit_fn: Callable[[int], int]) -> tuple[int, int]:
+    """Largest split-chat slot count whose sequences each keep the full window.
+
+    ``fit_fn(n)`` is the per-slot context that fits when serving ``n`` sequences
+    (``fit_split_ctx``, capped at the working target and verified against real
+    per-card headroom). More slots divide the KV, so a split whose cards hold
+    several full windows can serve that many agents concurrently instead of one.
+    Returns ``(slots, per_slot_ctx)``, falling to one slot when only one full
+    window fits (or the fit degenerated to the floor), which preserves the
+    max-context single-sequence behaviour on a tight card.
+
+    Found by bisection rather than a scan because every ``fit_fn`` call is a
+    complete binary search whose probes each shell out to gguf-parser, and the
+    whole thing runs while this process holds the cross-process build lock that
+    every other lilbee start waits on without a deadline. A descending scan paid
+    for all of ``_CHAT_SLOTS - 1`` searches in exactly the tight-card case where
+    none of them fit. Bisection is sound here because the fit is non-increasing
+    in the slot count: more sequences divide the same headroom, so once a count
+    fails no larger one can succeed.
+    """
+    full = fit_fn(1)
+    if full <= model_cache._DYNAMIC_CTX_FLOOR:
+        return 1, full
+    low, high = 1, _CHAT_SLOTS
+    while low < high:
+        mid = (low + high + 1) // 2
+        if fit_fn(mid) >= full:
+            low = mid
+        else:
+            high = mid - 1
+    return low, full
+
+
 def _resolve_chat_slots(
     model_path: Path,
     ctx: int,
@@ -293,6 +330,7 @@ def _fit_slots(
                 kv_cache_type=_role_kv_cache_type(role),
                 kv_cache_type_v=_role_kv_cache_type_v(role),
                 mmproj_path=mmproj_path,
+                expert_offload=_role_expert_offload(model_path),
             )
         except (ProviderError, OSError):
             # An unsizable model runs a single slot; the load decides the rest.
@@ -517,6 +555,7 @@ def _estimate_role(
         kv_cache_type_v=_role_kv_cache_type_v(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
+        expert_offload=_role_expert_offload(path),
     )
     fp = est.footprint(unified=unified_budget is not None)
     if role is WorkerRole.CHAT and unified_budget is None:
@@ -565,10 +604,12 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
 
 
 def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> int:
-    """The slot count a role launches with, so the estimate's total ctx matches the launch.
+    """The slot count the placement estimate reserves KV for.
 
-    A tensor-split chat serves a single full-context sequence, so the placement total
-    is the per-sequence ceiling, not ``ceiling x _CHAT_SLOTS`` (KV no launch allocates).
+    A tensor-split chat reserves one full-context sequence here: a conservative
+    floor for the card-count decision. The launch then fills the placed cards'
+    real headroom with as many full-context slots as fit (``_resolve_split_chat_slots``),
+    never exceeding what those cards hold, so a larger launch count can't OOM.
     """
     from lilbee.core.config import cfg
 
@@ -607,6 +648,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, _role_rerank_mode(role, meta), ctx),
+            expert_offload=_role_expert_offload(path),
         )
         return est.per_device_vram
 
@@ -678,17 +720,78 @@ def _role_weights_bytes(role: WorkerRole, ref: str) -> int:
     return size
 
 
-def _weights_exceed_hardware(size: int, total_vram: int) -> bool:
+def _is_moe(meta: dict[str, str] | None) -> bool:
+    """Whether the GGUF declares routed experts, so its experts can be offloaded."""
+    count = (meta or {}).get("expert_count")
+    try:
+        return int(count) > 0 if count is not None else False
+    except ValueError:
+        return False
+
+
+def expert_offload_all(meta: dict[str, str] | None) -> bool:
+    """Whether to keep every layer's experts in system memory; MoE models only."""
+    from lilbee.core.config import cfg
+
+    return bool(cfg.cpu_moe) and _is_moe(meta)
+
+
+def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
+    """How many layers' experts to keep in system memory, or None for no split.
+
+    A non-positive ``n_cpu_moe`` offloads nothing (it would emit a no-op
+    ``--n-cpu-moe 0``), so it reads as unset.
+    """
+    from lilbee.core.config import cfg
+
+    if cfg.n_cpu_moe is None or cfg.n_cpu_moe < 1 or not _is_moe(meta):
+        return None
+    return cfg.n_cpu_moe
+
+
+def _role_expert_offload(model_path: Path) -> tuple[str, ...]:
+    """Expert patterns the launch will offload, for sizing the same way it runs.
+
+    Reads the GGUF (cached) rather than taking metadata as an argument so every
+    estimate site charges the same tensors the launch moves off the GPU.
+    """
+    from lilbee.providers.fleet.adapters import expert_offload_patterns
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    meta = read_gguf_metadata(model_path)
+    return expert_offload_patterns(
+        cpu_moe=expert_offload_all(meta), n_cpu_moe=expert_offload_layers(meta)
+    )
+
+
+def _expert_offload_configured() -> bool:
+    """Whether the user asked for expert offload that would actually take effect.
+
+    A non-positive ``n_cpu_moe`` offloads nothing, so it does not count.
+    """
+    from lilbee.core.config import cfg
+
+    return bool(cfg.cpu_moe) or (cfg.n_cpu_moe is not None and cfg.n_cpu_moe >= 1)
+
+
+def _weights_exceed_hardware(size: int, total_vram: int, *, is_moe: bool) -> bool:
     """True when a model's weight bytes alone cannot fit the fleet's physical VRAM.
 
     File size is ground truth, not an estimate, so this bound cannot repeat the
     false-refusal class: no estimator error makes a 40 GiB file fit a 1 GiB card.
-    It stands down when the user configured partial CPU offload (``n_gpu_layers``),
-    where big-weights-small-VRAM is a legitimate setup.
+    It stands down for a per-layer offload (``n_gpu_layers``, which moves dense
+    layers too) on any model, and for expert offload only on a mixture-of-experts
+    model, where the experts genuinely leave the GPU. A dense model with expert
+    offload set keeps its refusal: the launch would emit no offload flags, so the
+    weights really must fit, and a guided refusal beats a raw load-time OOM.
     """
     from lilbee.core.config import cfg
 
-    return total_vram > 0 and cfg.n_gpu_layers is None and size > total_vram
+    if cfg.n_gpu_layers is not None:
+        return False
+    if is_moe and _expert_offload_configured():
+        return False
+    return total_vram > 0 and size > total_vram
 
 
 def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
@@ -742,7 +845,7 @@ def _estimate_or_fallback(
             role, ref, exc, device_count=device_count, total_vram=total_vram
         )
     weights = _role_weights_bytes(role, ref)
-    if _weights_exceed_hardware(weights, total_vram):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     return estimate
@@ -763,7 +866,7 @@ def _sizing_failure_fallback(
     if weights == 0:
         log.warning("Skipping %s server: could not size model %r (%s).", role.value, ref, exc)
         return None
-    if _weights_exceed_hardware(weights, total_vram):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     log.warning(
@@ -777,16 +880,73 @@ def _sizing_failure_fallback(
     )
 
 
+def _ref_is_moe(ref: str) -> bool:
+    """Whether *ref*'s GGUF declares routed experts; False when it cannot be read."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    try:
+        return _is_moe(read_gguf_metadata(resolve_model_path(ref)))
+    except (ProviderError, OSError):
+        return False
+
+
 def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
+    # Cutting GPU layers on a sparse model slows all of it; offload the experts.
+    remedy = (
+        "set cpu_moe to keep its expert weights in system memory"
+        if _ref_is_moe(ref)
+        else "set n_gpu_layers to offload part of it to system memory"
+    )
     log.warning(
         "The %s model %s cannot load: its weights alone are %.1f GiB and the GPU "
-        "memory is %.1f GiB in total. Use a smaller model, or set n_gpu_layers to "
-        "offload part of it to system memory.",
+        "memory is %.1f GiB in total. Use a smaller model, or %s.",
         role.value,
         ref,
         weights / 1024**3,
         total_vram / 1024**3,
+        remedy,
     )
+
+
+def placeable_total_vram() -> int:
+    """Physical VRAM across all cards, for the weights-exceed placeability bound.
+
+    Physical total is box-state-independent (a running incumbent doesn't skew
+    it), so it is safe to read without a clean box. Reuses the plan probe when
+    one is captured; otherwise probes best-effort and returns ``0`` on failure,
+    which disables only the weights-exceed filter (its own ``total > 0`` guard).
+    """
+    probe = _plan_probe_store.get()
+    if probe is not None:
+        return sum(d.total_bytes for d in probe.devices)
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    try:
+        apply_fleet_gpu_env()
+        return sum(d.total_bytes for d in resolve_devices(resolve_llama_server()))
+    except (ProviderError, OSError):
+        return 0
+
+
+def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
+    """Whether a fresh plan would actually serve *role* on *ref*.
+
+    Mirrors the planner's own drop conditions (SDK-routed role, vision without a
+    projector, model not installed, weights exceeding physical VRAM) using the
+    same primitives, so the acquisition ladder binds and replaces against what
+    an engine can serve rather than the raw config. Without this a
+    configured-but-unplaceable role keeps bind from ever matching a running
+    engine and restarts the shared engine on every process start.
+    """
+    if parse_model_ref(ref).is_remote or _vision_without_mmproj(role, ref):
+        return False
+    weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
+    if weights == 0:
+        return False
+    return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref))
 
 
 def _server_model_inputs(
@@ -929,33 +1089,40 @@ def _launch_for(
             model_ref,
             list(plan.devices),
         )
+    split_slots = _SPLIT_CHAT_SLOTS
     if split_chat:
         # circular: fleet.ctx -> engine_params -> app.services
         from lilbee.providers.fleet.ctx import fit_split_ctx
 
         reserved = reserved_by_device or {}
-        ctx = fit_split_ctx(
-            model_path,
-            meta=meta,
-            slots=_SPLIT_CHAT_SLOTS,
-            ratio=plan.tensor_split,
-            # Headroom left after the embed/rerank servers on each shared card, not
-            # the card's raw free VRAM, so the chat KV doesn't over-commit.
-            per_device_free_bytes=[max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen],
-            gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-            flash_attn=_role_flash(WorkerRole.CHAT),
-            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
-            ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
-        )
+        # Headroom left after the embed/rerank servers on each shared card, not the
+        # card's raw free VRAM, so the chat KV doesn't over-commit.
+        per_device_free = [max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen]
+
+        def _split_fit(slots: int) -> int:
+            return fit_split_ctx(
+                model_path,
+                meta=meta,
+                slots=slots,
+                ratio=plan.tensor_split,
+                per_device_free_bytes=per_device_free,
+                gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+                flash_attn=_role_flash(WorkerRole.CHAT),
+                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+                kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
+                ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
+            )
+
+        split_slots, ctx = _resolve_split_chat_slots(_split_fit)
     else:
         ctx = _role_ctx(plan.role, model_path, meta)
     rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
-    # A multi-card chat runs one slot; other roles size --parallel against the budget
-    # the same way the estimator did so the launch matches the placement reservation.
+    # A multi-card chat runs as many full-context slots as its cards' KV headroom
+    # holds (split_slots, one when a num_ctx pin skips the fit); other roles size
+    # --parallel against the budget the same way the estimator did.
     slots = (
-        _SPLIT_CHAT_SLOTS
+        split_slots
         if multi_card_chat
         else _slots_for(
             plan.role,
@@ -987,6 +1154,8 @@ def _launch_for(
         cache_type_v=cache_type_v,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
+        cpu_moe=expert_offload_all(meta),
+        n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
     )
     return InstanceLaunch(
@@ -1201,16 +1370,40 @@ class _PlanProbeStore:
 _plan_probe_store = _PlanProbeStore()
 
 
-def capture_plan_probe() -> None:
-    """Snapshot devices and memory for planning; call only on a clean box."""
-    from lilbee.core.config import cfg
+def _probe_engine_devices() -> tuple[list[FleetDevice], bool]:
+    """Apply the fleet GPU/CUDA env, resolve the binary, and enumerate devices.
+
+    This is the wedge point: a missing binary raises NOT_FOUND, and a CUDA build
+    that cannot init a GPU (a broken-runtime host) raises loud from resolve_devices
+    rather than silently degrading. Device enumeration reads no residency, so it is
+    safe to run while an incumbent engine is still up.
+    """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env()
-    devices, refused_all = _resolve_devices_and_refusal(binary)
+    return _resolve_devices_and_refusal(binary)
+
+
+def assert_engine_probeable() -> None:
+    """Raise if the engine cannot be probed; capture no snapshot.
+
+    A build precondition that must run BEFORE stopping a replaceable incumbent:
+    it surfaces a wedged GPU probe or an unusable CUDA runtime without taking the
+    residency-dependent memory snapshot (that belongs on the clean box, after the
+    stop, in capture_plan_probe). resolve_devices caches within its TTL, so the
+    follow-up capture reuses this enumeration rather than re-probing the hardware.
+    """
+    _probe_engine_devices()
+
+
+def capture_plan_probe() -> None:
+    """Snapshot devices and memory for planning; call only on a clean box."""
+    from lilbee.core.config import cfg
+
+    devices, refused_all = _probe_engine_devices()
     _plan_probe_store.set(
         _PlanProbe(
             devices=tuple(devices),

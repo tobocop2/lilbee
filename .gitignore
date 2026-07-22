@@ -76,3 +76,7 @@ packaging/snap-compat/payload/
 packaging/snap-cuda/payload/
 # Built engine binaries land here during wheel/executable builds.
 packaging/engine-wheel/lilbee_engine/bin/
+
+# Benchmark/soak run output is not version-controlled: it is machine- and
+# run-specific data, not documentation.
+docs/benchmarks/*-results/

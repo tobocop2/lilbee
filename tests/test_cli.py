@@ -1,5 +1,6 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import contextlib
 import json
 import logging
 import os
@@ -3899,6 +3900,8 @@ class TestSelfCheck:
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",
+            "cpu_moe",
+            "n_cpu_moe",
             "main_gpu",
             "gpu_devices",
         }
@@ -4481,3 +4484,46 @@ def test_mcp_command_applies_data_dir_then_starts(tmp_path):
     # The override was applied before the server started, not merely parsed: main()
     # observed cfg.data_root already pointing at the alt root.
     assert applied_root == [alt]
+
+
+def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, tmp_path) -> None:
+    """The diagnostic must launch the same command line the fleet would.
+
+    The fleet applies expert offload to every role it launches. When the
+    self-check gated it on the embed role, an MoE embedding model with offload
+    configured got a launch with no --override-tensor from the diagnostic and
+    one with it from the fleet, so the check could fail a full-VRAM load the
+    fleet would have offloaded -- the disagreement this shared-flags work exists
+    to remove.
+    """
+    from lilbee.cli.commands import setup as setup_mod
+    from lilbee.providers.fleet import adapters as adapters_mod
+    from lilbee.providers.roles import WorkerRole
+
+    captured: dict[str, object] = {}
+    real_build = adapters_mod.build_server_argv
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(adapters_mod, "build_server_argv", _spy)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+    )
+    from lilbee.core.config import cfg as real_cfg
+
+    monkeypatch.setattr(real_cfg, "cpu_moe", True, raising=False)
+    monkeypatch.setattr(real_cfg, "n_cpu_moe", None, raising=False)
+
+    model = tmp_path / "embed.gguf"
+    model.write_bytes(b"")
+    with contextlib.suppress(Exception):  # spawning the server is not under test
+        setup_mod._self_check_server(WorkerRole.EMBED, model)
+
+    assert captured, "build_server_argv was never reached; the test proves nothing"
+    assert captured.get("cpu_moe") is True, "embed self-check dropped the fleet's offload"

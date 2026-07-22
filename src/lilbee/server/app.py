@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from litestar import Litestar
 from litestar.config.cors import CORSConfig
@@ -33,6 +34,7 @@ from lilbee.server.routes.general import (
     config_route,
     config_update_route,
     health_route,
+    shutdown_route,
     source_content_route,
     status_route,
     warm_stream_route,
@@ -101,7 +103,30 @@ from lilbee.server.wiki import (
     wiki_update_route,
 )
 
+if TYPE_CHECKING:
+    from lilbee.retrieval.embedder import Embedder
+
 log = logging.getLogger(__name__)
+
+
+def _log_embedding_model_state(embedder: Embedder) -> None:
+    """Report whether embeddings will work, without letting that check stop startup.
+
+    A model that reports itself unavailable and one whose check raises both leave
+    the server usable for everything that does not embed, so neither is fatal.
+    """
+    try:
+        validated = embedder.validate_model()
+    except Exception:
+        log.warning("Failed to validate embedding model", exc_info=True)
+        return
+    if validated:
+        log.info("Embedding model validated")
+    else:
+        log.warning(
+            "Embedding model %s is unavailable; search and chat will run without embeddings",
+            cfg.embedding_model,
+        )
 
 
 @asynccontextmanager
@@ -112,15 +137,12 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     inject_provider_keys()
 
     try:
-        get_services()  # pre-load all services (provider, embedder, etc.)
+        services = get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
     except Exception:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
-    try:
-        get_services().embedder.validate_model()
-        log.info("Embedding model validated")
-    except Exception:
-        log.warning("Failed to validate embedding model", exc_info=True)
+    else:
+        _log_embedding_model_state(services.embedder)
     try:
         yield
     finally:
@@ -149,6 +171,7 @@ def create_app() -> Litestar:
             health_route,
             warm_stream_route,
             status_route,
+            shutdown_route,
             config_route,
             config_defaults_route,
             config_update_route,

@@ -1,0 +1,3 @@
+task2_window_impl.py in the current directory has a bug making
+`python -m pytest task2_window_test.py` fail. Find and fix the bug in the
+implementation only (never edit the tests), run the tests to verify, then stop.

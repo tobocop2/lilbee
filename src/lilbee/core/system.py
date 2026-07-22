@@ -59,6 +59,29 @@ def default_data_dir() -> Path:
     return base / "lilbee"
 
 
+def default_state_dir() -> Path:
+    """Return platform-appropriate directory for live runtime state.
+    - macOS:   ~/Library/Application Support/lilbee
+    - Windows: %LOCALAPPDATA%/lilbee
+    - Linux:   ~/.local/state/lilbee  (XDG_STATE_HOME)
+
+    Deliberately not a cache directory. This holds the machine engine slot: the
+    state files recording a running llama-swap's pid and ports, the refcount
+    lock dir, and the build lock. Those records are the only handle any
+    out-of-process stop has on a running fleet, so a cleaner (or macOS evicting
+    ~/Library/Caches under disk pressure) emptying the dir mid-run would orphan
+    a fleet holding VRAM and leave the slot looking free to the next process,
+    which would then build a second fleet on top of it.
+    """
+    if sys.platform == "darwin":  # pragma: no cover - platform split
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":  # pragma: no cover - platform split
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
+    else:  # pragma: no cover - platform split
+        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return base / "lilbee"
+
+
 def find_local_root(start: Path | None = None) -> Path | None:
     """Walk up from start (default: cwd) looking for a ``.lilbee/`` directory."""
     start = start or Path.cwd()
