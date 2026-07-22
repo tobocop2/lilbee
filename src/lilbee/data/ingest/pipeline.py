@@ -327,6 +327,7 @@ def _classify_changes(
     submission halts and queued-but-unstarted work is cancelled, so a mid-pass
     cancel over a huge corpus does not hash every remaining file.
     """
+
     def _classify(name: str, path: Path) -> _FileChangeVerdict:
         return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
 
