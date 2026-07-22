@@ -59,6 +59,31 @@ class TestKeepFleetWarm:
         cfg.ingest_max_inflight = 48
         assert _max_concurrent() == 48
 
+    def test_auto_admission_scales_with_the_embed_fleet(self, monkeypatch):
+        # 0 = auto: admission scales with the detected embed replicas so a
+        # multi-GPU box is fed without a manual cap.
+        from lilbee.data.ingest import offload, pipeline
+
+        monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
+        cfg.vision_model = ""
+        cfg.ingest_max_inflight = 0
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 8)
+        # Emulate an 8-replica fleet: 8 * _EMBED_INFLIGHT_PER_REPLICA (8) = 64.
+        # Patch both bound names (pipeline imported the helper by name).
+        monkeypatch.setattr(pipeline, "embed_inflight_target", lambda: 64)
+        monkeypatch.setattr(offload, "embed_inflight_target", lambda: 64)
+        assert pipeline._max_concurrent() == 64  # max(cpu_quota=8, 64)
+        assert offload._max_workers() == 64  # pool lifts to feed it too
+
+    def test_embed_inflight_target_single_card_is_zero(self, monkeypatch):
+        from lilbee.data.ingest import offload
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.replicas.resolve_replica_count", lambda *_a, **_k: 1
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 1)
+        assert offload.embed_inflight_target() == 0  # single card: CPU sizing fits
+
     def test_max_inflight_lifts_the_worker_pool_ceiling(self, monkeypatch):
         # In adaptive mode the admission gate's permit_max is max_workers(), so
         # the override must raise the pool too or a multi-GPU fleet stays clamped

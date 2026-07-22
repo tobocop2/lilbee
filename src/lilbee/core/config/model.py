@@ -106,11 +106,11 @@ class Config(BaseSettings):
     # batch-starved (~96% util, low throughput). The engine still re-splits to
     # its physical batch, so raising this only helps up to the server's --batch.
     embed_batch_sequences: int = ConfigField(default=64, ge=1, writable=True)
-    # Files allowed in their compute phase at once during ingest. 0 = auto
-    # (max(cpu_quota, embed replicas)). The auto cap is CPU-bound, so a many-core
-    # box with a large embed fleet can leave most GPUs idle (dispatch is
-    # least-loaded but only spreads across replicas that have work in flight);
-    # raise this to keep every replica fed. Sizes the extract+embed fan-out.
+    # Files allowed in their compute phase at once during ingest. 0 = auto: the
+    # ceiling scales with the detected embed fleet (replicas x per-replica
+    # in-flight) so a multi-GPU box is kept fed without a manual cap, falling back
+    # to the CPU quota on a single card. Set a positive value only to override the
+    # auto sizing. Sizes the extract+embed fan-out, not the plan pass.
     ingest_max_inflight: int = ConfigField(default=0, ge=0, writable=True)
     # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)

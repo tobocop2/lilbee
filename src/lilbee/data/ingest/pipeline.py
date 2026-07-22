@@ -35,7 +35,7 @@ from lilbee.data.ingest.adaptive import (
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
-from lilbee.data.ingest.offload import max_workers, to_ingest_thread
+from lilbee.data.ingest.offload import embed_inflight_target, max_workers, to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -104,12 +104,11 @@ def _max_concurrent() -> int:
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * config.vision_ocr_concurrency)
     if config.ingest_max_inflight > 0:
-        # Explicit override: on a many-core multi-GPU box the auto cap below is
-        # CPU-bound and leaves most embed replicas idle, so allow more files in
-        # their compute phase to keep every replica fed.
-        return config.ingest_max_inflight
-    embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
-    return max(cpu_quota(), embed_slots)
+        return config.ingest_max_inflight  # explicit override
+    # Auto: keep every embed replica fed. The CPU-bound quota alone leaves a
+    # many-core multi-GPU box starved (~4 files/card), so scale admission with
+    # the detected fleet size -- no manual cap needed.
+    return max(cpu_quota(), embed_inflight_target())
 
 
 async def _rebuild_concept_clusters() -> None:
