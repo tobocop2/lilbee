@@ -90,6 +90,11 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
+    # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
+    # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
+    # not the GPU-fed extract/embed batch.
+    ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
     # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)

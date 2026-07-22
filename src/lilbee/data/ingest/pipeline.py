@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -61,7 +62,7 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
-from lilbee.runtime.cpu import cpu_quota
+from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import LockTimeoutError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -301,6 +302,17 @@ def _classify_file_change(
     )
 
 
+def _plan_workers() -> int:
+    """Worker count for the parallel planning pass: config override, else auto.
+
+    ``config.ingest_workers`` (also set per run by ``add --max-cpus``) wins when
+    positive; otherwise size to the container-aware CPU budget so a big corpus
+    hashes on every core the pod actually has, not the host's vCPU count.
+    """
+    configured = active_config().ingest_workers
+    return configured if configured > 0 else available_cpu_count()
+
+
 def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
@@ -315,17 +327,47 @@ def _plan_file_changes(
     current hash matches a marker in ``skip_markers`` (set by a prior failed
     attempt) is treated as unchanged so we don't retry every sync. Edit the file
     or run ``/sync --force-rebuild`` to clear the marker and try again.
+
+    Per-file classification is independent (stat + hash, no shared state), so it
+    fans across a thread pool; the plan is then assembled from the results in the
+    original sorted order, making the output identical to a serial pass. Hashing
+    a multi-million-file corpus is the single-core stall this parallelizes;
+    ``hashlib`` releases the GIL during digest, so threads give real speedup.
     """
     skip_markers = skip_markers or {}
+    items = sorted(disk_files.items())
+
+    def _classify(name: str, path: Path) -> _FileChangeVerdict:
+        return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+
+    verdicts: dict[str, _FileChangeVerdict] = {}
+    workers = _plan_workers()
+    if workers <= 1 or len(items) <= 1:
+        for name, path in items:
+            if cancel and cancel.is_set():
+                break
+            verdicts[name] = _classify(name, path)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lilbee-plan") as pool:
+            futures: dict[Future[_FileChangeVerdict], str] = {}
+            for name, path in items:
+                if cancel and cancel.is_set():
+                    break
+                futures[pool.submit(_classify, name, path)] = name
+            for future in as_completed(futures):
+                verdicts[futures[future]] = future.result()
+
     files_to_process: list[FileToProcess] = []
     added: dict[str, None] = {}
     updated: dict[str, None] = {}
     stat_backfills: list[SourceStatBackfill] = []
     unchanged = 0
-    for name, path in sorted(disk_files.items()):
-        if cancel and cancel.is_set():
-            break
-        verdict = _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+    # Assemble in the original sorted order so a partial (cancelled) or reordered
+    # completion never changes the plan the serial pass would have produced.
+    for name, _path in items:
+        verdict = verdicts.get(name)
+        if verdict is None:
+            continue  # cancelled before this file was classified
         if verdict.to_process is None:
             unchanged += 1
             if verdict.backfill is not None:

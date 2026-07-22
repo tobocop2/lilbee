@@ -1286,6 +1286,62 @@ class TestStatShortCircuit:
         assert plan.unchanged == 1
         assert len(plan.stat_backfills) == 1
 
+    def test_parallel_plan_matches_serial(self, isolated_env, monkeypatch):
+        # Many brand-new files (no existing sources): the parallel planning pass
+        # must produce the same added set, order, and counts as the serial pass.
+        from lilbee.data.ingest import pipeline
+
+        names = [f"doc{i:03d}.txt" for i in range(50)]
+        disk: dict[str, Path] = {}
+        for n in names:
+            p = isolated_env / n
+            p.write_text(f"content of {n}")
+            disk[n] = p
+
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 8)
+        parallel = pipeline._plan_file_changes(disk, {}, cancel=None)
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 1)
+        serial = pipeline._plan_file_changes(disk, {}, cancel=None)
+
+        assert [f.name for f in parallel.files_to_process] == [
+            f.name for f in serial.files_to_process
+        ]
+        assert list(parallel.added) == list(serial.added) == names
+        assert parallel.unchanged == serial.unchanged == 0
+
+    def test_cancelled_parallel_plan_returns_partial(self, isolated_env, monkeypatch):
+        import threading
+
+        from lilbee.data.ingest import pipeline
+
+        disk: dict[str, Path] = {}
+        for i in range(10):
+            p = isolated_env / f"c{i}.txt"
+            p.write_text("x")
+            disk[p.name] = p
+
+        cancel = threading.Event()
+        cancel.set()
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 4)
+        plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
+        assert plan.files_to_process == []
+
+    def test_plan_workers_config_override_beats_auto(self, monkeypatch):
+        import types
+
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(
+            pipeline, "active_config", lambda: types.SimpleNamespace(ingest_workers=3)
+        )
+        assert pipeline._plan_workers() == 3
+
+        monkeypatch.setattr(
+            pipeline, "active_config", lambda: types.SimpleNamespace(ingest_workers=0)
+        )
+        monkeypatch.setattr(pipeline, "available_cpu_count", lambda: 9)
+        assert pipeline._plan_workers() == 9
+
     def test_changed_mtime_rehashes(self, isolated_env, monkeypatch):
         import os
 

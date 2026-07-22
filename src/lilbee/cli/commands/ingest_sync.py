@@ -66,6 +66,12 @@ _paths_argument = typer.Argument(
 )
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
+_max_cpus_option = typer.Option(
+    None,
+    "--max-cpus",
+    min=1,
+    help="Cap the workers used to discover and hash files. Unset = auto (all available cores).",
+)
 _crawl_option = typer.Option(
     False,
     "--crawl",
@@ -488,10 +494,13 @@ def add(
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
     include_subdomains: bool = _include_subdomains_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
-    """Copy files or crawl URLs into the knowledge base and ingest them."""
+    """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
 
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
