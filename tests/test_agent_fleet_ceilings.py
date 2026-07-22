@@ -152,8 +152,9 @@ class TestFileDescriptorNudge:
     def _run(self, caplog, *, soft: int, hard: int = _UNLIMITED) -> str:
         from lilbee.server import app as app_mod
 
-        with inject_modules(_fake_resource(soft=soft, hard=hard)), caplog.at_level(
-            "INFO", logger=app_mod.__name__
+        with (
+            inject_modules(_fake_resource(soft=soft, hard=hard)),
+            caplog.at_level("INFO", logger=app_mod.__name__),
         ):
             app_mod._warn_if_few_file_descriptors()
         return caplog.text
