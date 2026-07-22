@@ -851,3 +851,65 @@ class TestUnsizableModelPlacement:
         plan = plan_placement([model], [(0, 24 * _GB), (1, 24 * _GB)], estimate_peak=boom)
         assert len(plan.instances) == 1
         assert plan.tight_roles.keys() == {WorkerRole.CHAT}
+
+
+class TestAnIntegratedGpuIsOnePoolNotAGpuToPackAgainst:
+    """A unified host's device heap and its system RAM are the same memory.
+
+    Bin-packing it per device reads one pool as several, and the GPU branch never
+    refuses a role: one that fits nowhere is placed tight with a warning. So a
+    role set too large for the machine was admitted, loaded, and swap-livelocked
+    it, which is exactly what the shared-memory budget exists to prevent and what
+    an empty device list already refused.
+    """
+
+    # The reported laptop: 15.32 GiB Tiger Lake, ~4.6 GiB already in use, so the
+    # iGPU advertises the whole of RAM as its heap while ~9 GiB is really free.
+    _IGPU = ((0, 15 * _GB),)
+    _FREE_RAM = 9 * _GB
+
+    def test_an_oversize_role_set_is_refused_not_placed_tight(self) -> None:
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 10 * _GB),
+                ModelPlacementInput(WorkerRole.EMBED, 4 * _GB),
+            ],
+            self._IGPU,
+            estimate_peak=_never,
+            unified_budget=self._FREE_RAM,
+        )
+
+        assert WorkerRole.CHAT in plan.unplaceable_roles
+
+    def test_what_fits_the_shared_pool_is_still_placed(self) -> None:
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 2 * _GB)],
+            self._IGPU,
+            estimate_peak=_never,
+            unified_budget=self._FREE_RAM,
+        )
+
+        assert plan.unplaceable_roles == ()
+        assert [i.role for i in plan.instances] == [WorkerRole.EMBED]
+
+    def test_unified_roles_are_not_pinned_to_a_device(self) -> None:
+        """One pool, one GPU: a pin says nothing and the shared path owns sizing."""
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 2 * _GB)],
+            self._IGPU,
+            estimate_peak=_never,
+            unified_budget=self._FREE_RAM,
+        )
+
+        assert all(i.devices == () for i in plan.instances)
+
+    def test_a_discrete_card_still_bin_packs_per_device(self) -> None:
+        """The routing must key on the budget, not merely on a device being present."""
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.CHAT, 10 * _GB)],
+            [(0, 24 * _GB)],
+            estimate_peak=_never,
+            unified_budget=None,
+        )
+
+        assert plan.instances == (InstancePlan(WorkerRole.CHAT, (0,)),)

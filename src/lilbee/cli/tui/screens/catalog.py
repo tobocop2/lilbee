@@ -407,7 +407,7 @@ class CatalogScreen(Screen[None]):
         with Horizontal(id="catalog-body"):
             with (
                 Container(id="catalog-tabs-wrap"),
-                TabbedContent(initial=TAB_CHAT, id="catalog-tabs"),
+                TabbedContent(id="catalog-tabs"),
             ):
                 with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
                     yield DiscoverRails(id="discover-rails")
@@ -443,11 +443,12 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
-        # Force Chat as the initial active tab. `TabbedContent(initial=...)`
-        # doesn't take effect when panes are added via `with TabPane(...)`
-        # (Textual resolves initial at construction time but the panes mount
-        # after), so we set active explicitly via call_after_refresh so the
-        # TabActivated cascade has already settled before our setter runs.
+        # Force Chat as the initial active tab. Deliberately not
+        # `TabbedContent(initial=...)`: that arms `Tabs._on_mount` to assign the
+        # active tab unconditionally, and when the app tears down mid-mount
+        # Textual's `mount_all` no-ops, so the strip has no Tab children yet and
+        # the assignment raises `ValueError: No Tab with id`. Setting it here via
+        # call_after_refresh also lets the TabActivated cascade settle first.
         # Chat is the most common landing destination; users opt into
         # Discover via keyboard shortcut.
         self.call_after_refresh(self._activate_initial_tab)

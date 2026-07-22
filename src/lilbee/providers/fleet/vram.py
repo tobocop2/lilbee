@@ -31,6 +31,8 @@ _FLAG_TENSOR_SPLIT = "--tensor-split"
 _FLAG_SPLIT_MODE = "--split-mode"
 _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
+_FLAG_OVERRIDE_TENSOR = "--override-tensor"
+_BUFFER_TYPE_CPU = "CPU"
 
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
@@ -93,9 +95,11 @@ def estimate_instance_footprint(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
+    kv_cache_type_v: KvCacheType | None = None,
     mmproj_path: Path | None = None,
     tensor_split: tuple[int, ...] = (),
     batch_size: int | None = None,
+    expert_offload: tuple[str, ...] = (),
 ) -> GgufVramEstimate:
     """gguf-parser's UMA-aware footprint for one llama-server instance.
 
@@ -121,10 +125,12 @@ def estimate_instance_footprint(
             gpu_layers,
             flash_attn,
             kv_cache_type.value,
+            (kv_cache_type_v or kv_cache_type).value,
             str(mmproj) if mmproj is not None else None,
             mmproj.stat().st_mtime_ns if mmproj is not None else 0,
             tensor_split,
             batch_size,
+            expert_offload,
         )
 
     if mmproj_path is None:
@@ -164,10 +170,12 @@ def _cached_footprint(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: str,
+    kv_cache_type_v: str,
     mmproj: str | None,
     _mmproj_mtime_ns: int,
     tensor_split: tuple[int, ...],
     batch_size: int | None,
+    expert_offload: tuple[str, ...],
 ) -> GgufVramEstimate:
     """Memoised gguf-parser run keyed on path + mtime + sizing.
 
@@ -181,9 +189,11 @@ def _cached_footprint(
         gpu_layers=gpu_layers,
         flash_attn=flash_attn,
         kv_cache_type=kv_cache_type,
+        kv_cache_type_v=kv_cache_type_v,
         mmproj=mmproj,
         tensor_split=tensor_split,
         batch_size=batch_size,
+        expert_offload=expert_offload,
     )
     return _parse_estimate(_run_parser(argv, path_str), path_str)
 
@@ -196,9 +206,11 @@ def estimator_argv(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: str,
+    kv_cache_type_v: str,
     mmproj: str | None,
     tensor_split: tuple[int, ...],
     batch_size: int | None,
+    expert_offload: tuple[str, ...] = (),
 ) -> list[str]:
     """The gguf-parser command line for one instance's sizing parameters."""
     argv = [
@@ -214,7 +226,7 @@ def estimator_argv(
         _FLAG_CACHE_K,
         kv_cache_type,
         _FLAG_CACHE_V,
-        kv_cache_type,
+        kv_cache_type_v,
         _FLAG_FLASH if flash_attn else _FLAG_NO_FLASH,
         _FLAG_JSON,
     ]
@@ -230,6 +242,14 @@ def estimator_argv(
             ",".join(str(p) for p in tensor_split),
             _FLAG_SPLIT_MODE,
             _SPLIT_MODE_LAYER,
+        ]
+    if expert_offload:
+        # Without these the estimate charges the GPU for experts the launch keeps
+        # in system memory, and the planner sizes slots against a footprint that
+        # never materializes.
+        argv += [
+            _FLAG_OVERRIDE_TENSOR,
+            ",".join(f"{pattern}={_BUFFER_TYPE_CPU}" for pattern in expert_offload),
         ]
     if mmproj is not None:
         argv += [_FLAG_MMPROJ, mmproj]

@@ -277,35 +277,43 @@ background the moment the app opens. Ask something before it's ready and the
 answer bubble carries the load until your answer streams. Nothing freezes and
 nothing is silently queued.
 
-By default the engine lives and dies with lilbee: launch starts it, quit frees
-all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
-while lilbee is closed, but it means the first answer of a session waits out the
-engine load. If you relaunch lilbee often, opt into a persistent engine in
-Settings:
+One engine serves every lilbee process on the machine: open a second TUI, point
+a coding agent at `lilbee mcp`, or run `lilbee serve` alongside, and they all
+bind to the same loaded models instead of building their own. The engine stops
+when the last lilbee process exits, so the machine is left clean by default; no
+VRAM, RAM, or stray processes are held while nothing is running. Two knobs
+adjust that:
 
-- **Keep engine warm** leaves the engine running when you quit, and the next
-  session's first answer skips the load entirely.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
-  five minutes by default (the same idea as Ollama's keep_alive). The memory
-  frees itself after that many idle minutes; a small proxy process stays behind,
-  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
-- **`lilbee engine stop`** frees everything immediately from any terminal, no
-  TUI needed.
+- **Keep engine warm** lets the engine outlive lilbee entirely, so the next
+  session's first answer skips the load. Recommended if you relaunch often or
+  use lilbee mainly through coding agents, whose sessions come and go.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory in
+  every mode, warm included, five minutes by default (the same idea as Ollama's
+  keep_alive). The memory frees itself after that many idle minutes; a small
+  proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
+  loaded until the engine stops.
+- **`lilbee engine stop`** frees the shared engine immediately from any
+  terminal, no TUI needed, whichever process started it. It reaches the machine
+  slot and this project root's own overflow engine; a private overflow engine
+  built for a different project root is stopped by running the command from
+  that root.
 
-Turning the setting off returns to the on-demand default and stops the engine at
-the next opportunity. Both knobs live in the TUI Settings screen,
-MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
-launch after a reboot is always a cold one.
+Both knobs live in the TUI Settings screen, MCP `lilbee_settings_set`, the HTTP
+config API, and `config.toml`. Changing a model takes effect on your next
+prompt, from whichever surface you changed it. If no one else is using the
+engine it restarts on the new configuration; if other lilbee processes are
+serving from it, theirs keeps running and yours either rebinds, when the
+running engine already serves what you asked for, or starts its own alongside
+it. The first launch after a reboot is always a cold one.
 
-To stop a warm engine without opening the TUI:
+To stop the engine without opening the TUI:
 
 ```bash
 lilbee engine stop
 ```
 
 It reports whether anything was running, frees the GPU immediately, and is safe
-to run at any time. Turning **Keep engine warm** off also cleans the engine up
-at the next launch of any lilbee command.
+to run at any time.
 
 ## Memory
 
@@ -688,13 +696,25 @@ lilbee serve --port 8080               # fixed port
 lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1)
 ```
 
-The surface covers search (with SSE streaming variants for `ask` and `chat`),
+One server runs per data dir: a second `lilbee serve` against the same
+`--data-dir` waits up to fifteen seconds for the first to exit, then stops with an
+error (exit code 3) instead of competing for the port file and the model engine. A supervisor
+that manages several data dirs (the Obsidian plugin's shared root) can pass
+`LILBEE_EXCLUSIVE_SCOPE=<dir>` to extend the same guarantee across all of them;
+the refusal then names the data dir the running server is serving. To replace a
+running server, ask it to stop with `POST /api/shutdown` (token-authed): it
+shuts down exactly as an external SIGTERM would, and its locks release the
+moment it exits.
+
+Every route needs the session token, reads included, `GET /api/health` among
+them; the daemon writes the token to `server.json` (mode `0600`) next to the
+port file, and `lilbee agent-config` hands it to local clients. The surface
+covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary; reads work with a read-only token,
-writes need a full one), configuration (including a defaults endpoint
-that powers per-setting reset), and status/health. The
+delete, and the compaction summary), configuration (including a defaults
+endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the
@@ -879,6 +899,8 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
+| `LILBEE_CPU_MOE` | `false` | Keep a mixture-of-experts model's expert weights in system memory so it fits a smaller GPU. Only the ~3B active parameters stay on the card, which is what lets an 80B MoE run on a single consumer GPU. No effect on dense models, which have no expert tensors |
+| `LILBEE_N_CPU_MOE` | *(none)* | Offload only the first N layers' experts instead of all of them. Takes precedence over `LILBEE_CPU_MOE`; a smaller N keeps more of the model on the GPU, so tune it up until the model fits |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 | `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
 
@@ -890,6 +912,8 @@ Only relevant when running the HTTP server.
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
+| `LILBEE_EXCLUSIVE_SCOPE` | *(none)* | Directory that at most one server may serve at a time, on top of the per-data-dir lock. A second `lilbee serve` pointed at the same scope waits up to fifteen seconds, then exits with an error naming the data dir the running server is serving. Managed supervisors set this (the Obsidian plugin passes its shared root) |
+| `LILBEE_ENGINE_DIR` | *(platform default)* | Where the shared engine slot lives. Every lilbee on the machine binds the engine recorded here rather than starting its own, so pointing two installs at the same path makes them share one fleet. Set this when the default lands on a filesystem without working file locks, where lilbee declines to share and logs that it is doing so |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |

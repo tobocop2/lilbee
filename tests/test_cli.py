@@ -1,5 +1,6 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import contextlib
 import json
 import logging
 import os
@@ -1229,6 +1230,12 @@ class TestSearch:
         result = runner.invoke(app, ["search", "q", "--top-k", "500"])
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_rejects_non_positive_top_k(self, mock_svc):
+        for bad in ("0", "-3"):
+            result = runner.invoke(app, ["search", "q", "--top-k", bad])
+            assert result.exit_code != 0
+        mock_svc.searcher.search.assert_not_called()
 
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
@@ -3812,6 +3819,49 @@ class TestSelfCheck:
         assert not d.exists()
         fake_swap.shutdown.assert_called_once()
 
+    def test_self_check_chat_uses_the_planners_flash_and_kv_decision(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The self-check exists to exercise the flags a real request drives.
+
+        The flash-attention value and the KV cache types are one decision (a
+        quantized V cache is invalid without flash attention), so this path asks
+        the planner rather than rebuilding the rule and drifting from it.
+        """
+        from lilbee.cli.commands import setup
+        from lilbee.core.config.enums import KvCacheType
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.roles import WorkerRole
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(tmp_path / "wd"))
+        (tmp_path / "wd").mkdir()
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        captured: dict[str, list[str]] = {}
+
+        class _Swap:
+            def start(self, launches):
+                captured["argv"] = launches[0].argv
+                raise RuntimeError("stop here")
+
+            def shutdown(self, *_a, **_k):
+                pass
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: _Swap()
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+
+        argv = captured["argv"]
+        assert argv[argv.index("--flash-attn") + 1] == "auto"
+        assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+        assert "--cache-type-v" not in argv
+
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
@@ -3850,6 +3900,8 @@ class TestSelfCheck:
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",
+            "cpu_moe",
+            "n_cpu_moe",
             "main_gpu",
             "gpu_devices",
         }
@@ -4432,3 +4484,46 @@ def test_mcp_command_applies_data_dir_then_starts(tmp_path):
     # The override was applied before the server started, not merely parsed: main()
     # observed cfg.data_root already pointing at the alt root.
     assert applied_root == [alt]
+
+
+def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, tmp_path) -> None:
+    """The diagnostic must launch the same command line the fleet would.
+
+    The fleet applies expert offload to every role it launches. When the
+    self-check gated it on the embed role, an MoE embedding model with offload
+    configured got a launch with no --override-tensor from the diagnostic and
+    one with it from the fleet, so the check could fail a full-VRAM load the
+    fleet would have offloaded -- the disagreement this shared-flags work exists
+    to remove.
+    """
+    from lilbee.cli.commands import setup as setup_mod
+    from lilbee.providers.fleet import adapters as adapters_mod
+    from lilbee.providers.roles import WorkerRole
+
+    captured: dict[str, object] = {}
+    real_build = adapters_mod.build_server_argv
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(adapters_mod, "build_server_argv", _spy)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+    )
+    from lilbee.core.config import cfg as real_cfg
+
+    monkeypatch.setattr(real_cfg, "cpu_moe", True, raising=False)
+    monkeypatch.setattr(real_cfg, "n_cpu_moe", None, raising=False)
+
+    model = tmp_path / "embed.gguf"
+    model.write_bytes(b"")
+    with contextlib.suppress(Exception):  # spawning the server is not under test
+        setup_mod._self_check_server(WorkerRole.EMBED, model)
+
+    assert captured, "build_server_argv was never reached; the test proves nothing"
+    assert captured.get("cpu_moe") is True, "embed self-check dropped the fleet's offload"

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -136,6 +137,24 @@ class TestSearchRoute:
     def test_invalid_chunk_type_rejected_with_400(self, client):
         resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
         assert resp.status_code == 400
+
+
+class TestSearchDoesNotLeakInternals:
+    """/api/search errors stay generic even for authorized callers."""
+
+    def test_unexpected_failure_hides_the_exception_text(self, client, caplog):
+        boom = RuntimeError("no such table '/home/tobias/data/lancedb/chunks'")
+        with (
+            mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=boom),
+            caplog.at_level("ERROR"),
+        ):
+            resp = client.get("/api/search", params={"q": "x"})
+        assert resp.status_code == 503
+        body = resp.text
+        assert "/home/tobias" not in body
+        assert "lancedb" not in body
+        # The operator still needs the real cause; it goes to the log, not the wire.
+        assert "no such table" in caplog.text
 
 
 class TestAskRoute:
@@ -617,10 +636,12 @@ class TestStreamSingleFlightGate:
 class TestEmbeddingMismatchSurfacing:
     """A downloaded index built with a different embedder surfaces as an actionable
     error, not a generic 503/stream failure. The store raises
-    EmbeddingModelMismatchError; non-stream routes translate it to a 409 whose
-    ``extra`` carries the index's embedder so the client can offer to adopt it,
-    and the streaming path emits an SSE error carrying the INDEX_EMBEDDER_MISMATCH
-    code plus that embedder in ``detail``."""
+    EmbeddingModelMismatchError; the token-gated non-stream routes translate it to
+    a 409 whose ``extra`` carries the index's embedder so the client can offer to
+    adopt it, and the streaming path emits an SSE error carrying the
+    INDEX_EMBEDDER_MISMATCH code plus that embedder in ``detail``. The
+    unauthenticated search route reports the same 409 with the embedder refs
+    redacted."""
 
     PERSISTED = "orgA/repoA/modelA.gguf"
 
@@ -635,13 +656,20 @@ class TestEmbeddingMismatchSurfacing:
         )
 
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock)
-    def test_search_route_returns_structured_409(self, mock_search, client):
+    def test_search_route_returns_409_without_naming_the_embedders(self, mock_search, client):
+        """Search is the one unauthenticated route here, so it redacts.
+
+        The adoptable flag stays, since a client renders its recovery hint from
+        it and a bare yes/no identifies nothing; the embedder refs do not, since
+        anyone who can reach the port would otherwise learn which models the
+        machine runs.
+        """
         mock_search.side_effect = self._mismatch()
         resp = client.get("/api/search", params={"q": "x"})
         assert resp.status_code == 409
         body = resp.json()
-        assert self.PERSISTED in body["detail"]
-        assert body["extra"]["persisted_model"] == self.PERSISTED
+        assert self.PERSISTED not in resp.text
+        assert "persisted_model" not in body.get("extra", {})
         assert body["extra"]["adoptable"] is True
 
     @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
@@ -709,7 +737,7 @@ class TestModelsPullArchPrecheck:
         from lilbee.catalog.compat import UnsupportedArchError
 
         manager = mock.MagicMock()
-        manager._enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+        manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
         with mock.patch(
             "lilbee.server.handlers.models.get_services",
             return_value=mock.MagicMock(model_manager=manager),
@@ -1411,12 +1439,12 @@ class TestSetupCrawlerRoutes:
         assert resp.status_code == 200
         assert resp.json()["installed"] is False
 
-    def test_status_route_is_read_only(self):
-        """Parity with the other status GETs: no auth token required to poll."""
-        from lilbee.server.auth import is_read_only
+    def test_status_route_is_gated_by_the_middleware(self):
+        """Reports whether Chromium is installed, which is host inventory."""
+        from lilbee.server.auth import authenticates_itself
         from lilbee.server.routes.setup import setup_crawler_status_route
 
-        assert is_read_only(setup_crawler_status_route.fn)
+        assert not authenticates_itself(setup_crawler_status_route.fn)
 
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
@@ -1480,15 +1508,31 @@ class TestLifespan:
             pass
 
     @mock.patch("lilbee.server.app.get_services")
-    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+    async def test_a_raising_embedding_check_warns_and_does_not_block(self, mock_get_svc, caplog):
+        """A check that raises leaves the server usable for everything but embedding."""
         mock_svc = mock.MagicMock()
-        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("model file is corrupt")
         mock_get_svc.return_value = mock_svc
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            pass
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert "Failed to validate embedding model" in caplog.text
+
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_unavailable_embedding_model_warns_and_does_not_block(self, mock_get_svc, caplog):
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.return_value = False
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
         mock_get_svc.assert_called()
+        assert "Embedding model validated" not in caplog.text
+        assert "embedding" in caplog.text.lower()
 
     @mock.patch("lilbee.server.app.peek_services")
     @mock.patch("lilbee.server.app.get_services")
@@ -1531,7 +1575,46 @@ class TestSessionManagerPersistence:
         fresh_manager.token = None
         second = fresh_manager.load_or_generate()
         assert second == first
-        assert fresh_manager.token == first
+
+    def test_concurrent_boots_converge_on_one_token(self, fresh_manager):
+        """Two workers booting together must end up with the same token.
+
+        Without serialization both see no file and mint their own; the last
+        write wins and the loser rejects every client that read the file.
+        """
+        import threading
+        import time
+
+        from lilbee.server import auth as auth_mod
+        from lilbee.server.auth import SessionManager
+
+        first_inside_generate = threading.Event()
+        resume_first = threading.Event()
+        real_generate = auth_mod.secrets.token_urlsafe
+        gated = {"done": False}
+
+        def slow_first_generate(n: int) -> str:
+            if not gated["done"]:
+                gated["done"] = True
+                first_inside_generate.set()
+                resume_first.wait(timeout=5)
+            return real_generate(n)
+
+        second = SessionManager()
+        with mock.patch.object(auth_mod.secrets, "token_urlsafe", slow_first_generate):
+            t1 = threading.Thread(target=fresh_manager.load_or_generate)
+            t1.start()
+            assert first_inside_generate.wait(timeout=5)
+            # First manager is past its read, paused before its write.
+            t2 = threading.Thread(target=second.load_or_generate)
+            t2.start()
+            time.sleep(0.1)
+            resume_first.set()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert fresh_manager.token is not None
+        assert second.token == fresh_manager.token
 
     def test_regenerates_when_file_is_empty(self, fresh_manager):
         from lilbee.server.auth import server_json_path
@@ -1605,7 +1688,9 @@ class TestSessionManagerPersistence:
 
     def test_load_or_generate_on_win32_skips_chmod(self, fresh_manager, monkeypatch) -> None:
         """On Windows the chmod branch is skipped; file must still be created and readable."""
-        monkeypatch.setattr("lilbee.server.auth.sys.platform", "win32")
+        # The platform check lives in core.security now, with auth and settings
+        # both calling through it.
+        monkeypatch.setattr("lilbee.core.security.sys.platform", "win32")
         token = fresh_manager.load_or_generate()
         assert isinstance(token, str)
         assert len(token) >= 32
@@ -1731,7 +1816,7 @@ class TestAuthMiddleware:
             auth_mod.session_manager.token = old
 
     @pytest.mark.asyncio
-    async def test_read_only_handler_passes_through(self, middleware):
+    async def test_a_self_authenticating_handler_passes_through(self, middleware):
         import lilbee.server.auth as auth_mod
 
         old = auth_mod.session_manager.token
@@ -1739,7 +1824,7 @@ class TestAuthMiddleware:
         try:
             handler = mock.MagicMock()
 
-            @auth_mod.read_only
+            @auth_mod.auth_checked_in_handler
             def _ro_route() -> None: ...
 
             handler.fn = _ro_route
@@ -1825,6 +1910,12 @@ class TestAuthRequiredRoutes:
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
         assert resp.status_code == 401
 
+    def test_shutdown_requires_auth(self, auth_client):
+        # The remote shutdown is the most abuse-sensitive mutating route; pin that
+        # it is bearer-protected so a future @read_only slip fails loud here.
+        resp = auth_client.post("/api/shutdown")
+        assert resp.status_code == 401
+
 
 class _StubEmbedder:
     truncated_total = 0
@@ -1869,7 +1960,8 @@ class TestExportRoute:
         assert row["source"] == "doc.pdf"
         assert resp.headers["content-disposition"] == 'attachment; filename="pages.jsonl"'
 
-    def test_read_only_without_token(self, dataset_store):
+    def test_a_caller_without_the_token_gets_nothing(self, dataset_store):
+        """/api/export serializes the entire corpus; this asserted a 200."""
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
@@ -1878,7 +1970,7 @@ class TestExportRoute:
             resp = TestClient(create_app()).get("/api/export")
         finally:
             auth_mod.session_manager.token = None
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_unknown_source_is_400(self, dataset_store, client):
         resp = client.get("/api/export", params={"source": "missing.pdf"})
@@ -1888,6 +1980,39 @@ class TestExportRoute:
     def test_bad_format_is_400(self, dataset_store, client):
         resp = client.get("/api/export", params={"format": "csv"})
         assert resp.status_code == 400
+
+    async def test_serialization_runs_off_the_event_loop(self, dataset_store):
+        """export_to_bytes serializes the whole dataset in memory; a large export
+        must not stall every other request, so it runs in a worker thread."""
+        import threading
+
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.app import dataset as dataset_mod
+        from lilbee.server.app import create_app
+
+        real = dataset_mod.export_to_bytes
+        seen: list[int] = []
+
+        def record(fmt, source=None):
+            seen.append(threading.get_ident())
+            return real(fmt, source)
+
+        loop_tid = threading.get_ident()
+        import lilbee.server.auth as auth_mod
+
+        with mock.patch.object(dataset_mod, "export_to_bytes", record):
+            async with AsyncTestClient(create_app()) as client:
+                # The app lifespan mints the token, so read it after startup
+                # rather than planting one that startup would overwrite.
+                token = auth_mod.session_manager.token
+                resp = await client.get(
+                    "/api/export",
+                    params={"format": "jsonl"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert seen and seen[0] != loop_tid
 
 
 class TestImportRoute:
@@ -1949,3 +2074,93 @@ class TestPlacementSetRoute:
         """DELETE placement is refused on the shared HTTP daemon."""
         resp = client.delete("/api/placement")
         assert resp.status_code == 409
+
+
+class TestShutdownRoute:
+    def test_raises_sigterm_only_after_the_response_is_sent(self, client):
+        """No guessed delay: the ordering is the framework's, not a timer's."""
+        import signal as signal_mod
+
+        with mock.patch.object(signal_mod, "raise_signal") as raise_signal:
+            response = client.post("/api/shutdown")
+            assert response.status_code == 202
+            assert response.json() == {"status": "shutting_down"}
+            # The background task runs as part of the same ASGI cycle, after the
+            # body is handed to the transport -- so by the time the client holds
+            # the response the signal has already been raised, with no window in
+            # which a slow flush could lose the race to a wall-clock timer.
+            raise_signal.assert_called_once_with(signal_mod.SIGTERM)
+
+
+class TestPaginationAndTopKLowerBounds:
+    """Upper bounds without lower bounds let 0 and negatives through.
+
+    LanceDB's plain-query ``limit`` treats anything <= 0 as no limit, so
+    ``?limit=0`` returned the whole table, which is what pagination exists to
+    prevent. A negative ``top_k`` reached the store and surfaced as a 503,
+    blaming the server for a bad request.
+    """
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_documents_limit_rejects_non_positive(self, client, value):
+        resp = client.get("/api/documents", params={"limit": value})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_catalog_limit_rejects_non_positive(self, client, value):
+        resp = client.get("/api/models/catalog", params={"limit": value})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_search_top_k_rejects_non_positive(self, client, value):
+        resp = client.get("/api/search", params={"q": "x", "top_k": value})
+        assert resp.status_code == 400
+
+    def test_ask_rejects_negative_top_k_but_keeps_zero(self, client):
+        """Zero is a documented pure-LLM call, so only negatives are invalid."""
+        assert client.post("/api/ask", json={"question": "q", "top_k": -1}).status_code == 400
+
+        with mock.patch(
+            "lilbee.server.handlers.ask",
+            new_callable=AsyncMock,
+            return_value={"answer": "a", "sources": []},
+        ):
+            resp = client.post("/api/ask", json={"question": "q", "top_k": 0})
+        assert resp.status_code == 201
+
+    def test_chat_rejects_negative_top_k(self, client):
+        resp = client.post("/api/chat", json={"question": "q", "history": [], "top_k": -1})
+        assert resp.status_code == 400
+
+
+class TestReadOnlyDecoratorOrdering:
+    """The registry keys on the raw function, so stacking order is load-bearing.
+
+    Applied above the route decorator it registers the handler object instead;
+    the middleware's handler.fn lookup then misses. Reversed, the same class of
+    mistake silently opens a route, so the ordering is enforced.
+    """
+
+    def test_applying_it_above_the_route_decorator_is_rejected(self):
+        from litestar import get
+
+        from lilbee.server.auth import auth_checked_in_handler
+
+        with pytest.raises(TypeError, match="below the route decorator"):
+
+            @auth_checked_in_handler
+            @get("/api/example")
+            async def _wrong_order() -> dict[str, str]:
+                return {}
+
+    def test_applying_it_below_the_route_decorator_registers(self):
+        from litestar import get
+
+        from lilbee.server.auth import auth_checked_in_handler, authenticates_itself
+
+        @get("/api/example-ok")
+        @auth_checked_in_handler
+        async def _right_order() -> dict[str, str]:
+            return {}
+
+        assert authenticates_itself(_right_order.fn)

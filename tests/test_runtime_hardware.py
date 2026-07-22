@@ -125,3 +125,25 @@ def test_family_size_variants_handles_missing_param_or_quant() -> None:
     [only] = family_size_variants(family)
     assert only.size_label == "--"
     assert only.params == ""
+
+
+def test_expert_offload_headroom_is_capacity_not_free_right_now(monkeypatch) -> None:
+    """The fit budget it joins is capacity-based; mixing bases makes it drift.
+
+    Sizing from what is free this instant made a catalog entry fit or not fit
+    depending on whatever else the machine was doing, and shrank the budget
+    exactly when another model was already resident.
+    """
+    from lilbee.core.config import cfg
+    from lilbee.providers import model_cache
+    from lilbee.runtime import hardware
+
+    monkeypatch.setattr(cfg, "cpu_moe", True, raising=False)
+    monkeypatch.setattr(cfg, "n_cpu_moe", None, raising=False)
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.5, raising=False)
+    monkeypatch.setattr(model_cache, "has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(model_cache, "total_system_memory", lambda: 64 * 10**9)
+    # A machine busy right now must not shrink a capacity-based budget.
+    monkeypatch.setattr(model_cache, "free_system_memory", lambda: 1 * 10**9)
+
+    assert hardware._expert_offload_headroom() == 32 * 10**9
