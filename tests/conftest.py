@@ -48,11 +48,9 @@ def _patch_executor_daemon_threads() -> None:
     non-daemon and block xdist worker process exit. On 3.12+ interpreter
     shutdown handles this correctly.
 
-    LanceDB spawns a non-daemon ``LanceDBBackgroundEventLoop`` tokio thread
-    with no close() API. On ubuntu 3.11 these accumulate across tests in
-    test_store.py and the process wedges shortly after. On 3.12+ interpreter
-    shutdown handles it. Daemonify both at Thread.__init__ so start() runs
-    them as daemons.
+    LanceDB's ``LanceDBBackgroundEventLoop`` thread used to need daemonizing
+    here too, but the pinned lancedb already creates it ``daemon=True``, so only
+    the executor workers remain.
     """
     if sys.version_info >= (3, 12):
         return
@@ -62,7 +60,7 @@ def _patch_executor_daemon_threads() -> None:
 
     def _init_with_daemon(self: threading.Thread, *args: object, **kwargs: object) -> None:
         _real_init(self, *args, **kwargs)  # type: ignore[misc]
-        if getattr(self, "_target", None) is _tmod._worker or "LanceDB" in self.name:
+        if getattr(self, "_target", None) is _tmod._worker:
             self.daemon = True
 
     threading.Thread.__init__ = _init_with_daemon  # type: ignore[assignment]
@@ -307,19 +305,34 @@ def _no_leaked_task_workers():
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Safety net: join non-daemon threads that outlive the test.
+    """Join non-daemon threads that outlive the test; fail the test that leaks one.
 
     Daemon threads (executor workers, litestar QueueListeners) are safe to
     ignore since they won't block process exit. Only non-daemon threads need
     explicit joining to prevent xdist hangs.
+
+    A non-daemon thread still alive after the join is exactly the precondition
+    for the Windows xdist wedge: it survives loop teardown and keeps posting to
+    the closing loop's self-pipe. Silently giving up hides the leaking test; name
+    it and fail it so the owner (not a random later victim) is on the hook.
     """
     before = set(threading.enumerate())
     yield
+    leaked: list[str] = []
     for thread in threading.enumerate():
         if thread in before or thread is threading.current_thread():
             continue
         if thread.is_alive() and not thread.daemon:
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                leaked.append(thread.name)
+    if leaked:
+        pytest.fail(
+            f"Test leaked non-daemon thread(s) still alive after a 2s join: {leaked}. "
+            "A non-daemon thread that outlives the test wedges the xdist worker on "
+            "Windows (it keeps posting to the torn-down loop's self-pipe). Join or "
+            "daemonize it before the test returns."
+        )
 
 
 @pytest.fixture(autouse=True)
