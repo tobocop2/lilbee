@@ -20,7 +20,6 @@ from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
-from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
@@ -33,10 +32,17 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
 
 
 def _fake_launch(
-    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0, replica: int = 0
+    role: WorkerRole,
+    *,
+    model: str = "",
+    slots: int = 1,
+    ctx: int = 0,
+    weights_bytes: int = 0,
+    replica: int = 0,
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
+    launch.model = model or f"model-{role.value}"
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
@@ -54,14 +60,15 @@ class _FakeSwap:
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
-        self.bound = True
+        self.bound = False  # bound to a shared engine (set by the adopt/bind path)
+        self.bound_lifetime = True  # spawned with the crash-orphan death binding
 
     def reap_stale(self) -> None:
         self.reaps += 1
 
     def start(self, launches: list, **kwargs: object) -> None:
         self.started.append(launches)
-        self.bound = bool(kwargs.get("bind_lifetime", True))
+        self.bound_lifetime = bool(kwargs.get("bind_lifetime", True))
         self.running = True
 
     def endpoint(self) -> str:
@@ -84,23 +91,44 @@ class _FakeSwap:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_probe(monkeypatch):
-    """No test in this module may probe real hardware or resolve real binaries.
+def _no_real_probe(monkeypatch, tmp_path_factory):
+    """No test in this module may probe real hardware, resolve real binaries, or
+    touch the real per-user machine engine slot.
 
-    capture_plan_probe resolves the engine binary and spawns device probes; on a
-    host without the bundled engine (CI) it raises, and on a dev box it silently
-    probes the real GPUs. Tests that exercise the capture lifecycle override
-    this stub with their own recorder.
+    capture_plan_probe and placeable_total_vram both resolve the engine binary
+    and spawn device probes; on a host without the bundled engine (CI) they raise,
+    and on a dev box they silently probe the real GPUs. machine_engine_dir would
+    otherwise let parallel tests collide on one real directory. Tests that
+    exercise these override the stubs with their own recorders; placeability is
+    stubbed true so a configured role is placeable unless a test says otherwise.
     """
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    mslot = tmp_path_factory.mktemp("machine-slot")
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: mslot)
 
 
-def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
-    """Patch the swap, client, and planner so _ensure_fleet builds controllable fakes."""
+def _install_engine(
+    monkeypatch, tmp_path: Path, *, launches: list, swap: _FakeSwap | None = None
+) -> _FakeSwap:
+    """Patch the swap, client, planner, and ladder so _ensure_fleet builds fakes.
+
+    The machine slot points at a fresh dir under the test's tmp_path, so tests
+    never touch the real per-user engine slot and leave nothing behind, and
+    stop_engine is inert (fakes own no processes).
+    """
+    import tempfile
+
     swap = swap or _FakeSwap()
+    machine = Path(tempfile.mkdtemp(prefix="lilbee-test-slot-", dir=tmp_path))
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
-    monkeypatch.setattr(prov_mod, "sweep_owned", lambda _data_dir: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
@@ -233,19 +261,19 @@ def test_embed_routes_to_least_busy_replica() -> None:
     busy.embed.assert_not_called()
 
 
-def test_adopt_group_builds_a_client_per_replica(monkeypatch) -> None:
+def test_adopt_group_builds_a_client_per_replica(monkeypatch, tmp_path: Path) -> None:
     launches = [_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED)]
-    _install_engine(monkeypatch, launches=launches)
+    _install_engine(monkeypatch, tmp_path, launches=launches)
     p = FleetProvider()
     p._ensure_fleet()
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
-def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch) -> None:
+def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_path: Path) -> None:
     # The plan reports a configured-but-missing chat model; _plan_and_spawn records
     # it so the warm finalizer can fail chat with a named reason. The installed embed
     # role still starts.
-    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
@@ -259,22 +287,162 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch) -> No
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
-def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
+def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
+    # A reload with nothing running recaptures the probe like a first build; a
+    # wedged probe there must fail loud, not silently leave the box empty. The
+    # raise lands before the stop phase, so no running group is torn down.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+
+    def _wedged() -> None:
+        raise ProviderError(
+            "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
+    p = FleetProvider()  # no swaps: the resurrect path recaptures the probe
+    with pytest.raises(ProviderError) as excinfo:
+        p._reload_pass()
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # A missing binary on the reload resurrect path aborts quietly (nothing to
+    # serve), mirroring the build path rather than raising.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+
+    def _no_binary() -> None:
+        raise ProviderError(
+            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+    p = FleetProvider()
+    p._reload_pass()  # must not raise
+    assert p._swaps == {}
+
+
+def test_drop_group_prunes_its_dir_entry() -> None:
+    # A dir entry must not outlive its group: a stale entry makes _reload_dir see
+    # two dirs and pick one arbitrarily, splitting the provider across dirs.
+    p = FleetProvider()
+    group = SwapGroup.CHAT
+    p._swaps = {group: _FakeSwap()}
+    p._group_dirs = {group: Path("/slot/a")}
+    p._drop_group(group)
+    assert group not in p._group_dirs
+
+
+def test_drop_swap_refs_clears_the_dir_map() -> None:
+    # A full teardown leaves no group, so it must leave no dir map either.
+    p = FleetProvider()
+    p._group_dirs = {SwapGroup.CHAT: Path("/slot/a"), SwapGroup.EMBED: Path("/slot/b")}
+    p._drop_swap_refs()
+    assert p._group_dirs == {}
+
+
+def test_restart_engines_releases_and_prunes_holds(monkeypatch, tmp_path: Path) -> None:
+    # A config-change restart must release membership and clear the hold map: a
+    # stale hold would later evict a foreign engine that claimed the dir, and keep
+    # it falsely live so its real last user could never reap it.
+    from lilbee.runtime.engine_lock import hold_user_lock, live_users_exist
+
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: hold_user_lock(tmp_path)}
+    assert live_users_exist(tmp_path) is True  # we hold membership
+
+    p._release_engines(config_changed=True)
+
+    assert p._engine_holds == {}  # hold map pruned
+    assert live_users_exist(tmp_path) is False  # membership released, not left stale
+    assert stopped == [tmp_path]  # engine stopped for the config change
+
+
+def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch) -> None:
+    # A provider bound to another process's engine owns none of its groups. A model
+    # change must not restart the group "in place": a bound manager's shutdown only
+    # detaches, so restarting spawns a SECOND full fleet into the shared slot, sized
+    # blind against the incumbent's resident VRAM (an OOM on a small-VRAM box). The
+    # binder must drop its binding and re-run the acquisition ladder instead.
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    built: list = []
+
+    def _record_manager(data_dir, group):
+        built.append((data_dir, group))
+        return _FakeSwap()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", _record_manager)
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    reacquired: list[bool] = []
+
+    def _fake_acquire(_root) -> bool:
+        reacquired.append(True)
+        return False  # rebound/overflowed off the shared slot; nothing to preload
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_engine", _fake_acquire)
+    bound_swap = _FakeSwap()
+    bound_swap.bound = True
+    group = SwapGroup.CHAT
+    p._swaps = {group: bound_swap}
+    p._role_group = {WorkerRole.CHAT: group}
+    p._group_dirs = {group: prov_mod.machine_engine_dir()}
+
+    p._reload_pass()
+
+    assert reacquired == [True]  # re-acquired through the ladder, not restarted in place
+    assert bound_swap.shutdowns == 1  # the binding was dropped (detached)
+    assert built == []  # no duplicate fleet spawned into the shared slot
+
+
+def test_reload_of_a_bound_engine_preloads_the_reacquired_roles(monkeypatch) -> None:
+    # When the re-acquire lands (rebinds or overflows), the reload warms the roles
+    # it now serves off-thread, just like an owned restart does.
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    kicked = _stub_warm_thread(monkeypatch)
+
+    def _fake_acquire(_root) -> bool:
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}  # ladder adopted the role
+        return True
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_engine", _fake_acquire)
+    monkeypatch.setattr(p, "_release_engines", lambda: None)
+    bound_swap = _FakeSwap()
+    bound_swap.bound = True
+    p._swaps = {SwapGroup.CHAT: bound_swap}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert kicked and kicked[0]["name"] == "fleet-reload-warm"  # roles warmed off-thread
+
+
+def test_ensure_fleet_refused_after_shutdown(monkeypatch, tmp_path: Path) -> None:
     """bb-dpp source guard: once shut down (and likely discarded by reset_services),
     a lingering warm-up/reload thread's _ensure_fleet must not spawn a new llama-swap
     on the dead provider -- that is exactly the duplicate that leaks on teardown."""
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     p._shutdown_swap()  # latches _shut_down (and reaps via a fresh SwapManager)
     assert p._ensure_fleet() is False
     assert swap.started == []  # no swap started after shutdown
 
 
-def test_adopt_group_retires_old_clients_without_closing(monkeypatch) -> None:
+def test_adopt_group_retires_old_clients_without_closing(monkeypatch, tmp_path: Path) -> None:
     # Re-adopting (a reload) must not close old clients in place (a
     # reader may still hold one); they are retired for deferred close.
     launch = _fake_launch(WorkerRole.EMBED)
-    swap = _install_engine(monkeypatch, launches=[launch])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
     p = FleetProvider()
     old = [_fake_client(), _fake_client()]
     p._clients = {WorkerRole.EMBED: old}
@@ -323,7 +491,7 @@ def test_drop_swap_refs_closes_retiring_clients() -> None:
     p._clients = {WorkerRole.EMBED: [live]}
     p._retiring_clients = [retiring]
 
-    p._drop_swap_refs()
+    p._drop_swap_refs(close_all=True)
 
     live.close.assert_called_once_with()
     retiring.close.assert_called_once_with()
@@ -341,6 +509,12 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
     monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: "m-rerank" if role is WorkerRole.RERANK else "",
+    )
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
         planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
     )
@@ -435,15 +609,70 @@ def test_fit_chat_context_raises_context_overflow_when_unfixable() -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
-def test_fit_chat_context_reserves_requested_max_tokens() -> None:
-    from lilbee.providers.base import ProviderError
+def test_fit_chat_context_clamps_a_greedy_output_reservation() -> None:
+    """A num_predict the window cannot honor shrinks to the floor, not an error.
+
+    Agent clients reserve output from their own (under-counting) prompt
+    estimate; a prompt that fits the window with the default generation room
+    must be served, with llama-server stopping at the context edge if the
+    generation runs long.
+    """
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 2000
+    msgs = [{"role": "user", "content": "x" * 2000}]
+    out = p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
+    assert out[-1]["content"] == "x" * 2000
+
+
+def test_fit_chat_context_keeps_history_a_greedy_reservation_would_evict() -> None:
+    """The clamp is a policy, not a rescue: it must fire before history is lost.
+
+    An agent that reserves most of the window on every call left a prompt
+    budget of a few dozen tokens. The final turn still squeezed in, so the fit
+    "succeeded" and the reservation was honored verbatim -- silently dropping
+    the entire conversation on exactly the clients the clamp exists for.
+    """
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 8192
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for i in range(10):
+        msgs.append({"role": "user", "content": f"turn {i} " + "x" * 200})
+        msgs.append({"role": "assistant", "content": "y" * 200})
+    msgs.append({"role": "user", "content": "final"})
+
+    greedy = p._fit_chat_context(msgs, None, {"num_predict": 8000}, "m")
+
+    # The same history the default reservation preserves, not a bare final turn.
+    assert greedy == p._fit_chat_context(msgs, None, None, "m")
+    assert len(greedy) > 2
+
+
+def test_fit_chat_context_honors_a_small_output_reservation() -> None:
+    """Capping the reserve at the default must not shrink a modest request."""
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 8192
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for i in range(200):
+        msgs.append({"role": "user", "content": f"turn {i} " + "x" * 200})
+        msgs.append({"role": "assistant", "content": "y" * 200})
+    msgs.append({"role": "user", "content": "final"})
+
+    # A caller wanting only 16 tokens out earns more prompt room, not less.
+    small = p._fit_chat_context(msgs, None, {"num_predict": 16}, "m")
+    default = p._fit_chat_context(msgs, None, None, "m")
+    assert len(small) > len(default)
+
+
+def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     p._chat_ctx = 2000
-    # a large num_predict shrinks the prompt budget below what a modest history needs
-    msgs = [{"role": "user", "content": "x" * 3000}]
-    with pytest.raises(ProviderError):
+    # far beyond ctx minus the floor reserve: no reservation shrink can save it
+    msgs = [{"role": "user", "content": "x" * 40_000}]
+    with pytest.raises(ProviderError) as excinfo:
         p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
@@ -837,6 +1066,32 @@ def test_chat_streams_from_server() -> None:
     client.chat_stream_items.assert_called_once()
 
 
+def test_chat_stream_with_no_frames_yields_nothing() -> None:
+    # Priming must pass an immediately-exhausted stream through, not error on it.
+    client = _fake_client(0)
+    client.chat_stream_items.return_value = iter([])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == []
+
+
+def test_chat_stream_close_before_iteration_releases_the_request() -> None:
+    closed: list[bool] = []
+
+    def _frames():
+        try:
+            yield "a"
+            yield "b"
+        finally:
+            closed.append(True)
+
+    client = _fake_client(0)
+    client.chat_stream_items.return_value = _frames()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    stream.close()  # truncated before consuming anything
+    assert closed == [True]  # the source stream (and its request slot) was released
+
+
 def test_supports_rerank_always_true() -> None:
     # llama-server reranks any cross-encoder GGUF via --pooling rank.
     assert FleetProvider().supports_rerank() is True
@@ -1123,9 +1378,9 @@ def test_pdf_ocr_without_server_raises() -> None:
 # --- llama-swap lifecycle ----------------------------------------------------
 
 
-def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch) -> None:
+def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch, tmp_path: Path) -> None:
     launches = [_fake_launch(WorkerRole.CHAT, slots=4, ctx=32768), _fake_launch(WorkerRole.EMBED)]
-    swap = _install_engine(monkeypatch, launches=launches)
+    swap = _install_engine(monkeypatch, tmp_path, launches=launches)
     p = FleetProvider()
     assert p._ensure_fleet() is True
     assert len(swap.started) == 2  # one start per placed role group
@@ -1136,8 +1391,8 @@ def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch) -> None:
     assert len(swap.started) == 2
 
 
-def test_ensure_fleet_defaults_chat_slots_without_chat_launch(monkeypatch) -> None:
-    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+def test_ensure_fleet_defaults_chat_slots_without_chat_launch(monkeypatch, tmp_path: Path) -> None:
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
     p = FleetProvider()
     p._ensure_fleet()
     assert p._chat_slots == 1  # no chat launch -> default capacity
@@ -1177,7 +1432,9 @@ def test_ensure_fleet_reaps_stale_swaps_before_planning(monkeypatch) -> None:
         planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
     )
     FleetProvider()._ensure_fleet()
-    assert order == ["reap", "plan"]
+    # A placeable-set plan precedes the reap (it reads total VRAM, reap-independent);
+    # the sizing plan that sees free VRAM still runs after the reap.
+    assert order[-2:] == ["reap", "plan"]
 
 
 def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
@@ -1196,7 +1453,7 @@ def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     assert order == ["reap", "plan"]
 
 
-def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
+def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
     started = {"swaps": 0}
@@ -1206,7 +1463,7 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
             started["swaps"] += 1
             super().start(launches)
 
-    _install_engine(monkeypatch, launches=[], swap=_CountingSwap())
+    _install_engine(monkeypatch, tmp_path, launches=[], swap=_CountingSwap())
     p = FleetProvider()
     assert p._ensure_fleet() is False
     assert started["swaps"] == 0  # never started
@@ -1301,18 +1558,18 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
     assert len(swap.started) == 1  # routing the first chat started the swap
-    assert swap.bound is True  # bound to this process by default so a crash cannot orphan it
+    assert swap.bound_lifetime is True  # bound by default so a crash cannot orphan it
 
 
-def test_keep_engine_warm_starts_the_swap_unbound(monkeypatch) -> None:
+def test_keep_engine_warm_starts_the_swap_unbound(monkeypatch, tmp_path: Path) -> None:
     """A warm engine must outlive lilbee, so it is spawned without the death binding."""
     monkeypatch.setattr(cfg, "keep_engine_warm", True)
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
 
     FleetProvider()._ensure_fleet()
 
     assert swap.started  # the fleet was built
-    assert swap.bound is False  # keep_engine_warm: not bound to this process
+    assert swap.bound_lifetime is False  # keep_engine_warm: not bound to this process
 
 
 def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
@@ -1356,27 +1613,26 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     assert starts["n"] == 1  # single-flight: 8 concurrent first-requests start one swap
 
 
-def test_shutdown_tears_down_swap_and_closes_clients() -> None:
+def test_shutdown_drops_refs_and_closes_clients() -> None:
+    # Engine processes are stopped through stop_engine (last-out), never by
+    # signalling tracked swaps: shutdown's provider-side job is refs and clients.
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
-    swap = next(iter(p._swaps.values()))
     p.shutdown()
-    assert swap.shutdowns == 1
     client.close.assert_called_once()
     assert p._swaps == {}
+    assert p._shut_down is True
 
 
-def test_invalidate_load_cache_drops_swap() -> None:
+def test_invalidate_load_cache_drops_swap_refs() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    swap = next(iter(p._swaps.values()))
     p.invalidate_load_cache()
-    assert swap.shutdowns == 1
     assert p._swaps == {}
 
 
-def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
+def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
     """A cache drop is not terminal: the next use rebuilds the swap."""
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.invalidate_load_cache()
@@ -1385,14 +1641,14 @@ def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
     assert p._swaps.get(WorkerRole.CHAT) is swap
 
 
-def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch) -> None:
+def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
     """The off-thread drop used by settings changes must not latch shutdown.
 
     app.settings routes num_ctx/kv_cache_type changes here while retaining the
     provider; a latched flag would refuse every later chat/embed/rerank call
     until process restart.
     """
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.drop_loaded_models_async()
@@ -1411,7 +1667,7 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
+def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> None:
     # The eager warm-up at TUI mount must not block the caller; it dispatches a
     # background start thread and returns immediately.
     started = threading.Event()
@@ -1423,7 +1679,9 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_SlowSwap())
+    swap = _install_engine(
+        monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)], swap=_SlowSwap()
+    )
     p = FleetProvider()
     p.warm_up_pool()
     assert started.wait(timeout=5.0)  # start runs on a background thread
@@ -1432,7 +1690,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
     assert _wait_until(lambda: p._swaps.get(WorkerRole.CHAT) is swap)
 
 
-def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
+def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch, tmp_path: Path) -> None:
     starts = {"n": 0}
     in_start = threading.Event()
     release = threading.Event()
@@ -1444,7 +1702,9 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_GatedSwap())
+    swap = _install_engine(
+        monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)], swap=_GatedSwap()
+    )
     p = FleetProvider()
     p.warm_up_pool()
     assert in_start.wait(timeout=5.0)  # first start genuinely in flight
@@ -1454,12 +1714,12 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
     assert starts["n"] == 1
 
 
-def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch) -> None:
+def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch, tmp_path: Path) -> None:
     # A fully-loaded fleet (swap up AND its role ready) short-circuits: no swap
     # restart and no re-warm thread. The cold-role counterpart, where the swap is
     # up but the model idle-unloaded, is covered by the rewarm test above.
     starts = {"n": 0}
-    swap = _install_engine(monkeypatch, launches=[])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[])
     monkeypatch.setattr(swap, "start", lambda launches: starts.__setitem__("n", starts["n"] + 1))
     ready_swap = _FakeSwap()
     ready_swap.ready = {WorkerRole.CHAT}
@@ -1556,6 +1816,13 @@ def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatc
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+    # The placeable-set query plans too; give it a fleet so the build proceeds to
+    # the wedged clean-box snapshot, which is what must surface.
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
 
     def _wedged() -> None:
         raise ProviderError("The GPU device probe did not respond", kind=ProviderErrorKind.SERVER)
@@ -1576,10 +1843,29 @@ def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> Non
     def _no_binary() -> None:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
+    # A missing binary surfaces first when the placeable set is planned; nothing
+    # is placeable, so the ladder serves nothing without ever reaching a build.
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
     assert p._ensure_fleet() is False
     assert p._swaps == {}
+
+
+def test_plan_and_spawn_serves_nothing_if_the_binary_vanishes_before_the_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The placeable-set plan and _can_build_engine both confirmed the binary, so
+    # this NOT_FOUND guard fires only if it is removed before the clean-box
+    # snapshot; it must serve nothing, not raise.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _no_binary() -> None:
+        raise ProviderError("binary vanished", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+
+    assert FleetProvider()._plan_and_spawn(tmp_path) is False
 
 
 def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> None:
@@ -1878,12 +2164,10 @@ def test_role_ready_reflects_swap_running_state() -> None:
 
 def test_drop_loaded_models_async_tears_down_off_thread() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    swap = next(iter(p._swaps.values()))
     p.drop_loaded_models_async()
-    # Wait on the actual shutdown rather than ``_swap is None``: the worker clears
-    # the ref before it calls swap.shutdown(), so the latter is the later signal.
-    assert _wait_until(lambda: swap.shutdowns == 1)
-    assert p._swaps == {}
+    # The off-thread worker drops the refs; the engine restart itself goes
+    # through stop_engine on the held dirs (none in this fixture).
+    assert _wait_until(lambda: p._swaps == {})
 
 
 def test_drop_loaded_models_async_noop_without_swap() -> None:
@@ -2194,6 +2478,9 @@ class _FakeReplica:
     def mark_healthy(self) -> None:
         self.healthy = True
 
+    def close(self) -> None:
+        """Rediscovery retires the pool; a real client's close releases httpx."""
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         if self.fail is not None:
@@ -2247,14 +2534,17 @@ class TestReplicaHealthRouting:
         p.embed(["b"])  # routed straight to the healthy replica now
         assert dead.calls == dead_calls_after_failover
 
-    def test_all_dead_surfaces_provider_error(self) -> None:
+    def test_all_dead_surfaces_provider_error(self, monkeypatch, tmp_path) -> None:
+        # All replicas dead now triggers one engine rediscovery; when the
+        # rebuild serves nothing (as here), that emptiness is what surfaces.
         import httpx as _httpx
 
         from lilbee.providers.base import ProviderError
 
+        _install_ladder(monkeypatch, tmp_path, launches=[])
         only = _FakeReplica(fail=_httpx.ConnectError("refused"))
         p = _provider_with_clients({WorkerRole.EMBED: [only]})
-        with pytest.raises(ProviderError, match="no healthy replica"):
+        with pytest.raises(ProviderError, match="No embed model server"):
             p.embed(["a"])
 
     def test_vision_ocr_fails_over_to_healthy_replica(self, monkeypatch) -> None:
@@ -2333,10 +2623,14 @@ class TestReplicaHealthRouting:
     def test_retry_connection_failure_marks_the_second_replica_unhealthy(self) -> None:
         import httpx as _httpx
 
+        from lilbee.providers.base import ProviderError
+
         dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
         also_dead = _FakeReplica(in_flight=5, fail=_httpx.ConnectError("refused"))
         p = _provider_with_clients({WorkerRole.EMBED: [dead, also_dead]})
-        with pytest.raises(_httpx.ConnectError):
+        # An exhausted pool triggers one engine rediscovery; with no engine to
+        # rebuild here, that surfaces the no-server error, not the transport one.
+        with pytest.raises(ProviderError, match="No embed model server"):
             p.embed(["a"])
         assert dead.healthy is False
         assert also_dead.healthy is False  # the retry target is taken out too
@@ -2633,7 +2927,7 @@ class TestReloadSingleFlight:
             return planning_mod.FleetPlan(())
 
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-        monkeypatch.setattr(prov_mod, "sweep_owned", lambda _d: None)
+        monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(planning_mod, "plan_all_launches", _slow_plan)
         reloader = threading.Thread(target=p._reload_blocking)
         reloader.start()
@@ -2645,8 +2939,8 @@ class TestReloadSingleFlight:
         gate.set()
         reloader.join(timeout=5.0)
         shutter.join(timeout=5.0)
-        # The reload's stop phase ran first (nothing planned -> group stops), then
-        # the terminal shutdown's sweep; serialized on the build lock either way.
+        # The reload's stop phase ran (nothing planned -> group stops); the
+        # terminal shutdown then dropped refs, serialized on the build lock.
         assert order == ["shutdown"]
         assert p._swaps == {}  # the shutdown's state cleanup still landed
 
@@ -2871,7 +3165,7 @@ def test_rebuild_role_restarts_only_that_role(monkeypatch) -> None:
     assert live.shutdowns == 0
 
 
-def test_co_tenant_roles_share_one_swap_process(monkeypatch) -> None:
+def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> None:
     """Chat and vision must land in the same llama-swap process; only a shared process
     can evict one to load the other. Separate processes would hold both resident."""
     groups: list[SwapGroup] = []
@@ -2882,9 +3176,18 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch) -> None:
 
     chat, vision = _fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.VISION)
     embed = _fake_launch(WorkerRole.EMBED)
+    import tempfile
+
     monkeypatch.setattr(prov_mod, "SwapManager", _factory)
+    monkeypatch.setattr(
+        prov_mod,
+        "machine_engine_dir",
+        lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
+    )
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-    monkeypatch.setattr(prov_mod, "sweep_owned", lambda _d: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(
@@ -2975,8 +3278,18 @@ def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
 class TestPlanProbeLifecycle:
     """The provider owns the plan snapshot: captured on clean-box builds only."""
 
-    def _wire(self, monkeypatch, order: list[str]) -> None:
+    def _wire(self, monkeypatch, tmp_path: Path, order: list[str]) -> None:
+        import tempfile
+
         monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: _FakeSwap())
+        monkeypatch.setattr(
+            prov_mod,
+            "machine_engine_dir",
+            lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
+        )
+        monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+        monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+        monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: order.append("reap"))
         monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: order.append("capture"))
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
@@ -2988,20 +3301,25 @@ class TestPlanProbeLifecycle:
             ),
         )
 
-    def test_first_build_snapshots_after_reaping(self, monkeypatch) -> None:
+    def test_first_build_snapshots_after_reaping(self, monkeypatch, tmp_path: Path) -> None:
         # Capture must follow the reap (a dead owner's servers still hold VRAM
         # before it) and precede planning (the plan sizes against the snapshot).
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         FleetProvider()._ensure_fleet()
-        assert order == ["reap", "capture", "plan"]
+        # The clean-box snapshot and the sizing plan it feeds still follow the reap;
+        # a placeable-set plan (total-VRAM, reap-independent) may precede it.
+        assert order[-3:] == ["reap", "capture", "plan"]
+        assert "capture" not in order[: order.index("reap")]
 
-    def test_reload_with_a_loaded_fleet_reuses_the_snapshot(self, monkeypatch) -> None:
+    def test_reload_with_a_loaded_fleet_reuses_the_snapshot(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
         # THE #474 follow-up regression guard: re-planning while our own fleet
         # holds VRAM must not re-probe (which would shrink ctx/slots and diff
         # every launch); the boot snapshot stays the sizing basis.
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -3010,9 +3328,9 @@ class TestPlanProbeLifecycle:
         assert "capture" not in order
         assert "plan" in order
 
-    def test_resurrect_reload_recaptures_the_clean_box(self, monkeypatch) -> None:
+    def test_resurrect_reload_recaptures_the_clean_box(self, monkeypatch, tmp_path: Path) -> None:
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._reload_pass(force=frozenset((WorkerRole.CHAT,)))  # nothing running
@@ -3070,156 +3388,6 @@ class TestWarmErrorsClearedOnTeardown:
         assert "did not finish loading" in p._chat_load_failure()
 
 
-class TestWarmDetachOnShutdown:
-    def _provider_with_fake_swaps(self, count: int = 2):
-        provider = FleetProvider()
-        fakes = []
-        for group in list(SwapGroup)[:count]:
-            fake = MagicMock()
-            provider._swaps[group] = fake
-            fakes.append(fake)
-        return provider, fakes
-
-    def test_warm_shutdown_detaches_and_never_kills(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider.shutdown()
-        for fake in fakes:
-            fake.detach.assert_called_once()
-            fake.shutdown.assert_not_called()
-
-    def test_warm_shutdown_still_latches(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, _ = self._provider_with_fake_swaps()
-        provider.shutdown()
-        assert provider._shut_down is True
-
-    def test_default_shutdown_kills_exactly_as_before(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", False)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider.shutdown()
-        for fake in fakes:
-            fake.shutdown.assert_called_once_with()
-            fake.detach.assert_not_called()
-
-    def test_cache_drop_kills_even_when_warm(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider._shutdown_swap(latch=False)
-        for fake in fakes:
-            fake.shutdown.assert_called_once_with()
-            fake.detach.assert_not_called()
-
-
-class TestAdoptDetachedFleet:
-    """Adoption binds to a warm fleet only when version, health, and models match."""
-
-    def _detached_fleet(self, tmp_path, **chat_kwargs):
-        """Detached chat + embed groups matching the configured models."""
-        self._detached_state(tmp_path, **chat_kwargs)
-        self._detached_state(
-            tmp_path,
-            group=SwapGroup.EMBED,
-            proxy_port=4199,
-            launches=[
-                InstanceLaunch(
-                    role=WorkerRole.EMBED,
-                    argv=["/bin/llama-server"],
-                    env_overrides={},
-                    model=cfg.embedding_model,
-                ).to_state()
-            ],
-        )
-
-    def _detached_state(
-        self, tmp_path, *, version=None, launches=None, group=SwapGroup.CHAT, proxy_port=4099
-    ):
-        import json as _json
-        from importlib.metadata import version as _pkg_version
-
-        from lilbee.providers.fleet import swap_manager as sm
-
-        payload = {
-            "pid": 999_998,
-            "owner_pid": 999_999,
-            "member_ports": [proxy_port + 1],
-            "proxy_port": proxy_port,
-            "lilbee_version": version or _pkg_version("lilbee"),
-            "detached": True,
-            "launches": launches
-            if launches is not None
-            else [
-                InstanceLaunch(
-                    role=WorkerRole.CHAT,
-                    argv=["/bin/llama-server"],
-                    env_overrides={},
-                    model=cfg.chat_model,
-                    slots=4,
-                    ctx=8192,
-                ).to_state()
-            ],
-        }
-        path = tmp_path / sm._state_filename(999_999, group.value)
-        path.write_text(_json.dumps(payload))
-        return path
-
-    def _adopting_provider(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        monkeypatch.setattr(cfg, "data_dir", tmp_path)
-        # chat + embed configured (embed can never be empty); optional roles off.
-        monkeypatch.setattr(cfg, "vision_model", "")
-        monkeypatch.setattr(cfg, "reranker_model", "")
-        provider = FleetProvider()
-        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: True)
-        return provider
-
-    def test_adopts_a_matching_fleet_without_planning(self, monkeypatch, tmp_path) -> None:
-        self._detached_fleet(tmp_path)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        planned = MagicMock()
-        monkeypatch.setattr(prov_mod.planning, "plan_all_launches", planned)
-        assert provider._ensure_fleet() is True
-        planned.assert_not_called()
-        assert provider.role_ready is not None  # fleet bound
-        assert provider._chat_slots == 4
-        assert provider._chat_ctx == 8192
-
-    def test_version_drift_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        path = self._detached_state(tmp_path, version="0.0.0+stale")  # stale chat
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_model_mismatch_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        launches = [
-            InstanceLaunch(
-                role=WorkerRole.CHAT,
-                argv=["/bin/llama-server"],
-                env_overrides={},
-                model="somebody/else-GGUF/else.gguf",
-            ).to_state()
-        ]
-        path = self._detached_state(tmp_path, launches=launches)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_dead_proxy_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        path = self._detached_state(tmp_path)
-        self._detached_fleet(tmp_path)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: False)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_missing_configured_role_aborts(self, monkeypatch, tmp_path) -> None:
-        self._detached_state(tmp_path)  # serves CHAT only, but embed is configured
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-
-
 class TestLaunchStateRoundTrip:
     def test_round_trips_every_field(self) -> None:
         launch = InstanceLaunch(
@@ -3238,36 +3406,1133 @@ class TestLaunchStateRoundTrip:
         assert rebuilt == launch
 
 
-class TestAdoptableLaunchGuards:
-    def test_undecodable_launch_record_is_rejected(self, monkeypatch) -> None:
-        from importlib.metadata import version as _pkg_version
+# ── The engine acquisition ladder ───────────────────────────────────
 
-        from lilbee.providers.fleet import swap_manager as sm
 
-        state = sm._SwapState(
-            pid=1,
-            pgid=None,
-            owner_pid=None,
-            owner_created_at=None,
-            lilbee_version=_pkg_version("lilbee"),
-            launches=({"garbage": True},),
+def _engine_state_file(engine_dir: Path, group: str, *, pin: str, model: str, role: str) -> Path:
+    """A live engine's state record as another process would have written it."""
+    import json
+
+    from lilbee.providers.fleet import swap_manager as sm
+
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    path = engine_dir / sm._state_filename(999_999, group)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": 999_998,
+                "member_ports": [4000],
+                "proxy_port": 4100,
+                "launches": [
+                    {
+                        "role": role,
+                        "argv": ["/bin/llama-server"],
+                        "env_overrides": {},
+                        "model": model,
+                    }
+                ],
+                "engine_pin": pin,
+            }
         )
-        assert prov_mod._adoptable_launches(state) is None
+    )
+    return path
 
-    def test_empty_launch_record_is_rejected(self) -> None:
-        from importlib.metadata import version as _pkg_version
 
-        from lilbee.providers.fleet import swap_manager as sm
+class _BindableSwap(_FakeSwap):
+    """A fake swap that can also bind to an existing engine record."""
 
-        state = sm._SwapState(
-            pid=1,
-            pgid=None,
-            owner_pid=None,
-            owner_created_at=None,
-            lilbee_version=_pkg_version("lilbee"),
-            launches=(),
+    def __init__(self) -> None:
+        super().__init__()
+        self.binds: list[object] = []
+        self.bind_result = True
+        self.bound = False
+
+    def bind(self, state) -> bool:
+        self.binds.append(state)
+        if self.bind_result:
+            self.bound = True
+        return self.bind_result
+
+
+def _install_ladder(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    launches: list,
+    swap: _BindableSwap | None = None,
+    pin: str = "pin-a",
+):
+    """Point the ladder at a tmp machine dir with controllable fakes."""
+    swap = swap or _BindableSwap()
+    machine = tmp_path / "machine-slot"
+    built_dirs: list[Path] = []
+
+    def _swap_factory(data_dir, _group):
+        built_dirs.append(Path(data_dir))
+        return swap
+
+    monkeypatch.setattr(prov_mod, "SwapManager", _swap_factory)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: pin)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    # Everything the test configures is placeable and buildable unless overridden.
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
+    monkeypatch.setattr(
+        prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+    )
+    return swap, machine, built_dirs
+
+
+def _chat_launch() -> InstanceLaunch:
+    return InstanceLaunch(
+        role=WorkerRole.CHAT, argv=["/bin/llama-server"], env_overrides={}, model="m-chat"
+    )
+
+
+def test_ladder_never_kills_a_live_engine_on_a_probe_failure(monkeypatch, tmp_path: Path) -> None:
+    """A busy engine whose proxy probe transiently fails must survive.
+
+    Membership (a live user lock), not the HTTP health probe, decides whether an
+    engine may be replaced. With every probe failing (fd exhaustion, host thrash)
+    but a live user present, the ladder must not reap or stop the engine; it
+    overflows to the private dir instead.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    reaped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda d, **_k: reaped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # every probe fails
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the engine is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert machine not in stopped and machine not in reaped  # the live engine is untouched
+    holder.release_and_check_last()
+
+
+def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Path) -> None:
+    """A process that can serve nothing must not stop an engine left warm.
+
+    keep_engine_warm leaves the machine engine running with no live users. A
+    process whose models are all unplaceable (or whose binary is missing) would
+    otherwise stop that warm engine and then spawn nothing.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "_placeable_wanted", lambda: set())  # nothing placeable
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # serves nothing...
+    assert stopped == []  # ...but never stops the warm engine
+
+
+def test_ladder_binds_when_a_configured_role_is_unplaceable(monkeypatch, tmp_path: Path) -> None:
+    """A configured-but-unplaceable role must not keep the engine restarting.
+
+    The engine serves the installed chat model; embed is configured but not
+    installed, so a fresh plan omits it. wanted must reflect that placeable set
+    so bind matches and the engine is never stopped and rebuilt (the storm).
+    """
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed-missing"}.get(role.value, ""),
+    )
+    # embed's model is not installed, so the planner would drop it; chat is fine.
+    monkeypatch.setattr(
+        planning_mod,
+        "role_model_placeable",
+        lambda role, _ref, _vram: role is WorkerRole.CHAT,
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1  # bound to the running engine...
+    assert swap.started == [] and stopped == []  # ...never stopped or rebuilt
+
+
+def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []  # bound, never built
+    # Binding must take membership too, or a peer's clean exit stops the engine
+    # this process is actively using -- the multi-process bug the ladder exists
+    # to prevent. Only the build path asserted this before.
+    assert list((machine / "engine-users").glob("*.lock"))
+
+
+def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.started  # built
+    assert built and built[0] == machine  # into the machine slot
+    users = list((machine / "engine-users").glob("*.lock"))
+    assert len(users) == 1  # holding membership
+
+
+def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []  # incompatible: never bound
+    assert swap.started  # built instead
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    holder.release_and_check_last()
+
+
+def test_ladder_private_path_stops_short_when_it_cannot_build(monkeypatch, tmp_path: Path) -> None:
+    """Overflow to the private dir also refuses to build when nothing is buildable,
+    rather than stopping a private incumbent it cannot replace."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # live foreign incumbent forces overflow
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # can't build, so the private path serves nothing
+    assert swap.started == []
+    holder.release_and_check_last()
+
+
+def test_ladder_replaces_an_unused_incompatible_machine_engine(monkeypatch, tmp_path: Path) -> None:
+    """A wrong-shape incumbent nobody holds a user lock on is replaced in place.
+
+    A fleet built while only some configured models were installed serves a
+    partial contract; once its builder exits, overflowing around it would
+    poison the machine slot for every later arrival.
+    """
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []  # incompatible: never bound
+    assert stopped == [machine]  # the unused incumbent was stopped...
+    assert built and built[0] == machine  # ...and the slot rebuilt, not overflowed
+
+
+def test_last_out_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert stopped == [machine]
+    assert not list((machine / "engine-users").glob("*.lock"))
+
+
+def test_not_last_leaves_the_engine(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    peer = hold_user_lock(machine, pid=555_555)
+    p.shutdown()
+    assert stopped == []
+    peer.release_and_check_last()
+
+
+def _bindable_machine(monkeypatch, tmp_path: Path):
+    """A machine slot holding an engine any compatible provider can bind."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    return swap, machine
+
+
+def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The machine slot is shared; whose config decides must not be exit order."""
+    swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    warm = FleetProvider()
+    assert warm._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain = FleetProvider()
+    assert plain._ensure_fleet() is True
+    assert swap.started == []  # both bound the one machine engine
+
+    warm.shutdown()
+    plain.shutdown()  # last out, and its own config says stop
+    assert stopped == []
+
+
+def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """The opt-in belongs to the engine, so it outlives the process that made it."""
+    _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain = FleetProvider()
+    assert plain._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    warm = FleetProvider()
+    assert warm._ensure_fleet() is True
+
+    warm.shutdown()  # the opt-in user leaves first
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain.shutdown()  # last out, reading a config that says stop
+    assert stopped == []
+
+
+def test_opting_in_after_binding_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """The setting doesn't affect the load, so a flip never re-acquires."""
+    _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p.shutdown()
+    assert stopped == []
+
+
+def test_a_config_change_leaves_an_engine_other_users_are_serving(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """One member's settings change must not interrupt every peer's requests."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    peer = hold_user_lock(machine, pid=555_555)
+
+    p.invalidate_load_cache()
+
+    assert stopped == []  # the peer is mid-request; we rebind or overflow on next use
+    assert p._engine_holds == {}  # our membership is gone either way
+    peer.release_and_check_last()
+
+
+def test_a_config_change_stops_an_engine_no_one_else_is_using(monkeypatch, tmp_path: Path) -> None:
+    """Nothing keeps a stale-config engine resident once its last user leaves."""
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    # Even an explicit warm opt-in does not preserve an engine built for a
+    # configuration that no longer exists.
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    p.invalidate_load_cache()
+
+    assert stopped == [machine]
+
+
+def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
+    """The mark describes one engine instance; the next one starts unmarked."""
+    from lilbee.providers.fleet.swap_manager import stop_engine
+    from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
+
+    request_keep_warm(tmp_path)
+    assert keep_warm_requested(tmp_path) is True
+    stop_engine(tmp_path)
+    assert keep_warm_requested(tmp_path) is False
+
+
+def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert stopped == []
+
+
+def test_ttl_applies_even_with_warm_on(monkeypatch) -> None:
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
+    assert prov_mod._warm_ttl_seconds() == 420
+
+
+def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert p._shut_down is True
+
+
+def test_config_change_restarts_the_engine_and_releases_membership(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.invalidate_load_cache()
+    assert stopped == [machine]  # the shared engine restarts for everyone
+    # Membership is released, not kept: a retained hold would let a later config
+    # change stop a foreign engine that claimed the slot, and keep it falsely live.
+    # The next use re-runs the ladder and re-acquires membership in whatever dir it
+    # rebuilds into.
+    assert not list((machine / "engine-users").glob("*.lock"))
+    assert p._engine_holds == {}
+    assert p._shut_down is False  # provider reusable; next use rebuilds
+
+
+def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1  # bound in the overflow dir
+    assert swap.started == []
+    assert list((private / "engine-users").glob("*.lock"))  # membership in the bound dir
+    holder.release_and_check_last()
+
+
+def test_ladder_replaces_an_unused_incompatible_private_engine(monkeypatch, tmp_path: Path) -> None:
+    """The private dir gets the same replacement rule: no stacked second fleet."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # machine incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [private]  # unused private incumbent stopped, machine's left alone
+    assert built and built[0] == private
+    holder.release_and_check_last()
+
+
+def test_ladder_does_not_kill_a_live_incompatible_overflow_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The overflow dir never evicts or stacks on a live in-use incompatible engine.
+
+    With the machine slot held by one live setup and the overflow dir held by
+    another, there is nowhere further to go; the ladder serves nothing rather than
+    kill the overflow incumbent or load a second fleet's weights beside it.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    machine_holder = hold_user_lock(machine, pid=999_888)  # machine incumbent in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    private_holder = hold_user_lock(private, pid=999_777)  # overflow incumbent in live use too
+
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # nowhere to serve
+    assert stopped == []  # neither live incumbent was killed
+    assert built == []  # no second fleet stacked into the overflow dir
+
+    machine_holder.release_and_check_last()
+    private_holder.release_and_check_last()
+
+
+def test_ladder_returns_false_when_overflow_has_nothing_to_serve(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False
+    assert swap.binds == [] and swap.started == []
+    holder.release_and_check_last()
+
+
+def test_ladder_ignores_groups_serving_only_unwanted_models(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    # A pin-matching group serving a model nobody asked for: no bind, and with
+    # no live users it is replaced along with the rest of the unused engine.
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-unrelated", role="embed")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []
+    assert stopped == [machine]  # unused wrong-shape incumbent replaced
+    assert swap.started  # built fresh in the machine slot
+
+
+def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _SecondBindFails(_BindableSwap):
+        def __init__(self) -> None:
+            super().__init__()
+            self.results = [True, False]
+            self.shutdowns_after_bind = 0
+
+        def bind(self, state) -> bool:
+            self.binds.append(state)
+            return self.results.pop(0)
+
+        def shutdown(self) -> None:
+            self.shutdowns_after_bind += 1
+            super().shutdown()
+
+    swap = _SecondBindFails()
+    # The placeable set (from the plan) is what the ladder tries to bind, so the
+    # plan carries both roles the state files below serve.
+    _swap, machine, _built = _install_ladder(
+        monkeypatch,
+        tmp_path,
+        launches=[
+            _fake_launch(WorkerRole.CHAT, model="m-chat"),
+            _fake_launch(WorkerRole.EMBED, model="m-embed"),
+        ],
+        swap=swap,
+        pin="pin-a",
+    )
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed"}.get(role.value, ""),
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-embed", role="embed")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert len(swap.binds) == 2  # first bound, second refused
+    assert swap.shutdowns_after_bind >= 1  # the earlier bind was rolled back
+
+
+def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pin-equal incumbent missing a wanted group is rebuilt in place, not overflowed.
+
+    The healthy groups serve only wanted models, so the slot is this
+    contract's own engine and its live members are waiting for exactly this
+    rebuild; overflowing around it would load duplicate weights.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch(), _embed_launch()]
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed"}.get(role.value, ""),
+    )
+    # Only the chat group survives; the wanted embed group has no live state.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # a member (e.g. serve) is still live
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [machine]  # the partially dead engine was stopped...
+    assert built and built[0] == machine  # ...and rebuilt in the machine slot
+    holder.release_and_check_last()
+
+
+def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch) -> None:
+    """The bind path handles an undecodable contract itself, not by call ordering.
+
+    Previously the bare decode was safe only because contract_matches ran first and
+    its except clause proved decodability; reordering or dropping that guard turned
+    a non-match into an unhandled exception in the ladder. With the guard stubbed
+    permissive, an undecodable contract must still yield "not bindable" rather than
+    raise.
+    """
+    state = object()  # opaque: the decode is what is under test
+    monkeypatch.setattr(prov_mod, "contract_matches", lambda *_a, **_k: True)  # guard removed
+    monkeypatch.setattr(prov_mod, "decoded_launches", lambda _s: None)  # undecodable record
+
+    assert prov_mod._bindable_group(state, "pin-a", {(WorkerRole.CHAT, "m")}) is None
+
+
+def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> None:
+    """Bind eligibility and replaceability read one snapshot, not two probe passes.
+
+    Every probe runs under the cross-process build lock that gates every other
+    lilbee start, and two passes could also disagree about an engine that died
+    between them.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    probed: list[int | None] = []
+    real_healthy = prov_mod.state_is_healthy
+
+    def counting_probe(state):
+        probed.append(state.proxy_port)
+        return real_healthy(state)
+
+    monkeypatch.setattr(prov_mod, "state_is_healthy", counting_probe)
+    # Want a model the recorded engine does not serve, so the bind fails and the
+    # replaceability check runs too -- the path that used to re-probe. A live
+    # peer keeps that check from short-circuiting on membership.
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-other" if role is WorkerRole.CHAT else ""
+    )
+    peer = hold_user_lock(machine, pid=555_555)
+
+    p = FleetProvider()
+    try:
+        p._ensure_fleet()
+    finally:
+        peer.release_and_check_last()
+
+    assert probed  # the ladder really did probe
+    assert len(probed) == len(set(probed))  # and no port twice in one pass
+
+
+def test_ladder_skips_the_shared_slot_without_kernel_arbitrated_locks(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Membership is only meaningful when the kernel releases locks on death.
+
+    On a filesystem where flock is unavailable, probing a live member's lock
+    destroys it, so the shared slot would look free while another setup serves
+    from it. The ladder must keep to this config root's own dir instead.
+    """
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    assert swap.binds == []  # never bound the shared engine
+    assert machine not in p._engine_holds  # and took no membership in it
+
+
+def test_healthy_groups_ours_is_false_with_no_healthy_group() -> None:
+    # The vacuous case: an empty snapshot is "not ours" (live membership owns
+    # that branch); the helper must not claim it.
+    assert prov_mod._healthy_groups_ours({}, "pin-a", {(WorkerRole.CHAT, "m-chat")}) is False
+
+
+def test_ladder_overflows_when_a_live_used_pin_equal_group_serves_unwanted_models(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Pin-equal but serving a model outside the contract: protected while in use."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-unrelated", role="embed")
+    holder = hold_user_lock(machine, pid=999_888)  # that foreign fleet is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"  # overflowed
+    holder.release_and_check_last()
+
+
+# ── Retry-rediscover: a vanished engine gets one ladder re-run ──────
+
+
+def _embed_launch() -> InstanceLaunch:
+    return InstanceLaunch(
+        role=WorkerRole.EMBED, argv=["/bin/llama-server"], env_overrides={}, model="m-embed"
+    )
+
+
+def _connection_error() -> Exception:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+
+
+def test_placeable_wanted_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
+    # A role dropped by co-placement gets no launch, so it is not wanted; bind
+    # then matches a running engine instead of rebuilding it every start. Chat is
+    # configured but the plan below places only embed+rerank (chat could not
+    # co-tenant), so chat is excluded despite being configured.
+    models = {"chat": "m-chat", "embed": "m-embed", "rerank": "m-rerank"}
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: models.get(role.value, ""))
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (
+                _fake_launch(WorkerRole.EMBED, model="m-embed"),
+                _fake_launch(WorkerRole.RERANK, model="m-rerank"),
+            )
+        ),
+    )
+
+    assert prov_mod._placeable_wanted() == {
+        (WorkerRole.EMBED, "m-embed"),
+        (WorkerRole.RERANK, "m-rerank"),
+    }  # chat placed nowhere -> not wanted
+
+
+def test_placeable_wanted_is_empty_without_an_engine_binary(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _no_binary() -> planning_mod.FleetPlan:
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
+
+    assert prov_mod._placeable_wanted() == set()
+
+
+def test_placeable_wanted_propagates_a_real_planning_failure(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _wedged() -> planning_mod.FleetPlan:
+        raise ProviderError("wedged probe", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
+
+    with pytest.raises(ProviderError, match="wedged"):
+        prov_mod._placeable_wanted()
+
+
+def test_release_holds_drops_membership_without_stopping_engines(monkeypatch) -> None:
+    # The rediscover path drops this process's memberships so it does not count
+    # itself a live user and overflow; it must never stop an engine to do so.
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold, Path("/e2"): MagicMock()}
+
+    p._release_holds()
+
+    assert p._engine_holds == {}
+    hold.release_and_check_last.assert_called_once()
+    assert stopped == []
+
+
+def test_rediscover_releases_holds_before_the_retry(monkeypatch) -> None:
+    # A retained self-hold makes the machine slot look in use, overflowing the
+    # rebuild to a private engine; rediscover must release it before retrying.
+    p = FleetProvider()
+    order: list[str] = []
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
+    monkeypatch.setattr(p, "_release_holds", lambda: order.append("release"))
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        order.append("retry")
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert order == ["drop", "release", "retry"]  # holds dropped before the retry
+
+
+def test_rediscover_does_not_close_a_client_a_reader_is_using() -> None:
+    # _with_rediscover reaches _drop_swap_refs on any connection blip. A client
+    # another thread is mid-embed or mid-stream on must be retired, not closed
+    # underneath it; only idle clients close.
+    busy, idle = _fake_client(in_flight=1), _fake_client(in_flight=0)
+    p = _provider_with_clients({WorkerRole.CHAT: [busy], WorkerRole.EMBED: [idle]})
+
+    p._drop_swap_refs()
+
+    busy.close.assert_not_called()  # still streaming: severing it would kill the read
+    assert busy in p._retiring_clients  # kept for a later pass
+    idle.close.assert_not_called()  # retired this pass; closes on the next one
+
+
+def test_connection_failure_rediscovers_once_and_recovers(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.embed.side_effect = _connection_error()
+        else:
+            client.embed.return_value = [[1.0]]
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    assert p.embed(["hello"]) == [[1.0]]
+    assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
+def test_persistent_connection_failure_raises_after_one_retry(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    calls: list[int] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.embed.side_effect = _connection_error()
+        calls.append(1)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    with pytest.raises(ProviderError):
+        p.embed(["hello"])
+    assert len(calls) == 2  # exactly one rediscovery, then the error surfaces
+
+
+def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    calls: list[int] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.embed.side_effect = ProviderError(
+            "boom", provider="llama-server", kind=ProviderErrorKind.SERVER
         )
-        assert prov_mod._adoptable_launches(state) is None
+        calls.append(1)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    with pytest.raises(ProviderError):
+        p.embed(["hello"])
+    assert len(calls) == 1  # no ladder re-run for non-connection failures
+
+
+def _chat_ladder(monkeypatch, tmp_path: Path, client_factory) -> FleetProvider:
+    """A ladder-built provider whose chat clients come from *client_factory*."""
+    _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", client_factory)
+    return FleetProvider()
+
+
+def test_chat_transport_failure_rediscovers_once_and_recovers(monkeypatch, tmp_path: Path) -> None:
+    """A dead llama-swap proxy (raw ConnectError, no HTTP status) still rediscovers.
+
+    A SIGKILLed proxy surfaces as httpx.ConnectError, not as a ProviderError
+    carrying a status; rediscovery must classify both as connection failures.
+    """
+    import httpx
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_result.side_effect = httpx.ConnectError("refused")
+        else:
+            client.chat_result.return_value = "recovered"
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert p.chat([{"role": "user", "content": "hi"}]) == "recovered"
+    assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
+def test_chat_stream_open_failure_rediscovers_once_and_streams(monkeypatch, tmp_path: Path) -> None:
+    """A stream whose open dies on a dead proxy rediscovers before the first frame."""
+    import httpx
+
+    def _dead_stream():
+        raise httpx.ConnectError("refused")
+        yield  # pragma: no cover - unreachable; makes this a generator
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_stream_items.return_value = _dead_stream()
+        else:
+            client.chat_stream_items.return_value = iter(["a", "b"])
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
+    assert len(clients) == 2  # the dead pool was dropped and rebuilt
+
+
+def test_chat_with_tools_transport_failure_rediscovers_once(monkeypatch, tmp_path: Path) -> None:
+    """chat_with_tools gets the same transport-failure rediscovery as chat."""
+    import httpx
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_tools.side_effect = httpx.ConnectError("refused")
+        else:
+            client.chat_tools.return_value = "tools-recovered"
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[]) == "tools-recovered"
+    assert len(clients) == 2
+
+
+def test_can_build_engine_false_when_nothing_placeable() -> None:
+    assert prov_mod._can_build_engine(set()) is False
+
+
+def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
+    # A NOT_FOUND probe failure (no engine binary) is the quiet serve-nothing case.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _boom():
+        raise ProviderError(
+            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+        )
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _boom)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+
+
+def test_can_build_engine_true_with_a_placeable_model_and_binary(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is True
+
+
+def test_can_build_engine_false_when_the_probe_raises_oserror(monkeypatch) -> None:
+    # A probe OSError (a device node vanished, a broken pipe) is not a viable
+    # build; stand down quietly rather than propagate a raw OS error.
+    def _oops() -> None:
+        raise OSError("device node gone")
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _oops)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+
+
+def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
+    # A wedged GPU probe / unusable CUDA runtime (not a missing binary) must fail
+    # loud here, before any caller stops a replaceable incumbent.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _wedged():
+        raise ProviderError(
+            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
+    with pytest.raises(ProviderError) as excinfo:
+        prov_mod._can_build_engine({(WorkerRole.CHAT, "m")})
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A wedged device probe fails loud BEFORE the stop, sparing the incumbent.
+
+    The build precondition captures the probe, so a wedged GPU probe raises before
+    the ladder stops the replaceable incumbent that other members may still hold.
+    Were the probe left to _plan_and_spawn (after the stop), the incumbent would be
+    killed and the raised error would then skip the overflow, leaving zero engines.
+    """
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    real_can_build = prov_mod._can_build_engine  # captured before _install_ladder stubs it
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod, "_can_build_engine", real_can_build)  # exercise the real gate
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # bind fails
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    def _wedged() -> None:
+        raise ProviderError(
+            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
+    # A recorded incumbent with no live users: replaceable, so without the pre-stop
+    # gate the ladder would stop it and then hit the wedge in _plan_and_spawn.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+
+    with pytest.raises(ProviderError) as excinfo:
+        p._ensure_fleet()
+
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION  # failed loud
+    assert stopped == []  # the incumbent was never stopped
+
+
+def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_path: Path) -> None:
+    """A recorded but unprobeable no-user engine is stopped before build, not
+    double-built beside. The stop is keyed on the state file, not the probe."""
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # unprobeable
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    # A recorded engine with no live users (keep_warm orphan): probe fails but the
+    # state file exists, so it must be stopped before the fresh build.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [machine]  # cleared the recorded incumbent...
+    assert built and built[0] == machine  # ...then built fresh in the same slot
+
+
+def test_shutdown_does_not_hang_on_a_wedged_build(monkeypatch) -> None:
+    """A wedged engine start must not make process exit unreachable.
+
+    Every _shut_down check runs after the build lock is taken, so a build that
+    never finishes used to hold shutdown forever rather than for a bounded time.
+    """
+    import threading
+
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_BUILD_LOCK_WAIT_S", 0.2)
+    released: list[str] = []
+    monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
+
+    p._build_lock.acquire()  # stand in for a builder that never returns
+    try:
+        done = threading.Event()
+        threading.Thread(target=lambda: (p.shutdown(), done.set()), daemon=True).start()
+        assert done.wait(timeout=10), "shutdown blocked on the build lock"
+    finally:
+        p._build_lock.release()
+
+    assert released == ["released"]  # teardown ran rather than being skipped
+    assert p._shut_down is True  # and the latch is set for any queued thread
+
+
+def test_shutdown_latches_before_taking_the_build_lock() -> None:
+    """A queued warm thread can only bail early if the flag is already set."""
+    provider = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    seen: list[bool] = []
+
+    class _SpyLock:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def acquire(self, *args, **kwargs):
+            # What a warm or reload thread would observe on getting the lock next.
+            seen.append(provider._shut_down)
+            return self._inner.acquire(*args, **kwargs)
+
+        def release(self) -> None:
+            self._inner.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc) -> None:
+            self.release()
+
+    provider._build_lock = _SpyLock(provider._build_lock)  # type: ignore[assignment]
+    provider.shutdown()
+    assert seen == [True]
 
     def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
         assert FleetProvider()._try_adopt_detached(tmp_path) is False

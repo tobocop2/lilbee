@@ -353,19 +353,41 @@ def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
     assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384) == 1
 
 
-def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
+def test_cache_type_flags_are_absent_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
+
     assert planning_mod.chat_cache_type_flags() == (None, None)
 
 
-def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
+def test_cache_type_flags_use_the_enum_value(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-    monkeypatch.setattr(planning_mod, "_flash_attention_is_trusted", lambda: True)
+    monkeypatch.setattr(cfg, "flash_attention", None)
+
     assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+
+
+def test_only_the_v_cache_falls_back_without_flash_attention(monkeypatch) -> None:
+    # llama.cpp refuses a quantized V cache without flash attention; K needs nothing.
+    from lilbee.core.config.enums import KvCacheType
+
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr(cfg, "flash_attention", False)
+
+    assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+
+
+def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
+    # The estimate must match the KV type actually launched.
+    from lilbee.core.config.enums import KvCacheType
+
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr(cfg, "flash_attention", False)
+    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.Q8_0
+    assert planning_mod._role_kv_cache_type_v(WorkerRole.CHAT) is KvCacheType.F16
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -919,8 +941,10 @@ class TestBuildFleetWiring:
         seen: dict = {}
 
         def _fit(_model_path, *, slots, ratio, per_device_free_bytes, **_k) -> int:
-            seen.update(slots=slots, ratio=ratio, free=per_device_free_bytes)
-            return 5000
+            # Only one full window fits (a tight split): more slots shrink the fit,
+            # so the chooser keeps a single full-context sequence.
+            seen.update(ratio=ratio, free=per_device_free_bytes)
+            return 5000 if slots == 1 else 4000
 
         monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
@@ -928,12 +952,33 @@ class TestBuildFleetWiring:
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
         launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
         assert launch.ctx == 5000
-        # A multi-card chat serves one full-context slot, fit against per-device free.
-        assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS and seen["ratio"] == (1, 1)
+        assert seen["ratio"] == (1, 1)
         assert seen["free"] == [70 * _GB, 60 * _GB]  # per-device free, not the summed pool
-        assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
-        ctx_total = 5000 * planning_mod._SPLIT_CHAT_SLOTS
-        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(ctx_total)
+        assert launch.slots == 1  # tight split: one full-context sequence
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(5000)
+
+    def test_launch_for_split_chat_serves_multiple_slots_when_headroom_holds_them(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A split whose cards hold several full windows serves that many agents
+        # concurrently: the reel/multi-agent case on 2 big cards.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        # Every slot count still reaches the full window: 4 agents fit.
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 65536)
+        d0 = FleetDevice("CUDA", 0, "gpu", 143 * _GB, 130 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 143 * _GB, 130 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
+        assert launch.slots == planning_mod._CHAT_SLOTS  # all four full windows fit
+        assert launch.ctx == 65536  # each agent keeps the full window
+        # --ctx-size is the per-slot window times the slot count.
+        total = 65536 * planning_mod._CHAT_SLOTS
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(total)
 
     def test_launch_for_warns_on_oversize_network_fs_chat(self, tmp_path, monkeypatch, caplog):
         # A chat model served from a network volume that can't fit host RAM keeps
@@ -2068,6 +2113,292 @@ class TestSizingFailureFallsBackToFileSize:
             budget=8 * _GB,
         )
         assert slots == 1
+
+
+def test_expert_offload_is_ignored_on_a_dense_model(monkeypatch) -> None:
+    # No expert tensors to move, so the flag would be a silent no-op.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod.expert_offload_all({"architecture": "qwen3"}) is False
+
+
+def test_expert_offload_applies_to_a_sparse_model(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod.expert_offload_all({"expert_count": "128"}) is True
+
+
+def test_expert_offload_layer_count_applies_to_a_sparse_model(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "n_cpu_moe", 16)
+    assert planning_mod.expert_offload_layers({"expert_count": "128"}) == 16
+
+
+def test_expert_offload_survives_unparsable_expert_count(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod.expert_offload_all({"expert_count": "many"}) is False
+
+
+def test_expert_offload_lets_a_sparse_model_bigger_than_vram_through(monkeypatch) -> None:
+    # Oversize weights are legitimate once a sparse model's experts live in RAM.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is False
+
+
+def test_expert_offload_still_refuses_a_dense_model_over_vram(monkeypatch) -> None:
+    # A dense model gains no offload flags, so its weights really must fit: keep
+    # the guided refusal instead of a raw load-time OOM.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=False) is True
+
+
+def test_oversize_model_is_still_refused_without_expert_offload(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", False)
+    monkeypatch.setattr(cfg, "n_cpu_moe", None)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
+
+
+def test_zero_n_cpu_moe_is_not_effective_offload(monkeypatch) -> None:
+    # n_cpu_moe <= 0 would emit a no-op --n-cpu-moe 0; treat it as no offload, so
+    # a dense OR sparse model over VRAM is still refused rather than silently OOM.
+    monkeypatch.setattr(cfg, "cpu_moe", False)
+    monkeypatch.setattr(cfg, "n_cpu_moe", 0)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._expert_offload_configured() is False
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
+    assert planning_mod.expert_offload_layers({"expert_count": "128"}) is None
+
+
+def test_oversize_sparse_model_is_told_to_offload_its_experts(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: True)
+    with caplog.at_level("WARNING"):
+        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/moe", 80 * 1024**3, 24 * 1024**3)
+    assert "cpu_moe" in caplog.text
+    assert "n_gpu_layers" not in caplog.text
+
+
+def test_oversize_dense_model_is_still_told_to_cut_gpu_layers(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+    with caplog.at_level("WARNING"):
+        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/dense", 80 * 1024**3, 24 * 1024**3)
+    assert "n_gpu_layers" in caplog.text
+    assert "cpu_moe" not in caplog.text
+
+
+def test_ref_is_moe_reads_the_model_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_is_moe", lambda _meta: True)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m/moe.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    assert planning_mod._ref_is_moe("m/moe") is True
+
+
+def test_ref_is_moe_is_false_for_an_unresolvable_model(monkeypatch) -> None:
+    # The caller is already reporting a failure; a metadata read must not raise
+    # over the top of it.
+    def _boom(_ref):
+        raise OSError("gone")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _boom)
+    assert planning_mod._ref_is_moe("m/missing") is False
+
+
+def test_estimator_argv_has_no_override_tensor_without_offload(monkeypatch) -> None:
+    from lilbee.providers.fleet import vram as vram_mod
+
+    # Resolve no real binary: this pins argv construction, and CI runners have no
+    # bundled gguf-parser (resolve would raise and fail the test environmentally).
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+    argv = vram_mod.estimator_argv(
+        "/m/m.gguf",
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=True,
+        kv_cache_type="q8_0",
+        kv_cache_type_v="q8_0",
+        mmproj=None,
+        tensor_split=(),
+        batch_size=None,
+    )
+    assert "--override-tensor" not in argv
+
+
+def test_estimator_argv_charges_offloaded_experts_to_cpu(monkeypatch) -> None:
+    # Without this the estimate charges the GPU for experts the launch keeps in
+    # system memory, and the planner sizes slots against a footprint that never exists.
+    from lilbee.providers.fleet import vram as vram_mod
+
+    # Resolve no real binary: this pins argv construction, and CI runners have no
+    # bundled gguf-parser (resolve would raise and fail the test environmentally).
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+    argv = vram_mod.estimator_argv(
+        "/m/m.gguf",
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=True,
+        kv_cache_type="q8_0",
+        kv_cache_type_v="q8_0",
+        mmproj=None,
+        tensor_split=(),
+        batch_size=None,
+        expert_offload=(r"blk\.0\.ffn_x", r"blk\.1\.ffn_x"),
+    )
+    value = argv[argv.index("--override-tensor") + 1]
+    assert value == r"blk\.0\.ffn_x=CPU,blk\.1\.ffn_x=CPU"
+
+
+def test_estimate_offload_matches_what_the_launch_offloads(monkeypatch, tmp_path: Path) -> None:
+    # The estimate and the launch must move the same tensors or the planner's
+    # budget describes a configuration that never runs.
+    model = tmp_path / "moe.gguf"
+    model.write_bytes(b"x" * 64)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"expert_count": "128"}
+    )
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_cpu_moe", None)
+    from lilbee.providers.fleet.adapters import expert_offload_patterns
+
+    launched = expert_offload_patterns(cpu_moe=True, n_cpu_moe=None)
+    assert planning_mod._role_expert_offload(model) == launched
+
+
+def test_estimate_offloads_nothing_for_a_dense_model(monkeypatch, tmp_path: Path) -> None:
+    model = tmp_path / "dense.gguf"
+    model.write_bytes(b"x" * 64)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+    )
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod._role_expert_offload(model) == ()
+
+
+def test_resolve_split_chat_slots_uses_all_when_every_window_fits() -> None:
+    # fit_fn returns the full window at every slot count -> take the max.
+    slots, ctx = planning_mod._resolve_split_chat_slots(lambda _n: 65536)
+    assert slots == planning_mod._CHAT_SLOTS
+    assert ctx == 65536
+
+
+def test_resolve_split_chat_slots_falls_to_one_on_a_tight_split() -> None:
+    # More slots shrink the per-slot window below the single-slot full window.
+    def fit(n: int) -> int:
+        return 65536 if n == 1 else 20000
+
+    slots, ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 1
+    assert ctx == 65536
+
+
+def test_resolve_split_chat_slots_bounds_the_expensive_probes() -> None:
+    """Every fit_fn call is a full search whose probes shell out to gguf-parser.
+
+    They run while this process holds the cross-process build lock other lilbee
+    starts wait on without a deadline, so the count must grow with the log of
+    the slot ceiling, not with the ceiling itself. The tight split is the case
+    that used to pay for every count.
+    """
+    import math
+
+    probes: list[int] = []
+
+    def fit(n: int) -> int:
+        probes.append(n)
+        return 65536 if n == 1 else 20000  # nothing above one slot fits
+
+    slots, _ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 1
+    budget = 1 + math.ceil(math.log2(planning_mod._CHAT_SLOTS))
+    assert len(probes) <= budget, f"{len(probes)} searches, expected at most {budget}"
+
+
+def test_resolve_split_chat_slots_picks_the_largest_fitting_count() -> None:
+    # Two full windows fit but not three or four.
+    def fit(n: int) -> int:
+        return 40000 if n <= 2 else 12000
+
+    slots, _ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 2
+
+
+def test_resolve_split_chat_slots_stays_single_when_the_fit_is_the_floor() -> None:
+    # A degenerate floor fit is a give-up value, not a verified fit; never multiply it.
+    from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR
+
+    slots, ctx = planning_mod._resolve_split_chat_slots(lambda _n: _DYNAMIC_CTX_FLOOR)
+    assert slots == 1
+    assert ctx == _DYNAMIC_CTX_FLOOR
+
+
+def test_role_model_placeable_true_for_installed_fitting_model(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 10 * 1024**3)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v, **_k: False)
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_role_model_placeable_false_when_not_installed(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 0)  # not installed
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.EMBED, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_role_model_placeable_false_when_weights_exceed_vram(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 200 * 1024**3)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda w, v, **_k: w > v)
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_role_model_placeable_false_for_a_remote_ref(monkeypatch) -> None:
+    # A remote (SDK-routed) ref is never placed on the local engine.
+    _ref = type("R", (), {"is_remote": True})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "openrouter/gpt", 80 * 1024**3)
+
+
+def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
+    _dev = type("D", (), {"total_bytes": 40 * 1024**3})
+    probe = type("P", (), {"devices": [_dev(), _dev()]})()
+    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: probe)
+    assert planning_mod.placeable_total_vram() == 80 * 1024**3
+
+
+def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+    monkeypatch.setattr(planning_mod, "apply_fleet_gpu_env", lambda: None, raising=False)
+
+    def _boom(*_a, **_k):
+        raise ProviderError("no binary", provider="llama-server")
+
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
+    assert planning_mod.placeable_total_vram() == 0
+
+
+def test_assert_engine_probeable_probes_without_capturing_a_snapshot(monkeypatch) -> None:
+    # The build precondition enumerates devices (surfacing a wedge) but must not
+    # store a plan snapshot; that stays with the clean-box capture after the stop.
+    called: list[bool] = []
+    monkeypatch.setattr(
+        planning_mod, "_probe_engine_devices", lambda: (called.append(True), ([], False))[1]
+    )
+    planning_mod._plan_probe_store.clear()
+    planning_mod.assert_engine_probeable()
+    assert called == [True]  # it enumerated devices...
+    assert planning_mod._plan_probe_store.get() is None  # ...but took no snapshot
 
 
 def test_integrated_gpu_keeps_the_shared_ram_budget(monkeypatch) -> None:

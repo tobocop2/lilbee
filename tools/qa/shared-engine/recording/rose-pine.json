@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "base": "#191724",
+    "surface": "#1f1d2e",
+    "overlay": "#26233a",
+    "muted": "#6e6a86",
+    "subtle": "#908caa",
+    "text": "#e0def4",
+    "love": "#eb6f92",
+    "gold": "#f6c177",
+    "rose": "#ebbcba",
+    "pine": "#31748f",
+    "foam": "#9ccfd8",
+    "iris": "#c4a7e7",
+    "highlightMed": "#403d52",
+    "highlightHigh": "#524f67"
+  },
+  "theme": {
+    "primary": { "dark": "rose", "light": "rose" },
+    "secondary": { "dark": "foam", "light": "foam" },
+    "accent": { "dark": "iris", "light": "iris" },
+    "error": { "dark": "love", "light": "love" },
+    "warning": { "dark": "gold", "light": "gold" },
+    "success": { "dark": "pine", "light": "pine" },
+    "info": { "dark": "foam", "light": "foam" },
+    "text": { "dark": "text", "light": "text" },
+    "textMuted": { "dark": "subtle", "light": "subtle" },
+    "background": { "dark": "base", "light": "base" },
+    "backgroundPanel": { "dark": "surface", "light": "surface" },
+    "backgroundElement": { "dark": "overlay", "light": "overlay" },
+    "border": { "dark": "highlightMed", "light": "highlightMed" },
+    "borderActive": { "dark": "highlightHigh", "light": "highlightHigh" },
+    "borderSubtle": { "dark": "overlay", "light": "overlay" },
+
+    "syntaxComment": { "dark": "subtle", "light": "subtle" },
+    "syntaxKeyword": { "dark": "pine", "light": "pine" },
+    "syntaxFunction": { "dark": "rose", "light": "rose" },
+    "syntaxVariable": { "dark": "text", "light": "text" },
+    "syntaxString": { "dark": "gold", "light": "gold" },
+    "syntaxNumber": { "dark": "gold", "light": "gold" },
+    "syntaxType": { "dark": "foam", "light": "foam" },
+    "syntaxOperator": { "dark": "subtle", "light": "subtle" },
+    "syntaxPunctuation": { "dark": "subtle", "light": "subtle" }
+  }
+}
