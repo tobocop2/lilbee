@@ -95,7 +95,7 @@ class TestWhereTheConversionRuns:
         from lilbee.core.config import cfg
         from lilbee.crawler import crawl4ai_fetcher
 
-        monkeypatch.setattr(cfg, "crawl_markdown_workers", 0)
+        monkeypatch.setattr(cfg, "crawl_convert_workers", 0)
 
         assert crawl4ai_fetcher._conversion_limiter() is None
 
@@ -103,7 +103,7 @@ class TestWhereTheConversionRuns:
         from lilbee.core.config import cfg
         from lilbee.crawler import crawl4ai_fetcher
 
-        monkeypatch.setattr(cfg, "crawl_markdown_workers", 3)
+        monkeypatch.setattr(cfg, "crawl_convert_workers", 3)
         limiter = crawl4ai_fetcher._conversion_limiter()
 
         assert limiter is not None

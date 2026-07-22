@@ -66,7 +66,7 @@ def _conversion_limiter() -> CapacityLimiter | None:
 
     Read once per crawl, so a crawl keeps the setting it started with.
     """
-    workers = cfg.crawl_markdown_workers
+    workers = cfg.crawl_convert_workers
     return CapacityLimiter(workers) if workers >= 1 else None
 
 
