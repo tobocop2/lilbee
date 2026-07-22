@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from lilbee.core.llm_json import first_json_object
 from lilbee.retrieval.language import QueryLanguage, query_language
 
 
@@ -233,7 +234,6 @@ When unsure, use "topical".
 Question: {question}
 """
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _LLM_KINDS = {
     "total_sources": AggregateKind.TOTAL_SOURCES,
@@ -252,15 +252,8 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
     ``UNSUPPORTED`` is never produced here; declining is reserved for the
     deterministic layer, whose patterns prove the question is count-shaped.
     """
-    import json
-
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        return None
-    try:
-        # A brace-delimited match parses to a dict or raises; no shape check needed.
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    data = first_json_object(text)
+    if data is None:
         return None
     raw_kind = data.get("kind", "")
     # A non-string kind (list, dict) is malformed, not a crash: an unhashable

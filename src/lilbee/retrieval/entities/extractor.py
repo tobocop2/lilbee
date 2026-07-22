@@ -12,7 +12,6 @@ therefore dominated by how many LLM-kind types the schema keeps.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Mapping
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import regex
 
+from lilbee.core.llm_json import first_json_object, json_reply_format
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     EntityType,
@@ -88,26 +88,6 @@ LLM_EXTRACTION_PROMPT = (
 )
 
 
-def _first_json_object(text: str) -> dict | None:
-    """The first JSON object in *text*, or None.
-
-    ``raw_decode`` from each ``{`` position lets the stdlib own the parsing
-    state; a hand-rolled brace counter miscounts braces inside string
-    literals (a regex pattern or entity text containing ``}``).
-    """
-    decoder = json.JSONDecoder()
-    start = text.find("{")
-    while start >= 0:
-        try:
-            parsed, _ = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            start = text.find("{", start + 1)
-            continue
-        # A value starting at "{" can only decode to a dict.
-        return parsed if isinstance(parsed, dict) else None
-    return None
-
-
 def normalize_value(text: str) -> str:
     """Canonical form for grouping: casefold, collapse spaces, and strip
     leading zeros from purely numeric values so 00482 and 482 group together."""
@@ -153,12 +133,17 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
             # until the budget is gone and emit no JSON at all. temperature 0:
             # induction wants one deterministic, well-formed schema, not a
             # creative sample that parses only some of the time.
-            options={"num_predict": INDUCTION_MAX_TOKENS, "think": False, "temperature": 0},
+            options={
+                "num_predict": INDUCTION_MAX_TOKENS,
+                "think": False,
+                "temperature": 0,
+                "response_format": json_reply_format(),
+            },
         )
     except Exception:
         log.warning("Entity schema induction failed at the provider", exc_info=True)
         return None
-    payload = _first_json_object(strip_reasoning(response.text))
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         log.warning("Entity schema induction returned no parseable JSON")
         return None
@@ -277,7 +262,7 @@ def _extract_llm_batch(
     except Exception:
         log.warning("LLM entity extraction failed for a batch", exc_info=True)
         return None
-    payload = _first_json_object(strip_reasoning(response.text))
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         return empty
     results = empty
