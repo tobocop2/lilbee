@@ -33,7 +33,10 @@ log "engine binary is present and prebuilt (never compiled here)"
 # Whether the shipped engine covers this card is checked against the card, not
 # assumed from a note. An earlier comment asserted the cu124 build had no sm_90
 # kernels; the build pins 70;75;80;86;89;90, so it does. Ask the box.
-CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
+# --id=0 queries one card, so there is no `| head -1` that would close the pipe
+# early and SIGPIPE nvidia-smi (exit 141) under `set -o pipefail` on a multi-GPU
+# box -- a bug that passed on the 1-GPU smoke and killed preflight on 8 GPUs.
+CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader --id=0 | tr -d '. ')
 log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
 
 # The branch's extraction stack is a compiled extension, so the image's glibc
