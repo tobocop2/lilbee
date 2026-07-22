@@ -371,3 +371,174 @@ class TestRunServer:
             asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         fake_server_obj.shutdown.assert_awaited_once()
+
+
+class TestServeSingleton:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_exits_when_another_server_holds_the_lock(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        from lilbee.runtime.lock import acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        holder = acquire_server_lock(cfg.data_dir, timeout=0.1)
+        assert holder is not None
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            holder.release()
+        assert result.exit_code == 3
+        assert "already running" in result.output
+        mock_asyncio_run.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_releases_the_lock_on_exit(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        from lilbee.runtime.lock import acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+
+class TestServeExclusiveScope:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_exits_when_the_scope_is_held(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        holder = acquire_scope_lock(scope, tmp_path / "other-vault", timeout=0.1)
+        assert holder is not None
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            holder.release()
+        assert result.exit_code == 3
+        assert "already running" in result.output
+        # The console hard-wraps at terminal width and a long tmp path can
+        # split the dir name across lines; compare with newlines removed.
+        assert "other-vault" in result.output.replace("\n", "")
+        mock_asyncio_run.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_holds_then_releases_the_scope(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock, read_scope_owner
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        assert read_scope_owner(scope) is None
+        reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+
+class TestServeScopeReleasedOnDataDirRefusal:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_data_dir_refusal_frees_the_scope(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock, acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        data_dir_holder = acquire_server_lock(cfg.data_dir, timeout=0.1)
+        assert data_dir_holder is not None
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            data_dir_holder.release()
+        assert result.exit_code == 3
+        assert "data directory" in result.output
+        mock_asyncio_run.assert_not_called()
+        # The scope acquired before the refusal must not stay held.
+        reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+
+class TestServeHoldsLocksThroughTeardown:
+    @mock.patch("lilbee.cli.commands.servers.wait_for_hard_exit_teardown")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_waits_out_a_signal_teardown_before_releasing(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        mock_wait,
+    ):
+        from lilbee.runtime.lock import acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        order: list[str] = []
+        mock_wait.side_effect = lambda: order.append("teardown-joined")
+        # The lock must still be HELD when the teardown wait runs; prove it by
+        # failing a re-acquire inside the wait itself.
+        original_side_effect = mock_wait.side_effect
+
+        def wait_and_probe():
+            original_side_effect()
+            assert acquire_server_lock(cfg.data_dir, timeout=0.05) is None
+
+        mock_wait.side_effect = wait_and_probe
+
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        assert order == ["teardown-joined"]
+        # And after serve returns, the lock is free for a successor.
+        reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()

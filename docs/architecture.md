@@ -66,6 +66,33 @@ flowchart LR
     INGEST --> HF
 ```
 
+### Process boundaries: engine out of process, retrieval in
+
+One rule decides every process boundary: **a separate process is warranted only where
+the kernel cannot share the resource through the filesystem.**
+
+The engine qualifies. VRAM is per-process and a C++ inference crash must not take the
+app down, so llama-server runs externally behind llama-swap over localhost HTTP. The
+hop carries token streaming, where transport cost is noise next to per-token compute.
+
+The retrieval index does not. LanceDB is an embedded mmap'd store: queries read index
+pages in-process, and the OS page cache shares those pages across processes for free.
+In-process retrieval is already shared retrieval.
+
+What this buys:
+
+- **No transport on the hottest read path.** Candidate sets flow between search stages
+  as in-memory objects, not round-trips.
+- **Search cannot be "down."** No retrieval service to start, health-check, or crash.
+- **Library-first, CLI-first.** `lilbee search "q" --json` boots, maps the index, runs
+  the full pipeline, prints, and exits. No server, no daemon.
+- **Concurrency scales with processes**, not a shared service's event loop.
+
+The price is write coordination: writers serialize through a cross-process file lock
+and readers tolerate a bounded staleness window (LanceDB MVCC, 5s read-consistency).
+Cheap for a read-heavy knowledge base. Surfaces that cannot run in-process still get
+the full pipeline over HTTP via `/api/search`.
+
 ---
 
 ## Ingestion Pipeline
@@ -495,7 +522,13 @@ touching the running fleet.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type`; it also loads with `--no-mmap`
+  `--cache-type-k/-v` from `kv_cache_type` -- but a quantized KV type needs flash
+  attention, so with it disabled the launch falls back to f16 (and the estimate
+  sizes against f16 to match). A mixture-of-experts model also offloads its expert
+  weights to system memory when `cpu_moe`/`n_cpu_moe` is set (`--cpu-moe`/
+  `--n-cpu-moe`, gated on the GGUF declaring routed experts), and the VRAM estimate
+  charges the same tensors to the host so the plan matches the launch. Chat also
+  loads with `--no-mmap`
   (a malloc'd host copy) when its weights fit in at most half of total system
   RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
   page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
@@ -560,18 +593,13 @@ touching the running fleet.
 
 ### Startup sequence and engine lifecycle
 
-The TUI opens the way Ollama and LM Studio do: the app is usable within a
-couple of seconds and the model loads in the background. The launcher never
-blocks on the engine; the same amber wordmark carries every stage. The onefile
-bootstrap paints an unpack progress bar (one-time; later launches skip it via
-the extraction stamp), parks the wordmark for the Python start, and the startup
-gate (`cli/tui/screens/startup_gate.py`) holds only while the services
-container builds. Nothing slower than widget mounting runs on the mount path:
-model canonicalization (disk reads, server probes) lives in the gate's boot
-worker, off the event loop. A prompt sent before the engine is ready waits
-inside its own answer bubble, whose thinking row renders the live load phase
-(`wait_chat_ready(on_progress=...)` in `app/placement.py`), byte progress
-included; a failed load lands there with the model hint.
+The TUI opens in a couple of seconds and the model loads in the background,
+the way Ollama and LM Studio do. The startup gate
+(`cli/tui/screens/startup_gate.py`) holds only while the services container
+builds; anything slower than widget mounting (disk reads, server probes) runs
+in the gate's boot worker. A prompt sent before the engine is ready waits in
+its own answer bubble, which renders the live load phase with byte progress
+(`wait_chat_ready(on_progress=...)` in `app/placement.py`).
 
 ```mermaid
 flowchart TD
@@ -584,35 +612,60 @@ flowchart TD
     F -- no --> H
 ```
 
-By default the engine lives and dies with lilbee. With `keep_engine_warm` on,
-terminal shutdown detaches instead: the fleet state file gains a `detached`
-marker (owner-PID state files in `providers/fleet/swap_manager.py`) and the
-next launch adopts the running fleet after a health, version, and model match,
-skipping planning and the load entirely. llama-swap's per-model `ttl`
-(`engine_idle_ttl_minutes`, default five minutes) frees idle GPU memory on its
-own; `lilbee engine stop` frees everything from any terminal. `reap_stale`
-spares detached fleets only while the setting is on, so toggling it off cleans
-up at the next start of any lilbee process.
+The engine is machine-level infrastructure. One **machine engine slot** per
+OS user (`~/.local/state/lilbee/engine/`, `~/Library/Application
+Support/lilbee/engine` on macOS, `%LOCALAPPDATA%\lilbee\engine` on Windows)
+holds the running fleet's records; every process acquires its engine
+through the same ladder, under a cross-process build lock:
+
+1. **Bind** when the slot's engine is healthy and its contract (per-role
+   models plus the bundled **engine pin**) covers the configuration. Binders
+   spawn nothing and write nothing. lilbee version is not in the contract:
+   releases sharing a pin share an engine; differing pins never run on a
+   build they were not tested against.
+2. **Build** into the empty slot otherwise. An incumbent is replaced in place
+   when no live user holds it, and also when it is this contract's own engine
+   left partially dead (a killed group) or partially covering (config grew a
+   role): its members need that rebuild too, and rediscover it, so leftovers
+   never poison the slot and weights are never duplicated.
+3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
+   when the slot holds a live *incompatible* engine in active use: two engines
+   exist exactly while two different model setups run at once.
+
+Lifetime is kernel-refcounted membership: each process holds a user lock the
+OS releases on any death, and the last clean exit stops the engine.
+`keep_engine_warm` opts the engine into outliving lilbee; the idle TTL
+(`engine_idle_ttl_minutes`, default five minutes) applies in every mode;
+`lilbee engine stop` frees everything now, whoever started it. Reaping never
+disagrees with binding: an engine answering on its proxy is spared, anything
+else is stopped through its state record.
+
+Two costs ride along. A model or placement change restarts the shared engine;
+peers rediscover the new ports with a one-shot retry, and an in-flight
+request surfaces a retry error. And the proxy still listens on an
+unauthenticated localhost port; the machine slot only makes discovery easier.
 
 ```mermaid
 flowchart TD
-    subgraph OFF ["default: on-demand"]
-        q1["quit, kill, or terminal close"] --> s1["engine stopped<br/>GPU memory freed"]
-    end
-    subgraph ON ["keep_engine_warm on"]
-        q2[quit] --> d["fleet keeps running,<br/>state file marked detached"]
-        d --> l2([next launch]) --> ok{"healthy, same lilbee<br/>version, same models?"}
-        ok -- yes --> a["adopt: bind to the running fleet<br/>first answer immediate"]
-        ok -- no --> r["reap it, start fresh"]
-        d --> i["idle past the ttl<br/>default five minutes"] --> u["weights unloaded<br/>GPU memory freed"]
-        t["setting turned off"] --> r
-        e["lilbee engine stop"] --> s2["everything freed now"]
-    end
+    S["lilbee process starts"] --> L["hold user lock<br/>(kernel releases on ANY death)"]
+    L --> Q{"machine slot engine healthy,<br/>models + engine pin match?"}
+    Q -- bind --> B["use its proxy ports<br/>spawn nothing"]
+    Q -- "slot empty" --> BU["build engine in the slot"]
+    Q -- "occupied, incompatible,<br/>in live use" --> PR["build private engine<br/>in this config root"]
+    Q -- "occupied, incompatible,<br/>no live users" --> RP["replace it:<br/>build in the slot"]
+    RP --> X
+    B --> X{"clean exit:<br/>last user out?"}
+    BU --> X
+    PR --> X
+    X -- "yes, warm off" --> STOP["stop engine<br/>machine clean"]
+    X -- "no, or warm on" --> LEAVE["engine keeps serving;<br/>idle weights nap after the ttl"]
 ```
 
-There is no background daemon: the only processes that outlive a session are
-the engine's own, and only when the user opted in. A crashed or force-killed
-session's engine is reclaimed at the next launch.
+A SIGKILLed last user cannot run its exit hook: the engine lingers, its models
+nap on the ttl, and the next lilbee run binds to it or cleans it. There is no
+background daemon; the only processes that can outlive a session are the
+engine's own, either because another lilbee still uses them or because the
+user opted into warm.
 
 ### Chat context-window management
 

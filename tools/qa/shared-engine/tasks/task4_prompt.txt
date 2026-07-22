@@ -1,0 +1,4 @@
+task4_dupes_impl.py in the current directory duplicates logic between its two
+functions. Refactor to extract the shared logic into a helper so that
+`python -m pytest task4_dupes_test.py` passes fully (including the
+deduplication check). Never edit the tests. Run them to verify, then stop.

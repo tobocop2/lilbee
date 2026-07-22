@@ -31,7 +31,8 @@ class InstanceLaunch:
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
 
     def to_state(self) -> dict:
-        """JSON-safe form persisted in a detached fleet's state file."""
+        """JSON-safe form written into every engine state file so a guest lilbee
+        can read the serving contract and bind."""
         return {
             "role": self.role.value,
             "argv": list(self.argv),

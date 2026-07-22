@@ -140,6 +140,18 @@ def _parse_task_or_bad_param(value: str | None) -> ModelTask | None:
         raise typer.BadParameter(msg) from None
 
 
+def _apply_catalog_overrides(*, data_dir: Path | None, use_global: bool) -> None:
+    """Apply CLI overrides for a catalog command, with the fleet left cold.
+
+    Catalog commands list, read, download and delete model files; none of them
+    runs inference, so none should pay for a fleet warm (or its alarming
+    warm-up traceback on a slow host). Setting it here rather than at each
+    command means a catalog command added later cannot silently eager-start.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    cfg.worker_pool_eager_start = False
+
+
 @model_app.command("list")
 def list_cmd(
     source: str | None = _source_option,
@@ -148,10 +160,7 @@ def list_cmd(
     use_global: bool = global_option,
 ) -> None:
     """List installed models across all sources."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
-    # Listing installed model files never runs inference; don't pay the fleet
-    # warm (and its scary-looking warm-up traceback on a slow host) for a read.
-    cfg.worker_pool_eager_start = False
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
     parsed_task = _parse_task_or_bad_param(task)
     data = list_models_data(source=_parse_source_or_bad_param(source), task=parsed_task)
     if cfg.json_mode:
@@ -172,7 +181,7 @@ def show_cmd(
     """Show catalog and installed metadata for a model."""
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
     try:
         data = show_model_data(ref)
     except ModelNotFoundError as exc:
@@ -281,7 +290,7 @@ def pull_cmd(
     """Download a model."""
     from lilbee.catalog.types import ModelSource
 
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE
     if cfg.json_mode:
         _pull_json_stream(ref, src, allow_unsupported=allow_unsupported)
@@ -306,7 +315,7 @@ def rm_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Remove an installed model."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source)
     _confirm_remove_or_exit(ref, yes)
     try:
@@ -350,7 +359,7 @@ def browse_cmd(
     combinations (``--json`` with an interactive-only command), 1 for
     runtime environment failures (no TTY).
     """
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
     if cfg.json_mode:
         json_output({"error": "model browse is interactive, not available in --json mode"})
         raise typer.Exit(2)
