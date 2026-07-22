@@ -103,6 +103,11 @@ def _max_concurrent() -> int:
             return fitted
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * config.vision_ocr_concurrency)
+    if config.ingest_max_inflight > 0:
+        # Explicit override: on a many-core multi-GPU box the auto cap below is
+        # CPU-bound and leaves most embed replicas idle, so allow more files in
+        # their compute phase to keep every replica fed.
+        return config.ingest_max_inflight
     embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
     return max(cpu_quota(), embed_slots)
 
@@ -628,19 +633,26 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        get_services().embedder.validate_model()
-        await ingest_batch(
-            files_to_process,
-            added,
-            updated,
-            failed,
-            skipped,
-            quiet=quiet,
-            on_progress=on_progress,
-            cancel=cancel,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
+        # Hold the embed fleet resident for the whole batch: an unevenly loaded
+        # replica must not idle-unload and reload cold mid-run (which snowballs
+        # into a fleet collapse). The ContextVar propagates into the ingest
+        # thread pool, where the fleet actually spawns on the first embed.
+        from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
+
+        with keep_fleet_warm():
+            get_services().embedder.validate_model()
+            await ingest_batch(
+                files_to_process,
+                added,
+                updated,
+                failed,
+                skipped,
+                quiet=quiet,
+                on_progress=on_progress,
+                cancel=cancel,
+                flush_failed=flush_failed,
+                reasons=reasons,
+            )
 
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
