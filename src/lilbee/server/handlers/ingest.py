@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from lilbee.app.ingest import link_files
+from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
@@ -96,12 +96,14 @@ async def _run_add(
             else:
                 valid.append(p)
 
-        link_result = link_files(valid, force=force)
+        reg_result = register_sources(valid, force=force)
 
         if sse.cancel.is_set():
-            return AddSummary(copied=link_result.linked, skipped=link_result.skipped, errors=errors)
+            return AddSummary(
+                copied=reg_result.registered, skipped=reg_result.skipped, errors=errors
+            )
 
-        if not link_result.linked and not link_result.skipped:
+        if not reg_result.registered and not reg_result.skipped:
             # Nothing reached the corpus, and sync() is a whole-vault pass
             # holding the ingest lock. A *skipped* file is not this case: it is
             # already in the documents dir but may never have been indexed.
@@ -111,8 +113,8 @@ async def _run_add(
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
-            copied=link_result.linked,
-            skipped=link_result.skipped,
+            copied=reg_result.registered,
+            skipped=reg_result.skipped,
             errors=errors,
             sync=SyncSummary(**sync_result.model_dump()),
         )
@@ -132,9 +134,9 @@ def validate_add_paths(
     # your-codebase use case (hundreds of small files).
 
     for p_str in paths:
-        # Path(x).name cannot escape the root, so the traversal check alone
-        # never fires. What it catches is an empty name ("/", "a/"), which
-        # would resolve to documents_dir itself as the destination.
+        # The basename becomes the source root's label (its key prefix). It must
+        # be a clean single segment: Path(x).name cannot traverse, so this only
+        # rejects an empty name ("/", "a/") that would name no root.
         name = Path(p_str).name
         if not name:
             raise ValueError(f"{p_str!r} does not name a file")

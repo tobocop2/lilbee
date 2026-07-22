@@ -299,7 +299,7 @@ async def add(
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
     Paths must be absolute; URLs are crawled as markdown."""
-    from lilbee.app.ingest import link_files
+    from lilbee.app.ingest import register_sources
     from lilbee.data.ingest import sync as run_sync
 
     errors: list[str] = []
@@ -335,8 +335,11 @@ async def add(
             crawled_paths = await crawl_and_save(url, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
-    # Linking is blocking disk I/O (stat + symlink); keep it off the event loop.
-    link_result = await anyio.to_thread.run_sync(functools.partial(link_files, valid, force=force))
+    # Registration touches config.toml (a locked read-modify-write); keep the
+    # blocking disk I/O off the event loop.
+    reg_result = await anyio.to_thread.run_sync(
+        functools.partial(register_sources, valid, force=force)
+    )
 
     from lilbee.app.ingest import temporary_ocr_config
 
@@ -345,8 +348,8 @@ async def add(
 
     result: dict[str, Any] = {
         "command": "add",
-        "copied": link_result.linked,
-        "skipped": link_result.skipped,
+        "copied": reg_result.registered,
+        "skipped": reg_result.skipped,
         "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,

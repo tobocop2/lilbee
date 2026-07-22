@@ -6,8 +6,6 @@ import asyncio
 import mimetypes
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
-from lilbee.core.security import validate_path_within
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -127,8 +125,11 @@ def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | 
 
     if not source or not source.strip():
         raise ValueError("source must not be empty")
-    documents_dir = cfg.documents_dir
-    resolved = validate_path_within(documents_dir / source, documents_dir)
+    from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+    resolved = resolve_source_path_checked(source)
+    if resolved is None:
+        raise ValueError(f"source path escapes its root: {source}")
     if not resolved.is_file():
         # Imported sources have no file on disk; their text lives in the page-text store.
         markdown = _imported_source_markdown(source)

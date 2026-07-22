@@ -74,9 +74,6 @@ def generate_synthesis_page(
     """Generate a single synthesis page for a concept cluster.
     Returns the path to the generated page, or None on failure.
     """
-    # circular: ingest tooling for source hashing lives outside this module.
-    from lilbee.data.ingest import file_hash
-
     all_chunks = [c for cs in chunks_by_source.values() for c in cs]
     if not all_chunks:
         log.warning("No chunks for synthesis topic %r, skipping", topic)
@@ -90,11 +87,7 @@ def generate_synthesis_page(
     prompt = template.format(topic=display_topic, source_list=source_list, chunks_text=chunks_text)
     slug = make_slug(topic)
 
-    source_hashes: dict[str, str] = {}
-    for name in source_names:
-        source_path = config.documents_dir / name
-        if source_path.exists():
-            source_hashes[name] = file_hash(source_path)
+    source_hashes = hash_existing_sources(source_names)
 
     def resolver(parsed: list[ParsedCitation]) -> list[CitationRecord]:
         return resolve_multi_source_citations(parsed, source_names, source_hashes, chunks_by_source)
@@ -282,7 +275,7 @@ def generate_source_batch(
     wiki_root = config.data_root / config.wiki_dir
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
     source_names = [source]
-    source_hashes = hash_existing_sources(source_names, config.documents_dir)
+    source_hashes = hash_existing_sources(source_names)
     chunks_by_source = {source: budgeted}
 
     # Citation definitions live in the trailing block of the WHOLE

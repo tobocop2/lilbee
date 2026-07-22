@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from lilbee.runtime.progress import DetailedProgressCallback
 
-from lilbee.app.ingest import LinkResult, link_files
+from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.cli import theme
@@ -468,12 +468,12 @@ def _crawl_urls_step(
 
 
 def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: bool) -> None:
-    """Run the JSON-mode finish: link files, sync, emit one structured result."""
+    """Run the JSON-mode finish: register roots, sync, emit one structured result."""
     from lilbee.data.ingest import sync
 
-    link_result = LinkResult()
+    reg_result = RegisterResult()
     if file_paths:
-        link_result = link_files(file_paths, force=force)
+        reg_result = register_sources(file_paths, force=force)
     # Headless one-shot ingest: only the embed server is needed, so suppress eager
     # start (matching the interactive path) instead of warming every role's VRAM.
     cfg.worker_pool_eager_start = False
@@ -481,8 +481,8 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     json_output(
         {
             "command": "add",
-            "copied": link_result.linked,
-            "skipped": link_result.skipped,
+            "copied": reg_result.registered,
+            "skipped": reg_result.skipped,
             "crawled": len(crawled_paths),
             "sync": sync_result_to_json(result),
         }

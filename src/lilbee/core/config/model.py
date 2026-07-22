@@ -59,6 +59,14 @@ class Config(BaseSettings):
     # Writable so plugin-managed servers can pivot storage to a vault path on
     # first boot; rebuild the index after migrating.
     documents_dir: Path = ConfigField(default=Path(), writable=True)
+    # External source roots ``add`` registered, mapping label -> absolute path.
+    # lilbee indexes the files where they live (no copy, no symlink); the label
+    # prefixes their source keys so a root at /data/corpus keys as ``corpus/…``.
+    # Managed by ``add`` / ``remove``, so it is writable (persisted to
+    # config.toml) but not surfaced in the settings UI.
+    linked_roots: dict[str, str] = ConfigField(
+        default_factory=dict, writable=True, public=False
+    )
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())

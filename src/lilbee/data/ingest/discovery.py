@@ -1,4 +1,4 @@
-"""File discovery, classification, and hashing."""
+"""File discovery, classification, hashing, and source-path resolution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from lilbee.core.config import active_config
-from lilbee.core.system import is_ignored_dir, is_link
+from lilbee.core.system import is_ignored_dir
 from lilbee.data.code_chunker import is_code_file
 from lilbee.data.ingest.types import DOCUMENT_EXTENSION_MAP
 
@@ -34,83 +34,88 @@ def classify_file(path: Path) -> str | None:
     return None
 
 
-def _linked_roots(documents_dir: Path) -> dict[str, Path]:
-    """Top-level link entries under *documents_dir*, mapped label -> resolved target.
+def resolve_source_path(filename: str) -> Path:
+    """Map a stored source key back to the file it tracks on disk.
 
-    ``add`` links a prepared source into the knowledge base (a symlink, or a
-    junction on unprivileged Windows) rather than copying it. These are the roots
-    discovery follows, and the only escapes the containment guard permits. A
-    dangling link is skipped (its documents are then marked removed by the next
-    sync).
+    A key's first segment is a registered root label when ``add`` recorded that
+    root; the file then lives at ``linked_roots[label]/<rest>`` (or at the root
+    itself for a single-file root, where there is no rest). Every other key
+    belongs to a file lilbee owns under ``documents_dir`` and resolves there.
+    The path is returned whether or not it still exists: a source whose file was
+    moved or deleted keeps its index entry, and the dead path surfaces only when
+    something tries to open it.
     """
-    roots: dict[str, Path] = {}
-    try:
-        entries = list(documents_dir.iterdir())
-    except OSError:
-        return roots
-    for entry in entries:
-        if is_link(entry):
-            try:
-                roots[entry.name] = entry.resolve(strict=True)
-            except OSError:
-                continue
-    return roots
+    config = active_config()
+    first, _, rest = filename.partition("/")
+    root = config.linked_roots.get(first)
+    if root is not None:
+        base = Path(root)
+        return base / rest if rest else base
+    return config.documents_dir / filename
 
 
-def _walk_into(
+def resolve_source_path_checked(filename: str) -> Path | None:
+    """Resolve *filename*, returning None if it escapes its owning root.
+
+    Guards a surface that resolves a caller-supplied source key (the HTTP
+    document-serving endpoint): a key with ``..`` that would climb out of
+    ``documents_dir`` or a registered root is rejected. Keys produced by
+    discovery never contain ``..``; this defends against a crafted request, not
+    stored data.
+    """
+    config = active_config()
+    resolved = resolve_source_path(filename).resolve(strict=False)
+    roots = [
+        config.documents_dir.resolve(),
+        *(Path(root).resolve() for root in config.linked_roots.values()),
+    ]
+    if any(resolved == root or root in resolved.parents for root in roots):
+        return resolved
+    return None
+
+
+def _walk_root(
     files: dict[str, Path],
     base: Path,
     label: str | None,
-    allowed: tuple[Path, ...],
     ignore_dirs: frozenset[str],
-    skip_dirs: frozenset[str] = frozenset(),
 ) -> None:
-    """Walk *base*, recording supported files under *label* that stay within *allowed*.
+    """Record supported files under *base*, keyed relative to it (prefixed by *label*).
 
-    A file whose real location resolves outside every allowed root is an escaping
-    symlink and is skipped with a warning; this is the containment guard, applied
-    per file so a sneaky link nested inside a linked corpus cannot smuggle an
-    outside path into the index. Top-level directories named in *skip_dirs* are
-    not descended (they are the linked roots, walked separately under their label,
-    which also stops os.walk from following a junction into a linked tree twice).
+    Symlinks are not followed (``followlinks=False``): each root is walked as the
+    real tree it names, so there is no traversal loop and no path can escape the
+    root it was registered under.
     """
-    for root, dirs, filenames in os.walk(base, topdown=True):
+    for root, dirs, filenames in os.walk(base, topdown=True, followlinks=False):
         dirs[:] = [d for d in dirs if not is_ignored_dir(d, ignore_dirs)]
-        if Path(root) == base:
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
         for fname in filenames:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            resolved = path.resolve()
-            if not any(resolved == r or r in resolved.parents for r in allowed):
-                log.warning("Symlink escapes documents dir, skipping: %s", path)
+            if classify_file(path) is None:
                 continue
-            if classify_file(path) is not None:
-                rel = path.relative_to(base).as_posix()
-                files[f"{label}/{rel}" if label else rel] = path
+            rel = path.relative_to(base).as_posix()
+            files[f"{label}/{rel}" if label else rel] = path
 
 
 def discover_files() -> dict[str, Path]:
-    """Scan documents/ recursively, return {relative_name: absolute_path}.
+    """Scan the owned documents dir and every registered root, return {key: path}.
 
-    Real files under documents/ are keyed by their path relative to it. Top-level
-    links that ``add`` created (a symlink, or a junction on Windows) are followed:
-    each links to a source living elsewhere on disk, whose files are keyed under
-    the link's label so the name stays documents_dir-relative and every downstream
-    consumer is unchanged. A symlink that resolves outside documents/ and outside
-    these linked roots is an escape and is skipped.
+    Files lilbee owns under ``documents_dir`` (crawl and upload output) are keyed
+    by their path relative to it. Each root ``add`` registered is indexed where it
+    lives: a directory root contributes its files keyed under the root's label; a
+    single-file root contributes one entry keyed by the label alone. A root whose
+    path has since vanished contributes nothing this pass, and its already-indexed
+    sources are left in place (a dead path-link, not a removal).
     """
     config = active_config()
-    documents_dir = config.documents_dir
-    if not documents_dir.exists():
-        return {}
-    linked = _linked_roots(documents_dir)
-    allowed = (documents_dir.resolve(), *linked.values())
     files: dict[str, Path] = {}
-    # skip_dirs prunes the linked roots so each is walked exactly once below.
-    _walk_into(files, documents_dir, None, allowed, config.ignore_dirs, skip_dirs=frozenset(linked))
-    for label, target in linked.items():
-        if target.is_dir():
-            _walk_into(files, target, label, allowed, config.ignore_dirs)
+    if config.documents_dir.exists():
+        _walk_root(files, config.documents_dir, None, config.ignore_dirs)
+    for label, root in config.linked_roots.items():
+        root_path = Path(root)
+        if root_path.is_dir():
+            _walk_root(files, root_path, label, config.ignore_dirs)
+        elif root_path.is_file() and classify_file(root_path) is not None:
+            files[label] = root_path
     return files

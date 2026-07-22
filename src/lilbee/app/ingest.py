@@ -1,159 +1,103 @@
-"""Link sources into the documents directory, and remove them durably."""
+"""Register external source roots, and remove indexed documents durably."""
 
 from __future__ import annotations
 
-import contextlib
 import fnmatch
-import functools
-import os
-import shutil
-import sys
-import tempfile
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from lilbee.app.services import get_services
+from lilbee.core import settings
 from lilbee.core.config import active_config, cfg
-from lilbee.core.system import is_ignored_dir, is_link, remove_link
 from lilbee.data.store.types import RemoveResult
 
 
 @dataclass
-class LinkResult:
-    """Result of linking sources into the documents directory."""
+class RegisterResult:
+    """Result of registering source roots into the knowledge base."""
 
-    linked: list[str] = field(default_factory=list)
+    registered: list[str] = field(default_factory=list)  # labels newly registered
     skipped: list[str] = field(default_factory=list)
 
 
-@functools.cache
-def symlinks_supported() -> bool:
-    """Whether this platform and user can create symlinks.
+def _persist_roots(roots: dict[str, str]) -> None:
+    """Point the in-process registry at *roots* and persist it to config.toml."""
+    config = active_config()
+    config.linked_roots = roots
+    settings.set_value(config.data_root, "linked_roots", roots)
 
-    POSIX always can; Windows needs ``SeCreateSymbolicLinkPrivilege`` (Developer
-    Mode or admin), so an unprivileged Windows user cannot, and ``add`` falls back
-    to copying there. Probed once against a temp dir and cached for the process.
+
+def _resolve_label(
+    base: str, roots: dict[str, str], docs_resolved: Path, *, force: bool
+) -> str | None:
+    """Choose the source-key label for a new root, or None when the name is taken.
+
+    Reuses the label when a root of that name was registered before but its path
+    has since vanished (the source moved: re-register in place, no ``--force``
+    needed) or when *force* overwrites it. A live root or an owned top-level entry
+    of the same name is a genuine collision and blocks the label unless forced.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        probe = Path(tmp) / "probe"
-        try:
-            probe.symlink_to(Path(tmp))
-        except (OSError, NotImplementedError):  # pragma: no cover - privilege-less Windows
-            return False
-        return True
+    existing = roots.get(base)
+    if existing is not None and not Path(existing).exists():
+        return base  # dangling root; the source moved, re-point it to the new path
+    if force:
+        return base
+    if base in roots or (docs_resolved / base).exists():
+        return None
+    return base
 
 
-def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
-    """Ignore callback for the copy fallback that filters ignored directories."""
-    ignore_dirs = active_config().ignore_dirs
-    return {
-        name
-        for name in contents
-        if (Path(directory) / name).is_dir() and is_ignored_dir(name, ignore_dirs)
-    }
+def source_label_taken(name: str) -> bool:
+    """Whether *name* is already a live registered root or an owned top-level entry.
 
-
-def _create_junction(src: Path, dest: Path) -> bool:
-    """Create a Windows directory junction ``dest -> src``. False if unavailable.
-
-    Junctions need no privilege (unlike symlinks), so they are the no-copy path
-    for a directory on locked-down Windows. Unavailable off Windows, for a UNC or
-    cross-volume target, or when the reparse fails; the result is verified and a
-    broken junction is cleaned up so the caller can fall back to copying.
+    The confirm-before-overwrite affordance in the TUI reads this; the authority
+    on what actually collides is :func:`_resolve_label`, which this mirrors.
     """
-    if sys.platform != "win32":
-        return False
-    try:  # pragma: no cover - Windows-only
-        import _winapi
-
-        _winapi.CreateJunction(str(src), str(dest))
-        if Path(os.readlink(dest)).resolve() == src.resolve():
-            return True
-    except (OSError, ValueError, AttributeError):  # pragma: no cover - Windows-only
-        pass
-    with contextlib.suppress(OSError):  # pragma: no cover - Windows-only
-        remove_link(dest)
-    return False  # pragma: no cover - Windows-only
+    config = active_config()
+    existing = config.linked_roots.get(name)
+    if existing is not None:
+        return Path(existing).exists()
+    return (config.documents_dir / name).exists()
 
 
-def _place_source(src: Path, dest: Path) -> None:
-    """Link *src* into the KB at *dest*, degrading to a copy when links can't be made.
+def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:
+    """Register each path as a root lilbee indexes where it already lives.
 
-    Preference order, each avoiding a byte copy where possible: a symlink (POSIX,
-    or Windows with the privilege); a directory junction or a same-volume file
-    hard link on unprivileged Windows; finally a copy. Only the copy loses the
-    no-copy and move-in-place benefits.
+    A prepared corpus is already on local disk, so ``add`` records where it is
+    rather than copying or linking it: discovery walks the registered root and
+    keys its files under the root's label (its basename). A path already inside
+    ``documents_dir`` is left to the owned-files walk; a path already registered
+    under the same target is a no-op; a label already taken by a different live
+    root or an owned entry is skipped unless ``force``. The registry is persisted
+    so later processes index the same roots.
     """
-    if symlinks_supported():
-        dest.symlink_to(src, target_is_directory=src.is_dir())
-    elif src.is_dir():
-        if not _create_junction(src, dest):
-            shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_copytree_ignore, symlinks=False)
-    elif not _hardlink(src, dest):
-        shutil.copy2(src, dest)
-
-
-def _hardlink(src: Path, dest: Path) -> bool:
-    """Hard-link a file ``dest -> src`` (same volume, no privilege). False if it can't."""
-    try:
-        os.link(src, dest)
-    except OSError:
-        return False
-    return True
-
-
-def link_files(paths: list[Path], *, force: bool = False) -> LinkResult:
-    """Symlink each source into the documents dir (copy where symlinks are unavailable).
-
-    A prepared corpus already lives on local disk, so ``add`` links to it in
-    place: a directory becomes one link ``documents_dir/<name> -> src`` and a file
-    a file link. Discovery follows these top-level links, so the source is indexed
-    where it lives, with no second copy and no serial byte-copy preamble before
-    the GPUs get work. A source already inside documents_dir is left as-is
-    (discovery already sees it); an existing name is kept unless ``force``, and
-    re-linking the same target is idempotent. The link is a symlink, or on
-    unprivileged Windows a directory junction / same-volume file hard link, or a
-    copy where none of those can be made (see :func:`_place_source`).
-    """
-    documents_dir = active_config().documents_dir
+    config = active_config()
+    documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
     docs_resolved = documents_dir.resolve()
-    result = LinkResult()
+    roots = dict(config.linked_roots)
+    by_target = {target: label for label, target in roots.items()}
+    result = RegisterResult()
     for p in paths:
         src = p.resolve()
         if src == docs_resolved or docs_resolved in src.parents:
-            result.skipped.append(p.name)  # already inside the knowledge base
+            result.skipped.append(p.name)  # already owned by the knowledge base
             continue
-        # Guard the destination name stays a direct child of documents_dir. Check
-        # the name rather than resolving dest: an existing link there would resolve
-        # to its (external) target and falsely read as an escape.
-        if "/" in p.name or "\\" in p.name or p.name in ("", ".", ".."):
-            result.skipped.append(p.name)
+        already = by_target.get(str(src))
+        if already is not None:
+            result.skipped.append(already)  # this exact source is already registered
             continue
-        dest = documents_dir / p.name
-        if is_link(dest) or dest.exists():
-            already_linked = is_link(dest) and dest.exists() and dest.resolve() == src
-            # A dangling link (its old target is gone) means the source moved:
-            # relink to the new path without demanding --force, since there is
-            # nothing behind the dead link to protect. Sync recognizes the move
-            # by content hash and repoints the index in place.
-            dangling = is_link(dest) and not dest.exists()
-            if already_linked or (not force and not dangling):
-                result.skipped.append(p.name)
-                continue
-            if is_link(dest):
-                remove_link(dest)  # replace a stale/dangling symlink or junction
-            elif dest.is_file():
-                dest.unlink()  # replace a real file on force
-            elif dest.is_dir() and symlinks_supported():
-                # A real directory holds this name; a link won't clobber it.
-                # (On the copy fallback, copytree(dirs_exist_ok=True) merges.)
-                result.skipped.append(p.name)
-                continue
-        _place_source(src, dest)
-        result.linked.append(p.name)
+        label = _resolve_label(src.name, roots, docs_resolved, force=force)
+        if label is None:
+            result.skipped.append(src.name)  # name taken; --force to overwrite
+            continue
+        roots[label] = str(src)
+        by_target[str(src)] = label
+        result.registered.append(label)
+    if result.registered:
+        _persist_roots(roots)
     return result
 
 
@@ -215,23 +159,26 @@ def expand_remove_targets(names: list[str], known: list[str] | None = None) -> l
     return expanded
 
 
-def _unlink_linked_roots(names: Iterable[str], documents_dir: Path) -> list[str]:
-    """Remove any top-level link (symlink or junction) named in *names*.
+def unregister_roots(names: Iterable[str]) -> list[str]:
+    """Un-register any top-level source root named in *names*. Returns removed labels.
 
-    ``add`` links a source into the knowledge base; removing it by its top-level
-    name detaches the link (never the source bytes behind it) and thereby stops
-    discovery from re-finding its files, so those need no skip marker. Nested
-    names (``corpus/a.txt``) are left alone. Returns the names actually removed.
+    ``add`` registers a source root; removing it by its label drops the registry
+    entry so discovery stops finding its files, which then need no skip marker.
+    The source bytes on disk are never touched. Nested names (``corpus/a.txt``)
+    are not roots and are left alone.
     """
-    unlinked: list[str] = []
+    config = active_config()
+    roots = dict(config.linked_roots)
+    removed: list[str] = []
     for name in names:
-        if "/" in name.strip("/"):
+        label = name.strip("/")
+        if "/" in label or label not in roots:
             continue
-        entry = documents_dir / name
-        if is_link(entry):
-            remove_link(entry)
-            unlinked.append(name.strip("/"))
-    return unlinked
+        del roots[label]
+        removed.append(label)
+    if removed:
+        _persist_roots(roots)
+    return removed
 
 
 def remove_documents_durably(
@@ -242,13 +189,13 @@ def remove_documents_durably(
     Never deletes source bytes. A folder or glob argument expands to every
     indexed source it covers. Each removed source gets a skip-marker keyed on its
     current hash so the next sync treats it as unchanged-and-skipped instead of
-    re-ingesting it. Removing a top-level linked root instead unlinks that symlink
+    re-ingesting it. Removing a top-level registered root instead un-registers it
     (discovery then can't re-find its files, so no markers are needed for them).
     Editing the source (new hash), ``retry-skipped``, or ``rebuild`` restores it.
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
     """
-    from lilbee.data.ingest.discovery import file_hash
+    from lilbee.data.ingest.discovery import file_hash, resolve_source_path
     from lilbee.data.ingest.skip_marker import (
         load_skip_markers,
         load_skip_reasons,
@@ -256,22 +203,21 @@ def remove_documents_durably(
         write_skip_reasons,
     )
 
-    documents_dir = cfg.documents_dir
     if targets is None:
         targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
     if not result.removed:
         return result
-    unlinked_roots = _unlink_linked_roots(names, documents_dir)
+    unregistered = unregister_roots(names)
     markers = load_skip_markers(cfg.data_root)
     reasons = load_skip_reasons(cfg.data_root)
     for name in result.removed:
-        if any(name == root or name.startswith(root + "/") for root in unlinked_roots):
-            continue  # the link is gone; discovery won't resurrect these
-        path = documents_dir / name
+        if any(name == root or name.startswith(root + "/") for root in unregistered):
+            continue  # the root is gone; discovery won't resurrect these
+        path = resolve_source_path(name)
         # Imported sources have no file on disk; sync never re-ingests them, so a
-        # marker is only needed for real files that would otherwise be re-found.
-        if path.exists():  # follows the symlink to the real source when linked
+        # marker is only needed for a real file that would otherwise be re-found.
+        if path.exists():
             markers[name] = file_hash(path)
             reasons[name] = _REMOVED_SKIP_REASON
     write_skip_markers(cfg.data_root, markers)

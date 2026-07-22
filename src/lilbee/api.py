@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 # the config singleton (~50ms cumulative beyond core.config). data.ingest is
 # deferred at each callsite below because it transitively imports spaCy via
 # the wiki package and adds ~3s on first touch.
-from lilbee.app.ingest import link_files
+from lilbee.app.ingest import register_sources
 from lilbee.app.services import build_services, services_scope
 from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
@@ -134,14 +134,14 @@ class Lilbee:
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
-        Symlinks each path into the documents directory, then syncs.
+        Registers each path as a source root (indexed in place), then syncs.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
         with config_scope(self._config), services_scope(self._services):
-            link_files(resolved, force=True)
+            register_sources(resolved, force=True)
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:

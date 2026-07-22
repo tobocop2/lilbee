@@ -414,18 +414,18 @@ class _Move:
 def _detect_moves(
     files_to_process: list[FileToProcess],
     added: dict[str, None],
-    to_remove: list[str],
+    absent: list[str],
     existing_sources: dict[str, SourceRecord],
 ) -> list[_Move]:
-    """Pair brand-new files with just-removed sources of the same content hash.
+    """Pair brand-new files with absent sources of the same content hash.
 
     Only additions (files with a new name) can be moves; an update keeps its name.
-    When several removed sources share a hash, pairing is deterministic (sorted)
+    When several absent sources share a hash, pairing is deterministic (sorted)
     and one-to-one, so a duplicated file that moved matches exactly one old key
-    and any leftovers fall back to normal add/remove.
+    and any leftovers stay indexed under their old key.
     """
     removed_by_hash: dict[str, list[str]] = {}
-    for name in to_remove:
+    for name in absent:
         record = existing_sources.get(name)
         if record is not None:
             removed_by_hash.setdefault(record["file_hash"], []).append(name)
@@ -445,28 +445,27 @@ def _apply_moves(
     moves: list[_Move],
     files_to_process: list[FileToProcess],
     added: dict[str, None],
-    to_remove: list[str],
-) -> tuple[list[FileToProcess], list[str], list[str]]:
-    """Fold detected moves out of the add/remove sets after they were relocated.
+) -> tuple[list[FileToProcess], list[str]]:
+    """Fold detected moves out of the add set after they were relocated.
 
-    Drops each moved file from the ingest list and the added set (its chunks were
-    re-keyed, not rebuilt) and its old name from the removal set (repointed, not
-    deleted). Returns the trimmed ``(files_to_process, to_remove, relocated)``.
+    Drops each moved file from the ingest list and the added set: its chunks were
+    re-keyed onto the new source name, not rebuilt. Returns the trimmed
+    ``(files_to_process, relocated)``.
     """
     moved_new = {m.new for m in moves}
-    moved_old = {m.old for m in moves}
     for name in moved_new:
         added.pop(name, None)
     remaining = [e for e in files_to_process if e.name not in moved_new]
-    to_remove = [n for n in to_remove if n not in moved_old]
-    return remaining, to_remove, sorted(moved_new)
+    return remaining, sorted(moved_new)
 
 
-def _removable_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
-    """Document sources whose backing file is gone.
+def _absent_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
+    """Document sources whose backing file is not on disk this sync.
 
-    Imported sources are detached (no file under documents/), so a missing
-    disk file must not mark them for removal.
+    A vanished file is never removed on its own (its chunks stay searchable, a
+    dead path-link discovered at open time); this set exists only to pair a
+    reappeared identical file to its old key in move detection. Imported sources
+    have no backing file, so they are excluded.
     """
     return [
         s["filename"]
@@ -479,23 +478,22 @@ def detect_pending() -> int:
     """Count files in documents/ that are out of sync with the store.
 
     Cheap operation: filesystem walk + stat-gated SHA-256 hashing + a single
-    sources-table read. No embedding, no writes. Returns the total of
-    added + updated + removed, which is what the TaskBar hint surfaces.
-    Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
+    sources-table read. No embedding, no writes. Returns the count of files that
+    would be ingested (added + updated), which is what the TaskBar hint surfaces.
+    A vanished file is not pending work: sync leaves it indexed, so it is not
+    counted. Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
     Honors skip markers: a file that failed last time at this hash does
     not show up as pending. Blocking: callers on the event loop run it via
     ``asyncio.to_thread``.
     """
     config = active_config()
-    if not config.documents_dir.exists():
-        return 0
     disk_files = discover_files()
-    sources = get_services().store.get_sources()
-    existing_sources = {s["filename"]: s for s in sources}
-    removed = len(_removable_sources(sources, disk_files))
+    if not disk_files:
+        return 0
+    existing_sources = {s["filename"]: s for s in get_services().store.get_sources()}
     skip_markers = load_skip_markers(config.data_root)
     plan = _plan_file_changes(disk_files, existing_sources, cancel=None, skip_markers=skip_markers)
-    return len(plan.files_to_process) + removed
+    return len(plan.files_to_process)
 
 
 def _load_pruned_skip_markers(disk_files: dict[str, Path], *, clear_first: bool) -> dict[str, str]:
@@ -591,16 +589,16 @@ async def sync(
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
-    removed: list[str] = []
     failed: dict[str, None] = {}
     skipped: dict[str, None] = {}
     reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
-    # Document sources whose file is gone (imports are kept). Removal is deferred
-    # until after move detection so a relocated source's chunks are re-keyed, not
-    # deleted and re-embedded.
-    to_remove = _removable_sources(sources, disk_files)
+    # Sources whose backing file is not on disk this pass. They are NOT removed:
+    # a vanished file stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it. The set exists only to pair a
+    # reappeared identical file to its old key below.
+    absent = _absent_sources(sources, disk_files)
 
     # The planning pass stats (and where needed hashes) every file on disk;
     # off the event loop so a large corpus doesn't freeze the TUI.
@@ -609,20 +607,14 @@ async def sync(
     )
     files_to_process, added, updated = plan.files_to_process, plan.added, plan.updated
 
-    # A brand-new file whose content hash matches a source whose file just
-    # disappeared is a move, not an add + remove: repoint it in place so its
-    # chunks and embeddings are reused rather than rebuilt.
-    moves = _detect_moves(files_to_process, added, to_remove, existing_sources)
+    # A brand-new file whose content hash matches an absent source is that source
+    # moved, not an add: repoint it in place so its chunks and embeddings are
+    # reused rather than rebuilt, and the old key drops out of the index.
+    moves = _detect_moves(files_to_process, added, absent, existing_sources)
     relocated: list[str] = []
     if moves:
         await to_ingest_thread(_store.relocate_sources, [(m.old, m.new, m.stat) for m in moves])
-        files_to_process, to_remove, relocated = _apply_moves(
-            moves, files_to_process, added, to_remove
-        )
-
-    if to_remove:
-        _store.remove_documents(to_remove)
-        removed.extend(to_remove)
+        files_to_process, relocated = _apply_moves(moves, files_to_process, added)
 
     if plan.stat_backfills:
         await to_ingest_thread(_store.update_source_stats, plan.stat_backfills)
@@ -660,7 +652,7 @@ async def sync(
     # so a transient flush failure doesn't leave a stale reason behind.
     write_skip_reasons(config.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
 
-    if files_to_process or removed:
+    if files_to_process or relocated:
         _store.ensure_fts_index()
         _store.ensure_vector_index()
         _store.optimize_sources()
@@ -669,7 +661,7 @@ async def sync(
         # post-ingest hook stays function-local at this boundary.
         from lilbee.wiki.ingest import incremental_update
 
-        await incremental_update(set(added) | set(updated) | set(removed))
+        await incremental_update(set(added) | set(updated) | set(relocated))
 
     # Entity lifecycle: induce-once, extract, and re-apply edited schemas.
     # Runs every sync (cheap no-op when off or up to date) so flipping the
@@ -693,7 +685,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=removed,
+        removed=[],
         unchanged=plan.unchanged,
         relocated=relocated,
         failed=list(failed),

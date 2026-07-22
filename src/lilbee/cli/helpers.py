@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console, RenderableType
 from rich.table import Table
 
-from lilbee.app.ingest import link_files
+from lilbee.app.ingest import register_sources
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
@@ -130,15 +130,15 @@ def render_status(con: Console) -> None:
         con.print(renderable)
 
 
-def link_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
-    """Symlink *paths* into the documents directory. Returns list of linked names."""
-    result = link_files(paths, force=force)
+def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
+    """Register *paths* as source roots. Returns the labels registered."""
+    result = register_sources(paths, force=force)
     for name in result.skipped:
         con.print(
             f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {name} already exists in knowledge base "
             f"(use --force to overwrite)"
         )
-    return result.linked
+    return result.registered
 
 
 def add_paths(
@@ -151,19 +151,17 @@ def add_paths(
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[], object] | None = None,
 ) -> None:
-    """Link *paths* into the knowledge base and sync (human output).
+    """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
-    and this function returns immediately after linking files. *run_sync*
+    and this function returns immediately after registering. *run_sync*
     overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
     runner); it defaults to a plain ``asyncio.run(sync())``.
     """
-    linked = link_paths(paths, con, force=force)
+    registered = register_paths(paths, con, force=force)
     if chat_mode:
-        print(f"Linked {len(linked)} path(s) into {cfg.documents_dir}")
+        print(f"Registered {len(registered)} source(s)")
     else:
-        con.print(
-            f"[{theme.MUTED}]Linked {len(linked)} path(s) into {cfg.documents_dir}[/{theme.MUTED}]"
-        )
+        con.print(f"[{theme.MUTED}]Registered {len(registered)} source(s)[/{theme.MUTED}]")
 
     if background:
         from lilbee.cli.sync import run_sync_background

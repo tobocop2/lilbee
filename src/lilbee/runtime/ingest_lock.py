@@ -49,11 +49,12 @@ class IngestLockRegistry:
 
     @staticmethod
     def canonical_source_name(p_str: str) -> str:
-        """Basename of *p_str*, for callers that flatten into ``documents_dir``.
+        """Basename of *p_str*, the label a registered source root keys under.
 
-        ``link_files`` links server-side paths in by basename, so /api/add locks
-        on that. Uploads keep their relative layout and pass the relative path
-        instead, which is why the caller picks the key rather than this class.
+        ``register_sources`` records a server-side path by its basename, so
+        /api/add locks on that. Uploads keep their relative layout and pass the
+        relative path instead, which is why the caller picks the key rather than
+        this class.
         """
         return Path(p_str).name
 
