@@ -157,6 +157,16 @@ class TestWhereTheConversionRuns:
 
         assert await conversion.markdown_for(page) == "# from backend"
 
+    async def test_empty_cleaned_html_does_not_convert_the_raw_html(self) -> None:
+        """crawl4ai converts cleaned_html only, so an empty cleaned page stays empty
+        instead of turning raw nav/boilerplate into content."""
+        from lilbee.crawler import crawl4ai_fetcher
+
+        page = mock.MagicMock(cleaned_html="", html="<nav>menu</nav>", markdown="")
+        conversion = crawl4ai_fetcher._Conversion(generator=object(), limiter=None)
+
+        assert await conversion.markdown_for(page) == ""
+
 
 class TestTheConversionSeam:
     def test_config_kwargs_install_the_silent_generator(self) -> None:

@@ -118,9 +118,11 @@ class _Conversion:
         """The page's markdown, re-converted off the loop only when the backend was silenced.
 
         An un-silenced backend already converted the page, so re-converting would
-        duplicate the work this exists to move.
+        duplicate the work this exists to move. Converts ``cleaned_html`` only, the
+        same source crawl4ai's own generator uses, so an empty cleaned page stays
+        empty rather than turning raw nav/boilerplate into content.
         """
-        html = result.cleaned_html or result.html or ""
+        html = result.cleaned_html or ""
         if self.generator is None or not html:
             return str(result.markdown or "")
         base_url = base_url_for(result.html or "", result.url, result.redirected_url)

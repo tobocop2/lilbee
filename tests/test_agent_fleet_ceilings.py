@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from unittest import mock
 
 from tests._sys_modules import inject_modules
 
@@ -79,6 +80,53 @@ class TestThreadPoolCeiling:
         from lilbee.core.config.model import Config
 
         assert Config.model_fields["mcp_tool_threads"].default == 40
+
+    def test_reapply_is_a_noop_without_a_running_server(self, monkeypatch) -> None:
+        from lilbee.server import app as app_mod
+
+        holder = app_mod._ServerLoop()  # no loop set
+        monkeypatch.setattr(app_mod, "_server_loop", holder)
+
+        app_mod.reapply_thread_pool_ceiling()  # no server loop: nothing to resize, no raise
+
+    def test_reapply_marshals_the_resize_onto_the_server_loop(self, monkeypatch) -> None:
+        from lilbee.server import app as app_mod
+
+        scheduled: list[object] = []
+        loop = mock.MagicMock()
+        loop.is_closed.return_value = False
+        loop.call_soon_threadsafe.side_effect = scheduled.append
+        holder = app_mod._ServerLoop()
+        holder.set(loop)
+        monkeypatch.setattr(app_mod, "_server_loop", holder)
+
+        app_mod.reapply_thread_pool_ceiling()
+
+        assert scheduled == [app_mod._raise_thread_pool_ceiling]
+
+    def test_reapply_ignores_a_closed_loop(self, monkeypatch) -> None:
+        from lilbee.server import app as app_mod
+
+        loop = mock.MagicMock()
+        loop.is_closed.return_value = True
+        holder = app_mod._ServerLoop()
+        holder.set(loop)
+        monkeypatch.setattr(app_mod, "_server_loop", holder)
+
+        app_mod.reapply_thread_pool_ceiling()
+
+        loop.call_soon_threadsafe.assert_not_called()
+
+    def test_changing_the_thread_count_reapplies_the_ceiling(self, monkeypatch) -> None:
+        from lilbee.app import settings as settings_mod
+        from lilbee.server import app as app_mod
+
+        called: list[bool] = []
+        monkeypatch.setattr(app_mod, "reapply_thread_pool_ceiling", lambda: called.append(True))
+
+        settings_mod._invalidate_caches({"mcp_tool_threads"})
+
+        assert called == [True]
 
     async def test_a_sync_handler_is_still_offloaded(self, monkeypatch) -> None:
         """The offload itself is unchanged; only the pool it lands in is sized."""
