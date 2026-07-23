@@ -13481,3 +13481,26 @@ async def test_model_swap_reload_failure_is_toasted():
             await pilot.pause()
         assert screen.swapping_model is False
         assert any("engine gone" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_worker_returns_quietly_when_cancelled():
+    """A superseded swap (the user picked another model mid-load) must not toast a
+    completion or release the gate: the newer swap owns both."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        cancelled_worker = SimpleNamespace(is_cancelled=True)
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.cli.tui.screens.chat._get_worker", return_value=cancelled_worker),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: True),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is True  # gate still held by the newer swap
+        assert not any("Now using" in str(c.args[0]) for c in notify.call_args_list)
