@@ -1,11 +1,15 @@
-# Preregistration for one lilbee-vs-RAGFlow retrieval benchmark run.
+# Preregistration for one lilbee retrieval benchmark run.
 # Freeze this with `python -m evals.benchmark preregister` before any data
 # moves; the frozen copy carries a fingerprint so the run cannot be re-cut.
-run_id: parity-2026-07
+#
+# Every arm is a lilbee configuration: the study grades lilbee against itself,
+# so exactly one feature moves between the two arms and any metric gap is
+# attributable to it. See manifest.ablation.yaml for a multi-arm example.
+run_id: lilbee-parity-2026-07
 
-# Both arms share one served embedder and one served generator; only retrieval
-# differs. The judge must differ from the generator so answers are never graded
-# by the model that wrote them (validated at load time).
+# Both arms share one served embedder and one served generator; only the
+# configuration under test differs. The judge must differ from the generator so
+# answers are never graded by the model that wrote them (validated at load time).
 models:
   embedder: qwen3-embedding
   generator: qwen2.5-72b-instruct
@@ -13,20 +17,24 @@ models:
   judge: fable-5
 
 arms:
-  - name: lilbee-parity
+  - name: lilbee-full
     system: lilbee
-    description: test/retrieval-parity with every parity feature enabled
+    description: every retrieval feature enabled
     config:
       title_search: true
       neighbor_expansion: 2
       table_extraction: true
       layout_detection: true
       intent_llm: true
-  - name: ragflow-default
-    system: ragflow
-    description: RAGFlow DeepDoc pipeline at its defaults
+  - name: lilbee-baseline
+    system: lilbee
+    description: dense retrieval only, the same server with the features above off
     config:
-      pipeline: deepdoc
+      title_search: false
+      neighbor_expansion: 0
+      table_extraction: false
+      layout_detection: false
+      intent_llm: false
 
 # Passage sets carry native TREC qrels and load straight from ir_datasets,
 # whose id names the corpus, the split, and the published copy. The

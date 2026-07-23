@@ -6,7 +6,7 @@ denominator, which are excluded, and which metric names it will accept.
 """
 
 import pytest
-from evals.benchmark.metrics import METRIC_MEASURES, score_run
+from evals.benchmark.metrics import METRIC_MEASURES, judged_at_k, score_run
 
 pytest.importorskip("ir_measures")
 
@@ -47,3 +47,29 @@ def test_every_declared_metric_carries_its_depth_in_its_measure_string():
     # The measure string is the whole depth contract; there is no second place
     # a depth can be declared and drift out of step with it.
     assert all("@" in measure for measure in METRIC_MEASURES.values())
+
+
+def test_judged_at_k_reports_the_share_of_results_the_labels_cover():
+    # Two of the four retrieved documents carry a judgment, relevant or not:
+    # coverage is about whether the labels speak to the document at all.
+    qrels = {"q1": {"a": 1, "b": 0}}
+    run = {"q1": {"a": 4.0, "b": 3.0, "unjudged1": 2.0, "unjudged2": 1.0}}
+    assert judged_at_k(qrels, run, k=4) == pytest.approx(0.5)
+
+
+def test_judged_at_k_averages_over_the_qrels_topics_including_unanswered_ones():
+    # A topic the run never answered contributes zero coverage, matching how
+    # every other figure here is averaged over the qrels topic set.
+    qrels = {"q1": {"a": 1}, "q2": {"z": 1}}
+    run = {"q1": {"a": 1.0}}
+    assert judged_at_k(qrels, run, k=10) == pytest.approx(0.5)
+
+
+def test_judged_at_k_is_zero_when_the_run_and_qrels_name_documents_differently():
+    # The document-id namespace mismatch signature: every metric scores zero and
+    # looks like a terrible system, while coverage shows the labels and the run
+    # are not discussing the same documents at all.
+    qrels = {"q1": {"beir-doc-1": 1}}
+    run = {"q1": {"1f3c-uuid-a": 9.0, "1f3c-uuid-b": 8.0}}
+    assert judged_at_k(qrels, run) == 0.0
+    assert score_run(qrels, run, ["nDCG@10"])["aggregated"]["nDCG@10"] == 0.0

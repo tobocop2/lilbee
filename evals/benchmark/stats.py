@@ -32,11 +32,14 @@ SCIPY_INSTALL_HINT = install_hint("scipy", "for benchmark statistics")
 class PairedResult:
     """The paired comparison of arm B minus arm A on one metric.
 
-    ``significant`` here is the single-test verdict from the bootstrap CI. It is
-    NOT the verdict to publish when more than one comparison was run: a study
-    that tests four arms on three datasets across three metrics runs 36 tests,
-    and selecting the best of them inflates the type-I rate well past alpha. Feed
-    the whole family through ``benjamini_hochberg`` and decide on the adjusted p.
+    ``ci_excludes_zero`` is the single-test verdict from the bootstrap CI, and is
+    named for what it is rather than "significant" so a consumer of the raw
+    results file cannot mistake it for the study verdict. It is NOT the verdict
+    to publish when more than one comparison was run: a study that tests four
+    arms on three datasets across three metrics runs 36 tests, and selecting the
+    best of them inflates the type-I rate well past alpha. Feed the whole family
+    through ``benjamini_hochberg`` and decide on the adjusted p, which is what the
+    report does.
     """
 
     metric: str
@@ -47,7 +50,7 @@ class PairedResult:
     ci_low: float
     ci_high: float
     p_value: float
-    significant: bool
+    ci_excludes_zero: bool
     resamples: int = DEFAULT_RESAMPLES
     bootstrap_seed: int = DEFAULT_SEED
     permutation_seed: int = DEFAULT_SEED + 1
@@ -181,7 +184,7 @@ def compare(
         ci_low=ci_low,
         ci_high=ci_high,
         p_value=p_value,
-        significant=not (ci_low <= 0.0 <= ci_high),
+        ci_excludes_zero=not (ci_low <= 0.0 <= ci_high),
         resamples=resamples,
         bootstrap_seed=bootstrap_seed,
         permutation_seed=permutation_seed,

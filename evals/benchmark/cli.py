@@ -1,4 +1,4 @@
-"""Command-line entry point for the lilbee-vs-RAGFlow benchmark.
+"""Command-line entry point for the lilbee retrieval benchmark.
 
 Subcommands mirror the run stages: preregister, fetch, collect, score-ir,
 answer, score-ragas, stats, report. Heavy dependencies (ir_measures,
@@ -20,7 +20,6 @@ from evals.benchmark import metrics, stats
 from evals.benchmark.collectors import (
     DEFAULT_TARGET_DOCS,
     LilbeeCollector,
-    RagflowCollector,
     collect_run,
     load_queries,
 )
@@ -44,28 +43,22 @@ ASK_TIMEOUT_SECONDS = 600.0
 
 def _cmd_preregister(args: argparse.Namespace) -> int:
     manifest = Manifest.load(args.manifest)
+    # Freezing is also the moment to warn that a run will be rescorable but not
+    # rebuildable. The guard is not fatal here so a template can still be frozen,
+    # but a real run that leaves the build unrecorded is told so before any data
+    # moves, when it is still cheap to fill in.
+    try:
+        manifest.require_reproducible()
+    except ValueError as exc:
+        print(f"warning: {exc}", file=sys.stderr)
     fingerprint = manifest.freeze(args.out)
     print(f"froze manifest {manifest.run_id} -> {args.out} ({fingerprint[:12]})")
     return 0
 
 
-def _build_collector(args: argparse.Namespace) -> LilbeeCollector | RagflowCollector:
-    if args.system == "lilbee":
-        return LilbeeCollector(args.base_url, run_tag=args.run_tag, target_docs=args.target_docs)
-    if not args.api_key or not args.dataset_id:
-        raise ValueError("ragflow collection needs --api-key and at least one --dataset-id")
-    return RagflowCollector(
-        args.base_url,
-        args.api_key,
-        args.dataset_id,
-        run_tag=args.run_tag,
-        target_docs=args.target_docs,
-    )
-
-
 def _cmd_collect(args: argparse.Namespace) -> int:
     queries = load_queries(args.queries)
-    collector = _build_collector(args)
+    collector = LilbeeCollector(args.base_url, run_tag=args.run_tag, target_docs=args.target_docs)
     hits = collect_run(
         collector,
         queries,
@@ -122,6 +115,10 @@ def _cmd_score_ir(args: argparse.Namespace) -> int:
     qrels = read_qrels(args.qrels)
     run = read_run(args.run)
     scores = metrics.score_run(qrels, run, args.metrics)
+    # Pool coverage travels with the scores. Every metric above treats an unjudged
+    # document as non-relevant, so how much of the run the labels actually cover
+    # is what says whether a delta is a finding or an artefact of the pool.
+    judged = metrics.judged_at_k(qrels, run)
     write_jsonl(
         args.out,
         [
@@ -129,11 +126,25 @@ def _cmd_score_ir(args: argparse.Namespace) -> int:
                 "dataset": args.dataset,
                 "run_tag": args.run_tag,
                 "aggregated": scores["aggregated"],
+                "judged_at_k": judged,
+                "judged_depth": metrics.JUDGED_DEPTH,
                 "per_query": scores["per_query"],
             }
         ],
     )
-    print(f"scored {args.run_tag} on {args.dataset}: {scores['aggregated']} -> {args.out}")
+    print(
+        f"scored {args.run_tag} on {args.dataset}: {scores['aggregated']} "
+        f"(judged@{metrics.JUDGED_DEPTH} {judged:.1%}) -> {args.out}"
+    )
+    if judged == 0.0:
+        print(
+            "warning: no retrieved document in the top "
+            f"{metrics.JUDGED_DEPTH} carries a judgment on any topic. Every metric "
+            "above is therefore zero by construction. This is the signature of a "
+            "document-id mismatch between the run file and the qrels, not of a bad "
+            "system; check that both name documents the same way before reporting.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -302,7 +313,22 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             seed=manifest.stats.seed,
             alpha=manifest.stats.alpha,
         )
-        row = {"row_type": "ir", "dataset": dataset, **result.to_dict()}
+        # Each row carries its own arm pair, not just the file's first meta row.
+        # A results file accumulates several comparisons (BH runs across all of
+        # them), and an ablation's comparisons do not share one arm pair, so a
+        # single file-level label would print one comparison's scores under
+        # another's arm names.
+        row = {
+            "row_type": "ir",
+            "dataset": dataset,
+            "arm_a": arm_a,
+            "arm_b": arm_b,
+            # Pool coverage for each arm, carried from score-ir so the report can
+            # state how much of each run the labels covered beside the delta.
+            "judged_a": file_a.get("judged_at_k"),
+            "judged_b": file_b.get("judged_at_k"),
+            **result.to_dict(),
+        }
         rows.append(row)
     append_jsonl(args.out, rows)
     print(f"wrote {len(rows) - 1} paired IR comparisons -> {args.out}")
@@ -401,7 +427,6 @@ def _add_preregister(sub: argparse._SubParsersAction) -> None:
 
 def _add_collect(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("collect", help="build a TREC run file for one arm")
-    parser.add_argument("--system", choices=("lilbee", "ragflow"), required=True)
     parser.add_argument("--queries", type=Path, required=True)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -411,11 +436,7 @@ def _add_collect(sub: argparse._SubParsersAction) -> None:
         "--target-docs",
         type=int,
         default=DEFAULT_TARGET_DOCS,
-        help="distinct parent documents to collect per query; both arms use the same depth",
-    )
-    parser.add_argument("--api-key", default="", help="ragflow only")
-    parser.add_argument(
-        "--dataset-id", action="append", default=[], help="ragflow only, repeatable"
+        help="distinct parent documents to collect per query; every arm uses the same depth",
     )
     parser.set_defaults(handler=_cmd_collect)
 

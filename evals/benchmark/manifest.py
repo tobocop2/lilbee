@@ -26,8 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from evals.benchmark.datasets import LABEL_DERIVED, LABEL_NATIVE
 
 LILBEE_SYSTEM = "lilbee"
-RAGFLOW_SYSTEM = "ragflow"
-KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM, RAGFLOW_SYSTEM})
+KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM})
 FROZEN_TEMPERATURE = 0.0
 MIN_ARMS = 2
 
@@ -189,10 +188,9 @@ class Manifest(Frozen):
         names = [arm.name for arm in self.arms]
         if len(set(names)) != len(names):
             raise ValueError("arm names must be distinct")
-        # A cross-system parity study (one lilbee arm, one ragflow) and a
-        # single-system ablation (several lilbee arms at different configs) are
-        # both valid; requiring one of each made the ablation impossible to
-        # declare, so a run compared undeclared arms under a stamped fingerprint.
+        # Every arm is a lilbee configuration: the study grades lilbee against
+        # itself (a baseline against feature variants), so an arm naming any
+        # other system is a mistake the stamped fingerprint would otherwise hide.
         unknown = {arm.system for arm in self.arms} - KNOWN_SYSTEMS
         if unknown:
             raise ValueError(

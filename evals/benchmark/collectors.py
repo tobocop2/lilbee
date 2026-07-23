@@ -1,19 +1,14 @@
-"""Per-system collectors that turn a query set into a TREC run file.
+"""Per-arm collectors that turn a query set into a TREC run file.
 
-Each collector hits one system's retrieval API and returns chunk hits tagged
-with their parent document; the shared driver collapses those to a document run
-and writes the TREC file. Every query is checkpointed as it lands, so a killed
-pod run resumes without re-querying completed queries.
+Each collector hits one lilbee configuration's retrieval API and returns chunk
+hits tagged with their parent document; the shared driver collapses those to a
+document run and writes the TREC file. Every query is checkpointed as it lands,
+so a killed pod run resumes without re-querying completed queries.
 
-Metrics are scored over documents, so both arms must be asked for the same
+Metrics are scored over documents, so every arm must be asked for the same
 *document* depth. lilbee's search already groups results by source document, so
-one result is one document. A chunk-level system does not: asking RAGFlow for 20
-chunks yields however many distinct parent documents those chunks happen to
-belong to, typically far fewer than 20, because a relevant document usually
-contributes several chunks. Scoring a 20-document list against a 7-document one
-puts a pure depth artifact into the metric gap. Chunk-level collectors therefore
-page until they hold ``target_docs`` distinct parent documents, and the run is
-capped at that same document depth for every arm.
+one result is one document, and the run is capped at ``target_docs`` documents
+for every arm.
 """
 
 from __future__ import annotations
@@ -29,38 +24,10 @@ from evals.benchmark.runfile import ChunkHit, collapse_hits, write_run
 from evals.retrieval.checkpoint import JsonlCheckpoint, load_items, load_jsonl
 
 SEARCH_ROUTE = "/api/search"
-RAGFLOW_RETRIEVAL_ROUTE = "/api/v1/retrieval"
 RETRIEVE_TIMEOUT_SECONDS = 120.0
 # Distinct parent documents every arm is asked for; matches the published
 # Recall@20 depth, so recall_20 is scored on runs that can actually reach 20.
 DEFAULT_TARGET_DOCS = 20
-# Chunks fetched per RAGFlow page while over-fetching toward the document target.
-RAGFLOW_CHUNK_PAGE_SIZE = 50
-# Ceiling on pages, so a corpus that cannot supply the target cannot loop forever.
-RAGFLOW_MAX_PAGES = 20
-
-
-def collect_to_document_depth(
-    fetch_page: Callable[[int], list[ChunkHit]], target_docs: int, max_pages: int
-) -> list[ChunkHit]:
-    """Accumulate chunk hits page by page until ``target_docs`` documents are held.
-
-    Stops early on an empty page (the system has no more results) and at
-    ``max_pages`` (the corpus cannot supply the target). Returns every hit
-    fetched, including the extra chunks of documents already seen; collapsing to
-    documents and capping the depth happen downstream.
-    """
-    hits: list[ChunkHit] = []
-    documents: set[str] = set()
-    for page in range(1, max_pages + 1):
-        page_hits = fetch_page(page)
-        if not page_hits:
-            break
-        hits.extend(page_hits)
-        documents.update(hit.doc_id for hit in page_hits)
-        if len(documents) >= target_docs:
-            break
-    return hits
 
 
 class Collector(Protocol):
@@ -113,66 +80,6 @@ class LilbeeCollector:
             ChunkHit(query_id=query_id, doc_id=doc["source"], score=float(doc["best_relevance"]))
             for doc in response.json()
         ]
-
-
-class RagflowCollector:
-    """Reads ranked chunks from RAGFlow's retrieval API and tags parent docs.
-
-    RAGFlow ranks chunks, so a single page of ``page_size`` chunks collapses to
-    an unpredictable and usually much smaller number of parent documents. Pages
-    are requested until ``target_docs`` distinct documents are held, which is
-    what makes this arm depth-matched with a document-level arm.
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        api_key: str,
-        dataset_ids: list[str],
-        *,
-        run_tag: str = "ragflow",
-        target_docs: int = DEFAULT_TARGET_DOCS,
-        page_size: int = RAGFLOW_CHUNK_PAGE_SIZE,
-        max_pages: int = RAGFLOW_MAX_PAGES,
-        client: httpx.Client | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
-        self._dataset_ids = dataset_ids
-        self.run_tag = run_tag
-        self.target_docs = target_docs
-        self._page_size = page_size
-        self._max_pages = max_pages
-        self._client = client or make_http_client()
-
-    def _fetch_page(self, query_id: str, query_text: str, page: int) -> list[ChunkHit]:
-        response = self._client.post(
-            f"{self._base_url}{RAGFLOW_RETRIEVAL_ROUTE}",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "question": query_text,
-                "dataset_ids": self._dataset_ids,
-                "page": page,
-                "page_size": self._page_size,
-            },
-        )
-        response.raise_for_status()
-        chunks = response.json().get("data", {}).get("chunks", [])
-        return [
-            ChunkHit(
-                query_id=query_id,
-                doc_id=chunk["document_id"],
-                score=float(chunk["similarity"]),
-            )
-            for chunk in chunks
-        ]
-
-    def retrieve(self, query_id: str, query_text: str) -> list[ChunkHit]:
-        return collect_to_document_depth(
-            lambda page: self._fetch_page(query_id, query_text, page),
-            target_docs=self.target_docs,
-            max_pages=self._max_pages,
-        )
 
 
 def _row_hits(query_id: str, row: dict[str, Any]) -> list[ChunkHit]:

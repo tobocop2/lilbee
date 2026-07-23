@@ -128,6 +128,28 @@ def test_attribution_reports_the_two_halves_separately():
     assert deltas["generator_delta"] == pytest.approx(0.0)
 
 
+def test_generator_delta_orients_lower_is_better_metrics():
+    # More hallucination is worse, more faithfulness is better. Averaging raw
+    # deltas would cancel the two; the aggregate must sign-flip hallucination so
+    # a rise in it counts as a regression, not as offsetting the faithfulness win.
+    baseline = RagCheckerScores(
+        overall=dict.fromkeys(("precision", "recall", "f1"), 0.5),
+        retriever=dict.fromkeys(RETRIEVER_METRICS, 0.4),
+        generator=dict.fromkeys(GENERATOR_METRICS, 0.5),
+    )
+    # Only hallucination moves, and it moves up (worse).
+    worse_generator = RagCheckerScores(
+        overall=baseline.overall,
+        retriever=baseline.retriever,
+        generator={**dict.fromkeys(GENERATOR_METRICS, 0.5), "hallucination": 0.8},
+    )
+    deltas = attribution(baseline, worse_generator)
+    # Raw delta on hallucination is +0.3; oriented it is -0.3, so the mean over
+    # the six generator metrics is negative, not the +0.05 a naive mean gives.
+    assert deltas["generator_delta"] < 0
+    assert deltas["generator_delta"] == pytest.approx(-0.3 / len(GENERATOR_METRICS))
+
+
 def test_the_judge_model_is_addressed_as_an_openai_compatible_route():
     # litellm routes "openai/<name>" to api_base verbatim; without the prefix it
     # resolves a provider from the environment and the manifest's judge is not

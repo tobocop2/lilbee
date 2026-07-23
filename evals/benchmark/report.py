@@ -60,7 +60,11 @@ def _p_cell(row: dict[str, Any]) -> str:
     return f"{row['p_value']:.3f}"
 
 
-def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]:
+def _ir_row_arms(row: dict[str, Any]) -> tuple[str, str]:
+    return row.get("arm_a", "arm A"), row.get("arm_b", "arm B")
+
+
+def _ir_section(rows: list[dict[str, Any]]) -> list[str]:
     ir_rows = _rows_of(rows, "ir")
     if not ir_rows:
         return []
@@ -69,6 +73,31 @@ def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]
     # raw p gives two verdicts that can contradict each other, and quoting the
     # best of N raw p-values claims a confidence the study did not earn.
     adjusted = benjamini_hochberg([float(row["p_value"]) for row in ir_rows])
+    # Each row is labelled with its own arm pair. When the whole file is one
+    # comparison the pair becomes the two value-column headers, as before; when a
+    # file holds several comparisons (an ablation), a comparison column names the
+    # arms per row so no comparison's scores print under another's arm names.
+    pairs = {_ir_row_arms(row) for row in ir_rows}
+    single = len(pairs) == 1
+    records: list[dict[str, Any]] = []
+    for row, adj in zip(ir_rows, adjusted, strict=True):
+        arm_a, arm_b = _ir_row_arms(row)
+        record: dict[str, Any] = {"dataset": row["dataset"], "metric": row["metric"]}
+        if single:
+            record[arm_a] = f"{row['mean_a']:.4f}"
+            record[arm_b] = f"{row['mean_b']:.4f}"
+        else:
+            record["comparison"] = f"{arm_a} vs {arm_b}"
+            record["arm A"] = f"{row['mean_a']:.4f}"
+            record["arm B"] = f"{row['mean_b']:.4f}"
+        record["delta"] = f"{row['mean_diff']:+.4f}"
+        record["95% CI (B - A)"] = f"[{row['ci_low']:+.4f}, {row['ci_high']:+.4f}]"
+        record["p"] = _p_cell(row)
+        record["adj. p"] = f"{adj:.3f}"
+        record["significant"] = "yes" if adj <= DEFAULT_ALPHA else "no"
+        if row.get("judged_a") is not None and row.get("judged_b") is not None:
+            record["judged"] = f"{float(row['judged_a']):.0%} / {float(row['judged_b']):.0%}"
+        records.append(record)
     return _section(
         "Tier 1 - retrieval, scored against human labels",
         [
@@ -80,21 +109,14 @@ def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]
             f"all {len(ir_rows)} comparisons in this study, at alpha "
             f"{DEFAULT_ALPHA}. The CI is the effect size, not a second verdict. A "
             "raw p from the best of several arms is not evidence at its face value.",
+            "",
+            "`judged` is the share of each arm's top 10 that carries a human "
+            "judgment (arm A / arm B). These sets are pooled from the systems that "
+            "existed when they were built, so anything outside the pool counts as "
+            "non-relevant: the lower this is, the more of each run the labels "
+            "cannot speak to, and the more a small delta may be a pool artefact.",
         ],
-        [
-            {
-                "dataset": row["dataset"],
-                "metric": row["metric"],
-                arm_a: f"{row['mean_a']:.4f}",
-                arm_b: f"{row['mean_b']:.4f}",
-                "delta": f"{row['mean_diff']:+.4f}",
-                "95% CI (B - A)": f"[{row['ci_low']:+.4f}, {row['ci_high']:+.4f}]",
-                "p": _p_cell(row),
-                "adj. p": f"{adj:.3f}",
-                "significant": "yes" if adj <= DEFAULT_ALPHA else "no",
-            }
-            for row, adj in zip(ir_rows, adjusted, strict=True)
-        ],
+        records,
     )
 
 
@@ -118,9 +140,11 @@ def _ragas_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[s
     )
     for judge in _rows_of(rows, "judge"):
         lines += [
-            f"Corroborating blind judge noise floor: plus or minus "
-            f"{judge['noise_floor']} per dimension (one arm graded twice). "
-            "Answer-tier gaps at or below it are not oversold.",
+            f"Corroborating blind judge self-consistency: grading one arm twice "
+            f"under two rubric presentations disagrees by {judge['noise_floor']} "
+            "per dimension on average. This is a per-question spread, not an error "
+            "bar on a difference of means, so it is context on how noisy a single "
+            "grade is, not a significance threshold for the arm gap above.",
             "",
         ]
     return lines
@@ -160,10 +184,13 @@ def _calibration_section(rows: list[dict[str, Any]]) -> list[str]:
         [
             "The same rubric that grades this study's answers was run over "
             "SummEval, whose summaries were rated 1-5 by three experts years "
-            "before this harness existed. The ceiling is how well those experts "
-            "agreed with each other: a judge cannot track people more closely "
-            "than they track themselves, so the raw correlation is reported "
-            "against it rather than on its own.",
+            "before this harness existed. The reference is the published "
+            "expert-to-expert agreement: a correlation of 0.6 means something "
+            "different against a 0.80 reference than against a 0.40 one, so the "
+            "raw correlation is reported beside it rather than on its own. The "
+            "ratio can exceed 100 percent, because the judge is correlated "
+            "against the mean of three experts, which is more reliable than any "
+            "single expert, so it is a reference point rather than a hard ceiling.",
         ],
         [
             {
@@ -171,8 +198,8 @@ def _calibration_section(rows: list[dict[str, Any]]) -> list[str]:
                 "n": row["n"],
                 "Spearman": f"{row['spearman']:+.3f}",
                 "Kendall": f"{row['kendall']:+.3f}",
-                "expert ceiling": f"{row['expert_ceiling']:.3f}",
-                "share of ceiling": f"{row['fraction_of_ceiling']:.0%}",
+                "expert agreement": f"{row['expert_ceiling']:.3f}",
+                "vs expert agreement": f"{row['fraction_of_ceiling']:.0%}",
             }
             for row in _rows_of(rows, "calibration")
         ],
@@ -234,7 +261,7 @@ def _machine_section(rows: list[dict[str, Any]]) -> list[str]:
             )
     return _section(
         "Machines, timings and cost",
-        ["Read from the pods while the work ran, not reconstructed afterwards."],
+        ["Per-stage wall time, throughput and cost recorded for this run's stages."],
         records,
     )
 
@@ -264,20 +291,28 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         raise ValueError("results contain no ir or ragas rows; run score-ir first")
     arm_a, arm_b = _arm_labels(rows)
     meta = _rows_of(rows, "meta")
-    # Titled from the arms that actually ran. Hardcoding "lilbee vs RAGFlow"
-    # labelled every single-system ablation as a cross-system comparison, which
-    # is the same wrong-label problem the metric layer had.
-    header = [f"# Retrieval benchmark: {arm_a} vs {arm_b}", ""]
+    # A file that holds one comparison is titled by its two arms; one that holds
+    # several (an ablation) cannot honestly claim a single arm pair in its title,
+    # so it is named for the run instead and each comparison is labelled in the
+    # table. Hardcoding one pair was the wrong-label problem the metric layer had.
+    ir_pairs = {_ir_row_arms(row) for row in _rows_of(rows, "ir")}
+    multi_arm = len(ir_pairs) > 1
+    if multi_arm:
+        run_id = meta[0].get("run_id", "?") if meta else "?"
+        header = [f"# Retrieval benchmark: {run_id} ({len(ir_pairs)} comparisons)", ""]
+    else:
+        header = [f"# Retrieval benchmark: {arm_a} vs {arm_b}", ""]
     if meta:
-        header += [
+        provenance = (
             f"Run `{meta[0].get('run_id', '?')}` "
-            f"(manifest `{meta[0].get('fingerprint', '?')[:12]}`). "
-            f"Arm A = {arm_a}, arm B = {arm_b}.",
-            "",
-        ]
+            f"(manifest `{meta[0].get('fingerprint', '?')[:12]}`)."
+        )
+        if not multi_arm:
+            provenance += f" Arm A = {arm_a}, arm B = {arm_b}."
+        header += [provenance, ""]
     lines = (
         header
-        + _ir_section(rows, arm_a, arm_b)
+        + _ir_section(rows)
         + _ragas_section(rows, arm_a, arm_b)
         + _attribution_section(rows)
         + _calibration_section(rows)

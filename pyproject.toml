@@ -209,6 +209,16 @@ extend-immutable-calls = ["litestar.params.Body"]
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]
+# The evaluation harness (never shipped; see evals/pyproject.toml). Its S311 use
+# is the inverse of the rule's concern: every generator is explicitly seeded from
+# the frozen manifest so a third party can regenerate the same sample or shuffle.
+# A cryptographic RNG would make the study irreproducible, which is the defect
+# the seed exists to prevent. The infra probes shell out to nvidia-smi, whose
+# absolute path varies by pod image, and fetch a known provider endpoint; S603,
+# S607 and S310 describe untrusted input, and neither input is untrusted here:
+# the command is fixed and its query fields are module constants, named so the
+# query and the arity check that parses its CSV cannot drift apart.
+"evals/**/*.py" = ["S311", "S310", "S603", "S607"]
 # QA matrix runner is a test framework just like tests/; same ignores apply.
 "tools/qa/**/*.py" = [
     "S101", "S104", "S105", "S106", "S108", "S603", "S607",

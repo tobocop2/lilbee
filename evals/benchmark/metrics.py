@@ -38,6 +38,39 @@ METRIC_MEASURES: dict[str, str] = {
 
 IR_MEASURES_INSTALL_HINT = install_hint("ir_measures", "to score retrieval")
 
+# Depth the pool-coverage diagnostic is reported at. Ten, to match the depth the
+# headline nDCG and MRR are cut at, so the coverage figure describes the same
+# documents those metrics were computed over.
+JUDGED_DEPTH = 10
+
+
+def judged_at_k(qrels: Qrels, run: Run, k: int = JUDGED_DEPTH) -> float:
+    """Mean share of each topic's top-k results that carry a human judgment.
+
+    BEIR's qrels are pooled from the systems that existed when the dataset was
+    built, so a document no pooled system retrieved has no judgment and is scored
+    non-relevant by trec_eval convention. That convention is correct and is what
+    makes these numbers comparable to published baselines, but it means a system
+    retrieving outside the pool is penalised at a rate nobody measured.
+
+    This reports that rate. It is a diagnostic, not a metric: a low value does not
+    make the run wrong, it bounds how much of the run the labels can speak to. A
+    value near zero means the labels and the run are barely talking about the same
+    documents at all, which is the signature of a document-id namespace mismatch
+    rather than of a bad system, and is worth catching before publishing a delta.
+
+    Averaged over the qrels topic set, matching how every other figure here is
+    averaged, so a topic the run returned nothing for contributes zero coverage.
+    """
+    if not qrels:
+        return 0.0
+    total = 0.0
+    for query_id, judged in qrels.items():
+        ranked = sorted(run.get(query_id, {}).items(), key=lambda hit: (-hit[1], hit[0]))[:k]
+        if ranked:
+            total += sum(1 for doc_id, _ in ranked if doc_id in judged) / len(ranked)
+    return round(total / len(qrels), 4)
+
 
 def score_run(qrels: Qrels, run: Run, metrics: list[str]) -> dict[str, Any]:
     """Per-query and aggregated scores for the requested display metrics."""

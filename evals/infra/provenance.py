@@ -44,6 +44,12 @@ POD_ID_ENV = "RUNPOD_POD_ID"
 # in a multi-minute stage, slow enough that the sampling itself is free.
 SAMPLE_INTERVAL_SECONDS = 5.0
 
+# nvidia-smi query fields, named once so the query and the arity check that
+# parses its CSV cannot drift apart: a field added to one without the other
+# would silently drop every row instead of failing.
+INVENTORY_FIELDS = ("index", "name", "memory.total", "driver_version")
+SAMPLE_FIELDS = ("utilization.gpu", "memory.used")
+
 # getrusage reports ru_maxrss in KiB on Linux and in bytes on macOS. The pods are
 # Linux, but a developer checking the harness on a laptop would otherwise read a
 # number a thousand times too large and have no way to tell, so the unit is
@@ -94,7 +100,7 @@ def _query_gpus() -> list[GPU]:
         output = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,name,memory.total,driver_version",
+                f"--query-gpu={','.join(INVENTORY_FIELDS)}",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -107,7 +113,7 @@ def _query_gpus() -> list[GPU]:
     gpus: list[GPU] = []
     for line in output.strip().splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 4:
+        if len(parts) != len(INVENTORY_FIELDS):
             continue
         gpus.append(
             GPU(index=int(parts[0]), name=parts[1], memory_mib=int(parts[2]), driver=parts[3])
@@ -123,7 +129,7 @@ def _sample_gpus() -> tuple[list[float], list[float]]:
         output = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=utilization.gpu,memory.used",
+                f"--query-gpu={','.join(SAMPLE_FIELDS)}",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -137,7 +143,7 @@ def _sample_gpus() -> tuple[list[float], list[float]]:
     memory: list[float] = []
     for line in output.strip().splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 2:
+        if len(parts) != len(SAMPLE_FIELDS):
             continue
         utilisation.append(float(parts[0]))
         memory.append(float(parts[1]))

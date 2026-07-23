@@ -6,6 +6,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 import httpx
@@ -63,21 +64,6 @@ def lilbee_chat_fn() -> ChatFn:
     return chat
 
 
-@dataclass(frozen=True)
-class JudgeBackend:
-    """The judge's identity, its ragas LLM, and a plain chat fn for warming.
-
-    ``llm`` is what ragas' rubric metrics grade through. ``chat`` exists only so
-    ``warm_chat`` can block on model load over the same endpoint without
-    spending a structured-output call to do it.
-    """
-
-    llm: Any
-    chat: ChatFn
-    model: str
-    base_url: str
-
-
 def ragas_judge_llm(
     base_url: str, model: str, api_key: str | None, temperature: float = 0.0
 ) -> Any:
@@ -99,6 +85,30 @@ def ragas_judge_llm(
     return llm_factory(model, provider="openai", client=client, temperature=temperature)
 
 
+@dataclass(frozen=True)
+class JudgeBackend:
+    """The judge's identity, a lazily built ragas LLM, and a chat fn for warming.
+
+    Identity (``model``, ``base_url``) is available the moment the backend is
+    resolved, so recording who graded a run never depends on the generation
+    extra. ``llm`` is what ragas' rubric metrics grade through, built on first
+    use so a tier-1 install that only records provenance need not import ragas
+    or openai. ``chat`` exists only so ``warm_chat`` can block on model load over
+    the same endpoint without spending a structured-output call to do it.
+    """
+
+    chat: ChatFn
+    model: str
+    base_url: str
+    api_key: str | None = None
+    temperature: float = 0.0
+
+    @cached_property
+    def llm(self) -> Any:
+        """The ragas LLM, constructed on first access (needs the generation extra)."""
+        return ragas_judge_llm(self.base_url, self.model, self.api_key, self.temperature)
+
+
 def judge_backend() -> JudgeBackend:
     """The judge backend, which must be an endpoint separate from the system under test.
 
@@ -109,6 +119,10 @@ def judge_backend() -> JudgeBackend:
     share the generator, but not on the per-question variance the noise floor is
     supposed to bound, and a self-consistent grader shrinks that floor and widens
     what the report calls significant.
+
+    The ragas LLM is built lazily by ``JudgeBackend.llm``, so resolving the
+    backend to record its identity does not require the generation extra; only
+    grading real answers does.
     """
     base_url = os.environ.get(JUDGE_BASE_URL_ENV, "").strip()
     model = os.environ.get(JUDGE_MODEL_ENV, "").strip()
@@ -121,10 +135,10 @@ def judge_backend() -> JudgeBackend:
         )
     api_key = os.environ.get(JUDGE_API_KEY_ENV)
     return JudgeBackend(
-        llm=ragas_judge_llm(base_url, model, api_key),
         chat=openai_chat_fn(base_url, model, api_key),
         model=model,
         base_url=base_url,
+        api_key=api_key,
     )
 
 

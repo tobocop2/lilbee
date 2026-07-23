@@ -63,7 +63,7 @@ def test_compare_reports_a_significant_positive_effect():
     assert result.mean_b == pytest.approx(0.4)
     assert result.mean_diff == pytest.approx(0.4)
     assert result.ci_low > 0.0
-    assert result.significant is True
+    assert result.ci_excludes_zero is True
 
 
 def test_compare_flags_a_ci_that_crosses_zero_as_not_significant():
@@ -72,7 +72,7 @@ def test_compare_flags_a_ci_that_crosses_zero_as_not_significant():
     result = stats.compare("MRR@10", a, b, resamples=500, seed=5)
     assert result.mean_diff == pytest.approx(0.0)
     assert result.ci_low <= 0.0 <= result.ci_high
-    assert result.significant is False
+    assert result.ci_excludes_zero is False
 
 
 def test_compare_aligns_on_shared_query_ids_only():
@@ -90,7 +90,7 @@ def test_compare_with_zero_overlap_reports_a_degenerate_null():
     assert result.mean_diff == 0.0
     assert (result.ci_low, result.ci_high) == (0.0, 0.0)
     assert result.p_value == 1.0
-    assert result.significant is False
+    assert result.ci_excludes_zero is False
 
 
 def test_compare_result_round_trips_through_to_dict():
@@ -107,7 +107,7 @@ def test_compare_result_round_trips_through_to_dict():
         "ci_low",
         "ci_high",
         "p_value",
-        "significant",
+        "ci_excludes_zero",
         "resamples",
         "bootstrap_seed",
         "permutation_seed",

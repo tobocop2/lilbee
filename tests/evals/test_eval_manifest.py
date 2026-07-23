@@ -29,8 +29,8 @@ def _manifest(arms=None, datasets=None, **over) -> Manifest:
         arms
         if arms is not None
         else [
-            ArmConfig(name="lilbee-parity", system="lilbee", description="on"),
-            ArmConfig(name="ragflow-default", system="ragflow", description="default"),
+            ArmConfig(name="lilbee-full", system="lilbee", description="every feature on"),
+            ArmConfig(name="lilbee-baseline", system="lilbee", description="features off"),
         ]
     )
     datasets = (
@@ -52,7 +52,7 @@ def _manifest(arms=None, datasets=None, **over) -> Manifest:
     return Manifest(**fields)
 
 
-def test_a_valid_cross_system_manifest_validates():
+def test_a_valid_two_arm_manifest_validates():
     _manifest()
 
 
@@ -85,7 +85,7 @@ def test_an_ablation_may_declare_a_baseline_and_several_variants():
 def test_arm_names_must_be_distinct():
     dupes = [
         ArmConfig(name="same", system="lilbee", description=""),
-        ArmConfig(name="same", system="ragflow", description=""),
+        ArmConfig(name="same", system="lilbee", description=""),
     ]
     with pytest.raises(ValueError, match="distinct"):
         _manifest(arms=dupes)
@@ -128,12 +128,12 @@ def test_unknown_dataset_label_kind_is_rejected():
 
 
 def test_require_declared_comparison_accepts_the_declared_pair():
-    _manifest().require_declared_comparison("lilbee-parity", "ragflow-default", "scifact")
+    _manifest().require_declared_comparison("lilbee-full", "lilbee-baseline", "scifact")
 
 
 def test_require_declared_comparison_rejects_an_undeclared_arm():
-    # This is the committed bug: arms w1.0/dense were compared under a manifest
-    # that declares lilbee-parity/ragflow-default.
+    # Comparing arms the manifest never declared is the failure the guard exists
+    # to catch: it would stamp the frozen fingerprint onto a study nobody froze.
     with pytest.raises(ValueError, match="not declared in manifest"):
         _manifest().require_declared_comparison("w1.0", "dense", "scifact")
 
@@ -141,17 +141,17 @@ def test_require_declared_comparison_rejects_an_undeclared_arm():
 def test_require_declared_comparison_rejects_a_partial_pair():
     # One declared arm compared against an undeclared one.
     with pytest.raises(ValueError, match="not declared in manifest"):
-        _manifest().require_declared_comparison("lilbee-parity", "dense", "scifact")
+        _manifest().require_declared_comparison("lilbee-full", "dense", "scifact")
 
 
 def test_require_declared_comparison_rejects_an_undeclared_dataset():
     with pytest.raises(ValueError, match="dataset 'fiqa' is not declared"):
-        _manifest().require_declared_comparison("lilbee-parity", "ragflow-default", "fiqa")
+        _manifest().require_declared_comparison("lilbee-full", "lilbee-baseline", "fiqa")
 
 
 def test_require_declared_comparison_rejects_comparing_an_arm_with_itself():
     with pytest.raises(ValueError, match="two distinct arms"):
-        _manifest().require_declared_comparison("lilbee-parity", "lilbee-parity", "scifact")
+        _manifest().require_declared_comparison("lilbee-full", "lilbee-full", "scifact")
 
 
 def test_fingerprint_is_stable_across_equal_manifests():
@@ -175,7 +175,7 @@ def test_freeze_then_load_round_trips_and_records_the_fingerprint(tmp_path):
 
 def test_arm_and_dataset_name_helpers():
     manifest = _manifest()
-    assert manifest.arm_names == {"lilbee-parity", "ragflow-default"}
+    assert manifest.arm_names == {"lilbee-full", "lilbee-baseline"}
     assert manifest.dataset_names == {"scifact"}
 
 

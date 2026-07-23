@@ -50,6 +50,27 @@ GENERATOR_METRICS = (
 OVERALL_METRICS = ("precision", "recall", "f1")
 RAGCHECKER_METRICS = OVERALL_METRICS + RETRIEVER_METRICS + GENERATOR_METRICS
 
+# Metrics where a lower value is the better outcome. The generator side mixes
+# both polarities: more hallucination or noise sensitivity is worse, more
+# faithfulness or utilization is better. Averaging the raw arm-minus-baseline
+# deltas would let a rise in hallucination cancel a rise in faithfulness, so the
+# lower-is-better deltas are sign-flipped before the mean and the aggregate reads
+# as net generator improvement regardless of which metric moved.
+LOWER_IS_BETTER = frozenset(
+    {
+        "noise_sensitivity_in_relevant",
+        "noise_sensitivity_in_irrelevant",
+        "hallucination",
+    }
+)
+
+
+def _oriented_delta(arm: float, baseline: float, name: str) -> float:
+    """Arm-minus-baseline, sign-flipped so that positive always means better."""
+    delta = arm - baseline
+    return -delta if name in LOWER_IS_BETTER else delta
+
+
 # litellm routes any "openai/<name>" model string to the api_base verbatim, which
 # is how a self-hosted server is addressed. Naming the prefix once keeps the
 # convention out of the call sites.
@@ -205,12 +226,19 @@ def attribution(baseline: RagCheckerScores, arm: RagCheckerScores) -> dict[str, 
     moves for either cause; this reports the two separately, so a study can say
     whether a change helped because retrieval improved or because the generator
     made better use of what it was given.
+
+    Each delta is oriented so positive means better: the retriever metrics are
+    both higher-is-better, but the generator side mixes polarities, so the
+    lower-is-better metrics are sign-flipped before the mean rather than allowed
+    to cancel a genuine improvement.
     """
     return {
         "retriever_delta": statistics.fmean(
-            arm.retriever[name] - baseline.retriever[name] for name in RETRIEVER_METRICS
+            _oriented_delta(arm.retriever[name], baseline.retriever[name], name)
+            for name in RETRIEVER_METRICS
         ),
         "generator_delta": statistics.fmean(
-            arm.generator[name] - baseline.generator[name] for name in GENERATOR_METRICS
+            _oriented_delta(arm.generator[name], baseline.generator[name], name)
+            for name in GENERATOR_METRICS
         ),
     }

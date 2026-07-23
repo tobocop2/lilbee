@@ -99,10 +99,10 @@ def test_gid_does_not_leak_the_arm_or_qid():
     # digest by chance and prove nothing.
     qs = [_q("tq0")]
     ans = {
-        "lilbee-parity": {"tq0": _a("tq0", "lilbee-parity")},
-        "ragflow-default": {"tq0": _a("tq0", "ragflow-default")},
+        "lilbee-full": {"tq0": _a("tq0", "lilbee-full")},
+        "lilbee-baseline": {"tq0": _a("tq0", "lilbee-baseline")},
     }
-    blind = build_blind_rows(qs, ans, "ragflow-default", random.Random(7))
+    blind = build_blind_rows(qs, ans, "lilbee-baseline", random.Random(7))
     for gid, assignment in blind.assignments.items():
         digest = gid.removeprefix("g")
         assert assignment.qid not in gid

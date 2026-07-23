@@ -1,30 +1,23 @@
-# Benchmark harness: lilbee vs RAGFlow
+# Benchmark harness: lilbee retrieval
 
-A preregistered, reproducible A/B of retrieval quality. Two arms answer the
-same public, human-labeled datasets with the same served model, so retrieval is
-the only variable:
+A preregistered, reproducible A/B of lilbee's own retrieval quality. Two or more
+arms answer the same public, human-labeled datasets with the same served model,
+so one configuration feature is the only variable between them:
 
-- **Arm A - lilbee**: the `test/retrieval-parity` branch with every parity
-  feature enabled.
-- **Arm B - RAGFlow**: the DeepDoc pipeline with chunking and retrieval settings
-  pinned to RAGFlow's documented defaults.
+- **Arm A**: lilbee with the feature under test enabled (for example every
+  retrieval feature on).
+- **Arm B**: the same lilbee build and served model with that feature off (the
+  baseline the feature is measured against).
 
-One embedder and one generator are served once and pointed at by both arms, so
-generation is identical and only the retrieval stack changes. Lives outside
-`src/` on purpose: it never ships in the package.
+One embedder and one generator are served once and pointed at by every arm, so
+generation is identical and only the retrieval configuration changes. Lives
+outside `src/` on purpose: it never ships in the package. See
+`manifest.ablation.yaml` for a baseline-against-several-variants study.
 
-Note what this framing does and does not claim. The lilbee arm runs with every
-parity feature switched on while the RAGFlow arm runs at its defaults, so the
-comparison is a tuned lilbee against an out-of-the-box RAGFlow, not two equally
-tuned systems. The RAGFlow arm's knobs are pinned in `bootstrap_ragflow.py`
-rather than left to the server, so they cannot drift with RAGFlow's version, but
-they are still defaults and are reported as such.
-
-Both arms are asked for the same *document* depth. lilbee returns results
-grouped by source document; RAGFlow ranks chunks, so its collector pages until
-it holds the same number of distinct parent documents. Without that, one arm is
-scored on twenty documents and the other on however many its twenty chunks
-happened to come from.
+Every arm is asked for the same *document* depth. lilbee returns results grouped
+by source document, so one result is one document and the run is capped at the
+same document depth for every arm; scoring one arm on twenty documents and
+another on seven would put a pure depth artifact into the metric gap.
 
 ## Two tiers
 
@@ -36,15 +29,14 @@ happened to come from.
    (`RR@10`, not a truncated run), and every metric is averaged over the qrels
    topic set, so a query an arm returned nothing for scores zero instead of
    leaving the denominator.
-2. **Tier 2 - answer quality.** Both arms answer with the same model; RAGAS
-   scores faithfulness, answer relevancy, and context precision/recall for
-   *both* arms, using the judge model the manifest freezes. Each mean carries
-   the number of answers that actually scored, since RAGAS cannot score every
-   answer and the two arms need not fail equally often. A blind duplicate-arm
-   judge runs alongside as a corroborating signal: RAGAS' rubric metric grades
-   each answer on faithfulness, relevance, and citation, and its noise floor is
-   measured by grading one arm twice under two equivalent presentations of the
-   rubric.
+2. **Tier 2 - answer quality.** Every arm answers with the same model; RAGAS
+   scores faithfulness, answer relevancy, and context precision/recall for each
+   arm, using the judge model the manifest freezes. Each mean carries the number
+   of answers that actually scored, since RAGAS cannot score every answer and
+   two arms need not fail equally often. A blind duplicate-arm judge runs
+   alongside as a corroborating signal: RAGAS' rubric metric grades each answer
+   on faithfulness, relevance, and citation, and its noise floor is measured by
+   grading one arm twice under two equivalent presentations of the rubric.
 
 Every **Tier-1** cross-arm difference is paired per query and gets a bootstrap
 95% CI and a randomization-test p-value. Because a study runs many such tests at
@@ -77,7 +69,9 @@ gold-evidence annotations by one documented pure function
 ## Pod workflow
 
 One A100-80GB in a named tmux so a reclaimed pod reattaches. Preregister before
-any data moves, then run each arm, score, and power off.
+any data moves, then run each arm, score, and power off. The two arms differ only
+in lilbee's configuration, so the same corpus is served twice with different
+feature flags.
 
 ```bash
 cd ~/lilbee  # the repo checkout; run everything from the repo root
@@ -94,54 +88,51 @@ uv run python -m evals.benchmark preregister \
 uv run python -m evals.benchmark fetch \
   --manifest evals/benchmark/manifest.example.yaml --out "$RUN/datasets"
 
-# 1. Serve the shared model with lilbee (all parity features on) and stand up
-#    RAGFlow pointed at the same OpenAI-compatible endpoint.
+# 1. Serve arm A: lilbee with the feature under test on, over the shared model.
 export LILBEE_TITLE_SEARCH=true LILBEE_NEIGHBOR_EXPANSION=2 \
   LILBEE_TABLE_EXTRACTION=true LILBEE_LAYOUT_DETECTION=true LILBEE_INTENT_LLM=true
 lilbee serve --port 8080 &
-uv run python -m evals.benchmark.bootstrap_ragflow \
-  --base-url http://127.0.0.1:9380 --api-key "$RAGFLOW_KEY" \
-  --corpus-dir "$RUN/corpus" --llm-model qwen2.5-72b-instruct \
-  --embedding-model qwen3-embedding
 
-# 2. Ingest the same corpus into both systems (lilbee add; bootstrap uploaded
-#    RAGFlow's copy above). Both walk the corpus directory recursively, so a
-#    nested layout reaches both indexes.
+# 2. Ingest the corpus (lilbee add). A nested layout is walked recursively.
 
-# 3. Collect a TREC run file per arm. Each query is checkpointed, so a killed
+# 3. Collect a TREC run file for arm A. Each query is checkpointed, so a killed
 #    run resumes.
-uv run python -m evals.benchmark collect --system lilbee \
+uv run python -m evals.benchmark collect \
   --queries "$RUN/queries.jsonl" --base-url http://127.0.0.1:8080 \
-  --run-tag lilbee --run "$RUN/run-lilbee.trec" --checkpoint "$RUN/ck-lilbee.jsonl"
-uv run python -m evals.benchmark collect --system ragflow \
-  --queries "$RUN/queries.jsonl" --base-url http://127.0.0.1:9380 \
-  --api-key "$RAGFLOW_KEY" --dataset-id "$RAGFLOW_DATASET" \
-  --run-tag ragflow --run "$RUN/run-ragflow.trec" --checkpoint "$RUN/ck-ragflow.jsonl"
+  --run-tag lilbee-full --run "$RUN/run-full.trec" --checkpoint "$RUN/ck-full.jsonl"
+
+# 3b. Re-serve arm B with the feature off (baseline), then collect it the same way.
+export LILBEE_TITLE_SEARCH=false LILBEE_NEIGHBOR_EXPANSION=0 \
+  LILBEE_TABLE_EXTRACTION=false LILBEE_LAYOUT_DETECTION=false LILBEE_INTENT_LLM=false
+lilbee serve --port 8081 &
+uv run python -m evals.benchmark collect \
+  --queries "$RUN/queries.jsonl" --base-url http://127.0.0.1:8081 \
+  --run-tag lilbee-baseline --run "$RUN/run-baseline.trec" --checkpoint "$RUN/ck-baseline.jsonl"
 
 # 4. Tier 1: score each run against the qrels with ir_measures.
 uv run python -m evals.benchmark score-ir --qrels "$RUN/datasets/scifact/qrels.trec" \
-  --run "$RUN/run-lilbee.trec" --dataset scifact --run-tag lilbee \
-  --out "$RUN/ir-lilbee.jsonl"
+  --run "$RUN/run-full.trec" --dataset scifact --run-tag lilbee-full \
+  --out "$RUN/ir-full.jsonl"
 uv run python -m evals.benchmark score-ir --qrels "$RUN/datasets/scifact/qrels.trec" \
-  --run "$RUN/run-ragflow.trec" --dataset scifact --run-tag ragflow \
-  --out "$RUN/ir-ragflow.jsonl"
+  --run "$RUN/run-baseline.trec" --dataset scifact --run-tag lilbee-baseline \
+  --out "$RUN/ir-baseline.jsonl"
 
 # 5. Tier 2: generate answers on each arm, then score with RAGAS.
 uv run python -m evals.benchmark answer --queries "$RUN/queries.jsonl" \
   --ground-truth "$RUN/references.json" --base-url http://127.0.0.1:8080 \
-  --arm lilbee --out "$RUN/answers-lilbee.jsonl"
+  --arm lilbee-full --out "$RUN/answers-full.jsonl"
 uv run python -m evals.benchmark answer --queries "$RUN/queries.jsonl" \
-  --ground-truth "$RUN/references.json" --base-url http://127.0.0.1:9380 \
-  --arm ragflow --out "$RUN/answers-ragflow.jsonl"
+  --ground-truth "$RUN/references.json" --base-url http://127.0.0.1:8081 \
+  --arm lilbee-baseline --out "$RUN/answers-baseline.jsonl"
 # Both arms are required: the tier scores both or emits nothing.
 uv run python -m evals.benchmark score-ragas \
   --manifest "$RUN/manifest.frozen.json" \
-  --samples-a "$RUN/answers-lilbee.jsonl" --samples-b "$RUN/answers-ragflow.jsonl" \
+  --samples-a "$RUN/answers-full.jsonl" --samples-b "$RUN/answers-baseline.jsonl" \
   --judge-base-url "$JUDGE_URL" --out "$RUN/results.jsonl"
 
 # 6. Paired statistics (CI + p) into the same results file.
 uv run python -m evals.benchmark stats --manifest "$RUN/manifest.frozen.json" \
-  --metrics-a "$RUN/ir-lilbee.jsonl" --metrics-b "$RUN/ir-ragflow.jsonl" \
+  --metrics-a "$RUN/ir-full.jsonl" --metrics-b "$RUN/ir-baseline.jsonl" \
   --out "$RUN/results.jsonl"
 
 # 7. Render the report, then power the pod off.

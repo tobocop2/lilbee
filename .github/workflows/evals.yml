@@ -1,0 +1,54 @@
+name: Evals harness
+
+# The evaluation harness is its own uv project under evals/, separate from the
+# shipped package, so it has its own CI. Without this its tests ran in no
+# workflow: the suite is only reachable through the evals venv (the root venv
+# lacks ir_measures/ragas) and the root tests/conftest.py imports lilbee, which
+# the evals venv does not install. --confcutdir stops pytest from loading that
+# conftest, which is the same invocation the evals README documents.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "evals/**"
+      - "tests/evals/**"
+      - ".github/workflows/evals.yml"
+  pull_request:
+    paths:
+      - "evals/**"
+      - "tests/evals/**"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install the harness with every tier
+        # --all-extras so the generation and audit tiers (ragas, ragchecker,
+        # scikit-learn) are present and their tests actually run rather than skip.
+        # Lint and format are not repeated here: `make lint` in the CI workflow
+        # covers evals/ under the repository's single ruff config.
+        run: uv sync --project evals --locked --all-extras
+
+      - name: Run the harness test suite
+        # PYTHONPATH=. so `evals` imports from the repo root; --confcutdir so the
+        # root tests/conftest.py (which imports lilbee) is not collected.
+        run: PYTHONPATH=. uv run --project evals pytest tests/evals --confcutdir=tests/evals

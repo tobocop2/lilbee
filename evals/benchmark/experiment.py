@@ -156,7 +156,7 @@ def compare_arms(
 
     measures = [ir_measures.parse_measure(METRIC_MEASURES[name]) for name in metrics]
     # Baseline first, so PyTerrier's baseline=0 names the arm the caller meant.
-    names = [baseline] + sorted(name for name in runs if name != baseline)
+    names = [baseline, *sorted(name for name in runs if name != baseline)]
     frames = [run_to_frame(runs[name]) for name in names]
     frame = pt.Experiment(
         frames,

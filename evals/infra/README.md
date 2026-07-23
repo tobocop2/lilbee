@@ -136,7 +136,7 @@ swallows these lines.
 ## Stage 3 - retrieval, graded by humans
 
 ```bash
-python -m evals.benchmark collect --system lilbee --run-tag lilbee \
+python -m evals.benchmark collect --run-tag lilbee \
   --queries /workspace/datasets/msmarco/queries.jsonl \
   --base-url http://127.0.0.1:8080 \
   --run /workspace/runs/lilbee.trec --checkpoint /workspace/runs/ck.jsonl

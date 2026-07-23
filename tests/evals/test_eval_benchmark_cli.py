@@ -55,12 +55,12 @@ def test_resolve_rejects_two_different_datasets():
 
 
 def test_resolve_rejects_arms_the_manifest_does_not_declare():
-    # A manifest frozen for a parity study cannot stamp an ablation comparison.
-    parity = [
-        ArmConfig(name="lilbee-parity", system="lilbee", description=""),
-        ArmConfig(name="ragflow-default", system="ragflow", description=""),
+    # A manifest frozen for one pairing cannot stamp a different comparison.
+    declared = [
+        ArmConfig(name="lilbee-full", system="lilbee", description=""),
+        ArmConfig(name="lilbee-baseline", system="lilbee", description=""),
     ]
-    manifest = _manifest(parity)
+    manifest = _manifest(declared)
     with pytest.raises(ValueError, match="not declared in manifest"):
         resolve_comparison(manifest, _file("scifact", "dense"), _file("scifact", "w1.0"))
 

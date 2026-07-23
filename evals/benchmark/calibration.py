@@ -14,10 +14,12 @@ this project existed, on labels nobody here could have tuned.
 Two properties make it the right choice over the alternatives. Its scale is 1-5,
 which is the scale ragas' rubric grades on, so the comparison needs no threshold
 picked by hand. And its expert-to-expert agreement is published: about 0.80 on
-consistency, lower on relevance. That is the ceiling. A judge cannot agree with
-people more than they agree with each other, so the published figure is what
-turns a correlation into something interpretable instead of a number floating
-free.
+consistency, lower on relevance. That is the reference the correlation is read
+against. It is a reference and not a hard ceiling: the judge is correlated
+against the mean of three experts, which by Spearman-Brown is more reliable than
+any single expert, so the judge-vs-mean correlation can legitimately exceed
+expert-vs-expert agreement. What the published figure does is turn a correlation
+into something interpretable instead of a number floating free.
 
 What this is not: SummEval is summarization, and this harness answers questions
 over retrieved passages. The mapping is honest but it is a proxy -- article as
@@ -112,11 +114,14 @@ class Calibration:
 
     @property
     def fraction_of_ceiling(self) -> float:
-        """Where the judge sits relative to how well the experts agreed.
+        """The judge-human correlation relative to expert-to-expert agreement.
 
-        A judge cannot agree with people more than they agree with each other,
-        so a raw correlation of 0.6 means something very different against a
-        0.80 ceiling than against a 0.40 one.
+        A raw correlation of 0.6 means something different against a 0.80
+        reference than against a 0.40 one, so it is reported as a ratio to the
+        published inter-expert agreement. The ratio can exceed 1.0 and that is
+        not an error: the judge is correlated against the mean of three experts,
+        which by Spearman-Brown is more reliable than any single expert, so
+        expert agreement is a reference point rather than a hard ceiling.
         """
         return self.spearman / self.expert_ceiling if self.expert_ceiling else float("nan")
 
