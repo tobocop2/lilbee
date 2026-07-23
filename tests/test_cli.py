@@ -3904,6 +3904,20 @@ class TestSelfCheck:
             os.kill(os.getpid(), signal.SIGTERM)
         assert signal.getsignal(signal.SIGTERM) is before
 
+    def test_sigterm_handler_converts_to_an_interrupt_without_delivery(self) -> None:
+        """Windows registers the handler but never delivers SIGTERM, so the test
+        above skips there and the handler body goes unexercised. Drive it directly
+        so the conversion that makes teardown run is covered on every platform."""
+        import signal
+
+        from lilbee.cli.commands import setup
+
+        with setup._teardown_on_sigterm():
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            with pytest.raises(KeyboardInterrupt):
+                handler(signal.SIGTERM, None)
+
     def test_self_check_server_cleans_work_dir_on_start_failure(
         self, tmp_path: Path, monkeypatch
     ) -> None:

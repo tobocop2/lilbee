@@ -1,6 +1,6 @@
 --- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
 +++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
-@@ -446,6 +446,175 @@
+@@ -446,6 +446,179 @@
  
  #if _NUITKA_ONEFILE_TEMP_BOOL
  static bool payload_created = false;
@@ -171,12 +171,16 @@
 +        fputs(keep_logo ? "\033[A" : "\033[A\033[2K", stderr);
 +    }
 +    fputc('\r', stderr);
++    // Hide the parked cursor so it does not sit blinking on the wordmark between
++    // this frame and the Python splash, which keeps it hidden until Textual takes
++    // over. A launch with arguments returns to the shell, so show it there.
++    fputs(keep_logo ? "\033[?25l" : "\033[?25h", stderr);
 +    fflush(stderr);
 +}
  #endif
  
  #define MAX_CREATED_DIRS 1024
-@@ -1151,6 +1320,13 @@
+@@ -1151,6 +1324,13 @@
      wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
  #endif
  
@@ -190,7 +194,7 @@
      if (process_role == NULL) {
  #if defined(_WIN32)
          bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
-@@ -1169,6 +1345,7 @@
+@@ -1169,6 +1349,7 @@
  #endif
  
  #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
@@ -198,7 +202,7 @@
      NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
  
      char header[3];
-@@ -1202,6 +1379,11 @@
+@@ -1202,6 +1383,11 @@
  
      NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
  
@@ -210,7 +214,7 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
      payload_created = true;
  #endif
-@@ -1336,10 +1518,22 @@
+@@ -1336,10 +1522,22 @@
                  fatalErrorTempFiles();
              }
          }

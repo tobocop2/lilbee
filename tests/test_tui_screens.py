@@ -13114,14 +13114,15 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
 
 def test_catalog_tick_loading_spinner_advances_frame_with_no_widgets():
     """_tick_loading_spinner advances the frame counter even when widgets are missing."""
-    from lilbee.cli.tui.screens.catalog import _SPINNER_FRAMES, CatalogScreen
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.spinner import SPINNER_FRAMES
 
     screen = CatalogScreen()
     start = screen._spinner_frame
     # query_one will raise NoMatches off-mount; the suppress wrappers
     # still let _spinner_frame advance and exit cleanly.
     screen._tick_loading_spinner()
-    assert screen._spinner_frame == (start + 1) % len(_SPINNER_FRAMES)
+    assert screen._spinner_frame == (start + 1) % len(SPINNER_FRAMES)
 
 
 def test_catalog_sync_loading_spinner_exception_path():
@@ -13364,3 +13365,142 @@ async def test_i_returns_to_insert_even_when_the_pill_has_focus():
         await pilot.press("i")
         await pilot.pause()
         assert screen._insert_mode is True
+
+
+async def test_model_swap_locks_input_with_a_reason_until_ready():
+    """While a swap runs the chat input is disabled AND says which model it is
+    waiting on, so a held input is never an unexplained dead box; it returns to
+    the default prompt once the swap finishes."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        inp = screen._chat_input
+
+        screen.swapping_model = True
+        await pilot.pause()
+        assert inp.disabled is True
+        # The placeholder names the target model and explains the wait.
+        assert "unlocks" in inp.placeholder
+        assert msg.CHAT_INPUT_SWITCHING.split("{name}")[0].strip() in inp.placeholder
+
+        screen.swapping_model = False
+        await pilot.pause()
+        assert inp.disabled is False
+        assert inp.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_warms_the_new_model_before_unblocking():
+    """The swap reloads the role, eagerly warms the new model, and only unblocks
+    once it actually serves -- so the input never re-enables in front of a model
+    that has not loaded (which read as 'typing does nothing')."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        calls: list[str] = []
+        services = MagicMock()
+        services.reload_role.side_effect = lambda *a, **k: calls.append("reload")
+
+        def _warm() -> None:
+            calls.append("warm")
+
+        def _wait(**_kw) -> bool:
+            calls.append("wait")
+            return True
+
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", _warm),
+            patch("lilbee.app.placement.wait_chat_ready", _wait),
+            patch("lilbee.app.placement.chat_warm_error", return_value=None),
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        # Warm is requested after the reload and waited out before completing.
+        assert calls == ["reload", "warm", "wait"]
+        assert screen.swapping_model is False
+
+
+async def test_input_reason_says_reloading_during_a_placement_change():
+    """A placement reload holds the input too; the placeholder must explain that
+    case, not just a model swap."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.reloading_placement = True
+        await pilot.pause()
+        assert screen._chat_input.disabled is True
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_RELOADING
+        screen.reloading_placement = False
+        await pilot.pause()
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_surfaces_a_warm_failure():
+    """A warm that fails must toast the reason and release the input, never leave
+    it locked forever."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: False),
+            patch("lilbee.app.placement.chat_warm_error", return_value="out of VRAM"),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False  # input released
+        assert any("out of VRAM" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_reload_failure_is_toasted():
+    """A reload that raises becomes a toast, never a crashed worker."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        services.reload_role.side_effect = RuntimeError("engine gone")
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False
+        assert any("engine gone" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_worker_returns_quietly_when_cancelled():
+    """A superseded swap (the user picked another model mid-load) must not toast a
+    completion or release the gate: the newer swap owns both."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        cancelled_worker = SimpleNamespace(is_cancelled=True)
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.cli.tui.screens.chat._get_worker", return_value=cancelled_worker),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: True),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is True  # gate still held by the newer swap
+        assert not any("Now using" in str(c.args[0]) for c in notify.call_args_list)

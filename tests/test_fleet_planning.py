@@ -1851,23 +1851,24 @@ def test_server_spec_other_role_uses_role_default() -> None:
 
 
 class TestChatNoMmap:
-    def test_no_mmap_when_weights_fit_half_of_ram(self, monkeypatch) -> None:
+    def test_local_disk_always_mmaps(self, monkeypatch) -> None:
+        # Local disk keeps mmap regardless of size: --no-mmap's buffered read only
+        # wins on an already-hot cache and pessimizes the cold-start first token.
         monkeypatch.setattr(
             "lilbee.providers.model_cache.total_system_memory", lambda: 1000 * 10**9
         )
-        assert planning_mod._chat_no_mmap(112 * 10**9) is True
-
-    def test_mmap_kept_when_weights_crowd_ram(self, monkeypatch) -> None:
-        # A malloc'd copy is unevictable; a model over half of RAM keeps mmap.
-        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9)
+        assert planning_mod._chat_no_mmap(112 * 10**9) is False
         assert planning_mod._chat_no_mmap(20 * 10**9) is False
 
-    def test_network_fs_prefers_no_mmap_at_higher_fraction(self, monkeypatch) -> None:
-        # A model at 70% of RAM keeps mmap on local disk but takes --no-mmap on a
-        # network volume, where mmap page faults can wedge the loader.
+    def test_network_fs_uses_no_mmap_only_when_host_copy_fits(self, monkeypatch) -> None:
+        # A network filesystem prefers a buffered read (mmap page faults over the
+        # wire can wedge the loader), but only when the malloc'd copy fits the RAM
+        # fraction; an oversized model still mmaps. The same model on local disk
+        # keeps mmap either way.
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
-        assert planning_mod._chat_no_mmap(70 * 10**9) is False
         assert planning_mod._chat_no_mmap(70 * 10**9, on_network_fs=True) is True
+        assert planning_mod._chat_no_mmap(90 * 10**9, on_network_fs=True) is False
+        assert planning_mod._chat_no_mmap(70 * 10**9) is False
 
 
 class TestPlanProbe:

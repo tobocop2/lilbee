@@ -642,7 +642,7 @@ class TestCatalogCommandsNeverWarmTheFleet:
         from lilbee.providers import factory
 
         provider = mock.MagicMock()
-        monkeypatch.setattr(factory, "create_provider", lambda _config: provider)
+        monkeypatch.setattr(factory, "create_provider", lambda _config, **_kw: provider)
         monkeypatch.setattr(model_mod, "apply_overrides", lambda **_kwargs: None)
         cfg.worker_pool_eager_start = True
 

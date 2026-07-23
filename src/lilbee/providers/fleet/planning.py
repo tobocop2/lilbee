@@ -116,19 +116,14 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 _SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
 
-# The chat server loads its weights into a malloc'd host copy (--no-mmap) when
-# they fit in at most this fraction of total system RAM: a buffered sequential
-# read beats mmap's page-fault-driven upload measured on a hot cache (#474:
-# 33s vs 43s for a 112GB model on 3 GPUs), but the copy is unevictable, so a
-# host where the weights crowd RAM keeps mmap. Keyed on TOTAL memory (stable),
-# not free (fluctuates), so replans do not flap the launch argv and force
-# needless chat restarts. Replicated roles keep mmap regardless: their
-# replicas share one set of page-cache pages, and per-replica host copies
-# would multiply RAM use for no load-time win.
-_NO_MMAP_MAX_RAM_FRACTION = 0.5
 # A network filesystem makes mmap dangerous (page faults served over the wire can
-# wedge the loader in uninterruptible I/O), so prefer a buffered read whenever the
-# host copy fits, at a higher RAM fraction than the local-disk hot-cache case. The
+# wedge the loader in uninterruptible I/O), so the chat server loads its weights
+# into a malloc'd host copy (--no-mmap) whenever that copy fits in this fraction
+# of total system RAM. Local disk keeps mmap: its lazy paging gives a faster first
+# token on a cold cache -- the common desktop first launch -- and --no-mmap's
+# buffered full read only wins on an already-hot cache (#474: 33s vs 43s for a
+# 112GB model on 3 GPUs) while pessimizing cold start. Keyed on TOTAL memory
+# (stable), not free (fluctuates), so replans do not flap the launch argv. The
 # exact ceiling is tuned on a network-volume host.
 _NO_MMAP_NETWORK_RAM_FRACTION = 0.85
 
@@ -1465,12 +1460,17 @@ def _plan_free_system_memory() -> int:
 def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
     """Whether the chat server should malloc its weights instead of mmapping them.
 
-    See ``_NO_MMAP_MAX_RAM_FRACTION`` for the tradeoff and why the gate reads
-    total (not free) system memory. A model on a network filesystem prefers the
-    buffered read at a higher RAM fraction, since mmap over the network can hang.
+    Local disk mmaps: lazy page-fault paging gives a faster first token on a cold
+    cache -- the common desktop first launch -- matching mmap-by-default engines.
+    ``--no-mmap``'s buffered full read only wins on an already-hot cache and it
+    pessimizes cold start, so it is not worth defaulting on for local disk. A
+    network filesystem still prefers the buffered read whenever the host copy
+    fits, because mmap page faults served over the wire can wedge the loader in
+    uninterruptible I/O (see ``_NO_MMAP_NETWORK_RAM_FRACTION``).
     """
-    fraction = _NO_MMAP_NETWORK_RAM_FRACTION if on_network_fs else _NO_MMAP_MAX_RAM_FRACTION
-    return weights_bytes <= model_cache.total_system_memory() * fraction
+    if not on_network_fs:
+        return False
+    return weights_bytes <= model_cache.total_system_memory() * _NO_MMAP_NETWORK_RAM_FRACTION
 
 
 def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:

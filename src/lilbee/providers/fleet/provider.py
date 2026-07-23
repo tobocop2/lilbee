@@ -756,18 +756,20 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     return True
 
 
-def _warm_ttl_seconds() -> int:
+def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
-    Normally ``engine_idle_ttl_minutes``: an idle engine releases its weights and
-    reloads transparently on the next prompt, whether or not it outlives lilbee
-    (``keep_engine_warm`` governs that lifetime, not this timer). A bulk ingest
-    holds the fleet resident for its duration by returning a ttl of 0 (see
-    :func:`lilbee.providers.fleet.ingest_warmth.keep_fleet_warm`), so an unevenly
-    loaded replica cannot idle-unload and reload cold mid-run. A ttl of 0 keeps
-    weights resident until the engine is stopped.
+    A ttl of 0 keeps weights resident until the engine is stopped; otherwise an
+    idle engine releases its weights after ``engine_idle_ttl_minutes`` and reloads
+    transparently on the next prompt. The timer is held off (ttl 0) whenever
+    someone is actively depending on an instant response: *hold_warm_for_session*
+    is set for a provider serving an interactive session, which owns the process
+    for its whole lifetime (close lilbee to release the engine); a bulk ingest
+    holds the fleet resident for its run so an unevenly loaded replica cannot
+    idle-unload and reload cold mid-run; and ``keep_engine_warm`` pins the weights
+    for a process meant to stay ready.
     """
-    if ingest_keep_warm():
+    if hold_warm_for_session or ingest_keep_warm() or cfg.keep_engine_warm:
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 
@@ -775,7 +777,12 @@ def _warm_ttl_seconds() -> int:
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, hold_warm: bool = False) -> None:
+        # An interactive session (the TUI) owns this process for its whole
+        # lifetime, so its fleet stays resident instead of idle-unloading under a
+        # user who is still in the app; closing lilbee releases it. Set by the
+        # container that built this provider, never mutated afterwards.
+        self._hold_warm_for_session = hold_warm
         # One llama-swap per placed group, so restarting one group's servers (a
         # placement or per-role model change) never unloads another group's. A
         # co-tenant group holds chat and vision, which evict each other on load.
@@ -1067,7 +1074,9 @@ class FleetProvider:
                 swap = SwapManager(data_dir, group)
                 swap.start(
                     list(group_launches),
-                    ttl_seconds=_warm_ttl_seconds(),
+                    ttl_seconds=_warm_ttl_seconds(
+                        hold_warm_for_session=self._hold_warm_for_session
+                    ),
                     bind_lifetime=not cfg.keep_engine_warm,
                 )
                 started[group] = swap
@@ -2315,7 +2324,9 @@ class FleetProvider:
                     swap = SwapManager(reload_dir, group)
                     swap.start(
                         group_launches,
-                        ttl_seconds=_warm_ttl_seconds(),
+                        ttl_seconds=_warm_ttl_seconds(
+                            hold_warm_for_session=self._hold_warm_for_session
+                        ),
                         bind_lifetime=not cfg.keep_engine_warm,
                     )
                     with self._lock:
