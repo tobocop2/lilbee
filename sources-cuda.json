@@ -1,9 +1,9 @@
 {
-  "version": "0.6.90b420.dev725",
+  "version": "0.6.90b420.dev726",
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-linux-x86_64-cu125",
-      "sha256": "8aa78b37a3b9b5dda86b5b8dfc7779a8764044d329780449a69724930acf76b2"
+      "sha256": "fc840dac7ce728d77e57af5f10a5cea19ad443b5fd62691791bb0423f429e4c8"
     }
   }
 }
