@@ -18,6 +18,7 @@ import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -106,6 +107,23 @@ _PROBE_TIMEOUT_S = 5.0
 # for tens of seconds. A local proxy that cannot answer /running this fast is
 # not usable for inference either.
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
+
+
+@lru_cache(maxsize=1)
+def _probe_client() -> httpx.Client:
+    """One shared client for the localhost engine probes.
+
+    ``httpx.get`` builds a fresh ``Client`` per call, and every ``Client``
+    construction creates an SSL context, which loads the system CA bundle. These
+    probes are plain HTTP to 127.0.0.1, so none of that TLS setup is ever used --
+    and the readiness probe runs on the task bar's timer (up to 10 Hz), which made
+    ``ssl.create_default_context`` 23% of TUI CPU in a py-spy profile. One client
+    builds that at most once and keeps the connection alive between polls.
+    ``trust_env`` is off so a proxy env var cannot redirect a loopback probe.
+    """
+    return httpx.Client(trust_env=False)
+
+
 _PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
 _KEY_RUNNING = "running"
@@ -391,7 +409,7 @@ class SwapManager:
             if self._proc is not None and self._proc.poll() is not None:
                 self._fail("The local model engine exited before it was ready.")
             with contextlib.suppress(httpx.HTTPError):
-                if httpx.get(url, timeout=_PROBE_TIMEOUT_S).status_code == httpx.codes.OK:
+                if _probe_client().get(url, timeout=_PROBE_TIMEOUT_S).status_code == httpx.codes.OK:
                     return
             time.sleep(_BOOT_POLL_S)
         self._fail("The local model engine did not start in time.")
@@ -404,9 +422,11 @@ class SwapManager:
         suppressed too and the probe reports "nothing ready" rather than throwing.
         """
         with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError, ProviderError):
-            payload = httpx.get(
-                f"{self.endpoint()}{_RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S
-            ).json()
+            payload = (
+                _probe_client()
+                .get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S)
+                .json()
+            )
             return {
                 entry[_KEY_MODEL]
                 for entry in payload[_KEY_RUNNING]
@@ -544,7 +564,7 @@ def _running_endpoint_answers(base_url: str) -> bool:
     Total: any transport error or non-conforming body reads as "not our engine".
     """
     try:
-        resp = httpx.get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
+        resp = _probe_client().get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
         return False
     if resp.status_code >= httpx.codes.BAD_REQUEST:
