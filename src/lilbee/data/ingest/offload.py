@@ -51,15 +51,8 @@ def embed_inflight_target() -> int:
     return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0
 
 
-@functools.cache
-def max_workers() -> int:
-    """The ingest pool's worker count -- its hard concurrency ceiling.
-
-    The adaptive-concurrency controller uses this as the upper bound on in-flight
-    documents, since each one needs a pool thread to run its blocking extraction.
-    Resolved once and cached: the pool is built with this same value on first use,
-    so re-reading ``LILBEE_INGEST_MAX_WORKERS`` per call would let the reported
-    ceiling drift away from the pool that actually exists.
+def _max_workers() -> int:
+    """Concurrent slots for ingest offload work; honors ``LILBEE_INGEST_MAX_WORKERS``.
 
     Extraction rasterizes PDFs and drives OCR on this pool. The default caps at
     ``min(32, cpu_count + 4)``: a worker-count sweep on forced-OCR multi-page PDFs
@@ -97,10 +90,19 @@ def max_workers() -> int:
     return max(default, inflight)
 
 
+def max_workers() -> int:
+    """The ingest pool's worker count -- its hard concurrency ceiling.
+
+    The adaptive-concurrency controller uses this as the upper bound on in-flight
+    documents, since each one needs a pool thread to run its blocking extraction.
+    """
+    return _max_workers()
+
+
 @functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
     """The shared ingest pool, created on first use (cache makes it a singleton)."""
-    return ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix="lilbee-ingest")
+    return ThreadPoolExecutor(max_workers=_max_workers(), thread_name_prefix="lilbee-ingest")
 
 
 async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
