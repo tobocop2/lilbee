@@ -10,7 +10,9 @@ chat endpoint, so a multipart image request gets the same stub answer.
 
 from __future__ import annotations
 
+import base64
 import json
+import struct
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -59,7 +61,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"choices": [{"message": {"content": "stub-chat"}}]})
         elif self.path == "/v1/embeddings":
             count = len(body.get("input", []))
-            self._send_json({"data": [{"embedding": [0.5, 0.5]} for _ in range(count)]})
+            vector = base64.b64encode(struct.pack("<2f", 0.5, 0.5)).decode()
+            self._send_json({"data": [{"embedding": vector} for _ in range(count)]})
         else:
             self.send_error(404)
 
