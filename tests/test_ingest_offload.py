@@ -17,7 +17,7 @@ from lilbee.data.ingest import offload
 
 @pytest.fixture(autouse=True)
 def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin both inputs ``_max_workers`` reads: the env override and the inflight floor."""
+    """Clear the ambient ``LILBEE_INGEST_MAX_WORKERS`` and inflight floor before each test."""
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
 
