@@ -8,10 +8,13 @@ each call site.
 
 from __future__ import annotations
 
+from typing import cast
+
 from rich.spinner import SPINNERS
 
-# Rich stores the frames as one glyph-per-character string.
-SPINNER_FRAMES: tuple[str, ...] = tuple(SPINNERS["dots"]["frames"])
+# Rich stores the frames as one glyph-per-character string, but types the spinner
+# table loosely (the entry values are ``object``), so narrow it here.
+SPINNER_FRAMES: tuple[str, ...] = tuple(cast(str, SPINNERS["dots"]["frames"]))
 
 
 def spinner_frame(tick: int) -> str:
