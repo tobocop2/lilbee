@@ -52,3 +52,81 @@ def test_returns_none_for_corrupt_header(tmp_path: Path, label: str, data: bytes
     f = tmp_path / f"{label}.gguf"
     f.write_bytes(data)
     assert read_gguf_metadata(f) is None
+
+
+class TestMetadataDiskCache:
+    """The parse costs ~60s for a multi-GB model, so it must survive the process."""
+
+    def _isolate(self, monkeypatch, tmp_path):
+        from lilbee.providers import gguf_meta
+
+        monkeypatch.setattr("lilbee.core.system.default_state_dir", lambda: tmp_path)
+        gguf_meta._METADATA_CACHE.clear()
+        return gguf_meta
+
+    def test_second_process_reads_the_disk_cache_instead_of_reparsing(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+
+        def fake_parse(path):
+            calls.append(str(path))
+            return {"context_length": "4096"}
+
+        monkeypatch.setattr(gguf_meta, "_read_gguf_metadata_uncached", fake_parse)
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 1
+
+        # A fresh process: in-memory cache gone, disk entry still there.
+        gguf_meta._METADATA_CACHE.clear()
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 1, "re-parsed despite a usable disk cache"
+
+    def test_a_changed_file_is_re_read(self, monkeypatch, tmp_path) -> None:
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta,
+            "_read_gguf_metadata_uncached",
+            lambda p: (calls.append(str(p)), {"context_length": str(len(calls))})[1],
+        )
+        gguf_meta.read_gguf_metadata(model)
+        gguf_meta._METADATA_CACHE.clear()
+        model.write_bytes(b"y" * 64)  # different size + mtime -> different key
+        gguf_meta.read_gguf_metadata(model)
+        assert len(calls) == 2
+
+    def test_a_corrupt_cache_entry_falls_back_to_parsing(self, monkeypatch, tmp_path) -> None:
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta,
+            "_read_gguf_metadata_uncached",
+            lambda p: (calls.append(str(p)), {"context_length": "4096"})[1],
+        )
+        gguf_meta.read_gguf_metadata(model)
+        gguf_meta._METADATA_CACHE.clear()
+        for entry in (tmp_path / "gguf-meta").glob("*.json"):
+            entry.write_text("{not json", encoding="utf-8")
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 2  # corrupt entry ignored, parsed again
+
+    def test_a_file_with_no_metadata_is_cached_too(self, monkeypatch, tmp_path) -> None:
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta, "_read_gguf_metadata_uncached", lambda p: (calls.append(str(p)), None)[1]
+        )
+        assert gguf_meta.read_gguf_metadata(model) is None
+        gguf_meta._METADATA_CACHE.clear()
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert len(calls) == 1, "an unparseable file re-parsed instead of using the cached miss"
