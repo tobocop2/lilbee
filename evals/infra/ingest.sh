@@ -67,22 +67,37 @@ log "config.toml -> embedder=$EMBED_MODEL dim=4096 ocr=off batch_seq=$EMBED_BATC
 # No corpus.jsonl round-trip and no evals CLI: ir_datasets owns the download and
 # cache, and sync reads documents/ in place (no copy). ir_datasets' own cache
 # makes the docs_iter re-entrant, and the marker skips a completed materialise.
-MARKER="$LILBEE_DATA/.materialised.${SMOKE_N}"
+# Sharded materialise (for the partitioned multi-host run): this host writes only
+# passages whose GLOBAL non-empty index i satisfies i %% SHARD_COUNT == SHARD_INDEX.
+# ir_datasets iterates in a fixed order, so the partition is deterministic and the
+# UNION of all shards is byte-for-byte the same passage set a single host of
+# SHARD_COUNT=1 would materialise -- only the embed batching differs (the bb-afdo4
+# multi-slot noise floor, identical to what an 8-stack has against its own re-run).
+: "${SHARD_INDEX:=0}"
+: "${SHARD_COUNT:=1}"
+MARKER="$LILBEE_DATA/.materialised.${SMOKE_N}.${SHARD_INDEX}of${SHARD_COUNT}"
 if [ -f "$MARKER" ]; then
-  log "passages already materialised (SMOKE_N=$SMOKE_N), skipping"
+  log "passages already materialised (SMOKE_N=$SMOKE_N shard=$SHARD_INDEX/$SHARD_COUNT), skipping"
 else
-  log "materialising $DATASET_ID into $DOCS_DIR (SMOKE_N=$SMOKE_N; 0=full corpus)"
-  DATASET_ID="$DATASET_ID" "$PYBIN" - <<'PY'
+  log "materialising $DATASET_ID shard $SHARD_INDEX of $SHARD_COUNT into $DOCS_DIR (SMOKE_N=$SMOKE_N; 0=full)"
+  DATASET_ID="$DATASET_ID" SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" "$PYBIN" - <<'PY'
 import os, pathlib, time
 import ir_datasets
 docs = pathlib.Path(os.environ["DOCS_DIR"]); smoke = int(os.environ["SMOKE_N"])
+si = int(os.environ["SHARD_INDEX"]); sc = int(os.environ["SHARD_COUNT"])
 ds = ir_datasets.load(os.environ["DATASET_ID"])
-started = time.time(); n = 0
+started = time.time(); gi = 0; n = 0
 for d in ds.docs_iter():
-    if smoke and n >= smoke:
-        break
     text = (getattr(d, "text", "") or "").strip()
     if not text:
+        continue
+    # gi = deterministic global index over non-empty passages; smoke caps the
+    # GLOBAL corpus first, then this shard takes its slice of that same set.
+    if smoke and gi >= smoke:
+        break
+    idx = gi
+    gi += 1
+    if sc > 1 and idx % sc != si:
         continue
     shard = docs / f"{n // 1000:05d}"
     if n % 1000 == 0:
@@ -91,8 +106,8 @@ for d in ds.docs_iter():
     (shard / f"{d.doc_id}.txt").write_text(text)
     n += 1
     if n % 100000 == 0:
-        print(f"  {n:,} passages @ {n / (time.time() - started):,.0f}/s", flush=True)
-print(f"  wrote {n:,} passages in {time.time() - started:.0f}s", flush=True)
+        print(f"  shard {si}/{sc}: {n:,} written ({gi:,} scanned) @ {n / (time.time() - started):,.0f}/s", flush=True)
+print(f"  shard {si}/{sc}: wrote {n:,} of {gi:,} scanned in {time.time() - started:.0f}s", flush=True)
 PY
   touch "$MARKER"
 fi

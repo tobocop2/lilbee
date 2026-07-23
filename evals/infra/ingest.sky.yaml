@@ -44,15 +44,17 @@ resources:
   # collapse. The run starts accumulating real embeddings immediately; the
   # periodic search then migrates it up to an H100/A100 pack via checkpoint+
   # restore when one frees. Bigger packs stay in the ladder as a bonus if free.
+  # Full run: 8-packs first. With the base64 decode fix the single-thread decode
+  # ceiling is gone, so fast cards (H100/A100) now scale near-linearly and finish
+  # in a few hours; L40S:8 is the reliable-available fallback (~8-10h). Only drop
+  # to 4-packs if no 8-pack lands at all.
   ordered:
-    - accelerators: H100:2
-    - accelerators: A100-80GB:2
-    - accelerators: L40S:2
+    - accelerators: H100:8
+    - accelerators: A100-80GB:8
+    - accelerators: L40S:8
     - accelerators: H100:4
     - accelerators: A100-80GB:4
     - accelerators: L40S:4
-    - accelerators: H100:8
-    - accelerators: A100-80GB:8
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
@@ -138,4 +140,10 @@ run: |
   echo "embed replicas: $LILBEE_EMBED_REPLICAS ; SMOKE_N=$SMOKE_N ; concurrency=$LILBEE_INGEST_CONCURRENCY"
   # Fails before the GPU hours start, not during them.
   bash /opt/evals/infra/preflight.sh 2>&1 | tee "$LOG_DIR/preflight.log"
+  # Milestone checkpoint of the growing index to a private HF dataset (insurance
+  # against pod loss on the volume-free run); backgrounded for the whole sync.
+  # Uses HF_TOKEN from the launch secret to upload.
+  LILBEE_DATA="$LILBEE_DATA" PYBIN="$PYBIN" LOG_DIR="$LOG_DIR" \
+    CHECKPOINT_REPO="beeberg/msmarco-ingest-checkpoint" \
+    nohup bash /opt/evals/infra/checkpoint.sh > "$LOG_DIR/checkpoint.log" 2>&1 &
   bash /opt/evals/infra/ingest.sh
