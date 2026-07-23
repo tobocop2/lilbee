@@ -12,14 +12,20 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
 
 
-def create_provider(config: Config) -> LLMProvider:
-    """Create a new LLM provider instance from the given config."""
+def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
+    """Create a new LLM provider instance from the given config.
+
+    *hold_warm* marks the provider as serving an interactive session, so the local
+    fleet it composes keeps its weights resident instead of idle-unloading for as
+    long as that session owns the process. Irrelevant to a remote provider, which
+    has no local engine to hold.
+    """
     match config.llm_provider:
         case LlmProvider.AUTO:
             # heavy: routing_provider eagerly imports litellm_sdk (>50ms; litellm fanout)
             from lilbee.providers.routing_provider import RoutingProvider
 
-            return RoutingProvider()
+            return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
             # THIS is the swap line: the single import that changes when
