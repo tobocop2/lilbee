@@ -130,3 +130,38 @@ class TestMetadataDiskCache:
         gguf_meta._METADATA_CACHE.clear()
         assert gguf_meta.read_gguf_metadata(model) is None
         assert len(calls) == 1, "an unparseable file re-parsed instead of using the cached miss"
+
+    def test_a_wrong_shaped_cache_entry_is_ignored(self, monkeypatch, tmp_path) -> None:
+        """Valid JSON of the wrong shape must not be served as metadata."""
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta,
+            "_read_gguf_metadata_uncached",
+            lambda p: (calls.append(str(p)), {"context_length": "4096"})[1],
+        )
+        gguf_meta.read_gguf_metadata(model)
+        gguf_meta._METADATA_CACHE.clear()
+        for entry in (tmp_path / "gguf-meta").glob("*.json"):
+            entry.write_text('{"metadata": {"ctx": 4096}}', encoding="utf-8")  # int, not str
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 2
+
+    def test_a_payload_without_the_metadata_key_is_ignored(self, monkeypatch, tmp_path) -> None:
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta,
+            "_read_gguf_metadata_uncached",
+            lambda p: (calls.append(str(p)), {"context_length": "4096"})[1],
+        )
+        gguf_meta.read_gguf_metadata(model)
+        gguf_meta._METADATA_CACHE.clear()
+        for entry in (tmp_path / "gguf-meta").glob("*.json"):
+            entry.write_text('{"other": 1}', encoding="utf-8")
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 2
