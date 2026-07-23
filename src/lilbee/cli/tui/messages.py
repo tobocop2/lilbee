@@ -121,10 +121,18 @@ CMD_SET_CHOICES = "{key} must be one of {choices}"
 CMD_SET_READONLY = "{key} is read-only; use the Models screen"
 CMD_MODEL_SET = "Model set to {name}"
 # Shown while a model swap's fleet reload runs off the event loop, so the swap
-# reads as in-progress instead of a frozen TUI.
-MODEL_SWAP_APPLYING = "Switching model, loading..."
+# reads as in-progress instead of a frozen TUI. Role-neutral: shared by the chat
+# swap and the embed/vision/rerank swaps in model_pick, which name the model in
+# their own surfaces (the chat input placeholder and warm footer for chat).
+MODEL_SWAP_APPLYING = "Switching model, loading…"
 MODEL_SWAP_DONE = "Now using {name}"
 MODEL_SWAP_FAILED = "Could not switch model: {error}"
+# Chat-input placeholder while a swap holds the input disabled: names the target
+# model and says the input is waiting on it, so the disabled box is never a
+# silent dead end. The warm progress itself shows in the task-bar footer.
+CHAT_INPUT_SWITCHING = "Switching to {name} · chat unlocks when the model is ready…"
+# Chat-input placeholder while a placement change reloads the whole fleet.
+CHAT_INPUT_RELOADING = "Reloading the engine · one moment…"
 # Shown when the user tries to send a prompt while the new chat model is still loading.
 CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
 FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then send your prompt."
@@ -563,15 +571,18 @@ STATUS_DOCS_EMPTY = "(no documents yet)"
 STATUS_DOCS_TITLE = "Documents"
 TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
-# Cold-start chat warm line: phase (and byte % while paging weights) so the held
-# input reads as "loading", not "stuck".
-TASKBAR_WARM = "warming up chat · {detail}"
-TASKBAR_WARM_STARTING = "starting"
+# Cold-start chat warm line: a spinner, the model being loaded, and the phase
+# (with byte % while paging weights) so the held input reads as "loading {model}",
+# not "stuck". The name is the model's display label, or this fallback before the
+# warm has stamped which model it is loading.
+TASKBAR_WARM_LINE = "{spinner}  warming up {name} · {detail}"
+TASKBAR_WARM_FALLBACK_NAME = "chat"
+TASKBAR_WARM_STARTING = "starting engine"
 TASKBAR_WARM_READING = "reading weights {pct}%"
 # Names the phase, like its two siblings above. "almost ready" predicted a
 # finish time the engine has not promised, and was the one phase saying nothing
 # about what is happening.
-TASKBAR_WARM_LOADING = "loading the engine"
+TASKBAR_WARM_LOADING = "loading into VRAM"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"

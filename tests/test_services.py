@@ -101,7 +101,9 @@ class TestEagerStartBranch:
 
         services_mod.set_services(None)
         provider = MagicMock()
-        monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: provider)
+        monkeypatch.setattr(
+            "lilbee.providers.factory.create_provider", lambda _cfg, **_kw: provider
+        )
         try:
             services_mod.get_services()
         finally:
@@ -117,7 +119,9 @@ class TestEagerStartBranch:
         services_mod.set_services(None)
         provider = MagicMock()
         provider.warm_up_pool.side_effect = RuntimeError("simulated warm-up failure")
-        monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: provider)
+        monkeypatch.setattr(
+            "lilbee.providers.factory.create_provider", lambda _cfg, **_kw: provider
+        )
         try:
             svc = services_mod.get_services()
             assert svc is not None
@@ -131,7 +135,9 @@ class TestEagerStartBranch:
 
         services_mod.set_services(None)
         provider = MagicMock()
-        monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: provider)
+        monkeypatch.setattr(
+            "lilbee.providers.factory.create_provider", lambda _cfg, **_kw: provider
+        )
         try:
             services_mod.get_services()
         finally:

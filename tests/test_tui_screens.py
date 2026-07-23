@@ -13114,14 +13114,15 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
 
 def test_catalog_tick_loading_spinner_advances_frame_with_no_widgets():
     """_tick_loading_spinner advances the frame counter even when widgets are missing."""
-    from lilbee.cli.tui.screens.catalog import _SPINNER_FRAMES, CatalogScreen
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.spinner import SPINNER_FRAMES
 
     screen = CatalogScreen()
     start = screen._spinner_frame
     # query_one will raise NoMatches off-mount; the suppress wrappers
     # still let _spinner_frame advance and exit cleanly.
     screen._tick_loading_spinner()
-    assert screen._spinner_frame == (start + 1) % len(_SPINNER_FRAMES)
+    assert screen._spinner_frame == (start + 1) % len(SPINNER_FRAMES)
 
 
 def test_catalog_sync_loading_spinner_exception_path():
