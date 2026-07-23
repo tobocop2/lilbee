@@ -575,7 +575,7 @@ TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 # (with byte % while paging weights) so the held input reads as "loading {model}",
 # not "stuck". The name is the model's display label, or this fallback before the
 # warm has stamped which model it is loading.
-TASKBAR_WARM_LINE = "{spinner}  warming up {name} · {detail}"
+TASKBAR_WARM_LINE = "warming up {name} · {detail}"
 TASKBAR_WARM_FALLBACK_NAME = "chat"
 TASKBAR_WARM_STARTING = "starting engine"
 TASKBAR_WARM_READING = "reading weights {pct}%"

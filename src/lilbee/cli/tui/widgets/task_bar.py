@@ -14,7 +14,6 @@ from textual.widgets import Label, Static
 
 from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.spinner import spinner_frame
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
@@ -42,28 +41,44 @@ _WARM_BAR_TRACK = "░"
 _WARM_BAR_WIDTH = 12
 
 
+# Indeterminate sweep (the engine-load phases have no byte signal): a lit window
+# that walks the track so the bar reads as "working", not stalled. Advanced by the
+# poll tick. Preferred over a spinner glyph: the moving bar reads as progress at a
+# glance, which is what a multi-second model load needs.
+_WARM_SWEEP_WIDTH = 3
+
+
 def _progress_bar(fraction: float) -> str:
     """A determinate fill bar for the byte-progress (reading-weights) phase."""
     filled = round(max(0.0, min(1.0, fraction)) * _WARM_BAR_WIDTH)
     return _WARM_BAR_FILL * filled + _WARM_BAR_TRACK * (_WARM_BAR_WIDTH - filled)
 
 
-def _warm_detail(progress: WarmProgress | None) -> str | None:
-    """The phase text, with a byte bar while reading weights, for the warm line.
+def _sweep_bar(tick: int) -> str:
+    """An indeterminate bar with a lit window of fixed width walking (and wrapping)
+    across the track, keyed to *tick*, so it always shows motion, never a blank."""
+    start = tick % _WARM_BAR_WIDTH
+    lit = {(start + offset) % _WARM_BAR_WIDTH for offset in range(_WARM_SWEEP_WIDTH)}
+    return "".join(_WARM_BAR_FILL if i in lit else _WARM_BAR_TRACK for i in range(_WARM_BAR_WIDTH))
 
-    None once past an active phase, so the caller drops the line entirely instead
-    of showing a stalled indicator.
+
+def _warm_detail(progress: WarmProgress | None, tick: int = 0) -> str | None:
+    """A moving bar plus the phase word for the warm line.
+
+    A determinate byte bar while paging weights, an indeterminate sweep while the
+    engine starts and loads (no byte signal). None once past an active phase, so
+    the caller drops the line entirely instead of showing a stalled indicator.
     """
     if progress is None:
         return None
     if progress.phase is WarmPhase.STARTING:
-        return msg.TASKBAR_WARM_STARTING
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_STARTING}"
     if progress.phase is WarmPhase.LOADING_ENGINE:
-        return msg.TASKBAR_WARM_LOADING
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_LOADING}"
     if progress.phase is WarmPhase.READING_WEIGHTS:
         fraction = progress.bytes_done / progress.bytes_total if progress.bytes_total else 0.0
         pct = int(fraction * 100)
-        return f"{msg.TASKBAR_WARM_READING.format(pct=pct)}  {_progress_bar(fraction)}"
+        return f"{_progress_bar(fraction)}  {msg.TASKBAR_WARM_READING.format(pct=pct)}"
     return None
 
 
@@ -240,7 +255,10 @@ class TaskBar(Static):
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
         spawning_roles = sorted(self._controller.spawning_roles) if idle else []
-        warm_line = self._warm_line() if idle else None
+        # Computed regardless of task activity: a chat warm holds the user's input
+        # disabled, so it outranks a passive task summary (which stays in the Task
+        # Center). Hiding it behind a background sync left a dead input unexplained.
+        warm_line = self._warm_line()
         fully_idle = idle and pending == 0 and not spawning_roles and warm_line is None
         self._sync_poll_cadence(fully_idle)
         if fully_idle:
@@ -287,7 +305,7 @@ class TaskBar(Static):
         idle: bool,
     ) -> tuple[str, str]:
         """Pick the dot color and summary text for the current bar state."""
-        if idle and warm_line is not None:
+        if warm_line is not None:
             return "$primary", warm_line
         if idle and spawning_roles:
             return "$primary", self._spawning_workers_template(spawning_roles)
@@ -300,7 +318,7 @@ class TaskBar(Static):
         from lilbee.app.placement import active_chat_warm_progress
 
         progress = active_chat_warm_progress()
-        detail = _warm_detail(progress)
+        detail = _warm_detail(progress, self._tick_count)
         if detail is None:
             return None
         name = (
@@ -308,9 +326,7 @@ class TaskBar(Static):
             if progress is not None and progress.model_ref
             else msg.TASKBAR_WARM_FALLBACK_NAME
         )
-        return msg.TASKBAR_WARM_LINE.format(
-            spinner=spinner_frame(self._tick_count), name=name, detail=detail
-        )
+        return msg.TASKBAR_WARM_LINE.format(name=name, detail=detail)
 
     def _spawning_workers_template(self, roles: list[str]) -> str:
         """Render the active worker-warmup hint for the bottom bar."""
