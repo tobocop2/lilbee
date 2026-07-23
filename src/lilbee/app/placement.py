@@ -264,15 +264,21 @@ def active_chat_warm_progress() -> WarmProgress | None:
     A surface gates interactive input on this: ``None`` covers ready, no fleet, a
     missing model, and a finished or failed warm, so nothing traps the input in a
     locked state. Non-``None`` carries the phase and byte progress to render.
+
+    The in-process warm snapshot is checked before ``role_ready`` because the task
+    bar polls this on every tick: the snapshot is a free attribute read, while
+    ``role_ready`` is an HTTP probe of the engine. Ordering it this way keeps the
+    probe to the seconds a load is actually in flight instead of firing forever on
+    an idle TUI. The two orders return the same answer.
     """
     services = peek_services()
     if services is None:
         return None
     provider = services.provider
-    if provider.role_ready(WorkerRole.CHAT):
-        return None
     snapshot = provider.warm_progress()
-    return snapshot if warm_is_reporting(snapshot) else None
+    if not warm_is_reporting(snapshot):
+        return None
+    return None if provider.role_ready(WorkerRole.CHAT) else snapshot
 
 
 def chat_warm_error() -> str | None:
