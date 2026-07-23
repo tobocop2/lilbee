@@ -137,6 +137,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
+    "ingest_workers": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
+    ),
     "mcp_tool_threads": SettingDef(
         int,
         nullable=False,

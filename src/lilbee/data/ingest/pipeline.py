@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -34,7 +35,7 @@ from lilbee.data.ingest.adaptive import (
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
-from lilbee.data.ingest.offload import max_workers, to_ingest_thread
+from lilbee.data.ingest.offload import embed_inflight_target, max_workers, to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -61,7 +62,7 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
-from lilbee.runtime.cpu import cpu_quota
+from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import LockTimeoutError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -102,8 +103,12 @@ def _max_concurrent() -> int:
             return fitted
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * config.vision_ocr_concurrency)
-    embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
-    return max(cpu_quota(), embed_slots)
+    if config.ingest_max_inflight > 0:
+        return config.ingest_max_inflight  # explicit override
+    # Auto: keep every embed replica fed. The CPU-bound quota alone leaves a
+    # many-core multi-GPU box starved (~4 files/card), so scale admission with
+    # the detected fleet size -- no manual cap needed.
+    return max(cpu_quota(), embed_inflight_target())
 
 
 async def _rebuild_concept_clusters() -> None:
@@ -301,6 +306,103 @@ def _classify_file_change(
     )
 
 
+def _plan_workers() -> int:
+    """Worker count for the parallel planning pass: config override, else auto.
+
+    ``config.ingest_workers`` (also set per run by ``add --max-cpus``) wins when
+    positive; otherwise size to the container-aware CPU budget so a big corpus
+    hashes on every core the pod actually has, not the host's vCPU count.
+    """
+    configured = active_config().ingest_workers
+    return configured if configured > 0 else available_cpu_count()
+
+
+# How often the plan pass logs progress. The pass can run for tens of minutes on
+# a multi-million-file corpus while the Rich bar renders nothing without a TTY
+# and stdout is block-buffered when piped; a periodic line (which logging flushes
+# per record) keeps a headless run observable instead of looking hung.
+_PLAN_LOG_INTERVAL_S = 10.0
+
+
+class _PlanProgress:
+    """Periodic progress for the plan/hash pass, with rate and ETA.
+
+    Emitted at warning level, not info: the default LILBEE_LOG_LEVEL is WARNING,
+    so an info line would be filtered before any handler and a headless
+    ``lilbee sync`` would show nothing during the plan pass and still look hung.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+        self._done = 0
+        self._started = time.monotonic()
+        self._last = self._started
+
+    def tick(self) -> None:
+        self._done += 1
+        now = time.monotonic()
+        if now - self._last < _PLAN_LOG_INTERVAL_S:
+            return
+        self._last = now
+        elapsed = now - self._started
+        rate = self._done / elapsed if elapsed > 0 else 0.0
+        remaining = (self._total - self._done) / rate if rate > 0 else 0.0
+        log.warning(
+            "Planning: examined %d/%d files (%.0f%%, %.0f files/s, ~%.0fs left)",
+            self._done,
+            self._total,
+            100.0 * self._done / self._total,
+            rate,
+            remaining,
+        )
+
+
+def _classify_changes(
+    items: list[tuple[str, Path]],
+    existing_sources: dict[str, SourceRecord],
+    skip_markers: dict[str, str],
+    cancel: threading.Event | None,
+) -> dict[str, _FileChangeVerdict]:
+    """Classify each file (stat + hash) by name, fanning across a thread pool.
+
+    Independent per file and side-effect-free, so pooled classification matches a
+    serial pass; ``hashlib`` releases the GIL during digest, giving real speedup
+    on a large corpus. Returns name -> verdict. A set ``cancel`` stops promptly:
+    submission halts and queued-but-unstarted work is cancelled, so a mid-pass
+    cancel over a huge corpus does not hash every remaining file.
+    """
+
+    def _classify(name: str, path: Path) -> _FileChangeVerdict:
+        return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+
+    verdicts: dict[str, _FileChangeVerdict] = {}
+    total = len(items)
+    progress = _PlanProgress(total)
+    workers = _plan_workers()
+    if workers <= 1 or total <= 1:
+        for name, path in items:
+            if cancel and cancel.is_set():
+                break
+            verdicts[name] = _classify(name, path)
+            progress.tick()
+        return verdicts
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lilbee-plan") as pool:
+        futures: dict[Future[_FileChangeVerdict], str] = {}
+        for name, path in items:
+            if cancel and cancel.is_set():
+                break
+            futures[pool.submit(_classify, name, path)] = name
+        for future in as_completed(futures):
+            if cancel and cancel.is_set():
+                # Drop queued-but-unstarted work; running tasks drain on exit.
+                for pending in futures:
+                    pending.cancel()
+                break
+            verdicts[futures[future]] = future.result()
+            progress.tick()
+    return verdicts
+
+
 def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
@@ -315,17 +417,27 @@ def _plan_file_changes(
     current hash matches a marker in ``skip_markers`` (set by a prior failed
     attempt) is treated as unchanged so we don't retry every sync. Edit the file
     or run ``/sync --force-rebuild`` to clear the marker and try again.
+
+    Classification fans across a thread pool (see :func:`_classify_changes`); the
+    plan is assembled from the results in the original sorted order, so a partial
+    or reordered completion never yields a wrong or reordered plan -- only a
+    shorter one when cancelled mid-pass.
     """
     skip_markers = skip_markers or {}
+    items = sorted(disk_files.items())
+    verdicts = _classify_changes(items, existing_sources, skip_markers, cancel)
+
     files_to_process: list[FileToProcess] = []
     added: dict[str, None] = {}
     updated: dict[str, None] = {}
     stat_backfills: list[SourceStatBackfill] = []
     unchanged = 0
-    for name, path in sorted(disk_files.items()):
-        if cancel and cancel.is_set():
-            break
-        verdict = _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+    # Assemble in the original sorted order so a partial (cancelled) or reordered
+    # completion never changes the plan the serial pass would have produced.
+    for name, _path in items:
+        verdict = verdicts.get(name)
+        if verdict is None:
+            continue  # cancelled before this file was classified
         if verdict.to_process is None:
             unchanged += 1
             if verdict.backfill is not None:
@@ -339,11 +451,70 @@ def _plan_file_changes(
     return FileChangePlan(files_to_process, added, updated, unchanged, stat_backfills)
 
 
-def _removable_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
-    """Document sources whose backing file is gone.
+@dataclass(frozen=True)
+class _Move:
+    """One relocated source: its old key, its new key, and the new file's stat."""
 
-    Imported sources are detached (no file under documents/), so a missing
-    disk file must not mark them for removal.
+    old: str
+    new: str
+    stat: SourceStat | None
+
+
+def _detect_moves(
+    files_to_process: list[FileToProcess],
+    added: dict[str, None],
+    absent: list[str],
+    existing_sources: dict[str, SourceRecord],
+) -> list[_Move]:
+    """Pair brand-new files with absent sources of the same content hash.
+
+    Only additions (files with a new name) can be moves; an update keeps its name.
+    When several absent sources share a hash, pairing is deterministic (sorted)
+    and one-to-one, so a duplicated file that moved matches exactly one old key
+    and any leftovers stay indexed under their old key.
+    """
+    removed_by_hash: dict[str, list[str]] = {}
+    for name in absent:
+        record = existing_sources.get(name)
+        if record is not None:
+            removed_by_hash.setdefault(record["file_hash"], []).append(name)
+    for candidates in removed_by_hash.values():
+        candidates.sort()
+    moves: list[_Move] = []
+    for entry in files_to_process:
+        if entry.name not in added:
+            continue
+        matches = removed_by_hash.get(entry.file_hash)
+        if matches:
+            moves.append(_Move(matches.pop(0), entry.name, entry.stat))
+    return moves
+
+
+def _apply_moves(
+    moves: list[_Move],
+    files_to_process: list[FileToProcess],
+    added: dict[str, None],
+) -> tuple[list[FileToProcess], list[str]]:
+    """Fold detected moves out of the add set after they were relocated.
+
+    Drops each moved file from the ingest list and the added set: its chunks were
+    re-keyed onto the new source name, not rebuilt. Returns the trimmed
+    ``(files_to_process, relocated)``.
+    """
+    moved_new = {m.new for m in moves}
+    for name in moved_new:
+        added.pop(name, None)
+    remaining = [e for e in files_to_process if e.name not in moved_new]
+    return remaining, sorted(moved_new)
+
+
+def _absent_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
+    """Document sources whose backing file is not on disk this sync.
+
+    A vanished file is never removed on its own (its chunks stay searchable, a
+    dead path-link discovered at open time); this set exists only to pair a
+    reappeared identical file to its old key in move detection. Imported sources
+    have no backing file, so they are excluded.
     """
     return [
         s["filename"]
@@ -356,23 +527,22 @@ def detect_pending() -> int:
     """Count files in documents/ that are out of sync with the store.
 
     Cheap operation: filesystem walk + stat-gated SHA-256 hashing + a single
-    sources-table read. No embedding, no writes. Returns the total of
-    added + updated + removed, which is what the TaskBar hint surfaces.
-    Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
+    sources-table read. No embedding, no writes. Returns the count of files that
+    would be ingested (added + updated), which is what the TaskBar hint surfaces.
+    A vanished file is not pending work: sync leaves it indexed, so it is not
+    counted. Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
     Honors skip markers: a file that failed last time at this hash does
     not show up as pending. Blocking: callers on the event loop run it via
     ``asyncio.to_thread``.
     """
     config = active_config()
-    if not config.documents_dir.exists():
-        return 0
     disk_files = discover_files()
-    sources = get_services().store.get_sources()
-    existing_sources = {s["filename"]: s for s in sources}
-    removed = len(_removable_sources(sources, disk_files))
+    if not disk_files:
+        return 0
+    existing_sources = {s["filename"]: s for s in get_services().store.get_sources()}
     skip_markers = load_skip_markers(config.data_root)
     plan = _plan_file_changes(disk_files, existing_sources, cancel=None, skip_markers=skip_markers)
-    return len(plan.files_to_process) + removed
+    return len(plan.files_to_process)
 
 
 def _load_pruned_skip_markers(disk_files: dict[str, Path], *, clear_first: bool) -> dict[str, str]:
@@ -468,17 +638,16 @@ async def sync(
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
-    removed: list[str] = []
     failed: dict[str, None] = {}
     skipped: dict[str, None] = {}
     reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
-    # Find files to remove (document sources whose file is gone; imports are kept)
-    to_remove = _removable_sources(sources, disk_files)
-    if to_remove:
-        _store.remove_documents(to_remove)
-        removed.extend(to_remove)
+    # Sources whose backing file is not on disk this pass. They are NOT removed:
+    # a vanished file stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it. The set exists only to pair a
+    # reappeared identical file to its old key below.
+    absent = _absent_sources(sources, disk_files)
 
     # The planning pass stats (and where needed hashes) every file on disk;
     # off the event loop so a large corpus doesn't freeze the TUI.
@@ -486,6 +655,16 @@ async def sync(
         _plan_file_changes, disk_files, existing_sources, cancel, skip_markers
     )
     files_to_process, added, updated = plan.files_to_process, plan.added, plan.updated
+
+    # A brand-new file whose content hash matches an absent source is that source
+    # moved, not an add: repoint it in place so its chunks and embeddings are
+    # reused rather than rebuilt, and the old key drops out of the index.
+    moves = _detect_moves(files_to_process, added, absent, existing_sources)
+    relocated: list[str] = []
+    if moves:
+        await to_ingest_thread(_store.relocate_sources, [(m.old, m.new, m.stat) for m in moves])
+        files_to_process, relocated = _apply_moves(moves, files_to_process, added)
+
     if plan.stat_backfills:
         await to_ingest_thread(_store.update_source_stats, plan.stat_backfills)
     # Track skip markers for files processed this run, keyed by name → hash.
@@ -497,19 +676,26 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        get_services().embedder.validate_model()
-        await ingest_batch(
-            files_to_process,
-            added,
-            updated,
-            failed,
-            skipped,
-            quiet=quiet,
-            on_progress=on_progress,
-            cancel=cancel,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
+        # Hold the embed fleet resident for the whole batch: an unevenly loaded
+        # replica must not idle-unload and reload cold mid-run (which snowballs
+        # into a fleet collapse). The ContextVar propagates into the ingest
+        # thread pool, where the fleet actually spawns on the first embed.
+        from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
+
+        with keep_fleet_warm():
+            get_services().embedder.validate_model()
+            await ingest_batch(
+                files_to_process,
+                added,
+                updated,
+                failed,
+                skipped,
+                quiet=quiet,
+                on_progress=on_progress,
+                cancel=cancel,
+                flush_failed=flush_failed,
+                reasons=reasons,
+            )
 
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
@@ -522,7 +708,7 @@ async def sync(
     # so a transient flush failure doesn't leave a stale reason behind.
     write_skip_reasons(config.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
 
-    if files_to_process or removed:
+    if files_to_process or relocated:
         _store.ensure_fts_index()
         _store.ensure_vector_index()
         _store.optimize_sources()
@@ -531,7 +717,7 @@ async def sync(
         # post-ingest hook stays function-local at this boundary.
         from lilbee.wiki.ingest import incremental_update
 
-        await incremental_update(set(added) | set(updated) | set(removed))
+        await incremental_update(set(added) | set(updated) | set(relocated))
 
     # Entity lifecycle: induce-once, extract, and re-apply edited schemas.
     # Runs every sync (cheap no-op when off or up to date) so flipping the
@@ -555,8 +741,9 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=removed,
+        removed=[],
         unchanged=plan.unchanged,
+        relocated=relocated,
         failed=list(failed),
         skipped=list(skipped),
         truncated=get_services().embedder.truncated_total - truncated_before,
@@ -569,6 +756,7 @@ async def sync(
             removed=len(result.removed),
             failed=len(result.failed),
             skipped=len(result.skipped),
+            relocated=len(result.relocated),
         ),
     )
     return result
@@ -629,7 +817,9 @@ def _build_admission(
         permit_max=permit_max,
     )
     task = asyncio.ensure_future(controller.run())
-    log.info(
+    # warning, not info: the default LILBEE_LOG_LEVEL is WARNING, so the
+    # auto-chosen concurrency would otherwise never surface on a headless sync.
+    log.warning(
         "Adaptive ingest concurrency (%s): start %d, max %d", profile.name, gate.limit, permit_max
     )
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task

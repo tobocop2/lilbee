@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import shutil
 import subprocess
 import sys
 import time
@@ -17,7 +16,6 @@ from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -134,23 +132,17 @@ def remember_from_input(raw: str) -> RememberOutcome:
     return RememberOutcome(msg.CMD_REMEMBER_SUCCESS.format(kind=kind.value))
 
 
-def remove_copied_files(names: list[str]) -> None:
-    """Delete files previously copied into documents/ by a /add invocation.
+def unregister_added_roots(labels: list[str]) -> None:
+    """Un-register roots a /add invocation created, for cancel/failure cleanup.
 
-    Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync. Silently tolerates missing entries;
-    the user may have removed them concurrently, and the goal is just to
-    prevent accidental indexing.
+    Called on cancel or failure of the add task so a cancelled source is not
+    re-found on the next sync. Only the registry entries this invocation added are
+    dropped; the source bytes on disk and files the user owns are never touched.
     """
-    for name in names:
-        target = cfg.documents_dir / name
-        try:
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            log.debug("Could not remove copied file %s", target, exc_info=True)
+    from lilbee.app.ingest import unregister_roots
+
+    if labels:
+        unregister_roots(labels)
 
 
 def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:

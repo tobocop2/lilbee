@@ -46,7 +46,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     close_stream,
     open_local_file,
     remember_from_input,
-    remove_copied_files,
+    unregister_added_roots,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
@@ -672,6 +672,8 @@ class ChatScreen(Screen[None]):
         self.refresh_bindings()
 
     def _cmd_add(self, args: str) -> None:
+        from lilbee.app.ingest import source_label_taken
+
         if not args:
             return
         if self._sync_active:
@@ -688,11 +690,12 @@ class ChatScreen(Screen[None]):
                 severity="error",
             )
             return
-        # Directory adds are whole-tree copies handled by copy_files'
-        # recursion; a same-named subdir in documents_dir is not a clean
-        # "duplicate file" signal, so skip the prompt there and let
-        # copy_files emit its per-file skipped notices.
-        duplicates = [p for p in paths if p.is_file() and (cfg.documents_dir / p.name).exists()]
+        # A file add registers a root labeled by its basename. Prompt before
+        # overwriting only when that label is already taken by a different source
+        # (a live root elsewhere, or an owned file of that name); re-adding the
+        # same path is idempotent, and a directory is left to register_sources'
+        # own skipped notices rather than a duplicate-file prompt.
+        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name)]
         if duplicates:
             self._prompt_overwrite(paths, duplicates)
             return
@@ -736,37 +739,42 @@ class ChatScreen(Screen[None]):
     def _do_add(
         self, paths: list[Path], reporter: ProgressReporter, *, force: bool = False
     ) -> None:
-        """Copy files and run sync. Called on worker thread with a reporter."""
-        from lilbee.app.ingest import copy_files
+        """Register source roots and run sync. Called on worker thread with a reporter."""
+        from lilbee.app.ingest import register_sources
         from lilbee.data.ingest import sync
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
-        reporter.update(0, f"Copying {label}...", indeterminate=True)
-        copy_result = copy_files(paths, force=force)
-        copied = copy_result.copied
-        for name in copy_result.skipped:
+        reporter.update(0, f"Adding {label}...", indeterminate=True)
+        reg_result = register_sources(paths, force=force)
+        registered = reg_result.registered
+        for name in reg_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
-        reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
+        reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
 
         try:
             sync_result = asyncio_loop.run(
                 sync(quiet=True, on_progress=build_add_progress_callback(reporter))
             )
         except BaseException:
-            # On cancel or any failure, remove the files we copied into
-            # documents/ so the next sync doesn't silently re-ingest the
-            # file the user just cancelled. Only files copied by
-            # this /add invocation are removed; pre-existing files the user
-            # put in documents/ themselves are never touched.
-            remove_copied_files(copied)
+            # On cancel or any failure, un-register the roots this /add created so
+            # the next sync doesn't silently re-ingest the source the user just
+            # cancelled. Only entries this invocation created are dropped;
+            # sources the user put in documents/ themselves are never touched.
+            unregister_added_roots(registered)
             raise
         if sync_result.failed:
-            remove_copied_files(copied)
+            unregister_added_roots(registered)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
-            remove_copied_files(copied)
+            unregister_added_roots(registered)
             raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
-        call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+        if sync_result.relocated:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_ADD_RELOCATED.format(count=len(sync_result.relocated)),
+            )
+        call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(registered)))
 
     def _cmd_cancel(self, _args: str) -> None:
         # _cancel_inflight_stream already cancels every screen worker, so the

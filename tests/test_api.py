@@ -175,7 +175,7 @@ class TestSearch:
 
 
 class TestAdd:
-    def test_add_copies_and_syncs(self, tmp_path):
+    def test_add_registers_and_syncs(self, tmp_path):
         from lilbee import Lilbee
 
         bee = Lilbee(tmp_path / "proj")
@@ -183,6 +183,8 @@ class TestAdd:
         external.write_text("# External\nThis file lives outside the project.")
         result = bee.add([external])
         assert "external.md" in result.added
+        # Registered in place, never copied into the project's documents dir.
+        assert not (bee.config.documents_dir / "external.md").exists()
         found = bee.search("external")
         assert len(found) > 0
 
