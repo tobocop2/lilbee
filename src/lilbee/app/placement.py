@@ -284,20 +284,3 @@ def chat_warm_error() -> str | None:
     if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
         return snapshot.error or ""
     return None
-
-
-def warm_chat_after_swap(*, should_abort: Callable[[], bool] | None = None) -> bool:
-    """Load the newly selected chat model instead of deferring it to the next prompt.
-
-    Every chat-model swap ends here, whichever surface started it: the chat
-    model bar, the same bar mounted off the chat screen, or the Settings pane.
-    Warming from one place is what makes the task-bar line appear for all of
-    them (it renders whatever ``active_chat_warm_progress`` reports, on any
-    screen) and what stops a swap reporting "done" while the engine is still
-    cold -- which read as a live input that silently answered nothing.
-
-    Returns True once the model can serve. Worker thread; never call on the
-    event loop, since the load takes seconds.
-    """
-    request_engine_warm()
-    return wait_chat_ready(should_abort=should_abort)

@@ -13423,3 +13423,61 @@ async def test_model_swap_warms_the_new_model_before_unblocking():
         # Warm is requested after the reload and waited out before completing.
         assert calls == ["reload", "warm", "wait"]
         assert screen.swapping_model is False
+
+
+async def test_input_reason_says_reloading_during_a_placement_change():
+    """A placement reload holds the input too; the placeholder must explain that
+    case, not just a model swap."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.reloading_placement = True
+        await pilot.pause()
+        assert screen._chat_input.disabled is True
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_RELOADING
+        screen.reloading_placement = False
+        await pilot.pause()
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_surfaces_a_warm_failure():
+    """A warm that fails must toast the reason and release the input, never leave
+    it locked forever."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: False),
+            patch("lilbee.app.placement.chat_warm_error", return_value="out of VRAM"),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False  # input released
+        assert any("out of VRAM" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_reload_failure_is_toasted():
+    """A reload that raises becomes a toast, never a crashed worker."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        services.reload_role.side_effect = RuntimeError("engine gone")
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False
+        assert any("engine gone" in str(c.args[0]) for c in notify.call_args_list)

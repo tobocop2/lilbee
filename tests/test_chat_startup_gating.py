@@ -256,3 +256,18 @@ async def test_await_engine_builds_services_when_none_exist(_warming_services):
         ):
             assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
         build.assert_called_once()
+
+
+def test_active_chat_warm_progress_is_none_once_the_role_is_ready():
+    """A warm that has finished must not keep the surface in a loading state."""
+    from lilbee.app.placement import active_chat_warm_progress
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    services.provider.role_ready.return_value = True
+    set_services(services)
+    try:
+        assert active_chat_warm_progress() is None
+    finally:
+        set_services(None)

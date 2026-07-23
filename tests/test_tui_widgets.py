@@ -7096,3 +7096,28 @@ async def test_warm_line_survives_an_active_background_task() -> None:
         # Not idle: a task is active, yet the warm line still wins the summary.
         _dot, summary = bar._status_line([mock.MagicMock()], [], [], 0, warm, idle=False)
         assert summary == warm
+
+
+async def test_warm_line_names_the_model_being_loaded() -> None:
+    """The line carries the model's display label, not the raw ref, so a swap says
+    which model the wait is for."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.role_ready.return_value = False
+    services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.LOADING_ENGINE, model_ref=TEST_LOCAL_REF
+    )
+    set_services(services)
+
+    app = _TaskBarApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        warm = app.query_one(TaskBar)._warm_line()
+        assert warm is not None
+        assert "chat ·" not in warm  # not the fallback name
+        assert "warming up " in warm
