@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data.ingest import offload
 
 
 @pytest.fixture(autouse=True)
-def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin every input ``_max_workers`` reads, not just the env override.
+
+    It also floors the result at ``ingest_max_inflight``, so a value left on the
+    config singleton by an earlier test makes these assertions order-dependent.
+    """
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
+    monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
 
 
 def test_default_caps_at_32_on_a_big_box(monkeypatch: pytest.MonkeyPatch) -> None:
