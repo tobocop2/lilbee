@@ -206,6 +206,33 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
+    async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
+        import shutil
+
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "a.txt").write_text("Hello world. This document will move.")
+        first = await sync()
+        assert "a.txt" in first.added
+
+        # Move it: same content, new key. Sync must relocate, not re-ingest.
+        (isolated_env / "sub").mkdir()
+        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+        mock_extract_file.reset_mock()
+        store = get_services().store
+        store.relocate_sources.reset_mock()
+
+        second = await sync()
+
+        assert second.relocated == ["sub/a.txt"]
+        assert second.added == []
+        assert second.removed == []  # a move is not a removal
+        mock_extract_file.assert_not_called()  # no re-extraction/re-embedding
+        store.relocate_sources.assert_called_once()
+        moves = store.relocate_sources.call_args.args[0]
+        assert [(old, new) for old, new, _stat in moves] == [("a.txt", "sub/a.txt")]
+
     async def test_adaptive_mode_ingests_and_stops_controller(
         self, mock_extract_file, isolated_env, monkeypatch
     ):
@@ -326,14 +353,43 @@ class TestSync:
         f.write_text("Version 2, different content now")
         assert "changing.txt" in (await sync()).updated
 
-    async def test_deleted_file_removed(self, mock_extract_file, isolated_env):
+    async def test_deleted_file_stays_indexed(self, mock_extract_file, isolated_env):
+        # A vanished file is a dead path-link, not a removal: sync leaves it in
+        # the index (searchable), and the user only discovers it is gone when
+        # they try to open it.
         f = isolated_env / "temp.txt"
         f.write_text("Temporary")
+        from lilbee.app.services import get_services
         from lilbee.data.ingest import sync
 
         await sync()
         f.unlink()
-        assert "temp.txt" in (await sync()).removed
+        result = await sync()
+        assert result.removed == []
+        assert "temp.txt" in {s["filename"] for s in get_services().store.get_sources()}
+
+    async def test_registered_root_reindexes_edited_file(self, mock_extract_file, isolated_env):
+        # Editing a file inside a registered root re-ingests it in place: it is
+        # reported updated (not added) and the store's recorded hash reflects the
+        # edit, proving a real reindex rather than a no-op.
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import file_hash, sync
+
+        corpus = isolated_env.parent / "corpus"
+        corpus.mkdir()
+        (corpus / "f.txt").write_text("first version of the content")
+        cfg.linked_roots = {"corpus": str(corpus)}
+
+        first = await sync()
+        assert "corpus/f.txt" in first.added
+
+        (corpus / "f.txt").write_text("a second, edited version of the content")
+        second = await sync()
+        assert "corpus/f.txt" in second.updated
+        assert "corpus/f.txt" not in second.added
+        rec = next(s for s in get_services().store.get_sources() if s["filename"] == "corpus/f.txt")
+        assert rec["file_hash"] == file_hash(corpus / "f.txt")
 
     async def test_unchanged_file_skipped(self, mock_extract_file, isolated_env):
         (isolated_env / "stable.txt").write_text("I stay the same")
@@ -1147,6 +1203,77 @@ class TestZeroChunkPageTextPersistence:
         assert flush_spy.call_count >= 2
 
 
+class TestPlanProgress:
+    def test_logs_periodic_progress_at_warning(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+
+        # Log on every tick so a fast unit test still exercises the periodic path.
+        monkeypatch.setattr(pipeline, "_PLAN_LOG_INTERVAL_S", 0.0)
+        progress = pipeline._PlanProgress(total=3)
+        # Capture at WARNING, the default LILBEE_LOG_LEVEL: an info line is
+        # filtered here exactly as it is under a real headless `lilbee sync`, so
+        # this fails if the progress ever drops back below warning and goes
+        # silent in the very case it exists to make observable.
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            progress.tick()
+            progress.tick()
+            progress.tick()
+        records = [r for r in caplog.records if "Planning: examined" in r.getMessage()]
+        assert records
+        assert all(r.levelno >= logging.WARNING for r in records)
+        assert any("3/3" in r.getMessage() for r in records)
+
+    def test_silent_below_the_interval(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+
+        # A short sync (ticks faster than the interval) stays quiet -- no noise.
+        monkeypatch.setattr(pipeline, "_PLAN_LOG_INTERVAL_S", 3600.0)
+        progress = pipeline._PlanProgress(total=100)
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            for _ in range(50):
+                progress.tick()
+        assert not any("Planning:" in r.getMessage() for r in caplog.records)
+
+
+class TestScanProgress:
+    def test_logs_periodic_scan_progress_at_warning(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import discovery
+
+        # Log on every tick so a fast unit test still exercises the periodic path.
+        monkeypatch.setattr(discovery, "_SCAN_LOG_INTERVAL_S", 0.0)
+        progress = discovery._ScanProgress()
+        # WARNING, the default level: the discovery walk runs before the plan
+        # pass and is otherwise silent, so its heartbeat must survive the default
+        # or a headless sync over a large tree looks hung during the walk.
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.discovery"):
+            progress.tick(matched=True)
+            progress.tick(matched=False)
+        records = [r for r in caplog.records if "Scanning for files" in r.getMessage()]
+        assert records
+        assert all(r.levelno >= logging.WARNING for r in records)
+        # examined counts every visited file; matched only the supported ones.
+        assert any("examined 2, matched 1" in r.getMessage() for r in records)
+
+    def test_silent_below_the_interval(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import discovery
+
+        # A quick walk (ticks faster than the interval) stays quiet -- no noise.
+        monkeypatch.setattr(discovery, "_SCAN_LOG_INTERVAL_S", 3600.0)
+        progress = discovery._ScanProgress()
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.discovery"):
+            for _ in range(50):
+                progress.tick(matched=True)
+        assert not any("Scanning for files" in r.getMessage() for r in caplog.records)
+
+
 class TestDetectPending:
     """Cheap detection: filesystem walk + hash compare against the sources table."""
 
@@ -1156,7 +1283,7 @@ class TestDetectPending:
 
         assert detect_pending() == 0
 
-    def test_counts_added_updated_and_removed(self, isolated_env, mock_svc):
+    def test_counts_added_and_updated_not_absent(self, isolated_env, mock_svc):
         from lilbee.data.ingest import detect_pending, file_hash
 
         new_file = isolated_env / "new.md"
@@ -1167,11 +1294,12 @@ class TestDetectPending:
         mock_svc.store.upsert_source("existing.md", file_hash(existing), 1, source_type="document")
         existing.write_text("v2")  # hash now diverges from store
 
-        # A row in the store with no matching disk file = removed.
+        # A row whose disk file is gone is NOT pending: sync leaves it indexed,
+        # so it is not counted as work to do.
         mock_svc.store.upsert_source("gone.md", "deadbeef", 1, source_type="document")
 
-        # 1 added (new.md) + 1 updated (existing.md) + 1 removed (gone.md) = 3
-        assert detect_pending() == 3
+        # 1 added (new.md) + 1 updated (existing.md); gone.md does not count.
+        assert detect_pending() == 2
 
     def test_returns_zero_when_in_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import detect_pending, file_hash
@@ -1285,6 +1413,90 @@ class TestStatShortCircuit:
         assert hash_calls == [f]
         assert plan.unchanged == 1
         assert len(plan.stat_backfills) == 1
+
+    def test_parallel_plan_matches_serial(self, isolated_env, monkeypatch):
+        # Many brand-new files (no existing sources): the parallel planning pass
+        # must produce the same added set, order, and counts as the serial pass.
+        from lilbee.data.ingest import pipeline
+
+        names = [f"doc{i:03d}.txt" for i in range(50)]
+        disk: dict[str, Path] = {}
+        for n in names:
+            p = isolated_env / n
+            p.write_text(f"content of {n}")
+            disk[n] = p
+
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 8)
+        parallel = pipeline._plan_file_changes(disk, {}, cancel=None)
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 1)
+        serial = pipeline._plan_file_changes(disk, {}, cancel=None)
+
+        assert [f.name for f in parallel.files_to_process] == [
+            f.name for f in serial.files_to_process
+        ]
+        assert list(parallel.added) == list(serial.added) == names
+        assert parallel.unchanged == serial.unchanged == 0
+
+    def test_cancelled_parallel_plan_returns_partial(self, isolated_env, monkeypatch):
+        import threading
+
+        from lilbee.data.ingest import pipeline
+
+        disk: dict[str, Path] = {}
+        for i in range(10):
+            p = isolated_env / f"c{i}.txt"
+            p.write_text("x")
+            disk[p.name] = p
+
+        cancel = threading.Event()
+        cancel.set()
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 4)
+        plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
+        assert plan.files_to_process == []
+
+    def test_parallel_plan_cancels_pending_work_midpass(self, isolated_env, monkeypatch):
+        import threading
+
+        from lilbee.data.ingest import pipeline
+
+        disk: dict[str, Path] = {}
+        for i in range(30):
+            p = isolated_env / f"m{i:02d}.txt"
+            p.write_text(str(i))
+            disk[p.name] = p
+
+        cancel = threading.Event()
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 4)
+        original = pipeline._classify_file_change
+        seen = {"n": 0}
+
+        def _spy(name, path, record, markers):
+            seen["n"] += 1
+            if seen["n"] >= 3:
+                cancel.set()  # trip cancel partway through the pass
+            return original(name, path, record, markers)
+
+        monkeypatch.setattr(pipeline, "_classify_file_change", _spy)
+        plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
+
+        # A mid-pass cancel drops queued work rather than hashing all 30 files.
+        assert len(plan.files_to_process) < 30
+
+    def test_plan_workers_config_override_beats_auto(self, monkeypatch):
+        import types
+
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(
+            pipeline, "active_config", lambda: types.SimpleNamespace(ingest_workers=3)
+        )
+        assert pipeline._plan_workers() == 3
+
+        monkeypatch.setattr(
+            pipeline, "active_config", lambda: types.SimpleNamespace(ingest_workers=0)
+        )
+        monkeypatch.setattr(pipeline, "available_cpu_count", lambda: 9)
+        assert pipeline._plan_workers() == 9
 
     def test_changed_mtime_rehashes(self, isolated_env, monkeypatch):
         import os
@@ -1416,19 +1628,21 @@ class TestRemovableSources:
             "source_type": source_type,
         }
 
-    def test_keeps_imported_drops_missing_document(self):
+    def test_absent_set_keeps_imported_drops_missing_document(self):
         from pathlib import Path
 
-        from lilbee.data.ingest.pipeline import _removable_sources
+        from lilbee.data.ingest.pipeline import _absent_sources
         from lilbee.data.store import SourceType
 
+        # The absent set drives move detection only (a missing file is never
+        # removed on its own). An import has no backing file, so it is excluded.
         sources = [
             self._src("gone.md", SourceType.DOCUMENT),
             self._src("present.md", SourceType.DOCUMENT),
             self._src("shared.pdf", SourceType.IMPORTED),
         ]
         disk_files = {"present.md": Path("present.md")}
-        assert _removable_sources(sources, disk_files) == ["gone.md"]
+        assert _absent_sources(sources, disk_files) == ["gone.md"]
 
 
 class TestDiscoverFiles:
@@ -1911,45 +2125,73 @@ class TestClassifyNewFormats:
         assert classify_file(Path(filename)) == expected
 
 
-class TestDiscoverSymlinkEscape:
+class TestDiscoverRegisteredRoots:
+    def test_registered_dir_root_indexed_under_label(self, isolated_env, tmp_path):
+        """A registered directory root indexes its files keyed under the label."""
+        from lilbee.data.ingest import discover_files
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        cfg.linked_roots = {"corpus": str(source)}
+
+        found = discover_files()
+        assert found["corpus/doc.md"] == source / "doc.md"
+
+    def test_registered_file_root_indexed_by_label(self, isolated_env, tmp_path):
+        """A registered single-file root indexes as one entry keyed by the label."""
+        from lilbee.data.ingest import discover_files
+
+        outside_file = tmp_path / "linked.md"
+        outside_file.write_text("# Linked")
+        cfg.linked_roots = {"linked.md": str(outside_file)}
+
+        found = discover_files()
+        assert found["linked.md"] == outside_file
+
+    def test_owned_files_and_roots_coexist(self, isolated_env, tmp_path):
+        """documents_dir files and a registered root are both discovered."""
+        from lilbee.data.ingest import discover_files
+
+        (isolated_env / "owned.md").write_text("# Owned")
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        cfg.linked_roots = {"corpus": str(source)}
+
+        found = discover_files()
+        assert "owned.md" in found
+        assert "corpus/doc.md" in found
+
+    def test_vanished_root_contributes_nothing(self, isolated_env, tmp_path):
+        """A registered root whose path is gone yields nothing, not an error."""
+        from lilbee.data.ingest import discover_files
+
+        cfg.linked_roots = {"gone": str(tmp_path / "gone")}
+
+        found = discover_files()
+        assert "gone" not in found
+        assert not any(name.startswith("gone/") for name in found)
+
     @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
-    def test_symlink_escaping_docs_dir_skipped(self, isolated_env):
-        """Symlinks that resolve outside the documents directory are skipped."""
+    def test_directory_symlink_inside_root_is_not_followed(self, isolated_env, tmp_path):
+        """os.walk runs with followlinks=False, so a nested dir symlink is not descended."""
         import os
 
         from lilbee.data.ingest import discover_files
 
-        outside_file = isolated_env.parent / "secret.txt"
-        outside_file.write_text("secret data")
-        link_path = isolated_env / "escaped.txt"
-        os.symlink(outside_file, link_path)
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "doc.md").write_text("# Doc")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("secret")
+        os.symlink(outside, source / "escape")
+        cfg.linked_roots = {"corpus": str(source)}
 
         found = discover_files()
-        assert "escaped.txt" not in found
-        outside_file.unlink()
-
-    def test_path_validation_failure_skipped(self, isolated_env):
-        """Files that fail path validation are skipped (covers Windows too)."""
-        from unittest.mock import patch
-
-        from lilbee.data.ingest import discover_files
-
-        (isolated_env / "normal.md").write_text("# Normal")
-
-        original = __import__(
-            "lilbee.data.ingest.discovery", fromlist=["validate_path_within"]
-        ).validate_path_within
-
-        def strict_validate(path, base):
-            if "normal" in str(path):
-                raise ValueError("blocked")
-            return original(path, base)
-
-        with patch(
-            "lilbee.data.ingest.discovery.validate_path_within", side_effect=strict_validate
-        ):
-            found = discover_files()
-        assert "normal.md" not in found
+        assert "corpus/doc.md" in found
+        assert not any("secret.md" in name for name in found)
 
 
 class TestDiscoverNewFormats:
@@ -3184,3 +3426,315 @@ class TestRemoveDocumentsDurably:
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
         remove_documents_durably(["gone"])
         assert load_skip_markers(cfg.data_root) == {}
+
+
+class TestDetectMoves:
+    def _entry(self, name, fhash):
+        from lilbee.data.ingest.types import FileToProcess
+
+        return FileToProcess(name, Path(name), "text", fhash, needs_cleanup=True, stat=None)
+
+    def _record(self, name, fhash):
+        return {"filename": name, "file_hash": fhash}
+
+    def test_matches_new_file_to_removed_source_by_hash(self):
+        from lilbee.data.ingest import pipeline
+
+        entry = self._entry("new/a.txt", "h1")
+        files = [entry]
+        added = {"new/a.txt": None}
+        to_remove = ["old/a.txt"]
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+
+        moves = pipeline._detect_moves(files, added, to_remove, existing)
+        assert len(moves) == 1
+        assert moves[0].old == "old/a.txt"
+        assert moves[0].new == "new/a.txt"
+
+    def test_changed_content_is_not_a_move(self):
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry("new/a.txt", "h2")]
+        added = {"new/a.txt": None}
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+
+        moves = pipeline._detect_moves(files, added, ["old/a.txt"], existing)
+        assert moves == []
+
+    def test_update_is_not_a_move(self):
+        from lilbee.data.ingest import pipeline
+
+        # Same name (an update, not in `added`) is never a move even on hash match.
+        files = [self._entry("a.txt", "h1")]
+        existing = {"a.txt": self._record("a.txt", "h1")}
+        moves = pipeline._detect_moves(files, {}, [], existing)
+        assert moves == []
+
+    def test_duplicate_hash_pairs_one_to_one(self):
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry("new/a.txt", "h1"), self._entry("new/b.txt", "h1")]
+        added = {"new/a.txt": None, "new/b.txt": None}
+        existing = {
+            "old/a.txt": self._record("old/a.txt", "h1"),
+            "old/b.txt": self._record("old/b.txt", "h1"),
+        }
+        moves = pipeline._detect_moves(files, added, ["old/a.txt", "old/b.txt"], existing)
+        assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
+        assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
+
+
+class TestSyncResultRender:
+    def test_str_includes_relocated_line(self):
+        from lilbee.data.ingest.types import SyncResult
+
+        r = SyncResult(added=[], updated=[], removed=[], unchanged=0, relocated=["a.md", "b.md"])
+        assert "Relocated: 2" in str(r)
+
+
+class TestResolveSourcePath:
+    def test_owned_key_resolves_under_documents_dir(self, isolated_env):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        assert resolve_source_path("notes/a.md") == cfg.documents_dir / "notes/a.md"
+
+    def test_dir_root_key_resolves_under_the_root(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        root = tmp_path / "corpus"
+        cfg.linked_roots = {"corpus": str(root)}
+        assert resolve_source_path("corpus/sub/a.pdf") == root / "sub" / "a.pdf"
+
+    def test_file_root_key_resolves_to_the_file(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        f = tmp_path / "report.pdf"
+        cfg.linked_roots = {"report.pdf": str(f)}
+        assert resolve_source_path("report.pdf") == f
+
+    def test_checked_resolver_rejects_escaping_key(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+        root = tmp_path / "corpus"
+        root.mkdir()
+        cfg.linked_roots = {"corpus": str(root)}
+        assert resolve_source_path_checked("corpus/a.pdf") == (root / "a.pdf").resolve()
+        assert resolve_source_path_checked("corpus/../../etc/passwd") is None
+
+
+class TestSourceLabelTaken:
+    def test_true_for_live_registered_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import source_label_taken
+
+        root = tmp_path / "corpus"
+        root.mkdir()
+        cfg.linked_roots = {"corpus": str(root)}
+        assert source_label_taken("corpus") is True
+
+    def test_false_for_dangling_registered_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import source_label_taken
+
+        cfg.linked_roots = {"corpus": str(tmp_path / "gone")}
+        assert source_label_taken("corpus") is False
+
+    def test_true_for_owned_documents_entry(self, isolated_env):
+        from lilbee.app.ingest import source_label_taken
+
+        (cfg.documents_dir / "owned.md").write_text("x")
+        assert source_label_taken("owned.md") is True
+
+    def test_false_for_unknown_name(self, isolated_env):
+        from lilbee.app.ingest import source_label_taken
+
+        assert source_label_taken("nope") is False
+
+
+class TestRegisteredRootHelpers:
+    def test_unregister_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources, unregister_roots
+        from lilbee.core.config import cfg
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        register_sources([source])  # persists the root, mirroring real usage
+
+        # A nested name is not a root and is left alone; the label is un-registered.
+        removed = unregister_roots(["corpus/a.txt", "corpus"])
+
+        assert removed == ["corpus"]
+        assert "corpus" not in cfg.linked_roots
+        assert source.exists()  # source bytes untouched
+
+    def test_unregister_roots_ignores_unknown_label(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources, unregister_roots
+        from lilbee.core.config import cfg
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        register_sources([source])
+        assert unregister_roots(["not-a-root"]) == []
+        assert "corpus" in cfg.linked_roots
+
+    def test_unregister_empty_is_a_noop(self, isolated_env):
+        from lilbee.app.ingest import unregister_roots
+
+        assert unregister_roots([]) == []
+
+    def test_register_empty_is_a_noop(self, isolated_env):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        result = register_sources([])
+        assert result.registered == []
+        assert result.skipped == []
+        assert cfg.linked_roots == {}
+
+
+class TestRegisterSources:
+    def test_registers_dir_root_by_basename(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        result = register_sources([corpus])
+        assert result.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_reregistering_same_path_is_idempotent(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        register_sources([corpus])
+        result = register_sources([corpus])
+        assert result.registered == []
+        assert result.skipped == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_label_collision_needs_force(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+        register_sources([one])
+        # Same basename, different live path: skipped without force.
+        result = register_sources([two])
+        assert result.registered == []
+        assert result.skipped == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(one.resolve())}
+        # force overwrites the label.
+        forced = register_sources([two], force=True)
+        assert forced.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(two.resolve())}
+
+    def test_dangling_root_relinks_without_force(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        # A root registered to a path that no longer exists (the source moved):
+        # re-adding the new location re-points the label, no force needed.
+        settings.set_value(
+            cfg.data_root, "linked_roots", {"corpus": str(tmp_path / "old" / "corpus")}
+        )
+        moved = tmp_path / "new" / "corpus"
+        moved.mkdir(parents=True)
+        result = register_sources([moved])
+        assert result.registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(moved.resolve())}
+
+    def test_path_inside_documents_dir_left_to_owned_walk(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        inside = cfg.documents_dir / "sub"
+        inside.mkdir()
+        result = register_sources([inside])
+        assert result.registered == []
+        assert result.skipped == ["sub"]
+        assert cfg.linked_roots == {}
+
+    def test_registration_persists_to_config_toml(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        register_sources([corpus])
+        persisted = settings.load(cfg.data_root)
+        assert persisted.get("linked_roots") == {"corpus": str(corpus.resolve())}
+
+    def test_register_merges_with_concurrently_persisted_root(self, isolated_env, tmp_path):
+        # Another process persisted a root to config.toml while our in-memory view
+        # is stale; register must merge, not clobber it (no lost update).
+        from lilbee.app.ingest import register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        other = tmp_path / "a" / "other"
+        other.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"other": str(other)})
+        cfg.linked_roots = {}  # stale snapshot: does not know about "other"
+
+        mine = tmp_path / "b" / "mine"
+        mine.mkdir(parents=True)
+        register_sources([mine])
+
+        expected = {"other": str(other), "mine": str(mine.resolve())}
+        assert settings.load(cfg.data_root)["linked_roots"] == expected
+        assert cfg.linked_roots == expected
+
+    def test_rejects_root_nested_under_existing_root(self, isolated_env, tmp_path):
+        # Registering a child of an existing root would walk (and index) the same
+        # file under two keys; it is skipped.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        corpus = tmp_path / "corpus"
+        (corpus / "papers").mkdir(parents=True)
+        register_sources([corpus])
+        result = register_sources([corpus / "papers"])
+        assert result.registered == []
+        assert result.skipped == ["papers"]
+        assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_rejects_root_containing_existing_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        child = tmp_path / "data" / "corpus"
+        child.mkdir(parents=True)
+        register_sources([child])
+        result = register_sources([tmp_path / "data"])  # a parent of the existing root
+        assert result.registered == []
+        assert cfg.linked_roots == {"corpus": str(child.resolve())}
+
+    def test_rejects_root_that_is_ancestor_of_documents_dir(self, isolated_env, tmp_path):
+        # documents_dir lives under tmp_path; registering tmp_path would re-index
+        # every owned file a second time under the parent label.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        result = register_sources([cfg.documents_dir.parent])
+        assert result.registered == []
+        assert cfg.linked_roots == {}
+
+    def test_force_never_shadows_owned_documents_entry(self, isolated_env, tmp_path):
+        # An owned top-level entry must never be shadowed by a same-named root,
+        # even under --force, or resolve_source_path would disagree with discovery.
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        (cfg.documents_dir / "reports").mkdir(parents=True)
+        external = tmp_path / "reports"
+        external.mkdir()
+        result = register_sources([external], force=True)
+        assert result.registered == []
+        assert result.skipped == ["reports"]
+        assert cfg.linked_roots == {}

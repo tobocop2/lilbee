@@ -394,6 +394,7 @@ class SyncSummary(BaseModel):
     updated: list[str] = []
     removed: list[str] = []
     unchanged: int = 0
+    relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
     truncated: int = 0
