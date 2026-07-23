@@ -561,16 +561,19 @@ class TestTaskBar:
             assert out == "Starting chat, embed workers..."
 
     def test_warm_detail_phases(self) -> None:
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.task_bar import _warm_detail
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         assert _warm_detail(None) is None
         assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
-        # Each active phase carries a progress bar plus the phase word.
+        # Indeterminate phases carry a moving sweep bar plus the phase word: a
+        # multi-second load has to read as working, not stalled.
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
-        assert "starting" in starting and "▓" in starting
+        assert msg.TASKBAR_WARM_STARTING in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "loading the engine" in loading and ("▓" in loading or "░" in loading)
+        assert msg.TASKBAR_WARM_LOADING in loading and "▓" in loading
+        # Reading weights: a determinate byte bar, then the phase word with %.
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
@@ -599,7 +602,8 @@ class TestTaskBar:
             await pilot.pause()
             bar = app.query_one(TaskBar)
             warm = bar._warm_line()
-            assert warm.startswith("warming up chat · ")
+            # model_ref is None here, so the line uses the fallback name.
+            assert "warming up chat · " in warm
             assert "reading weights 25%" in warm and "▓" in warm
             bar._refresh_display()
             await pilot.pause()
@@ -612,6 +616,15 @@ class TestTaskBar:
         assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
         assert len({*frames}) > 1  # the lit window moves, so frames differ
         assert all("▓" in f for f in frames)  # always shows a lit window
+
+    def test_spinner_frames_cycle_from_rich(self) -> None:
+        from lilbee.cli.tui.spinner import SPINNER_FRAMES, spinner_frame
+
+        assert len(SPINNER_FRAMES) > 1  # sourced from Rich's "dots" spinner
+        assert spinner_frame(0) == SPINNER_FRAMES[0]
+        assert spinner_frame(len(SPINNER_FRAMES)) == SPINNER_FRAMES[0]  # wraps
+        distinct = {spinner_frame(t) for t in range(len(SPINNER_FRAMES))}
+        assert len(distinct) == len(SPINNER_FRAMES)  # every frame is used
 
     async def test_warm_line_none_when_not_warming(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -7055,3 +7068,56 @@ def test_size_variant_strip_disambiguates_same_quant_families():
         SizeVariant(label="8B Q5_K_M", quant="Q5_K_M", size_gb=5.7, ref="r/q5"),
     ]
     assert str(_build_size_variant_strip(distinct)) == "Q4_K_M · Q5_K_M"
+
+
+async def test_warm_line_survives_an_active_background_task() -> None:
+    """A chat warm holds the user's input disabled, so its line must show even
+    while an unrelated task (a document sync) is running. Hiding it behind the
+    task summary left the user staring at a dead input with no explanation."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.role_ready.return_value = False
+    services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.LOADING_ENGINE, model_ref=None
+    )
+    set_services(services)
+
+    app = _TaskBarApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        warm = bar._warm_line()
+        assert warm is not None
+        # Not idle: a task is active, yet the warm line still wins the summary.
+        _dot, summary = bar._status_line([mock.MagicMock()], [], [], 0, warm, idle=False)
+        assert summary == warm
+
+
+async def test_warm_line_names_the_model_being_loaded() -> None:
+    """The line carries the model's display label, not the raw ref, so a swap says
+    which model the wait is for."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.role_ready.return_value = False
+    services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.LOADING_ENGINE, model_ref=TEST_LOCAL_REF
+    )
+    set_services(services)
+
+    app = _TaskBarApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        warm = app.query_one(TaskBar)._warm_line()
+        assert warm is not None
+        assert "chat ·" not in warm  # not the fallback name
+        assert "warming up " in warm

@@ -50,7 +50,14 @@ def main() -> None:
         app()
         return
 
+    from lilbee.app.services import mark_interactive_session
     from lilbee.runtime.splash import start, stop
+
+    # A person is at the TUI for its whole lifetime, so hold the engine resident
+    # (no idle-unload) until they close lilbee. Recorded here, on the sole
+    # interactive entry point and before anything builds the services container,
+    # so a one-shot CLI or the MCP server never trips it.
+    mark_interactive_session()
 
     handle = start()
 
