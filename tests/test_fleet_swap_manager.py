@@ -69,8 +69,20 @@ def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
 
+class _FakeProbeClient:
+    """Stands in for the shared probe client; probes call .get on it."""
+
+    def __init__(self, responder) -> None:
+        self._responder = responder
+
+    def get(self, url, timeout=None):
+        return self._responder(url)
+
+
 def _patch_http(monkeypatch: pytest.MonkeyPatch, responder) -> None:
-    monkeypatch.setattr(sm.httpx, "get", lambda url, timeout=None: responder(url))
+    # The probes share one lru_cached httpx.Client (avoids rebuilding an SSL
+    # context per poll), so patch the factory rather than httpx.get.
+    monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(responder))
 
 
 def _raise_connect_error(url):
@@ -1076,8 +1088,9 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
         monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.httpx.get",
-            lambda url, timeout: _fake_response(status=200),
+            sm,
+            "_probe_client",
+            lambda: _FakeProbeClient(lambda _url: _fake_response(status=200)),
         )
         assert mgr.is_live() is True
 
@@ -1101,10 +1114,10 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
 
-        def boom(url: str, timeout: float) -> object:
+        def boom(_url: str) -> object:
             raise OSError("connection refused")
 
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.get", boom)
+        monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(boom))
         assert mgr.is_live() is False
 
     def test_false_and_no_raise_when_proc_alive_but_port_not_yet_set(self, tmp_path: Path) -> None:
@@ -1574,3 +1587,14 @@ def test_stale_config_tmp_of_a_dead_writer_is_swept(tmp_path: Path) -> None:
     sm._clean_stale_tmp_files(tmp_path)
     assert not dead.exists()
     assert live.exists()  # a live writer's file in flight is never touched
+
+
+def test_probe_client_is_shared_across_calls() -> None:
+    """The engine probes reuse one client: httpx.get would build a fresh Client --
+    and a fresh SSL context, loading the system CA bundle -- on every poll, which
+    the task bar runs at up to 10 Hz."""
+    sm._probe_client.cache_clear()
+    try:
+        assert sm._probe_client() is sm._probe_client()
+    finally:
+        sm._probe_client.cache_clear()
