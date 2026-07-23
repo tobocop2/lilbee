@@ -17,11 +17,7 @@ from lilbee.data.ingest import offload
 
 @pytest.fixture(autouse=True)
 def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin every input ``_max_workers`` reads, not just the env override.
-
-    It also floors the result at ``ingest_max_inflight``, so a value left on the
-    config singleton by an earlier test makes these assertions order-dependent.
-    """
+    """Pin both inputs ``_max_workers`` reads: the env override and the inflight floor."""
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
 
