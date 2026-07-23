@@ -69,3 +69,17 @@ def test_the_ceiling_matches_the_pool_that_actually_exists(
     finally:
         pool.shutdown(wait=False)
         offload._ingest_executor.cache_clear()
+
+
+def test_embed_inflight_target_is_zero_when_the_fleet_cannot_be_probed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fleet may not be resolvable yet (probe raises); admission sizing must
+    # fall back to the CPU-bound quota rather than crash the ingest run.
+    import lilbee.providers.fleet.replicas as replicas_mod
+
+    def _raise(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("fleet not resolvable yet")
+
+    monkeypatch.setattr(replicas_mod, "resolve_replica_count", _raise)
+    assert offload.embed_inflight_target() == 0

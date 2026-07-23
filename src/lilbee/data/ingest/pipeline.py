@@ -329,6 +329,46 @@ def _plan_workers() -> int:
     return configured if configured > 0 else available_cpu_count()
 
 
+# How often the plan pass logs progress. The pass can run for tens of minutes on
+# a multi-million-file corpus while the Rich bar renders nothing without a TTY
+# and stdout is block-buffered when piped; a periodic line (which logging flushes
+# per record) keeps a headless run observable instead of looking hung.
+_PLAN_LOG_INTERVAL_S = 10.0
+
+
+class _PlanProgress:
+    """Periodic progress for the plan/hash pass, with rate and ETA.
+
+    Emitted at warning level, not info: the default LILBEE_LOG_LEVEL is WARNING,
+    so an info line would be filtered before any handler and a headless
+    ``lilbee sync`` would show nothing during the plan pass and still look hung.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+        self._done = 0
+        self._started = time.monotonic()
+        self._last = self._started
+
+    def tick(self) -> None:
+        self._done += 1
+        now = time.monotonic()
+        if now - self._last < _PLAN_LOG_INTERVAL_S:
+            return
+        self._last = now
+        elapsed = now - self._started
+        rate = self._done / elapsed if elapsed > 0 else 0.0
+        remaining = (self._total - self._done) / rate if rate > 0 else 0.0
+        log.warning(
+            "Planning: examined %d/%d files (%.0f%%, %.0f files/s, ~%.0fs left)",
+            self._done,
+            self._total,
+            100.0 * self._done / self._total,
+            rate,
+            remaining,
+        )
+
+
 def _classify_changes(
     items: list[tuple[str, Path]],
     existing_sources: dict[str, SourceRecord],
@@ -348,12 +388,15 @@ def _classify_changes(
         return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
 
     verdicts: dict[str, _FileChangeVerdict] = {}
+    total = len(items)
+    progress = _PlanProgress(total)
     workers = _plan_workers()
-    if workers <= 1 or len(items) <= 1:
+    if workers <= 1 or total <= 1:
         for name, path in items:
             if cancel and cancel.is_set():
                 break
             verdicts[name] = _classify(name, path)
+            progress.tick()
         return verdicts
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lilbee-plan") as pool:
         futures: dict[Future[_FileChangeVerdict], str] = {}
@@ -368,6 +411,7 @@ def _classify_changes(
                     pending.cancel()
                 break
             verdicts[futures[future]] = future.result()
+            progress.tick()
     return verdicts
 
 
@@ -786,7 +830,9 @@ def _build_admission(
         permit_max=permit_max,
     )
     task = asyncio.ensure_future(controller.run())
-    log.info(
+    # warning, not info: the default LILBEE_LOG_LEVEL is WARNING, so the
+    # auto-chosen concurrency would otherwise never surface on a headless sync.
+    log.warning(
         "Adaptive ingest concurrency (%s): start %d, max %d", profile.name, gate.limit, permit_max
     )
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task

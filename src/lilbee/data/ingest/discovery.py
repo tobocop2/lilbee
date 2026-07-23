@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from functools import cache
 from pathlib import Path
 
@@ -42,6 +43,48 @@ def supported_extension_map() -> dict[str, str]:
         ext = (fmt.extension if fmt.extension.startswith(".") else f".{fmt.extension}").lower()
         out[ext] = _content_type_for(ext, fmt.mime_type)
     return out
+
+
+# How often the discovery walk logs progress. The walk runs before the file count
+# is known (it is what produces the count), so it cannot show an ETA; it just
+# proves the run is alive. A large or NFS-backed tree can take minutes to walk,
+# during which the plan pass has not started and nothing else logs.
+_SCAN_LOG_INTERVAL_S = 10.0
+
+
+class _ScanProgress:
+    """Periodic progress for the pre-plan discovery walk.
+
+    Emitted at warning level, not info: the default LILBEE_LOG_LEVEL is WARNING,
+    so an info line would be filtered before any handler and a headless
+    ``lilbee sync`` would show nothing while the tree is walked. Interval-gated,
+    so a fast walk (the common case) stays silent -- the first line appears only
+    once the walk has run longer than the interval.
+    """
+
+    def __init__(self) -> None:
+        self._examined = 0
+        self._matched = 0
+        self._started = time.monotonic()
+        self._last = self._started
+
+    def tick(self, *, matched: bool) -> None:
+        self._examined += 1
+        if matched:
+            self._matched += 1
+        now = time.monotonic()
+        if now - self._last < _SCAN_LOG_INTERVAL_S:
+            return
+        self._last = now
+        elapsed = now - self._started
+        rate = self._examined / elapsed if elapsed > 0 else 0.0
+        log.warning(
+            "Scanning for files: examined %d, matched %d (%.0f files/s, %.0fs elapsed)",
+            self._examined,
+            self._matched,
+            rate,
+            elapsed,
+        )
 
 
 def file_hash(path: Path) -> str:
@@ -116,6 +159,7 @@ def _walk_root(
     base: Path,
     label: str | None,
     ignore_dirs: frozenset[str],
+    progress: _ScanProgress,
 ) -> None:
     """Record supported files under *base*, keyed relative to it (prefixed by *label*).
 
@@ -129,7 +173,11 @@ def _walk_root(
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if classify_file(path) is None:
+            content_type = classify_file(path)
+            # tick per file visited, not per match: a skip-heavy tree still walks
+            # slowly and must still show a heartbeat.
+            progress.tick(matched=content_type is not None)
+            if content_type is None:
                 continue
             rel = path.relative_to(base).as_posix()
             files[f"{label}/{rel}" if label else rel] = path
@@ -147,12 +195,13 @@ def discover_files() -> dict[str, Path]:
     """
     config = active_config()
     files: dict[str, Path] = {}
+    progress = _ScanProgress()
     if config.documents_dir.exists():
-        _walk_root(files, config.documents_dir, None, config.ignore_dirs)
+        _walk_root(files, config.documents_dir, None, config.ignore_dirs, progress)
     for label, root in config.linked_roots.items():
         root_path = Path(root)
         if root_path.is_dir():
-            _walk_root(files, root_path, label, config.ignore_dirs)
+            _walk_root(files, root_path, label, config.ignore_dirs, progress)
         elif root_path.is_file() and classify_file(root_path) is not None:
             files[label] = root_path
     return files

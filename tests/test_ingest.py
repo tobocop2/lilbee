@@ -1268,6 +1268,77 @@ class TestZeroChunkPageTextPersistence:
         assert flush_spy.call_count >= 2
 
 
+class TestPlanProgress:
+    def test_logs_periodic_progress_at_warning(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+
+        # Log on every tick so a fast unit test still exercises the periodic path.
+        monkeypatch.setattr(pipeline, "_PLAN_LOG_INTERVAL_S", 0.0)
+        progress = pipeline._PlanProgress(total=3)
+        # Capture at WARNING, the default LILBEE_LOG_LEVEL: an info line is
+        # filtered here exactly as it is under a real headless `lilbee sync`, so
+        # this fails if the progress ever drops back below warning and goes
+        # silent in the very case it exists to make observable.
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            progress.tick()
+            progress.tick()
+            progress.tick()
+        records = [r for r in caplog.records if "Planning: examined" in r.getMessage()]
+        assert records
+        assert all(r.levelno >= logging.WARNING for r in records)
+        assert any("3/3" in r.getMessage() for r in records)
+
+    def test_silent_below_the_interval(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+
+        # A short sync (ticks faster than the interval) stays quiet -- no noise.
+        monkeypatch.setattr(pipeline, "_PLAN_LOG_INTERVAL_S", 3600.0)
+        progress = pipeline._PlanProgress(total=100)
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            for _ in range(50):
+                progress.tick()
+        assert not any("Planning:" in r.getMessage() for r in caplog.records)
+
+
+class TestScanProgress:
+    def test_logs_periodic_scan_progress_at_warning(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import discovery
+
+        # Log on every tick so a fast unit test still exercises the periodic path.
+        monkeypatch.setattr(discovery, "_SCAN_LOG_INTERVAL_S", 0.0)
+        progress = discovery._ScanProgress()
+        # WARNING, the default level: the discovery walk runs before the plan
+        # pass and is otherwise silent, so its heartbeat must survive the default
+        # or a headless sync over a large tree looks hung during the walk.
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.discovery"):
+            progress.tick(matched=True)
+            progress.tick(matched=False)
+        records = [r for r in caplog.records if "Scanning for files" in r.getMessage()]
+        assert records
+        assert all(r.levelno >= logging.WARNING for r in records)
+        # examined counts every visited file; matched only the supported ones.
+        assert any("examined 2, matched 1" in r.getMessage() for r in records)
+
+    def test_silent_below_the_interval(self, caplog, monkeypatch):
+        import logging
+
+        from lilbee.data.ingest import discovery
+
+        # A quick walk (ticks faster than the interval) stays quiet -- no noise.
+        monkeypatch.setattr(discovery, "_SCAN_LOG_INTERVAL_S", 3600.0)
+        progress = discovery._ScanProgress()
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.discovery"):
+            for _ in range(50):
+                progress.tick(matched=True)
+        assert not any("Scanning for files" in r.getMessage() for r in caplog.records)
+
+
 class TestDetectPending:
     """Cheap detection: filesystem walk + hash compare against the sources table."""
 

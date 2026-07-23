@@ -1998,6 +1998,12 @@ class _FakeReplica:
     def mark_healthy(self) -> None:
         self.healthy = True
 
+    def reserve(self) -> None:
+        self.in_flight += 1
+
+    def release(self) -> None:
+        self.in_flight -= 1
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         if self.fail is not None:
@@ -2017,6 +2023,52 @@ class _FakeReplica:
         if self.fail is not None:
             raise self.fail
         return "ocr text"
+
+
+class TestReserveSpreadsLoad:
+    def test_reserve_at_selection_spreads_concurrent_picks(self) -> None:
+        # Every picker reserves before the next selects, so four idle replicas
+        # each get exactly one request instead of all landing on the first
+        # (the thundering herd that left cards idle on the 8x A100 fleet).
+        replicas = [_FakeReplica() for _ in range(4)]
+        picked = [prov_mod._reserve_least_in_flight(replicas) for _ in range(4)]
+        assert {id(c) for c in picked} == {id(c) for c in replicas}
+        assert all(r.in_flight == 1 for r in replicas)
+
+    def test_call_with_failover_releases_the_reservation(self) -> None:
+        replicas = [_FakeReplica(), _FakeReplica()]
+        prov_mod._call_with_failover(replicas, lambda c: c.embed(["x"]))
+        assert all(r.in_flight == 0 for r in replicas)  # reservation released
+
+    def test_failover_releases_both_reservations(self) -> None:
+        import httpx
+
+        bad = _FakeReplica(fail=httpx.ConnectError("refused"))
+        good = _FakeReplica()
+        prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
+        assert bad.in_flight == 0 and good.in_flight == 0  # both released
+        assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
+
+    def test_concurrent_dispatch_does_not_pile_on_one_replica(self) -> None:
+        import threading
+
+        replicas = [_FakeReplica() for _ in range(4)]
+        # Each request holds its reservation at the barrier until all 8 have been
+        # reserved, so every reservation is live while the others are selecting.
+        # With the atomic reserve the 8 requests spread evenly (2 per replica);
+        # without it the herd piled onto whichever replica read idlest first.
+        overlap = threading.Barrier(8)
+
+        def _dispatch() -> None:
+            prov_mod._call_with_failover(replicas, lambda c: (overlap.wait(), c.embed(["x"]))[1])
+
+        threads = [threading.Thread(target=_dispatch) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(r.calls == 2 for r in replicas)  # perfectly spread, no herd
+        assert all(r.in_flight == 0 for r in replicas)  # all released
 
 
 class TestReplicaHealthRouting:
