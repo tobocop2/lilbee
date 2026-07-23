@@ -65,6 +65,15 @@ def test_judged_at_k_averages_over_the_qrels_topics_including_unanswered_ones():
     assert judged_at_k(qrels, run, k=10) == pytest.approx(0.5)
 
 
+def test_judged_at_k_cuts_ties_the_same_way_the_scorer_ranks():
+    # Three documents tied on score, depth 1. The harness' tie rule is doc_id
+    # descending, so "d3" is the document at rank 1; an ascending tie-break here
+    # would report coverage over a document the scorer never put at that rank.
+    qrels = {"q1": {"d3": 1}}
+    run = {"q1": {"d1": 1.0, "d2": 1.0, "d3": 1.0}}
+    assert judged_at_k(qrels, run, k=1) == pytest.approx(1.0)
+
+
 def test_judged_at_k_is_zero_when_the_run_and_qrels_name_documents_differently():
     # The document-id namespace mismatch signature: every metric scores zero and
     # looks like a terrible system, while coverage shows the labels and the run

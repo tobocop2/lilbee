@@ -217,11 +217,11 @@ Claims above are cheap. This section is what can be checked.
 
 ### The test suite runs, and now gates
 
-**229 tests, all passing**, run under the harness's own environment:
+**230 tests, all passing**, run under the harness's own environment:
 
 ```bash
 PYTHONPATH=. uv run --project evals pytest tests/evals --confcutdir=tests/evals
-# 229 passed
+# 230 passed
 ```
 
 Distribution across the measurement-critical modules (the two that used to have
@@ -240,7 +240,7 @@ covered):
 | datasets | 11 | checkpoint identity | 6 |
 | experiment (PyTerrier) | 10 | report (benchmark) | 6 |
 | store scan | 9 | answers | 6 |
-| metrics | 7 | collectors | 5 |
+| metrics | 11 | collectors | 5 |
 | | | checkpoint | 5 |
 | | | retrieval CLI | 4 |
 

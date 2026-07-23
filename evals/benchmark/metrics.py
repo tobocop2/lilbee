@@ -61,12 +61,20 @@ def judged_at_k(qrels: Qrels, run: Run, k: int = JUDGED_DEPTH) -> float:
 
     Averaged over the qrels topic set, matching how every other figure here is
     averaged, so a topic the run returned nothing for contributes zero coverage.
+
+    The top k is selected through ``rank_documents`` rather than a local sort, so
+    the documents this reports coverage over are the same ones the scorer ranks.
+    A second copy of that sort would be a second chance to pick the other tie
+    rule, and the two would disagree only on ties, which is where it is hardest
+    to notice.
     """
+    from evals.benchmark.runfile import rank_documents
+
     if not qrels:
         return 0.0
     total = 0.0
     for query_id, judged in qrels.items():
-        ranked = sorted(run.get(query_id, {}).items(), key=lambda hit: (-hit[1], hit[0]))[:k]
+        ranked = rank_documents(run.get(query_id, {}))[:k]
         if ranked:
             total += sum(1 for doc_id, _ in ranked if doc_id in judged) / len(ranked)
     return round(total / len(qrels), 4)
