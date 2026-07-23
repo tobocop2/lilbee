@@ -1594,7 +1594,10 @@ def test_probe_client_is_shared_across_calls() -> None:
     and a fresh SSL context, loading the system CA bundle -- on every poll, which
     the task bar runs at up to 10 Hz."""
     sm._probe_client.cache_clear()
+    client = sm._probe_client()
     try:
-        assert sm._probe_client() is sm._probe_client()
+        assert sm._probe_client() is client
     finally:
+        # Close before dropping the cache entry so the pool is not leaked.
+        client.close()
         sm._probe_client.cache_clear()
