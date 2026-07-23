@@ -143,6 +143,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
     ),
+    "mcp_tool_threads": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.LOCAL_SERVERS,
+        help_text=(
+            "Threads for synchronous MCP tool handlers; the ceiling on how many agents"
+            " one daemon serves before retrieval calls queue"
+        ),
+    ),
+    "crawl_convert_workers": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Crawled pages converted to markdown on worker threads at once, so a crawl"
+            " does not block request handling; 0 converts on the event loop"
+        ),
+    ),
     "auto_sync": SettingDef(
         bool,
         nullable=False,
@@ -276,6 +294,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Layers to offload to GPU. Empty = all (recommended), 0 = CPU only, "
             "positive int = partial offload for tight VRAM."
+        ),
+    ),
+    "cpu_moe": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Keep a mixture-of-experts model's expert weights in system memory so "
+            "it fits a smaller GPU. No effect on dense models."
+        ),
+    ),
+    "n_cpu_moe": SettingDef(
+        int,
+        nullable=True,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Offload only the first N layers' experts to system memory. Takes "
+            "precedence over the offload-everything setting; smaller N stays faster."
         ),
     ),
     "gpu_devices": SettingDef(
@@ -801,13 +837,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Keep the engine running after quit so the next launch starts warm",
+        help_text=(
+            "Let the engine outlive lilbee for warm launches; off stops it on last "
+            "exit unless another lilbee sharing the engine asked to keep it"
+        ),
     ),
     "engine_idle_ttl_minutes": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Idle minutes before a warm engine unloads its weights; 0 keeps them loaded",
+        help_text="Idle minutes before the engine unloads its weights; 0 keeps them loaded",
     ),
     "agent_mcp_enabled": SettingDef(
         bool,

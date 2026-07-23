@@ -21,6 +21,7 @@ from lilbee.providers.base import (
     THINK_OPEN_TAG,
     ChatResult,
     ChatToolResult,
+    ClosableIterator,
     FinishReason,
     ProviderError,
     ProviderErrorKind,
@@ -694,7 +695,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
-    ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+    ) -> ClosableIterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Stream text tokens and tool-call deltas from the server's OpenAI SSE.
 
         Each SSE chunk's ``choices[0].delta`` carries a ``content`` token and/or
@@ -1370,7 +1371,7 @@ def _tool_call_delta_from_recovered(call: ToolCall, index: int) -> ToolCallDelta
 
 def _recover_bare_json_stream(
     items: Iterator[str | ToolCallDelta | TokenUsage | StreamFinish],
-) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+) -> ClosableIterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Wrap a raw chat stream to recover a tool call emitted as bare-JSON text.
 
     Some small models print ``{"name": ..., "arguments": {...}}`` as content

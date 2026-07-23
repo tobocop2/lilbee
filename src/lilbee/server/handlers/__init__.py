@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import time
 from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -78,12 +79,15 @@ from lilbee.server.models import (
     GpusResponse,
     HealthResponse,
     PlacementResponse,
+    ShutdownResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
     from lilbee.providers.base import LLMProvider
+
+log = logging.getLogger(__name__)
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
 # bar advances smoothly without busy-spinning.
@@ -126,6 +130,18 @@ async def health() -> HealthResponse:
         chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
     )
+
+
+async def shutdown() -> ShutdownResponse:
+    """Accept an API-requested stop; the route's background task sends SIGTERM.
+
+    Litestar runs that task only after the response has been handed to the
+    transport, so the signal cannot beat the 202 out and no wall-clock delay
+    has to be guessed. Routing through SIGTERM keeps the fleet teardown and
+    shutdown logging identical however the stop arrives.
+    """
+    log.info("Shutdown requested via the API")
+    return ShutdownResponse(status="shutting_down")
 
 
 async def warm_stream() -> AsyncGenerator[str, None]:

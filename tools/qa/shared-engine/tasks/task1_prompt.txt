@@ -1,0 +1,4 @@
+Create a file named slugify_impl.py in the current directory implementing a
+slugify(text: str) -> str function so that `python -m pytest task1_slugify_test.py`
+passes. Lowercase, replace whitespace/punctuation with single hyphens, no leading
+or trailing hyphens. Run the test to verify, then stop.

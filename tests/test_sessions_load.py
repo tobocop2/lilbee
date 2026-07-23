@@ -41,8 +41,17 @@ SEED = 20260715
 
 
 @pytest.fixture
-def store(tmp_path) -> SessionStore:
+def store(tmp_path, monkeypatch) -> SessionStore:
     cfg.data_dir = tmp_path / "data"
+    # Neutralize os.fsync for this suite only. It writes thousands of events in a
+    # tight loop, and on Windows os.fsync is a real FlushFileBuffers barrier
+    # (~4ms each vs ~0.05ms on macOS), so the per-event disk barrier -- not the
+    # code under test -- is what wedged these tests in Windows CI. None of the
+    # invariants below depend on fsync: they hold on O_APPEND + one write per
+    # event + flush + the FileLock. Production is untouched (real usage appends
+    # one event per user turn, seconds apart, where the barrier is cheap and
+    # buys genuine crash durability); monkeypatch reverts after each test.
+    monkeypatch.setattr("lilbee.sessions.store.os.fsync", lambda _fd: None)
     return SessionStore()
 
 

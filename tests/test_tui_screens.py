@@ -10237,7 +10237,13 @@ async def test_catalog_grid_leave_down_focuses_next():
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
-            await pilot.pause()
+            # focus() lands over one or more refresh hops, not synchronously; a
+            # bare pause here lets LeaveDown post before grids[0] is actually the
+            # focused widget, so focus_next moves from the wrong anchor and can
+            # land back on grids[0]. Wait for the anchor to settle first, and
+            # assert it landed: without focus on grids[0] the post-condition
+            # ("focus moved off grids[0]") would pass for the wrong reason.
+            assert await pump_until(pilot, lambda: screen.focused is grids[0])
             grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
             await pump_until(pilot, lambda: screen.focused is not grids[0])
             assert screen.focused is not grids[0]
@@ -10270,9 +10276,15 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             grids = list(screen.query("#grid-chat ModelGrid"))
             last = grids[-1]
             last.focus()
-            await pilot.pause()
+            # Wait for focus to actually land before exercising LeaveDown: a bare
+            # pause can post the event while focus is still in flight, so the
+            # "focus stays put" assertion would pass for the wrong reason.
+            await pump_until(pilot, lambda: screen.focused is last)
             last.post_message(ModelGrid.LeaveDown(last))
-            await pilot.pause()
+            # Drain several hops so a mistaken focus_next would have moved focus
+            # off `last` by now; the guarantee is that it does not.
+            for _ in range(5):
+                await pilot.pause()
             assert screen.focused is last
 
 
@@ -10325,9 +10337,14 @@ async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
             if not grids:
                 pytest.skip("test requires at least one grid mounted in chat tab")
             grids[0].focus()
-            await pilot.pause()
+            # Settle focus onto grids[0] before exercising LeaveUp so the "stays
+            # put" assertion can't pass simply because focus was still in flight.
+            await pump_until(pilot, lambda: screen.focused is grids[0])
             grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
-            await pilot.pause()
+            # Drain several hops so a mistaken focus_previous would have leaked
+            # focus upward by now; the guarantee is that it does not.
+            for _ in range(5):
+                await pilot.pause()
             assert screen.focused is grids[0]
 
 

@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -34,6 +35,9 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
+# Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
+pytest_plugins = ["tests._hang_watchdog"]
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
@@ -45,11 +49,9 @@ def _patch_executor_daemon_threads() -> None:
     non-daemon and block xdist worker process exit. On 3.12+ interpreter
     shutdown handles this correctly.
 
-    LanceDB spawns a non-daemon ``LanceDBBackgroundEventLoop`` tokio thread
-    with no close() API. On ubuntu 3.11 these accumulate across tests in
-    test_store.py and the process wedges shortly after. On 3.12+ interpreter
-    shutdown handles it. Daemonify both at Thread.__init__ so start() runs
-    them as daemons.
+    LanceDB's ``LanceDBBackgroundEventLoop`` thread used to need daemonizing
+    here too, but the pinned lancedb already creates it ``daemon=True``, so only
+    the executor workers remain.
     """
     if sys.version_info >= (3, 12):
         return
@@ -59,7 +61,7 @@ def _patch_executor_daemon_threads() -> None:
 
     def _init_with_daemon(self: threading.Thread, *args: object, **kwargs: object) -> None:
         _real_init(self, *args, **kwargs)  # type: ignore[misc]
-        if getattr(self, "_target", None) is _tmod._worker or "LanceDB" in self.name:
+        if getattr(self, "_target", None) is _tmod._worker:
             self.daemon = True
 
     threading.Thread.__init__ = _init_with_daemon  # type: ignore[assignment]
@@ -67,6 +69,32 @@ def _patch_executor_daemon_threads() -> None:
 
 # Apply at import time so xdist workers get the patch immediately.
 _patch_executor_daemon_threads()
+
+
+def _use_selector_loop_on_windows() -> None:
+    """Run the Windows test process on the selector loop, not the proactor one.
+
+    The proactor loop's transport teardown leaks resources across the many
+    Textual ``run_test`` app cycles this suite drives; they pile up on the
+    xdist worker until it wedges holding the GIL, and the job hangs to
+    timeout-minutes (Windows py3.12/3.13; 3.11 is worse and runs serially).
+    The selector loop that Linux and macOS already use does not accumulate.
+
+    Safe here because the proactor loop's one hard advantage, asyncio
+    subprocess support, is never exercised by the tests: the sole caller
+    (``crawler.bootstrap``) is monkeypatched to a fake in every test that
+    reaches it. Production Windows keeps the proactor loop for real crawler
+    subprocesses; this touches the test process only. Set at import, before
+    any loop is created, so every xdist worker inherits it.
+    """
+    if sys.platform != "win32":
+        return
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_use_selector_loop_on_windows()
 
 
 # Silence stray lancedb thread shutdown errors globally so they can't wedge
@@ -278,19 +306,37 @@ def _no_leaked_task_workers():
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Safety net: join non-daemon threads that outlive the test.
+    """Join non-daemon threads that outlive the test, warning on any that survive.
 
     Daemon threads (executor workers, litestar QueueListeners) are safe to
     ignore since they won't block process exit. Only non-daemon threads need
     explicit joining to prevent xdist hangs.
+
+    A non-daemon thread still alive after the join is the precondition for the
+    Windows xdist wedge: it survives loop teardown and keeps posting to the
+    closing loop's self-pipe. Warn (naming the test and the threads) rather than
+    fail: several suites -- ingest workers, litellm's executor -- legitimately
+    leave such threads, so a hard failure would just be noise. The warning makes
+    the leakers greppable in CI so a real wedge can be traced to its owner.
     """
     before = set(threading.enumerate())
     yield
+    leaked: list[str] = []
     for thread in threading.enumerate():
         if thread in before or thread is threading.current_thread():
             continue
         if thread.is_alive() and not thread.daemon:
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                leaked.append(thread.name)
+    if leaked:
+        # warnings.warn (not print/stderr, which pytest's capture swallows on a
+        # passing test) so pytest aggregates it into the end-of-run warnings
+        # summary and the leaking thread names stay greppable in CI.
+        warnings.warn(
+            f"_drain_textual_threads: non-daemon thread(s) still alive after a 2s join: {leaked}",
+            stacklevel=2,
+        )
 
 
 @pytest.fixture(autouse=True)

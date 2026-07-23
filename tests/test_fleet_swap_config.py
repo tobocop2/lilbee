@@ -212,14 +212,15 @@ class TestHealthCheckTimeoutScaling:
 
 
 class TestWarmTtlSeconds:
-    def test_warm_keeps_weights_resident_regardless_of_ttl(self, monkeypatch) -> None:
-        # keep_engine_warm means resident: ttl 0, so llama-swap never idle-unloads.
+    def test_warm_engine_still_idle_unloads(self, monkeypatch) -> None:
+        # keep_engine_warm decides whether the engine outlives lilbee, never
+        # whether weights stay resident: the idle ttl applies in every mode.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 0
+        assert _warm_ttl_seconds() == 900
 
     def test_on_demand_unloads_after_idle_ttl(self, monkeypatch) -> None:
         # Warm off: the fleet releases its weights after the idle window.
