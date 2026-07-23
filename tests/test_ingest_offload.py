@@ -13,13 +13,20 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import offload
+from lilbee.providers.fleet import replicas
 
 
 @pytest.fixture(autouse=True)
 def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear the ambient ``LILBEE_INGEST_MAX_WORKERS`` and inflight floor before each test."""
+    """Drop the env override, zero the inflight floor, stub the fleet probe to one replica.
+
+    ``_max_workers`` floors its CPU-derived result at ``ingest_max_inflight``, or at the
+    probed embed-replica count when that is zero, so leaving either ambient makes these
+    assertions depend on what ran earlier.
+    """
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
+    monkeypatch.setattr(replicas, "resolve_replica_count", lambda *_a, **_k: 1)
 
 
 def test_default_caps_at_32_on_a_big_box(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,10 +64,14 @@ def test_embed_inflight_target_is_zero_when_the_fleet_cannot_be_probed(
 ) -> None:
     # The fleet may not be resolvable yet (probe raises); admission sizing must
     # fall back to the CPU-bound quota rather than crash the ingest run.
-    import lilbee.providers.fleet.replicas as replicas_mod
+    probed = False
 
     def _raise(*_args: object, **_kwargs: object) -> int:
+        nonlocal probed
+        probed = True
         raise RuntimeError("fleet not resolvable yet")
 
-    monkeypatch.setattr(replicas_mod, "resolve_replica_count", _raise)
+    monkeypatch.setattr(replicas, "resolve_replica_count", _raise)
     assert offload.embed_inflight_target() == 0
+    # A single-replica stub also returns 0, so pin that the raising probe ran.
+    assert probed
