@@ -301,7 +301,7 @@ async def add(
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
     Paths must be absolute; URLs are crawled as markdown."""
-    from lilbee.app.ingest import copy_files
+    from lilbee.app.ingest import register_sources
     from lilbee.data.ingest import sync as run_sync
 
     errors: list[str] = []
@@ -337,8 +337,11 @@ async def add(
             crawled_paths = await crawl_and_save(url, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
-    # Copying files is blocking disk I/O; keep it off the event loop.
-    copy_result = await anyio.to_thread.run_sync(functools.partial(copy_files, valid, force=force))
+    # Registration touches config.toml (a locked read-modify-write); keep the
+    # blocking disk I/O off the event loop.
+    reg_result = await anyio.to_thread.run_sync(
+        functools.partial(register_sources, valid, force=force)
+    )
 
     from lilbee.app.ingest import temporary_ocr_config
 
@@ -347,8 +350,8 @@ async def add(
 
     result: dict[str, Any] = {
         "command": "add",
-        "copied": copy_result.copied,
-        "skipped": copy_result.skipped,
+        "copied": reg_result.registered,
+        "skipped": reg_result.skipped,
         "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,
@@ -451,11 +454,14 @@ def init(path: str = "") -> dict[str, Any]:
 
 
 @_tool
-def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
-    """Remove documents by source name; ``delete_files=true`` also deletes the file on disk."""
-    result = get_services().store.remove_documents(
-        names, delete_files=delete_files, documents_dir=cfg.documents_dir
-    )
+def remove(names: list[str]) -> dict[str, Any]:
+    """Remove documents from the index by source name, folder, or glob pattern.
+
+    Source files are never deleted. A folder name removes every document indexed
+    beneath it; a glob (``*``/``?``/``[]``) removes every matching source."""
+    from lilbee.app.ingest import remove_documents_durably
+
+    result = remove_documents_durably(names)
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 

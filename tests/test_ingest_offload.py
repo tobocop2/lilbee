@@ -47,3 +47,17 @@ def test_invalid_env_override_is_ignored(monkeypatch: pytest.MonkeyPatch, bad: s
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
     monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", bad)
     assert offload._max_workers() == 12
+
+
+def test_embed_inflight_target_is_zero_when_the_fleet_cannot_be_probed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fleet may not be resolvable yet (probe raises); admission sizing must
+    # fall back to the CPU-bound quota rather than crash the ingest run.
+    import lilbee.providers.fleet.replicas as replicas_mod
+
+    def _raise(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("fleet not resolvable yet")
+
+    monkeypatch.setattr(replicas_mod, "resolve_replica_count", _raise)
+    assert offload.embed_inflight_target() == 0

@@ -29,7 +29,6 @@ class RemoveRequest(BaseModel):
     """Request body for /api/documents/remove."""
 
     names: list[str] = Field(max_length=100)
-    delete_files: bool = False
 
 
 @post("/api/sync")
@@ -107,7 +106,7 @@ async def documents_list_route(
 @post("/api/documents/remove")
 async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
-    return await handlers.delete_documents(data.names, delete_files=data.delete_files)
+    return await handlers.delete_documents(data.names)
 
 
 @get("/api/export")

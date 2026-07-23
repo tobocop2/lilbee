@@ -44,6 +44,7 @@ from lilbee.providers.fleet.client import (
 )
 from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
@@ -173,6 +174,25 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     return min(healthy or clients, key=lambda c: c.in_flight)
 
 
+# Serializes pick-and-reserve so concurrent routers see each other's assignment.
+# Held only for the O(replicas) selection, never across the request itself.
+_ROUTE_LOCK = threading.Lock()
+
+
+def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
+    """Atomically pick the least-loaded healthy client and reserve a slot on it.
+
+    Selection and reservation are one critical section: without it, concurrent
+    callers all read the same idlest replica before any of them increments its
+    counter and route there together (a thundering herd that starves the rest of
+    the fleet). The caller must :meth:`~LlamaServerClient.release` the slot.
+    """
+    with _ROUTE_LOCK:
+        client = _least_in_flight(clients)
+        client.reserve()
+        return client
+
+
 def _healthy_groups_ours(
     states: dict[SwapGroup, SwapState], pin: str, wanted: set[tuple[WorkerRole, str]]
 ) -> bool:
@@ -273,10 +293,12 @@ def _call_with_failover(
 ) -> _T:
     """Run *call* on the least-busy healthy client, retrying once on another replica.
 
-    A connection-level failure marks the client unhealthy and retries once on a
-    different replica; with no other replica the failure surfaces.
+    The client is reserved at selection so concurrent ingest threads spread
+    across replicas. A connection-level failure marks the client unhealthy and
+    retries once on a different replica; with no other replica the failure
+    surfaces. The reservation is released once the call resolves.
     """
-    client = _least_in_flight(clients)
+    client = _reserve_least_in_flight(clients)
     try:
         result = call(client)
     except Exception as exc:
@@ -284,8 +306,11 @@ def _call_with_failover(
             raise
         client.mark_unhealthy()
         return _retry_on_other_replica(clients, client, call, exc)
-    client.mark_healthy()
-    return result
+    else:
+        client.mark_healthy()
+        return result
+    finally:
+        client.release()
 
 
 def _retry_on_other_replica(
@@ -298,15 +323,18 @@ def _retry_on_other_replica(
     others = [c for c in clients if c is not failed]
     if not others:
         raise _no_healthy_replica_error() from cause
-    retry = _least_in_flight(others)
+    retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
     except Exception as retry_exc:
         if is_connection_failure(retry_exc):
             retry.mark_unhealthy()
         raise
-    retry.mark_healthy()
-    return retry_result
+    else:
+        retry.mark_healthy()
+        return retry_result
+    finally:
+        retry.release()
 
 
 def _no_healthy_replica_error() -> ProviderError:
@@ -731,11 +759,16 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
 def _warm_ttl_seconds() -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
-    Always ``engine_idle_ttl_minutes``: an idle engine releases its weights and
+    Normally ``engine_idle_ttl_minutes``: an idle engine releases its weights and
     reloads transparently on the next prompt, whether or not it outlives lilbee
-    (``keep_engine_warm``). A ttl of 0 keeps weights resident until the engine
-    is stopped.
+    (``keep_engine_warm`` governs that lifetime, not this timer). A bulk ingest
+    holds the fleet resident for its duration by returning a ttl of 0 (see
+    :func:`lilbee.providers.fleet.ingest_warmth.keep_fleet_warm`), so an unevenly
+    loaded replica cannot idle-unload and reload cold mid-run. A ttl of 0 keeps
+    weights resident until the engine is stopped.
     """
+    if ingest_keep_warm():
+        return 0
     return cfg.engine_idle_ttl_minutes * 60
 
 

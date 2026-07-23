@@ -25,6 +25,7 @@ def app_title(model: str) -> str:
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
 CMD_ADD_SUCCESS = "Added {count} file(s), syncing..."
+CMD_ADD_RELOCATED = "{count} already indexed, location changed: relinked (no re-embed)."
 CMD_ADD_DUPLICATE_TITLE = "File already in knowledge base"
 CMD_ADD_DUPLICATE_MESSAGE = "{name} is already in the knowledge base. Overwrite and re-sync?"
 CMD_ADD_SKIPPED_DUPLICATE = "Kept existing copy of {name}."
