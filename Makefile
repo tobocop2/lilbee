@@ -100,13 +100,10 @@ docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	rm -f openapi.json
 
 docs-site: docs-api  ## Build the full dev portal (coverage + API docs)
-	# Tests gate CI and releases, not the site build; publish whatever coverage was produced.
+	# Tests gate CI and releases, not the site build; the coverage report deploys regardless of the test outcome.
 	-$(MAKE) test-ci
-	@if [ -d htmlcov ]; then \
-		cp -r htmlcov site/coverage; \
-	else \
-		echo "warning: no coverage report; deploying the site without coverage pages"; \
-	fi
+	cp -r htmlcov site/coverage
+	uv run python tools/update_site_coverage.py
 
 docs: docs-site  ## Alias for docs-site
 
