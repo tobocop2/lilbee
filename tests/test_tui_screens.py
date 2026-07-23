@@ -13365,3 +13365,61 @@ async def test_i_returns_to_insert_even_when_the_pill_has_focus():
         await pilot.press("i")
         await pilot.pause()
         assert screen._insert_mode is True
+
+
+async def test_model_swap_locks_input_with_a_reason_until_ready():
+    """While a swap runs the chat input is disabled AND says which model it is
+    waiting on, so a held input is never an unexplained dead box; it returns to
+    the default prompt once the swap finishes."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        inp = screen._chat_input
+
+        screen.swapping_model = True
+        await pilot.pause()
+        assert inp.disabled is True
+        # The placeholder names the target model and explains the wait.
+        assert "unlocks" in inp.placeholder
+        assert msg.CHAT_INPUT_SWITCHING.split("{name}")[0].strip() in inp.placeholder
+
+        screen.swapping_model = False
+        await pilot.pause()
+        assert inp.disabled is False
+        assert inp.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_warms_the_new_model_before_unblocking():
+    """The swap reloads the role, eagerly warms the new model, and only unblocks
+    once it actually serves -- so the input never re-enables in front of a model
+    that has not loaded (which read as 'typing does nothing')."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        calls: list[str] = []
+        services = MagicMock()
+        services.reload_role.side_effect = lambda *a, **k: calls.append("reload")
+
+        def _warm() -> None:
+            calls.append("warm")
+
+        def _wait(**_kw) -> bool:
+            calls.append("wait")
+            return True
+
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", _warm),
+            patch("lilbee.app.placement.wait_chat_ready", _wait),
+            patch("lilbee.app.placement.chat_warm_error", return_value=None),
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        # Warm is requested after the reload and waited out before completing.
+        assert calls == ["reload", "warm", "wait"]
+        assert screen.swapping_model is False
