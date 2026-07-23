@@ -100,13 +100,15 @@ _DISK_MISS = object()
 
 def _disk_cache_file(key: tuple[str, int, int]) -> Path | None:
     """Where *key*'s metadata is cached on disk, or None if no state dir works."""
-    from lilbee.core.system import default_state_dir
+    from lilbee.core.system import default_cache_dir
 
     digest = hashlib.sha256(
         "\0".join(str(part) for part in (_DISK_CACHE_VERSION, *key)).encode()
     ).hexdigest()
     try:
-        return default_state_dir() / _DISK_CACHE_DIRNAME / f"{digest}.json"
+        # A cache dir, not the state dir: losing this costs a re-parse, never a
+        # lost handle on a running engine.
+        return default_cache_dir() / _DISK_CACHE_DIRNAME / f"{digest}.json"
     except OSError:  # pragma: no cover - unwritable/undiscoverable state dir
         return None
 

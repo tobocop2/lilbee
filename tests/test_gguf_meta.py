@@ -60,7 +60,7 @@ class TestMetadataDiskCache:
     def _isolate(self, monkeypatch, tmp_path):
         from lilbee.providers import gguf_meta
 
-        monkeypatch.setattr("lilbee.core.system.default_state_dir", lambda: tmp_path)
+        monkeypatch.setattr("lilbee.core.system.default_cache_dir", lambda: tmp_path)
         gguf_meta._METADATA_CACHE.clear()
         return gguf_meta
 
@@ -165,3 +165,20 @@ class TestMetadataDiskCache:
             entry.write_text('{"other": 1}', encoding="utf-8")
         assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
         assert len(calls) == 2
+
+    def test_no_usable_state_dir_falls_back_to_parsing(self, monkeypatch, tmp_path) -> None:
+        """With nowhere to cache, reads still work -- they just re-parse."""
+        gguf_meta = self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(gguf_meta, "_disk_cache_file", lambda _key: None)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            gguf_meta,
+            "_read_gguf_metadata_uncached",
+            lambda p: (calls.append(str(p)), {"context_length": "4096"})[1],
+        )
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        gguf_meta._METADATA_CACHE.clear()
+        assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
+        assert len(calls) == 2  # nothing persisted, so the second read re-parses
