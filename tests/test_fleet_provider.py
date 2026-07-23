@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
+import struct
 import threading
 import time
 from pathlib import Path
@@ -2742,7 +2744,8 @@ class TestReplicaHealthRouting:
         def _handler(name: str):
             def handler(_request: _httpx.Request) -> _httpx.Response:
                 calls[name] += 1
-                return _httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+                vector = base64.b64encode(struct.pack("<f", 0.25)).decode()
+                return _httpx.Response(200, json={"data": [{"embedding": vector}]})
 
             return handler
 
@@ -3887,8 +3890,15 @@ def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> N
     assert stopped == []
 
 
-def test_ttl_applies_even_with_warm_on(monkeypatch) -> None:
+def test_warm_on_pins_weights_resident(monkeypatch) -> None:
+    # keep_engine_warm means the model stays loaded, so the idle unload is off.
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
+    assert prov_mod._warm_ttl_seconds() == 0
+
+
+def test_ttl_applies_with_warm_off(monkeypatch) -> None:
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
     assert prov_mod._warm_ttl_seconds() == 420
 

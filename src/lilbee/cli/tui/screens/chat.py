@@ -1981,18 +1981,32 @@ class ChatScreen(Screen[None]):
         self._reload_chat_model_worker()
 
     def _apply_input_busy_state(self) -> None:
-        """Disable the chat input while a swap or placement reload is loading.
+        """Disable the chat input while a swap or placement reload is loading, and
+        say why in the placeholder so a person is never left facing a dead input
+        with no explanation.
 
-        Restores focus when the fleet is idle again so the user can type without
-        re-clicking the input that was disabled out from under them. Guarded
-        because the unblock can fire (via ``call_from_thread`` or a bubbled
-        message) after the user navigated away and the input is no longer mounted.
+        Restores focus and the default placeholder when the fleet is idle again so
+        the user can type without re-clicking the input that was disabled out from
+        under them. Guarded because the unblock can fire (via ``call_from_thread``
+        or a bubbled message) after the user navigated away and the input is no
+        longer mounted.
         """
         busy = self.swapping_model or self.reloading_placement
         with contextlib.suppress(NoMatches):
-            self._chat_input.disabled = busy
+            inp = self._chat_input
+            inp.disabled = busy
+            if self.swapping_model:
+                from lilbee.catalog.formatting import display_label_for_ref
+
+                inp.placeholder = msg.CHAT_INPUT_SWITCHING.format(
+                    name=display_label_for_ref(cfg.chat_model)
+                )
+            elif self.reloading_placement:
+                inp.placeholder = msg.CHAT_INPUT_RELOADING
+            else:
+                inp.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
             if not busy and self._insert_mode:
-                self._chat_input.focus()
+                inp.focus()
 
     def watch_swapping_model(self, swapping: bool) -> None:
         self._apply_input_busy_state()
@@ -2006,26 +2020,46 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reload_chat_model_worker(self) -> None:
-        """Reload only the chat role off the event loop, then unblock the input.
+        """Reload the chat role and warm the new model before unblocking the input.
 
         ``reload_role(wait=True)`` re-plans and restarts the fleet for the new chat
-        model while keeping the store and searcher (a chat-model change doesn't
-        touch retrieval), and returns once the fleet proxy is back up; the model
-        itself loads on the next request (the same lazy load every role swap uses).
-        The provider serializes overlapping reloads, so a rapid second swap
-        coalesces onto the latest cfg.
+        model (retrieval is untouched) and returns once the proxy is back up. The
+        model is then warmed here rather than deferred to the user's next prompt:
+        ``request_engine_warm`` drives the load and populates the provider warm
+        tracker, which the task-bar footer renders (spinner, model, phase), and
+        ``wait_chat_ready`` holds the input disabled until the model actually
+        serves -- so the switch never hands back a live input in front of a model
+        that has not loaded. The provider serializes overlapping reloads, so a
+        rapid second swap coalesces onto the latest cfg.
         """
+        from lilbee.app.placement import (
+            chat_warm_error,
+            request_engine_warm,
+            wait_chat_ready,
+        )
+
+        worker = _get_worker()
         try:
             get_services().reload_role(WorkerRole.CHAT, wait=True)
+            request_engine_warm()
+            ready = wait_chat_ready(should_abort=lambda: worker.is_cancelled)
         except Exception as exc:  # any reload failure becomes a toast, never a crash
             call_from_thread(self, self._on_model_swap_failed, str(exc))
             return
-        call_from_thread(self, self._on_model_swapped)
+        if worker.is_cancelled:
+            return
+        error = None if ready else chat_warm_error()
+        if error:
+            call_from_thread(self, self._on_model_swap_failed, error)
+        else:
+            call_from_thread(self, self._on_model_swapped)
 
     def _on_model_swapped(self) -> None:
         """Main-thread completion: unblock the input and confirm the new model."""
+        from lilbee.catalog.formatting import display_label_for_ref
+
         self.swapping_model = False
-        self.app.notify(msg.MODEL_SWAP_DONE.format(name=cfg.chat_model))
+        self.app.notify(msg.MODEL_SWAP_DONE.format(name=display_label_for_ref(cfg.chat_model)))
 
     def _on_model_swap_failed(self, error: str) -> None:
         """Main-thread failure: unblock the input and surface the error."""

@@ -35,15 +35,14 @@ class TestKeepFleetWarm:
         assert not ingest_keep_warm()
         assert _warm_ttl_seconds() == 300
 
-    def test_keep_engine_warm_does_not_change_the_ttl(self):
-        # keep_engine_warm governs whether the engine outlives lilbee
-        # (bind_lifetime), not the idle-unload timer. Only an active ingest forces
-        # ttl 0, so a warm engine that is not ingesting still idle-unloads on the
-        # normal window.
+    def test_keep_engine_warm_pins_weights_resident(self):
+        # keep_engine_warm keeps the model resident (ttl 0), not merely alive
+        # across restarts: a user who opted to keep it warm never waits out a
+        # mid-session reload. Independent of an active ingest.
         cfg.keep_engine_warm = True
         cfg.engine_idle_ttl_minutes = 5
         assert not ingest_keep_warm()
-        assert _warm_ttl_seconds() == 300
+        assert _warm_ttl_seconds() == 0
 
     def test_nested_scopes_restore_correctly(self):
         cfg.keep_engine_warm = False
