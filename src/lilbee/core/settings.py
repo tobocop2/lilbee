@@ -4,10 +4,10 @@ import logging
 import os
 import threading
 import tomllib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import tomli_w
 
@@ -16,6 +16,8 @@ from lilbee.core.config import cfg
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
+
+T = TypeVar("T")
 
 # A server, a CLI invocation, and an MCP process routinely run against the same
 # data root, so the in-process mutex alone lets two of them interleave a
@@ -114,6 +116,23 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
         for key in keys:
             current.pop(key, None)
         save(data_root, current)
+
+
+def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) -> T:
+    """Read-modify-write a single key under the config lock, atomically.
+
+    ``fn`` receives the key's persisted value (or None if absent) read *inside*
+    the lock and returns ``(new_value, result)``; the new value is written and
+    the result is returned. Unlike a read-then-:func:`set_value`, the whole
+    compound update is serialized across threads and processes, so two callers
+    updating a dict-valued key cannot lose each other's change.
+    """
+    with _config_write_lock(data_root):
+        current = load(data_root)
+        new_value, result = fn(current.get(key))
+        current[key] = new_value
+        save(data_root, current)
+    return result
 
 
 def overlay_persisted_settings(root: Path) -> None:

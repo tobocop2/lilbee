@@ -115,6 +115,40 @@ class TestSetValue:
         assert settings.get(tmp_path, "chat_model") == "mistral"
 
 
+class TestMutateValue:
+    def test_reads_persisted_value_inside_the_lock(self, tmp_path):
+        settings.set_value(tmp_path, "linked_roots", {"a": "/x"})
+
+        seen = {}
+
+        def _fn(current):
+            seen["current"] = current
+            return {**(current or {}), "b": "/y"}, "done"
+
+        result = settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert seen["current"] == {"a": "/x"}  # the persisted value, not None
+        assert result == "done"
+        assert settings.load(tmp_path)["linked_roots"] == {"a": "/x", "b": "/y"}
+
+    def test_passes_none_when_key_absent(self, tmp_path):
+        captured = {}
+
+        def _fn(current):
+            captured["current"] = current
+            return {"only": "/z"}, None
+
+        settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert captured["current"] is None
+        assert settings.load(tmp_path)["linked_roots"] == {"only": "/z"}
+
+    def test_preserves_sibling_keys(self, tmp_path):
+        settings.set_value(tmp_path, "chat_model", "keep-me")
+        settings.mutate_value(tmp_path, "linked_roots", lambda cur: ({"a": "/x"}, None))
+        loaded = settings.load(tmp_path)
+        assert loaded["chat_model"] == "keep-me"
+        assert loaded["linked_roots"] == {"a": "/x"}
+
+
 class TestDeleteValue:
     def test_delete_existing_key(self, tmp_path):
         settings.set_value(tmp_path, "temperature", "0.5")

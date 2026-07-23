@@ -5,8 +5,7 @@ from unittest import mock
 import pytest
 from rich.console import Console
 
-from lilbee.app.ingest import copy_files
-from lilbee.cli.helpers import copy_paths
+from lilbee.cli.helpers import register_paths
 from lilbee.core.config import cfg
 
 
@@ -17,8 +16,10 @@ def isolated_env(tmp_path):
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.linked_roots = {}
 
     yield tmp_path
 
@@ -26,90 +27,33 @@ def isolated_env(tmp_path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-class TestCopyFiles:
-    def test_copy_single_file(self, tmp_path):
-        src = tmp_path / "hello.txt"
-        src.write_text("hello")
-
-        result = copy_files([src])
-
-        assert result.copied == ["hello.txt"]
-        assert result.skipped == []
-        assert (cfg.documents_dir / "hello.txt").read_text() == "hello"
-
-    def test_skip_existing_no_force(self, tmp_path):
-        (cfg.documents_dir / "hello.txt").write_text("old")
-        src = tmp_path / "hello.txt"
-        src.write_text("new")
-
-        result = copy_files([src])
-
-        assert result.copied == []
-        assert result.skipped == ["hello.txt"]
-        assert (cfg.documents_dir / "hello.txt").read_text() == "old"
-
-    def test_overwrite_existing_with_force(self, tmp_path):
-        (cfg.documents_dir / "hello.txt").write_text("old")
-        src = tmp_path / "hello.txt"
-        src.write_text("new")
-
-        result = copy_files([src], force=True)
-
-        assert result.copied == ["hello.txt"]
-        assert result.skipped == []
-        assert (cfg.documents_dir / "hello.txt").read_text() == "new"
-
-    def test_copy_directory(self, tmp_path):
-        src_dir = tmp_path / "mydir"
-        src_dir.mkdir()
-        (src_dir / "a.txt").write_text("a")
-        (src_dir / "b.txt").write_text("b")
-
-        result = copy_files([src_dir])
-
-        assert result.copied == ["mydir"]
-        assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
-        assert (cfg.documents_dir / "mydir" / "b.txt").read_text() == "b"
-
-    def test_empty_paths(self):
-        result = copy_files([])
-
-        assert result.copied == []
-        assert result.skipped == []
-
-    def test_creates_documents_dir(self, tmp_path):
-        import shutil
-
-        shutil.rmtree(cfg.documents_dir)
-
-        src = tmp_path / "file.txt"
-        src.write_text("content")
-
-        result = copy_files([src])
-
-        assert result.copied == ["file.txt"]
-        assert cfg.documents_dir.exists()
-
-
-class TestCopyPaths:
-    def test_returns_copied_names(self, tmp_path):
-        src = tmp_path / "doc.txt"
-        src.write_text("content")
+class TestRegisterPaths:
+    def test_returns_registered_labels(self, tmp_path):
+        src = tmp_path / "corpus"
+        src.mkdir()
+        (src / "doc.txt").write_text("content")
         con = Console()
 
-        copied = copy_paths([src], con)
+        registered = register_paths([src], con)
 
-        assert copied == ["doc.txt"]
+        assert registered == ["corpus"]
+        assert cfg.linked_roots == {"corpus": str(src.resolve())}
 
     def test_prints_warning_for_skipped(self, tmp_path):
-        (cfg.documents_dir / "doc.txt").write_text("old")
-        src = tmp_path / "doc.txt"
-        src.write_text("new")
+        # A different corpus already holds the "corpus" label; a second one with
+        # the same basename is skipped without --force and the user is warned.
+        from lilbee.core import settings
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(one)})
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
         con = Console(quiet=True)
 
         with mock.patch.object(con, "print") as mock_print:
-            copied = copy_paths([src], con)
+            registered = register_paths([two], con)
 
-        assert copied == []
+        assert registered == []
         mock_print.assert_called_once()
         assert "already exists" in str(mock_print.call_args)

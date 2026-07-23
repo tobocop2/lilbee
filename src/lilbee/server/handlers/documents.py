@@ -6,8 +6,6 @@ import asyncio
 import mimetypes
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
-from lilbee.core.security import validate_path_within
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -66,11 +64,11 @@ def _imported_source_markdown(source: str) -> str | None:
     return "\n\n".join(row["text"] for row in ordered)
 
 
-async def delete_documents(
-    names: list[str], *, delete_files: bool = False
-) -> DocumentRemoveResponse:
-    """Remove documents from the knowledge base by source name."""
-    result = get_services().store.remove_documents(names, delete_files=delete_files)
+async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
+    """Remove documents by source name, folder, or glob (source files are kept)."""
+    from lilbee.app.ingest import remove_documents_durably
+
+    result = remove_documents_durably(names)
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
 
@@ -127,8 +125,11 @@ def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | 
 
     if not source or not source.strip():
         raise ValueError("source must not be empty")
-    documents_dir = cfg.documents_dir
-    resolved = validate_path_within(documents_dir / source, documents_dir)
+    from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+    resolved = resolve_source_path_checked(source)
+    if resolved is None:
+        raise ValueError(f"source path escapes its root: {source}")
     if not resolved.is_file():
         # Imported sources have no file on disk; their text lives in the page-text store.
         markdown = _imported_source_markdown(source)

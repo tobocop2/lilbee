@@ -31,12 +31,11 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
     for item in list(base_dir.iterdir()):
         try:
             # iterdir yields direct children only, so the entry is within
-            # base_dir by construction. Remove a symlink as the link itself
-            # (never follow it) -- resolving it would both escape base_dir and
-            # risk deleting the target, neither of which reset intends.
-            if item.is_symlink():
-                item.unlink()
-            elif item.is_dir():
+            # base_dir by construction. Registered source roots live outside this
+            # dir (only their config entry is here), so reset never reaches a
+            # user's corpus: it deletes owned files, and un-registering roots is
+            # done by clearing config.toml under data_dir.
+            if item.is_dir():
                 shutil.rmtree(item)
             else:
                 item.unlink()

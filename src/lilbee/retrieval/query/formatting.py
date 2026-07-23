@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lilbee.core.config import cfg
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk
 
 CONTEXT_TEMPLATE = """Context:
@@ -53,7 +52,9 @@ def display_source_path(source: str) -> str:
     Falls back to the raw source string if the file no longer exists on disk
     (e.g. the user moved the documents directory since ingestion).
     """
-    candidate = cfg.documents_dir / source
+    from lilbee.data.ingest.discovery import resolve_source_path
+
+    candidate = resolve_source_path(source)
     try:
         resolved = candidate.resolve(strict=False)
     except OSError:
@@ -86,8 +87,10 @@ def _source_label(source: str) -> str:
 def _source_file_url(source: str) -> str | None:
     """A ``file://`` URL to the source on disk, so a reader can click it open, or
     None when the path can't be resolved to an absolute location."""
+    from lilbee.data.ingest.discovery import resolve_source_path
+
     try:
-        return (cfg.documents_dir / source).resolve(strict=False).as_uri()
+        return resolve_source_path(source).resolve(strict=False).as_uri()
     except (OSError, ValueError):
         return None
 

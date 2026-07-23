@@ -61,11 +61,13 @@ _LEGACY_CONCEPTS_MIGRATED_SENTINEL = ".phase-d-migrated"
 _ARCHIVE_CONCEPTS_SUBPATH = Path(WikiSubdir.ARCHIVE) / WikiSubdir.CONCEPTS
 
 
-def hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
+def hash_existing_sources(source_names: list[str]) -> dict[str, str]:
     """Hash each source file that still exists on disk (used for citation staleness)."""
+    from lilbee.data.ingest.discovery import resolve_source_path
+
     out: dict[str, str] = {}
     for name in source_names:
-        source_path = documents_dir / name
+        source_path = resolve_source_path(name)
         if source_path.exists():
             out[name] = file_hash(source_path)
     return out

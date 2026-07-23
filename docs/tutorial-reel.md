@@ -62,7 +62,7 @@ everything; only what the model is sent is condensed.
 
 ## Add files
 
-`/add <path>` copies the file into your library and embeds it. Switching to the Task
+`/add <path>` links the file into your library and embeds it. Switching to the Task
 Center mid-ingest shows the live progress bar; once it lands you can ask away.
 
 ![add and task center](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)

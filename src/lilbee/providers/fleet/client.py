@@ -467,6 +467,24 @@ class LlamaServerClient:
         with self._in_flight_lock:
             self._healthy = True
 
+    def reserve(self) -> None:
+        """Mark a routed request assigned to this replica, at selection time.
+
+        The router balances on ``in_flight`` but the per-request tracking only
+        bumps it once the HTTP call starts. Under a bulk ingest many threads pick
+        a replica at the same instant, all see the momentarily-idlest one at the
+        same low count, and pile onto it (a thundering herd that leaves the other
+        cards idle). Reserving at selection makes the assignment visible to the
+        next picker so requests spread across replicas. Paired with :meth:`release`.
+        """
+        with self._in_flight_lock:
+            self.in_flight += 1
+
+    def release(self) -> None:
+        """Release a reservation taken by :meth:`reserve`."""
+        with self._in_flight_lock:
+            self.in_flight -= 1
+
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
         try:

@@ -104,30 +104,32 @@ def _archive_page(
 def _check_all_sources_deleted(
     wiki_source: str,
     store: Store,
-    documents_dir: Path,
 ) -> bool:
     """Return True if every cited source file has been deleted from disk."""
+    from lilbee.data.ingest.discovery import resolve_source_path
+
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
     source_files = {c["source_filename"] for c in citations}
-    return all(not (documents_dir / f).exists() for f in source_files)
+    return all(not resolve_source_path(f).exists() for f in source_files)
 
 
 def _check_cluster_below_threshold(
     wiki_source: str,
     store: Store,
-    documents_dir: Path,
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
+    from lilbee.data.ingest.discovery import resolve_source_path
+
     if f"/{WikiSubdir.SYNTHESIS}/" not in wiki_source:
         return False
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
     source_files = {c["source_filename"] for c in citations}
-    live_count = sum(1 for f in source_files if (documents_dir / f).exists())
+    live_count = sum(1 for f in source_files if resolve_source_path(f).exists())
     return live_count < min_sources
 
 
@@ -163,11 +165,11 @@ def _evaluate_page(
     wiki_source: str, wiki_root: Path, store: Store, config: Config
 ) -> PruneRecord | None:
     """Check a single wiki page against pruning rules. Returns a record or None."""
-    if _check_all_sources_deleted(wiki_source, store, config.documents_dir):
+    if _check_all_sources_deleted(wiki_source, store):
         return _archive_and_record(
             wiki_source, wiki_root, store, config, "all cited sources deleted"
         )
-    if _check_cluster_below_threshold(wiki_source, store, config.documents_dir):
+    if _check_cluster_below_threshold(wiki_source, store):
         return _archive_and_record(
             wiki_source,
             wiki_root,
