@@ -33,12 +33,26 @@ resources:
   # over an hour. Volume-free lets --retry-until-up catch a window across ~25 DCs,
   # which lands in seconds. The index builds on local NVMe; preservation (tar to a
   # volume once capacity frees, or a stopped-pod disk) is handled during the run.
-  # Minimum 4 GPUs, H100 first.
+  # 8-packs first (speed), then 4-packs. Generic A100-80GB (not the -SXM variant)
+  # so sky can take SXM *or* PCIE across every DC -- pinning -SXM kept losing the
+  # capacity race as the quoted instance vanished before acquire. H100 and A100
+  # only: these are the throughput tiers worth the run; slower/cheaper tiers
+  # (L40S, 2-card) are a deliberate call to surface, not an automatic fallback.
+  # Small multi-GPU FIRST: 2-packs land in seconds when 4/8-packs are capacity-
+  # starved, and 2 replicas is enough to prove the fixes empirically -- even
+  # dispatch across replicas (#599), both cards saturated, fleet-warm ttl:0/no
+  # collapse. The run starts accumulating real embeddings immediately; the
+  # periodic search then migrates it up to an H100/A100 pack via checkpoint+
+  # restore when one frees. Bigger packs stay in the ladder as a bonus if free.
   ordered:
-    - accelerators: H100:8
+    - accelerators: H100:2
+    - accelerators: A100-80GB:2
+    - accelerators: L40S:2
     - accelerators: H100:4
-    - accelerators: A100-80GB-SXM:8
-    - accelerators: A100-80GB-SXM:4
+    - accelerators: A100-80GB:4
+    - accelerators: L40S:4
+    - accelerators: H100:8
+    - accelerators: A100-80GB:8
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:

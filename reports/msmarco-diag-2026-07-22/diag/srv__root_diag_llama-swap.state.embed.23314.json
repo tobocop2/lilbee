@@ -1,0 +1,1 @@
+{"pid": 30143, "pgid": 30143, "created_at": 1784704958.93, "owner_pid": 23314, "owner_created_at": 1784703189.66, "name": "llama-swap", "member_ports": [34127, 37019, 38179, 40089, 47959, 48221, 51435, 60067], "proxy_port": 34369, "lilbee_version": "0.6.90b420.dev724", "detached": false, "launches": []}
