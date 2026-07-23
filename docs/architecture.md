@@ -227,53 +227,62 @@ on a single core. The rest of this section is why, and what fixed it.
 #### Embedding responses are binary, not JSON floats
 
 Ingest dispatches embed calls from a thread pool, so many files are in flight at once.
-The network wait overlaps well, because httpx releases the GIL while it waits. Decoding
-the response does not. If vectors arrive as JSON arrays of decimal literals, every
-element becomes a Python float parsed one at a time under the GIL, so a 4096-dimensional
-vector is 4096 individually parsed numbers. However many threads or GPUs are running,
-one core ends up decoding all of them, and that core's rate is the whole fleet's rate.
+The network wait overlaps well, because httpx releases the GIL while waiting. Decoding
+the response does not.
 
-lilbee therefore asks the server for `encoding_format: base64` and decodes the raw
-float32 buffer with `numpy.frombuffer`. The parse becomes a memory copy: one C call per
-vector instead of thousands of Python-level conversions.
+That is the whole problem. A vector arriving as JSON decimal literals becomes one Python
+float per dimension, parsed individually under the GIL. A 4096-dimensional vector is
+4096 separately parsed numbers. However many threads or GPUs are running, one core
+decodes all of them, and that core's rate is the fleet's rate.
 
-Measured through the client's own embed path on one core, 4096-dimensional vectors,
+So lilbee asks for `encoding_format: base64`. The response is still JSON, with the same
+envelope and the same fields. Only the vector itself is written differently:
+
+```jsonc
+// before: 4096 decimal literals to parse, one Python float each
+"embedding": [-0.0029101597, -0.0131583912, 0.0144413067, ...]
+
+// after: one string, decoded by numpy.frombuffer in a single C call
+"embedding": "Ybg+u0uWV7w7m2w8foWVvaJerzvbiCq8C1Yo..."
+```
+
+Measured through the client's own embed path, one core, 4096-dimensional vectors,
 64 per batch:
 
-| Response encoding | CPU per 1k vectors | Payload |
+| | Before (JSON floats) | After (base64) |
 |---|---|---|
-| JSON float literals | 785 ms | 5.41 MB |
-| base64 float32 buffer | 110 ms | 1.40 MB |
+| CPU per 1k vectors | 785 ms | **110 ms** |
+| Response body per batch | 5.41 MB | **1.40 MB** |
+| One-core decode ceiling | ~1,300 vectors/sec | **~9,000 vectors/sec** |
+| Work per vector | 4096 Python float objects | 1 buffer copy |
+| 8xA100 observed | 161 docs/sec, cards 10-98% util | GPU-bound |
 
-That is roughly seven times cheaper, and it moves the decode ceiling from about 1,300
-vectors/sec to about 9,000. At roughly eight chunks per document, the old figure works
-out to about 160 docs/sec, which is what the 8-card host was actually stuck at. That
-arithmetic is the quickest way to check whether decode is the limit on a given box:
-divide one core's decode rate by the chunks per document and compare it to observed
-throughput.
+Roughly seven times cheaper. The last row is the point: at about eight chunks per
+document, 1,300 vectors/sec works out to about 160 docs/sec, which is exactly where the
+8-card host was stuck. That arithmetic is the quickest field test for whether decode is
+your limit. Divide one core's decode rate by chunks per document and compare it to
+observed throughput.
 
-The same encoding applies to reranking, which shares the `/v1/embeddings` endpoint under
-rank pooling. Both callers decode through one helper, so the wire format cannot leak
-into the score path.
+Reranking shares the `/v1/embeddings` endpoint under rank pooling, so it receives the
+same encoding. Both callers decode through one helper, which keeps the wire format out
+of the score path.
 
-Three design notes:
+**Why not a real binary protocol?** MessagePack or protobuf would drop base64's 33% size
+inflation, but most of the remaining 110 ms is building Python floats for the caller, not
+the wire format. On the decode alone a raw binary buffer costs 55 ms per 1k vectors
+against base64's 97, so the entire protocol change is worth about 40 ms. It is also not
+reachable: the endpoint is llama.cpp's OpenAI-compatible API, which speaks JSON. Base64
+takes most of the available win using a format the engine already implements.
 
-- **A binary protocol would buy little.** MessagePack or protobuf would remove base64's
-  33% size inflation, but the remaining cost is dominated by materializing Python floats
-  for the caller, not by the wire format. Measured on the decode alone, a raw binary
-  buffer costs 55 ms per 1k vectors against base64's 97, so the whole protocol change is
-  worth about 40 ms. It is not reachable anyway: the endpoint is llama.cpp's
-  OpenAI-compatible API, which speaks JSON. Base64 captures most of the available win
-  using a format the engine already supports.
-- **Strict base64 validation is not worth its cost here.** Rejecting non-alphabet
-  characters during decode measured 12% slower on this path, to guard against corruption
-  that loopback HTTP already excludes. A wrong buffer length, a wrong response shape, and
-  a wrong vector dimension are each still caught, the last by the store on write.
-- **The remaining headroom is the provider contract, not the wire.** Returning numpy
-  arrays instead of `list[float]` measures 40 ms per 1k vectors, but it would change the
-  embedding contract across every provider backend. At current fleet sizes the GPUs
-  saturate well before the decode path does, so that change is not worth its blast
-  radius yet.
+**Why no strict base64 validation?** Rejecting non-alphabet characters during decode
+measured 12% slower, to guard against corruption that loopback HTTP already excludes. A
+wrong buffer length, a wrong response shape, and a wrong vector dimension are each still
+caught, the last by the store on write.
+
+**What headroom is left?** Returning numpy arrays instead of `list[float]` measures
+40 ms per 1k vectors, but it changes the embedding contract across every provider
+backend. GPUs saturate well before decode does at current fleet sizes, so that trade is
+not worth its blast radius yet.
 
 ---
 

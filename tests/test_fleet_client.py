@@ -706,28 +706,17 @@ def test_embed_decodes_base64_vectors_exactly() -> None:
     assert decoded == expected
 
 
-def test_embed_raises_when_server_returns_unencoded_floats() -> None:
+@pytest.mark.parametrize(
+    "embedding",
+    [
+        pytest.param([0.1, 0.2], id="server_ignored_the_requested_encoding"),
+        pytest.param(base64.b64encode(b"abc").decode(), id="buffer_is_not_whole_float32s"),
+        pytest.param("not!base64!", id="not_base64_text"),
+    ],
+)
+def test_embed_raises_on_unreadable_embedding(embedding: object) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
-
-    with pytest.raises(ProviderError, match="could not read"):
-        _client(handler).embed(["a"])
-
-
-def test_embed_raises_on_truncated_vector_buffer() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        # Three bytes cannot form whole float32 values.
-        return httpx.Response(
-            200, json={"data": [{"embedding": base64.b64encode(b"abc").decode()}]}
-        )
-
-    with pytest.raises(ProviderError, match="could not read"):
-        _client(handler).embed(["a"])
-
-
-def test_embed_raises_on_non_base64_vector_text() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [{"embedding": "not!base64!"}]})
+        return httpx.Response(200, json={"data": [{"embedding": embedding}]})
 
     with pytest.raises(ProviderError, match="could not read"):
         _client(handler).embed(["a"])
