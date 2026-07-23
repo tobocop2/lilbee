@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
+import struct
 import threading
 import time
 from pathlib import Path
@@ -2742,7 +2744,8 @@ class TestReplicaHealthRouting:
         def _handler(name: str):
             def handler(_request: _httpx.Request) -> _httpx.Response:
                 calls[name] += 1
-                return _httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+                vector = base64.b64encode(struct.pack("<f", 0.25)).decode()
+                return _httpx.Response(200, json={"data": [{"embedding": vector}]})
 
             return handler
 

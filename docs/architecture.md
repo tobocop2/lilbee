@@ -198,6 +198,51 @@ Safety limits are identical across both adaptive profiles; only the climb speed 
 | free RAM soft / min | — | — | 20% / 10% |
 | GPU temp warn / critical | — | — | 80°C / 85°C |
 
+### Embedding responses are binary, not JSON floats
+
+Admission control keeps the GPUs fed, but it can only help if the CPU can absorb what
+they produce. Embedding vectors come back over HTTP, and how they are encoded turns out
+to set a hard throughput ceiling that no amount of extra dispatch concurrency can lift.
+
+Ingest dispatches embed calls from a thread pool, so many files are in flight at once.
+The network wait overlaps well, because httpx releases the GIL while it waits. Decoding
+the response does not. If vectors arrive as JSON arrays of decimal literals, every
+element becomes a Python float parsed one at a time under the GIL, so a 4096-dimensional
+vector is 4096 individually parsed numbers. However many threads or GPUs are running,
+one core ends up decoding all of them, and that core's rate is the whole fleet's rate.
+
+lilbee therefore asks the server for `encoding_format: base64` and decodes the raw
+float32 buffer with `numpy.frombuffer`. The parse becomes a memory copy: one C call per
+vector instead of thousands of Python-level conversions.
+
+Measured through the client's own embed path on one core, 4096-dimensional vectors,
+64 per batch:
+
+| Response encoding | CPU per 1k vectors | Payload |
+|---|---|---|
+| JSON float literals | 785 ms | 5.41 MB |
+| base64 float32 buffer | 110 ms | 1.40 MB |
+
+That is roughly seven times cheaper, and it moves the decode ceiling from about 1,300
+vectors/sec to about 9,000. The symptom it removes is specific: on fast multi-GPU
+hosts, aggregate throughput would flatten while GPU utilization sagged and individual
+cards sat starved and uneven. On slower cards the GPU is the limiter, so the ceiling
+stays invisible, which is why it only appears as the hardware gets faster.
+
+Two design notes:
+
+- **A binary protocol would buy little.** MessagePack or protobuf would remove base64's
+  33% size inflation, but the remaining cost is dominated by materializing Python floats
+  for the caller, not by the wire format. A raw binary buffer measures 55 ms per 1k
+  vectors against base64's 97 on the decode itself, and it is not reachable anyway: the endpoint is
+  llama.cpp's OpenAI-compatible API, which speaks JSON. Base64 captures most of the
+  available win using a format the engine already supports.
+- **The remaining headroom is the provider contract, not the wire.** Returning numpy
+  arrays instead of `list[float]` measures 40 ms per 1k vectors, but it would change the
+  embedding contract across every provider backend. At current fleet sizes the GPUs
+  saturate well before the decode path does, so that change is not worth its blast
+  radius yet.
+
 ---
 
 ## Provider Abstraction
