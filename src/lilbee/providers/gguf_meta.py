@@ -6,10 +6,15 @@ metadata is available to any provider without loading a model into the engine.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import logging
+import os
 import struct
 import threading
 from pathlib import Path
+from typing import cast
 
 from gguf import GGUFReader, GGUFValueType
 
@@ -85,16 +90,75 @@ def train_ctx_from_meta(
 _METADATA_CACHE: dict[tuple[str, int, int], dict[str, str] | None] = {}
 _METADATA_CACHE_LOCK = threading.Lock()
 
+# Bump when the extracted field set changes, so old entries are ignored rather
+# than served stale.
+_DISK_CACHE_VERSION = 1
+_DISK_CACHE_DIRNAME = "gguf-meta"
+# Distinguishes "no entry on disk" from a cached "this file has no metadata".
+_DISK_MISS = object()
+
+
+def _disk_cache_file(key: tuple[str, int, int]) -> Path | None:
+    """Where *key*'s metadata is cached on disk, or None if no state dir works."""
+    from lilbee.core.system import default_cache_dir
+
+    digest = hashlib.sha256(
+        "\0".join(str(part) for part in (_DISK_CACHE_VERSION, *key)).encode()
+    ).hexdigest()
+    try:
+        # A cache dir, not the state dir: losing this costs a re-parse, never a
+        # lost handle on a running engine.
+        return default_cache_dir() / _DISK_CACHE_DIRNAME / f"{digest}.json"
+    except OSError:  # pragma: no cover - unwritable/undiscoverable state dir
+        return None
+
+
+def _disk_cache_load(key: tuple[str, int, int]) -> object:
+    """The cached metadata for *key*, or ``_DISK_MISS`` when not usable."""
+    path = _disk_cache_file(key)
+    if path is None:
+        return _DISK_MISS
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _DISK_MISS
+    if not isinstance(payload, dict) or "metadata" not in payload:
+        return _DISK_MISS
+    meta = payload["metadata"]
+    if meta is None:
+        return None
+    if not isinstance(meta, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
+    ):
+        return _DISK_MISS
+    return meta
+
+
+def _disk_cache_store(key: tuple[str, int, int], result: dict[str, str] | None) -> None:
+    """Persist *result* for *key*; best effort, a failure just costs a re-parse."""
+    path = _disk_cache_file(key)
+    if path is None:
+        return
+    with contextlib.suppress(OSError, TypeError, ValueError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename so a concurrent reader never sees a half-written file.
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"metadata": result}), encoding="utf-8")
+        tmp.replace(path)
+
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read header metadata from a GGUF file with the ``gguf`` parser.
 
-    Cached by ``(path, mtime, size)``: planning reads the same model's metadata
-    several times per fleet build (VRAM estimate, ctx sizing, launch), and
-    ``GGUFReader`` parses the whole header -- including large tokenizer arrays --
-    each time. The cache turns those repeats into one parse and survives across
-    builds; an immutable model file never re-reads. Returns a copy so callers
-    can't mutate the shared entry.
+    Cached by ``(path, mtime, size)`` in memory and on disk. ``GGUFReader`` parses
+    the whole header -- every tensor descriptor and the large tokenizer arrays --
+    to hand back a dozen scalar fields, which measured at ~60s for a 2.6GB model
+    on a spinning-rust-era CPU. Planning reads the same model several times per
+    fleet build, so the in-memory cache collapses those to one parse; the on-disk
+    cache carries it across processes, which is what stops a relaunch paying that
+    minute again while an already-warm engine sits idle waiting to be adopted.
+    Keying on mtime and size means an edited or replaced file re-reads. Returns a
+    copy so callers can't mutate the shared entry.
     """
     try:
         stat = model_path.stat()
@@ -106,10 +170,17 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
             if key in _METADATA_CACHE:
                 cached = _METADATA_CACHE[key]
                 return dict(cached) if cached is not None else None
+        from_disk = _disk_cache_load(key)
+        if from_disk is not _DISK_MISS:
+            entry = cast("dict[str, str] | None", from_disk)
+            with _METADATA_CACHE_LOCK:
+                _METADATA_CACHE[key] = entry
+            return dict(entry) if entry is not None else None
     result = _read_gguf_metadata_uncached(model_path)
     if key is not None:
         with _METADATA_CACHE_LOCK:
             _METADATA_CACHE[key] = result
+        _disk_cache_store(key, result)
     return dict(result) if result is not None else None
 
 

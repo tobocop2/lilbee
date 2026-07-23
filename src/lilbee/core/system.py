@@ -82,6 +82,28 @@ def default_state_dir() -> Path:
     return base / "lilbee"
 
 
+def default_cache_dir() -> Path:
+    """Return platform-appropriate directory for regenerable caches.
+
+    - macOS:   ~/Library/Caches/lilbee
+    - Windows: %LOCALAPPDATA%/lilbee/cache
+    - Linux:   ~/.cache/lilbee  (XDG_CACHE_HOME)
+
+    The counterpart to :func:`default_state_dir`. Everything here is derived data
+    that costs time, not correctness, to lose, so a cleaner -- or macOS evicting
+    ~/Library/Caches under disk pressure -- may empty it freely. Nothing that a
+    stop path needs to find a running process belongs here.
+    """
+    if sys.platform == "darwin":  # pragma: no cover - platform split
+        return Path.home() / "Library" / "Caches" / "lilbee"
+    if sys.platform == "win32":  # pragma: no cover - platform split
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
+        return base / "lilbee" / "cache"
+    return (  # pragma: no cover - platform split
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "lilbee"
+    )
+
+
 def find_local_root(start: Path | None = None) -> Path | None:
     """Walk up from start (default: cwd) looking for a ``.lilbee/`` directory."""
     start = start or Path.cwd()
