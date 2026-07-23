@@ -159,6 +159,12 @@ class _ServicesState:
         self.override: ContextVar[Services | None] = ContextVar(
             "lilbee_services_override", default=None
         )
+        # Whether this process is an interactive session (the TUI). Recorded by
+        # the interactive entry point before anything builds the container, and
+        # read once at build so the provider it creates holds its fleet resident
+        # for the session. Build-time intent only; the state that matters after
+        # that lives on the provider itself.
+        self.interactive: bool = False
 
 
 _state = _ServicesState()
@@ -169,6 +175,7 @@ def build_services(
     *,
     provider: LLMProvider | None = None,
     registry: ModelRegistry | None = None,
+    interactive: bool = False,
 ) -> Services:
     """Build a full Services container bound to *config*, without caching it.
 
@@ -194,7 +201,7 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = provider or create_provider(config)
+    provider = provider or create_provider(config, hold_warm=interactive)
     registry = registry or ModelRegistry(config.models_dir)
     store = Store(config)
     embedder = Embedder(config, provider)
@@ -250,7 +257,7 @@ def get_services() -> Services:
     # Pin the store width to the embedder before Store(); pass the registry so
     # resolution doesn't re-enter this half-built get_services.
     reconcile_embedding_dim(registry)
-    _state.singleton = build_services(cfg, registry=registry)
+    _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
     # Eager start is the default: pay the spawn cost per role server at TUI mount
     # so the first user action lands on a warm fleet. Roles whose model is unset
     # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -277,6 +284,18 @@ def services_scope(services: Services) -> Iterator[None]:
         yield
     finally:
         _state.override.reset(token)
+
+
+def mark_interactive_session() -> None:
+    """Record that this process is an interactive session before services build.
+
+    The TUI owns the process for its whole lifetime, so the fleet it builds keeps
+    its weights resident rather than idle-unloading under a user who is still in
+    the app; closing lilbee releases it. Called by the interactive entry point
+    before anything touches ``get_services``, so the provider is constructed with
+    that intent; a one-shot CLI or the MCP server never calls it.
+    """
+    _state.interactive = True
 
 
 def set_services(services: Services | None) -> None:
