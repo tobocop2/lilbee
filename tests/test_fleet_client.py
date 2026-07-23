@@ -36,6 +36,7 @@ def _embed_body(vectors: list[list[float]]) -> dict[str, object]:
         ]
     }
 
+
 _STREAM_BODY = (
     'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
     'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n'
