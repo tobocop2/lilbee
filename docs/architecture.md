@@ -198,6 +198,92 @@ Safety limits are identical across both adaptive profiles; only the climb speed 
 | free RAM soft / min | — | — | 20% / 10% |
 | GPU temp warn / critical | — | — | 80°C / 85°C |
 
+### Three ceilings govern ingest throughput
+
+Admission control keeps the GPUs fed, but it is only one of three limits, and tuning the
+wrong one wastes effort. Ingest throughput is the minimum of:
+
+1. **The GPU ceiling.** How fast the cards can actually run the model.
+2. **The admission ceiling.** How many documents the controller lets in flight, which is
+   what the adaptive profiles above tune.
+3. **The CPU decode ceiling.** How fast one core can turn embed responses back into
+   Python objects, because that step holds the GIL and therefore does not scale with
+   threads or with GPUs.
+
+The third is the least obvious and the easiest to misread as a GPU problem, so it is
+worth knowing how to tell them apart:
+
+| What you observe | Which ceiling is binding |
+|---|---|
+| All cards near 100% util, throughput flat | GPU. Add or upgrade cards. |
+| Cards well under 100%, CPU cores all moderate | Admission. The controller is holding back. |
+| Cards uneven and starved, **one** core pegged at 100% | CPU decode. More concurrency will not help. |
+
+The third row is a real failure lilbee hit: 8 A100s capped near 161 docs/sec at roughly
+78% util with cards ranging 10 to 98 percent, while 2 slower L40S cards sat at an even
+97/97 percent. The slower pair was GPU-bound and healthy; the faster eight were waiting
+on a single core. The rest of this section is why, and what fixed it.
+
+#### Embedding responses are binary, not JSON floats
+
+Ingest dispatches embed calls from a thread pool, so many files are in flight at once.
+The network wait overlaps well, because httpx releases the GIL while waiting. Decoding
+the response does not.
+
+That is the whole problem. A vector arriving as JSON decimal literals becomes one Python
+float per dimension, parsed individually under the GIL. A 4096-dimensional vector is
+4096 separately parsed numbers. However many threads or GPUs are running, one core
+decodes all of them, and that core's rate is the fleet's rate.
+
+So lilbee asks for `encoding_format: base64`. The response is still JSON, with the same
+envelope and the same fields. Only the vector itself is written differently:
+
+```jsonc
+// before: 4096 decimal literals to parse, one Python float each
+"embedding": [-0.0029101597, -0.0131583912, 0.0144413067, ...]
+
+// after: one string, decoded by numpy.frombuffer in a single C call
+"embedding": "Ybg+u0uWV7w7m2w8foWVvaJerzvbiCq8C1Yo..."
+```
+
+Measured through the client's own embed path, one core, 4096-dimensional vectors,
+64 per batch:
+
+| | Before (JSON floats) | After (base64) |
+|---|---|---|
+| CPU per 1k vectors | 785 ms | **110 ms** |
+| Response body per batch | 5.41 MB | **1.40 MB** |
+| One-core decode ceiling | ~1,300 vectors/sec | **~9,000 vectors/sec** |
+| Work per vector | 4096 Python float objects | 1 buffer copy |
+| 8xA100 observed | 161 docs/sec, cards 10-98% util | GPU-bound |
+
+Roughly seven times cheaper. The last row is the point: at about eight chunks per
+document, 1,300 vectors/sec works out to about 160 docs/sec, which is exactly where the
+8-card host was stuck. That arithmetic is the quickest field test for whether decode is
+your limit. Divide one core's decode rate by chunks per document and compare it to
+observed throughput.
+
+Reranking shares the `/v1/embeddings` endpoint under rank pooling, so it receives the
+same encoding. Both callers decode through one helper, which keeps the wire format out
+of the score path.
+
+**Why not a real binary protocol?** MessagePack or protobuf would drop base64's 33% size
+inflation, but most of the remaining 110 ms is building Python floats for the caller, not
+the wire format. On the decode alone a raw binary buffer costs 55 ms per 1k vectors
+against base64's 97, so the entire protocol change is worth about 40 ms. It is also not
+reachable: the endpoint is llama.cpp's OpenAI-compatible API, which speaks JSON. Base64
+takes most of the available win using a format the engine already implements.
+
+**Why no strict base64 validation?** Rejecting non-alphabet characters during decode
+measured 12% slower, to guard against corruption that loopback HTTP already excludes. A
+wrong buffer length, a wrong response shape, and a wrong vector dimension are each still
+caught, the last by the store on write.
+
+**What headroom is left?** Returning numpy arrays instead of `list[float]` measures
+40 ms per 1k vectors, but it changes the embedding contract across every provider
+backend. GPUs saturate well before decode does at current fleet sizes, so that trade is
+not worth its blast radius yet.
+
 ---
 
 ## Provider Abstraction
