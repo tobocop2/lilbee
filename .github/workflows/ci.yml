@@ -6,7 +6,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths:
+    paths: &ci-paths
       - 'src/**'
       - 'tests/**'
       - 'pyproject.toml'
@@ -20,19 +20,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/actions/restore-ci-models/**'
   pull_request:
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'Makefile'
-      - '.coveragerc-windows'
-      - 'engine-versions.env'
-      - 'scripts/check_style_rules.py'
-      - 'tools/qa/**'
-      - 'scripts/qa/**'
-      - '.github/workflows/ci.yml'
-      - '.github/actions/restore-ci-models/**'
+    paths: *ci-paths
   workflow_call:
   workflow_dispatch:
 
