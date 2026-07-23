@@ -216,6 +216,25 @@ class TestAddEndpoint:
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "/no/such/file.txt" in summary["errors"]
 
+    async def test_add_where_nothing_reaches_the_corpus_skips_the_sync(
+        self, mock_extract_file, isolated_env
+    ):
+        """A batch with no copied and no skipped file must not run the
+        whole-vault sync, which holds the ingest lock for nothing."""
+        from lilbee.server.app import create_app
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=Mock) as sync_mock:
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/add", json={"paths": ["/no/such/file.txt"]}, headers=_auth_headers()
+                )
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        summary = [d for t, d in events if t == "done" and "copied" in d][-1]
+        assert summary["copied"] == [] and summary["skipped"] == []
+        sync_mock.assert_not_called()
+
     async def test_add_with_force_flag(self, mock_extract_file, isolated_env, tmp_path):
         """The force flag allows overwriting existing files."""
         from lilbee.server.app import create_app

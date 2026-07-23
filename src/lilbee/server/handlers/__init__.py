@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import time
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from lilbee.app.services import get_services
@@ -78,12 +79,15 @@ from lilbee.server.models import (
     GpusResponse,
     HealthResponse,
     PlacementResponse,
+    ShutdownResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
     from lilbee.providers.base import LLMProvider
+
+log = logging.getLogger(__name__)
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
 # bar advances smoothly without busy-spinning.
@@ -126,6 +130,18 @@ async def health() -> HealthResponse:
         chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
     )
+
+
+async def shutdown() -> ShutdownResponse:
+    """Accept an API-requested stop; the route's background task sends SIGTERM.
+
+    Litestar runs that task only after the response has been handed to the
+    transport, so the signal cannot beat the 202 out and no wall-clock delay
+    has to be guessed. Routing through SIGTERM keeps the fleet teardown and
+    shutdown logging identical however the stop arrives.
+    """
+    log.info("Shutdown requested via the API")
+    return ShutdownResponse(status="shutting_down")
 
 
 async def warm_stream() -> AsyncGenerator[str, None]:
@@ -208,7 +224,7 @@ async def placement() -> PlacementResponse:
     """Current effective placement."""
     from lilbee.app.placement import get_placement
 
-    return _placement_response(get_placement())
+    return await _placement_response_off_loop(get_placement)
 
 
 async def placement_preview(spec_json: str | None) -> PlacementResponse:
@@ -217,7 +233,7 @@ async def placement_preview(spec_json: str | None) -> PlacementResponse:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     spec = PlacementSpec.from_json(spec_json) if spec_json else None
-    return _placement_response(preview_placement(spec))
+    return await _placement_response_off_loop(lambda: preview_placement(spec))
 
 
 async def placement_set(spec_json: str) -> PlacementResponse:
@@ -225,14 +241,24 @@ async def placement_set(spec_json: str) -> PlacementResponse:
     from lilbee.app.placement import set_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
+    spec = PlacementSpec.from_json(spec_json)
+    return await _placement_response_off_loop(lambda: set_placement(spec))
 
 
 async def placement_clear() -> PlacementResponse:
     """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
     from lilbee.app.placement import set_placement
 
-    return _placement_response(set_placement(None))
+    return await _placement_response_off_loop(lambda: set_placement(None))
+
+
+async def _placement_response_off_loop(action: Callable[[], PlacementView]) -> PlacementResponse:
+    """Run a placement action and serialize it off the event loop.
+
+    Placement actions and the Intel util notice both shell out to GPU probes,
+    so neither may run on the loop.
+    """
+    return await asyncio.to_thread(lambda: _placement_response(action()))
 
 
 def _placement_response(view: PlacementView) -> PlacementResponse:
@@ -255,11 +281,14 @@ async def gpus() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     from lilbee.app.placement import get_placement
 
-    view = get_placement()
-    return GpusResponse(
-        gpus=PlacementResponse.from_view(view).gpus,
-        notice=_intel_notice_text(view.gpus),
-    )
+    def _body() -> GpusResponse:
+        view = get_placement()
+        return GpusResponse(
+            gpus=PlacementResponse.from_view(view).gpus,
+            notice=_intel_notice_text(view.gpus),
+        )
+
+    return await asyncio.to_thread(_body)
 
 
 __all__ = [

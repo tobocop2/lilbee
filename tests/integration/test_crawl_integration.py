@@ -127,6 +127,23 @@ class TestSinglePageCrawl:
         content = paths[0].read_text(encoding="utf-8")
         assert len(content) > 0
 
+    async def test_crawl_resolves_links_against_a_base_href(self, httpserver, allow_localhost):
+        """A ``<base href>`` page's relative links resolve against the base in the saved markdown.
+
+        lilbee silences crawl4ai's own converter and re-derives the base URL, so this proves
+        the silenced path resolves links the way an un-silenced crawl would.
+        """
+        page = (
+            "<html><head><base href='https://based.example/docs/'></head>"
+            "<body><h1>Guide</h1><a href='guide'>Read the guide</a></body></html>"
+        )
+        httpserver.expect_request("/based").respond_with_data(page, content_type="text/html")
+        url = str(httpserver.url_for("/based"))
+        paths = await crawl_and_save(url, depth=0)
+        assert len(paths) == 1
+        content = paths[0].read_text(encoding="utf-8")
+        assert "https://based.example/docs/guide" in content
+
     async def test_crawl_saves_metadata(self, test_site, allow_localhost):
         """Crawl metadata records the URL and content hash."""
         url = str(test_site.url_for("/"))

@@ -2902,6 +2902,60 @@ class TestModelHandlersRunBlockingWorkOffLoop:
         assert threads and threads[0] != loop_tid
 
 
+class TestPlacementHandlersRunOffTheLoop:
+    """Placement actions and the Intel util notice shell out to GPU probes,
+    so every placement handler must run them on a worker thread."""
+
+    @staticmethod
+    def _view():
+        from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+        from lilbee.providers.roles import WorkerRole
+
+        gib = 1024**3
+        return PlacementView(
+            gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * gib, 72 * gib),),
+            roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+            unplaceable=(),
+            manual=False,
+            spec_json=None,
+        )
+
+    async def test_placement_and_gpus_run_off_the_loop(self, monkeypatch):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder(self._view())
+        monkeypatch.setattr("lilbee.app.placement.get_placement", stub)
+
+        await handlers.placement()
+        await handlers.gpus()
+
+        assert len(threads) == 2 and all(tid != loop_tid for tid in threads)
+
+    async def test_preview_runs_off_the_loop(self, monkeypatch):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder(self._view())
+        monkeypatch.setattr("lilbee.app.placement.preview_placement", stub)
+
+        await handlers.placement_preview(None)
+
+        assert threads and threads[0] != loop_tid
+
+    async def test_set_and_clear_run_off_the_loop(self, monkeypatch):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder(self._view())
+        monkeypatch.setattr("lilbee.app.placement.set_placement", stub)
+
+        await handlers.placement_set('{"chat": {"devices": [0]}}')
+        await handlers.placement_clear()
+
+        assert len(threads) == 2 and all(tid != loop_tid for tid in threads)
+
+
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()

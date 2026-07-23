@@ -22,10 +22,12 @@ T_co = TypeVar("T_co", covariant=True)
 # client boundary, so every downstream consumer parses one format.
 # What every provider holds back from the context window for the answer it is
 # about to generate, plus a small margin for the chat template's own framing.
-# One owner for both numbers: the fleet ENFORCES this budget and rejects a
-# prompt that exceeds it, while retrieval FITS its context to it. When the two
-# disagreed, retrieval assembled prompts up to the margin larger than the
-# engine would accept, and a grounded turn failed with a 400 the caller could
+# One owner for both numbers: the fleet ENFORCES this default budget (rejecting a
+# prompt that exceeds it), while retrieval FITS its context to it. An explicit
+# over-large output reservation (num_predict past the default) is clamped back to
+# this default rather than rejected, so an agent that over-reserves still fits.
+# When the two disagreed, retrieval assembled prompts up to the margin larger than
+# the engine would accept, and a grounded turn failed with a 400 the caller could
 # do nothing about.
 GENERATION_RESERVE_TOKENS = 1024
 CONTEXT_WINDOW_MARGIN_TOKENS = 128

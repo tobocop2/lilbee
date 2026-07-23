@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -139,7 +140,7 @@ class TestSearchRoute:
 
 
 class TestSearchDoesNotLeakInternals:
-    """/api/search is reachable without a token, so its errors stay generic."""
+    """/api/search errors stay generic even for authorized callers."""
 
     def test_unexpected_failure_hides_the_exception_text(self, client, caplog):
         boom = RuntimeError("no such table '/home/tobias/data/lancedb/chunks'")
@@ -1507,15 +1508,31 @@ class TestLifespan:
             pass
 
     @mock.patch("lilbee.server.app.get_services")
-    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+    async def test_a_raising_embedding_check_warns_and_does_not_block(self, mock_get_svc, caplog):
+        """A check that raises leaves the server usable for everything but embedding."""
         mock_svc = mock.MagicMock()
-        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("model file is corrupt")
         mock_get_svc.return_value = mock_svc
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            pass
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert "Failed to validate embedding model" in caplog.text
+
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_unavailable_embedding_model_warns_and_does_not_block(self, mock_get_svc, caplog):
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.return_value = False
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
         mock_get_svc.assert_called()
+        assert "Embedding model validated" not in caplog.text
+        assert "embedding" in caplog.text.lower()
 
     @mock.patch("lilbee.server.app.peek_services")
     @mock.patch("lilbee.server.app.get_services")
@@ -1893,6 +1910,12 @@ class TestAuthRequiredRoutes:
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
         assert resp.status_code == 401
 
+    def test_shutdown_requires_auth(self, auth_client):
+        # The remote shutdown is the most abuse-sensitive mutating route; pin that
+        # it is bearer-protected so a future @read_only slip fails loud here.
+        resp = auth_client.post("/api/shutdown")
+        assert resp.status_code == 401
+
 
 class _StubEmbedder:
     truncated_total = 0
@@ -2051,6 +2074,22 @@ class TestPlacementSetRoute:
         """DELETE placement is refused on the shared HTTP daemon."""
         resp = client.delete("/api/placement")
         assert resp.status_code == 409
+
+
+class TestShutdownRoute:
+    def test_raises_sigterm_only_after_the_response_is_sent(self, client):
+        """No guessed delay: the ordering is the framework's, not a timer's."""
+        import signal as signal_mod
+
+        with mock.patch.object(signal_mod, "raise_signal") as raise_signal:
+            response = client.post("/api/shutdown")
+            assert response.status_code == 202
+            assert response.json() == {"status": "shutting_down"}
+            # The background task runs as part of the same ASGI cycle, after the
+            # body is handed to the transport -- so by the time the client holds
+            # the response the signal has already been raised, with no window in
+            # which a slow flush could lose the race to a wall-clock timer.
+            raise_signal.assert_called_once_with(signal_mod.SIGTERM)
 
 
 class TestPaginationAndTopKLowerBounds:

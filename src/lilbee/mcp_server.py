@@ -210,6 +210,11 @@ def search(
         # "both" rather than a hard failure so the request still does work.
         log.warning("lilbee_search: unknown scope %r, falling back to %r", scope, SearchScope.BOTH)
         chunk_type = scope_to_chunk_type(SearchScope.BOTH.value)
+    if top_k is not None and top_k < 1:
+        # Same lenient stance as the scope fallback above: do the search with
+        # the configured default rather than hard-failing the agent's call.
+        log.warning("lilbee_search: top_k %d is not positive, using the default", top_k)
+        top_k = None
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
         results = get_services().searcher.search(
@@ -250,6 +255,8 @@ def status() -> dict[str, Any]:
             "flash_attention": cfg.flash_attention,
             "kv_cache_type": cfg.kv_cache_type.value,
             "n_gpu_layers": cfg.n_gpu_layers,
+            "cpu_moe": cfg.cpu_moe,
+            "n_cpu_moe": cfg.n_cpu_moe,
             "main_gpu": cfg.main_gpu,
             "gpu_devices": cfg.gpu_devices,
         },
@@ -1375,6 +1382,26 @@ def build_mcp_server() -> LilbeeMCP:
     return server
 
 
+_PARENT_DEATH_CLEANUP_S = 5.0
+
+
+def _exit_on_parent_death() -> None:
+    """Release engine membership best-effort, then hard-exit promptly.
+
+    ``os._exit`` skips atexit, so an explicit release stops this process's engine
+    when it was the last user and keeps the machine clean. But this watchdog's one
+    contract is to exit promptly on parent death, so the release runs on a daemon
+    thread joined with a short deadline: a peer holding an engine build lock can
+    never keep the orphaned process alive with its models resident. The kernel
+    releases this process's user lock on exit regardless, so a skipped release only
+    defers the engine stop to the peers' reap and the idle TTL.
+    """
+    cleanup = threading.Thread(target=reset_services, name="parent-death-cleanup", daemon=True)
+    cleanup.start()
+    cleanup.join(timeout=_PARENT_DEATH_CLEANUP_S)
+    os._exit(0)
+
+
 def main() -> None:
     """Entry point for the stdio MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
@@ -1390,6 +1417,6 @@ def main() -> None:
 
     parent_pid = parse_parent_pid()
     if parent_pid is not None:
-        watch_parent_thread(parent_pid, lambda: os._exit(0))
+        watch_parent_thread(parent_pid, _exit_on_parent_death)
 
     build_mcp_server().run()

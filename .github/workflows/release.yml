@@ -406,13 +406,22 @@ jobs:
           SERVER_PID=$!
           trap 'kill $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true; echo "=== server log ==="; cat "$SERVER_LOG" || true' EXIT
 
+          # /api/health needs the session token like every other route, so read
+          # the token the server persists on boot and authenticate each probe.
+          TOKEN=""
           for i in $(seq 1 30); do
             if ! kill -0 $SERVER_PID 2>/dev/null; then
               echo "server process died"
               cat "$SERVER_LOG"
               exit 1
             fi
-            if curl -sf http://127.0.0.1:9123/api/health > /dev/null 2>&1; then
+            if [ -z "$TOKEN" ]; then
+              SERVER_JSON=$(find "$LILBEE_DATA" -name server.json 2>/dev/null | head -1 || true)
+              if [ -n "$SERVER_JSON" ]; then
+                TOKEN=$(uv run --no-sync python -c "import json, sys; print(json.load(open(sys.argv[1]))['token'])" "$SERVER_JSON" 2>/dev/null || true)
+              fi
+            fi
+            if [ -n "$TOKEN" ] && curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9123/api/health > /dev/null 2>&1; then
               echo "server responded on attempt $i"
               break
             fi
@@ -424,7 +433,7 @@ jobs:
             fi
           done
 
-          HEALTH=$(curl -sf http://127.0.0.1:9123/api/health)
+          HEALTH=$(curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9123/api/health)
           echo "Health payload: ${HEALTH}"
           SERVER_VERSION=$(uv run --no-sync python -c "import json, sys; print(json.loads(sys.argv[1])['version'])" "${HEALTH}")
           test "${SERVER_VERSION}" = "${EXPECTED}"

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import shutil
+import signal
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
@@ -111,6 +114,8 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "flash_attention": cfg.flash_attention,
         "kv_cache_type": cfg.kv_cache_type.value,
         "n_gpu_layers": cfg.n_gpu_layers,
+        "cpu_moe": cfg.cpu_moe,
+        "n_cpu_moe": cfg.n_cpu_moe,
         "main_gpu": cfg.main_gpu,
         "gpu_devices": cfg.gpu_devices,
     }
@@ -140,7 +145,12 @@ def _self_check_server(
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
-    from lilbee.providers.fleet.planning import chat_cache_type_flags, flash_attn_flag
+    from lilbee.providers.fleet.planning import (
+        chat_cache_type_flags,
+        expert_offload_all,
+        expert_offload_layers,
+        flash_attn_flag,
+    )
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -168,6 +178,12 @@ def _self_check_server(
         cache_type_k=None if is_embed else cache_type_k,
         cache_type_v=None if is_embed else cache_type_v,
         batch_size=ctx if is_embed else None,
+        # Expert offload is role-agnostic in the fleet, so it is here too: an MoE
+        # embedding model with offload configured must get the same command line
+        # from the diagnostic, or the check fails a full-VRAM load the fleet
+        # would have offloaded.
+        cpu_moe=expert_offload_all(meta),
+        n_cpu_moe=expert_offload_layers(meta),
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     launch = InstanceLaunch(
@@ -246,6 +262,30 @@ def _self_check_leg(
     return result, model_path
 
 
+@contextlib.contextmanager
+def _teardown_on_sigterm() -> Iterator[None]:
+    """Convert SIGTERM into an exception so the self-check teardown runs.
+
+    Each leg tears its fleet down and removes its temp dir in a ``finally``. The
+    default SIGTERM disposition ends the interpreter without unwinding, orphaning
+    the engine; raising instead runs the same cleanup a ctrl-c (SIGINT) does.
+    No-op off the main thread and where SIGTERM is not delivered (Windows).
+    """
+
+    def _raise(_signum: int, _frame: FrameType | None) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise)
+    except ValueError:  # pragma: no cover - not the main thread
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def self_check_cmd(
     chat_model_path: Path | None = _self_check_chat_path_option,
     embed_model_path: Path | None = _self_check_embed_path_option,
@@ -271,31 +311,32 @@ def self_check_cmd(
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
-    text, chat_path = _self_check_leg(
-        chat_model_path,
-        _SELF_CHECK_CHAT_REPO,
-        _SELF_CHECK_CHAT_FILE,
-        "chat",
-        lambda p: _self_check_chat(p, max_tokens),
-    )
-
-    if not text.strip():
-        _self_check_emit_failure("empty inference response")
-        raise typer.Exit(1)
-
-    embedding_dims: int | None = None
-    if not skip_embedding:
-        embedding_dims, _ = _self_check_leg(
-            embed_model_path,
-            _SELF_CHECK_EMBED_REPO,
-            _SELF_CHECK_EMBED_FILE,
-            "embedding",
-            _self_check_embed,
+    with _teardown_on_sigterm():
+        text, chat_path = _self_check_leg(
+            chat_model_path,
+            _SELF_CHECK_CHAT_REPO,
+            _SELF_CHECK_CHAT_FILE,
+            "chat",
+            lambda p: _self_check_chat(p, max_tokens),
         )
 
-        if not embedding_dims:
-            _self_check_emit_failure("empty embedding vector")
+        if not text.strip():
+            _self_check_emit_failure("empty inference response")
             raise typer.Exit(1)
+
+        embedding_dims: int | None = None
+        if not skip_embedding:
+            embedding_dims, _ = _self_check_leg(
+                embed_model_path,
+                _SELF_CHECK_EMBED_REPO,
+                _SELF_CHECK_EMBED_FILE,
+                "embedding",
+                _self_check_embed,
+            )
+
+            if not embedding_dims:
+                _self_check_emit_failure("empty embedding vector")
+                raise typer.Exit(1)
 
     provider_kwargs = _resolved_provider_kwargs()
     if cfg.json_mode:

@@ -12,6 +12,7 @@ from lilbee.core.system import (
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_data_dir,
+    default_state_dir,
     find_local_root,
     is_ignored_dir,
     is_network_path,
@@ -104,6 +105,34 @@ class TestHelpers:
         ):
             result = default_data_dir()
             assert result.parts[-3:] == (".local", "share", "lilbee")
+
+    def test_default_state_dir_is_not_a_cache_dir(self, tmp_path):
+        """Live engine records must not sit where a cleaner may wipe them."""
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CACHE_HOME": str(tmp_path / "c")},
+                clear=False,
+            ),
+            mock.patch("sys.platform", "linux"),
+        ):
+            result = default_state_dir()
+            assert result == tmp_path / "state" / "lilbee"
+
+    def test_default_state_dir_linux_fallback(self):
+        filtered = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+        with (
+            mock.patch.dict(os.environ, filtered, clear=True),
+            mock.patch("sys.platform", "linux"),
+        ):
+            result = default_state_dir()
+            assert result.parts[-3:] == (".local", "state", "lilbee")
+
+    def test_default_state_dir_darwin_avoids_purgeable_caches(self):
+        with mock.patch("sys.platform", "darwin"):
+            result = default_state_dir()
+            assert "Caches" not in str(result)
+            assert "Application Support" in str(result)
 
     def test_default_data_dir_windows(self, tmp_path):
         with (

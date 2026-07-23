@@ -13,6 +13,13 @@ _BIN_DIR = Path(__file__).parent / "bin"
 _EXE = ".exe" if sys.platform == "win32" else ""
 
 
+def get_engine_pin() -> str:
+    """Identity of this wheel's engine build (the pinned source versions)."""
+    from lilbee_engine.pins import ENGINE_PIN
+
+    return ENGINE_PIN
+
+
 def get_llama_server_path() -> Path:
     """Absolute path to the bundled ``llama-server`` executable."""
     return _BIN_DIR / f"llama-server{_EXE}"

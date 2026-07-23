@@ -145,6 +145,14 @@ class Config(BaseSettings):
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
+    # that may run off the event loop at once. The ceiling on agents one daemon
+    # serves before their calls queue.
+    mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
+    # Crawled pages converted to markdown on anyio's thread pool at once. The
+    # conversion is synchronous, so this keeps it off the event loop that serves
+    # requests. 0 converts inline on the loop.
+    crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
@@ -442,15 +450,13 @@ class Config(BaseSettings):
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
     # On keeps the engine resident: it never idle-unloads and survives app close
-    # for the next launch to adopt. Off (default) is on-demand: the engine loads
-    # per launch, releases its weights after an idle window, and reloads on the
-    # next prompt.
+    # so the next launch binds instantly. Off (default): the engine stops when
+    # the last lilbee process exits, leaving the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before an on-demand (not-warm) fleet unloads its weights
-    # (llama-swap ttl), so it never holds VRAM past this window. 0 keeps weights
-    # loaded until the app tears the fleet down. Read only when keep_engine_warm
-    # is off (a warm fleet stays resident regardless).
+    # Idle minutes before the engine unloads its weights (llama-swap ttl), in
+    # every mode: even a persistent engine naps when unused. 0 keeps weights
+    # loaded until the engine stops.
     engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
@@ -504,6 +510,15 @@ class Config(BaseSettings):
     # layers, 0 = CPU only, positive int = partial offload. Useful when a
     # discrete GPU has less VRAM than the model needs.
     n_gpu_layers: int | None = ConfigField(default=None, writable=True)
+
+    # Keep a MoE model's expert weights in system memory, attention and shared
+    # layers on the GPU. Lets a sparse model run on a card too small to hold it.
+    # No effect on dense models, which have no expert tensors.
+    cpu_moe: bool = ConfigField(default=False, writable=True)
+
+    # Offload only the first N layers' experts. Takes precedence over cpu_moe;
+    # a smaller N keeps more of the model resident.
+    n_cpu_moe: int | None = ConfigField(default=None, writable=True)
 
     # GPU device picker for dual-GPU machines (typical laptop case:
     # discrete NVIDIA + integrated Intel/AMD). The Vulkan backend
