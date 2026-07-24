@@ -21,13 +21,18 @@ _CITE_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 # Ranges wider than this are page spans or line numbers, not citation lists.
 _MAX_CITE_RANGE = 32
 
-# An LLM-generated citation block: a "Sources:"/"References:"/... heading line
-# followed by a list (bullets, arrows, "[1]" or "1." numbering). Requiring the
-# list keeps an answer that legitimately discusses such a heading in prose
-# (e.g. "References:\n\nIt lists 40 works.") from being clipped.
+# A citation-block heading line: "Sources:"/"References:"/..., optionally
+# markdown-decorated (ATX hashes, emphasis around the word or the colon:
+# "**Sources:**", "*References:*", "**Sources**:").
+_HEADING_WORDS = r"(?:(?:Key\s+)?Sources|References|Bibliography|Citations)"
+_HEADING_LINE = rf"\n{{1,3}}(?:#+\s*)?[*_]{{0,3}}{_HEADING_WORDS}[*_]{{0,3}}\s*:?\s*[*_]{{0,3}}"
+
+# An LLM-generated citation block: a heading line followed by a list (bullets,
+# arrows, "[1]" or "1." numbering). Requiring the list keeps an answer that
+# legitimately discusses such a heading in prose (e.g. "References:\n\nIt
+# lists 40 works.") from being clipped.
 _LLM_CITATION_BLOCK_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n"
-    r"\s*(?:[-*•→\[]|\d+[.)]).*",
+    _HEADING_LINE + r"\n\s*(?:[-*•→\[]|\d+[.)]).*",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -36,7 +41,7 @@ _LLM_CITATION_BLOCK_RE = re.compile(
 # held back rather than shown; at end of stream it is a dangling artifact of a
 # citation block the model never finished, and is dropped either way.
 _TRAILING_HEADING_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*$",
+    _HEADING_LINE + r"\s*$",
     re.IGNORECASE,
 )
 
