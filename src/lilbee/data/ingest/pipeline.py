@@ -374,6 +374,8 @@ class _StreamStop:
     """Stop signal for a streamed plan: the caller's cancel, or the stream closing.
 
     Closing the stream has to reach the shard in flight, not just the next one.
+    Build-vs-buy: the hashers run in a thread pool, so the flag must be a
+    thread-visible ``threading.Event``; ``anyio.CancelScope`` is async-only.
     """
 
     def __init__(self, cancel: _CancelSignal | None) -> None:
@@ -608,7 +610,11 @@ _PLAN_SHARD_MAX_FILES = 8192
 
 
 def _shard_bounds(total: int) -> Iterator[tuple[int, int]]:
-    """(start, stop) slices covering *total* files, doubling up to the cap."""
+    """(start, stop) slices covering *total* files, doubling up to the cap.
+
+    Build-vs-buy: ``itertools.batched`` is the stock slicer but is 3.12+ (floor is
+    3.11) and fixed-size, so it cannot ramp the shard size.
+    """
     start = 0
     size = _PLAN_SHARD_MIN_FILES
     while start < total:
