@@ -593,7 +593,18 @@ def _charge_devices(
     remaining: dict[int, float],
     device_capacity: dict[int, int],
 ) -> None:
-    """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows."""
+    """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
+
+    An estimate that does not cover every pinned device is a PlacementError rather
+    than a zip mismatch: gguf-parser returns no per-device breakdown for some
+    models, and the auto planner skips such a candidate (see :func:`_place_split`),
+    so the manual path must refuse in the currency callers already handle.
+    """
+    if len(per_device) != len(devices):
+        raise PlacementError(
+            f"{role.value} is pinned to {len(devices)} device(s) but its memory estimate "
+            f"covers {len(per_device)}; clear the placement to place it automatically"
+        )
     for idx, peak in zip(devices, per_device, strict=True):
         if peak > remaining[idx]:
             raise PlacementError(
