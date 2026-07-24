@@ -103,11 +103,9 @@ def _install_real_store():
 def _feed(coros):
     """A _ResultFeed over one already-planned shard of file coroutines."""
     from lilbee.data.ingest.pipeline import _ResultFeed
+    from tests.conftest import one_shard
 
-    async def _shards():
-        yield list(coros)
-
-    return _ResultFeed(_shards())
+    return _ResultFeed(one_shard(coros))
 
 
 def _lazy_feed(coros):
