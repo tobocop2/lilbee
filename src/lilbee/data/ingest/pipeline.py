@@ -843,7 +843,9 @@ async def sync(
     """Sync documents/ with the vector store.
     Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
-    When *cancel* is set, processing stops between files without data loss.
+    When *cancel* is set mid-run, planning and processing stop between files
+    without data loss (completed work is flushed) and CancelledError is raised;
+    a cancel already set on entry returns an empty result instead.
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
     markers are cleared so this sync attempts every file.
     """
