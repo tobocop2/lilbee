@@ -1,5 +1,6 @@
 """The engine's cross-process lifecycle primitives: dirs, build lock, user locks."""
 
+import os
 import subprocess
 import sys
 import threading
@@ -294,3 +295,49 @@ def test_kernel_arbitrates_locks_assumes_support_when_the_probe_is_unusable(
         assert el.kernel_arbitrates_locks(tmp_path / "engine") is True
     finally:
         el.kernel_arbitrates_locks.cache_clear()
+
+
+def test_a_restart_reclaims_its_own_prior_keep_warm(monkeypatch, tmp_path: Path) -> None:
+    """Keyed by config root, not pid: a later run (new pid) of the same install
+
+    reclaims the mark an earlier run left, which a pid key could not.
+    """
+    from lilbee.runtime.engine_lock import (
+        keep_warm_requested,
+        request_keep_warm,
+        withdraw_keep_warm,
+    )
+
+    engine, root = tmp_path / "engine", tmp_path / "cfgroot"
+    request_keep_warm(engine, root)  # run 1: warm on
+    assert keep_warm_requested(engine) is True
+    restarted_pid = os.getpid() + 4242
+    monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # run 2 is a new process
+    withdraw_keep_warm(engine, root)  # same install, warm now off
+    assert keep_warm_requested(engine) is False
+
+
+def test_withdrawing_leaves_another_installs_optin_intact(tmp_path: Path) -> None:
+    """Each opt-in is one installation's, so withdrawing ours must not revoke a peer's."""
+    from lilbee.runtime.engine_lock import (
+        keep_warm_requested,
+        request_keep_warm,
+        withdraw_keep_warm,
+    )
+
+    engine = tmp_path / "engine"
+    request_keep_warm(engine, tmp_path / "mine")
+    request_keep_warm(engine, tmp_path / "peer")
+    withdraw_keep_warm(engine, tmp_path / "mine")
+    assert keep_warm_requested(engine) is True
+    withdraw_keep_warm(engine, tmp_path / "peer")
+    assert keep_warm_requested(engine) is False
+
+
+def test_withdrawing_an_absent_keep_warm_is_a_noop(tmp_path: Path) -> None:
+    """Teardown withdraws unconditionally, so an install that never opted in must not raise."""
+    from lilbee.runtime.engine_lock import keep_warm_requested, withdraw_keep_warm
+
+    engine = tmp_path / "engine"
+    withdraw_keep_warm(engine, tmp_path / "cfgroot")
+    assert keep_warm_requested(engine) is False
