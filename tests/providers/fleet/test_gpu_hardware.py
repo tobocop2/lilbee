@@ -22,6 +22,11 @@ NETWORK_CONTROLLER_CLASS = "0x020000"
 
 
 def _write_pci_device(root: Path, slot: str, *, class_code: str, vendor: str) -> None:
+    """Write one sysfs PCI device directory.
+
+    Real slot names are ``0000:00:02.0``; the colons are illegal in Windows paths
+    and the probe never parses the name, so the fixture uses a portable stand-in.
+    """
     device = root / slot
     device.mkdir(parents=True)
     (device / "class").write_text(f"{class_code}\n")
@@ -34,10 +39,10 @@ class TestLinuxSysfs:
     ) -> None:
         """An Intel iGPU beside a discrete NVIDIA card reports both vendors."""
         _write_pci_device(
-            tmp_path, "0000:00:02.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x8086"
+            tmp_path, "0000-00-02.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x8086"
         )
         _write_pci_device(
-            tmp_path, "0000:01:00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x10de"
+            tmp_path, "0000-01-00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x10de"
         )
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
@@ -49,7 +54,7 @@ class TestLinuxSysfs:
     ) -> None:
         """An Intel network card is not an Intel GPU."""
         _write_pci_device(
-            tmp_path, "0000:00:1f.6", class_code=NETWORK_CONTROLLER_CLASS, vendor="0x8086"
+            tmp_path, "0000-00-1f.6", class_code=NETWORK_CONTROLLER_CLASS, vendor="0x8086"
         )
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
@@ -73,7 +78,7 @@ class TestLinuxSysfs:
         3D controllers, so narrowing this to VGA would report them as absent and
         disable the driver they need.
         """
-        _write_pci_device(tmp_path, "0000:01:00.0", class_code=class_code, vendor="0x1002")
+        _write_pci_device(tmp_path, "0000-01-00.0", class_code=class_code, vendor="0x1002")
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
@@ -83,12 +88,12 @@ class TestLinuxSysfs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A device missing class or vendor drops out instead of failing the probe."""
-        (tmp_path / "0000:00:02.0").mkdir()  # no class file at all
-        no_vendor = tmp_path / "0000:01:00.0"
+        (tmp_path / "0000-00-02.0").mkdir()  # no class file at all
+        no_vendor = tmp_path / "0000-01-00.0"
         no_vendor.mkdir()
         (no_vendor / "class").write_text(VGA_CONTROLLER_CLASS)
         _write_pci_device(
-            tmp_path, "0000:02:00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x10de"
+            tmp_path, "0000-02-00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x10de"
         )
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
@@ -99,7 +104,7 @@ class TestLinuxSysfs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A non-hex class code cannot raise out of the probe."""
-        _write_pci_device(tmp_path, "0000:00:02.0", class_code="not-a-number", vendor="0x8086")
+        _write_pci_device(tmp_path, "0000-00-02.0", class_code="not-a-number", vendor="0x8086")
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
