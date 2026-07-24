@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock, Mock
 
+import numpy as np
 import pytest
 
 import lilbee.app.services as svc_mod
@@ -79,7 +80,7 @@ def mock_svc():
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
     embedder = MagicMock()
-    embedder.embed.side_effect = lambda text, **kw: [0.1] * 768
+    embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     # Real int so sync()'s truncated_total delta is 0, not a coerced MagicMock.
     embedder.truncated_total = 0

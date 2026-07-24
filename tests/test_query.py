@@ -3,6 +3,7 @@
 from typing import ClassVar
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from lilbee.app.services import get_services, set_services
@@ -510,7 +511,7 @@ class TestSearchContext:
         original = _make_result(source="a.md", chunk_index=0)
         expanded = _make_result(source="b.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[original], [expanded]]
-        mock_svc.embedder.embed.return_value = [0.1] * 768
+        mock_svc.embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
         mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 2
@@ -521,7 +522,7 @@ class TestSearchContext:
     def test_expansion_deduplicates(self, mock_svc):
         same = _make_result(source="a.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[same], [same]]
-        mock_svc.embedder.embed.return_value = [0.1] * 768
+        mock_svc.embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
         mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 1

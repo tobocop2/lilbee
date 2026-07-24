@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
@@ -482,7 +483,7 @@ class TestEmbed:
     def test_returns_vectors(self) -> None:
         backend = FakeBackend(embed_result=EmbeddingResult(vectors=[[0.0, 1.0]]))
         provider = SdkLLMProvider(backend)
-        assert provider.embed(["hi"]) == [[0.0, 1.0]]
+        assert [v.tolist() for v in provider.embed(["hi"])] == [[0.0, 1.0]]
 
     def test_request_includes_api_base_for_ollama(self) -> None:
         backend = FakeBackend()
@@ -510,6 +511,17 @@ class TestEmbed:
         assert req.ref.name == "org/Custom-Embed-GGUF/custom-Q4_K_M.gguf"
         assert req.ref.provider == "local"
         assert req.api_base is None
+
+    def test_converts_sdk_float_lists_to_float32_arrays(self) -> None:
+        # The SDK hands back JSON floats; the provider contract is float32 arrays.
+        backend = FakeBackend(embed_result=EmbeddingResult(vectors=[[0.25, -0.5], [1.0, 0.0]]))
+        vectors = SdkLLMProvider(backend).embed(["a", "b"])
+        assert all(isinstance(v, np.ndarray) and v.dtype == np.float32 for v in vectors)
+        assert [v.tolist() for v in vectors] == [[0.25, -0.5], [1.0, 0.0]]
+
+    def test_embed_of_no_texts_returns_no_vectors(self) -> None:
+        backend = FakeBackend(embed_result=EmbeddingResult(vectors=[]))
+        assert SdkLLMProvider(backend).embed([]) == []
 
     def test_wraps_backend_errors(self) -> None:
         backend = FakeBackend(raise_embed=RuntimeError("oops"))

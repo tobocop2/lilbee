@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 
 from lilbee.providers.fleet.client import LlamaServerClient
@@ -57,4 +58,5 @@ def test_client_chat_plain_stream_and_tools(stub_client: LlamaServerClient) -> N
 def test_client_embeds_over_real_http(stub_client: LlamaServerClient) -> None:
     embeds = stub_client.embed(["a", "b"])
     assert len(embeds) == 2
-    assert embeds[0] == [0.5, 0.5]
+    assert embeds[0].dtype == np.float32
+    assert embeds[0].tolist() == [0.5, 0.5]

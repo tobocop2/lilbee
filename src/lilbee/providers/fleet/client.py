@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     THINK_CLOSE_TAG,
     THINK_OPEN_TAG,
@@ -850,15 +851,15 @@ class LlamaServerClient:
             return None if _is_transient_probe_failure(exc) else False
         return True
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         """Embed a batch via ``/v1/embeddings``."""
         if not texts:
             # Match the in-process embedder; the server rejects an empty input.
             return []
-        vectors: list[list[float]] = []
+        vectors: list[Vector] = []
         for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
             data = self._embed_subbatch(sub_batch)
-            vectors.extend(_embedding_vector(item).tolist() for item in data)
+            vectors.extend(_embedding_vector(item) for item in data)
         return vectors
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
