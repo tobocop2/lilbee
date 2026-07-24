@@ -11502,7 +11502,7 @@ def test_run_tui_keyboard_interrupt_during_shutdown_propagates():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.sync.shutdown_executor", side_effect=KeyboardInterrupt),
-        patch("lilbee.cli.tui.reset_services") as mock_reset,
+        patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
         pytest.raises(KeyboardInterrupt),
     ):
         run_tui()

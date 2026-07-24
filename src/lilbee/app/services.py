@@ -312,8 +312,8 @@ def peek_services() -> Services | None:
     return _state.singleton
 
 
-# Serializes the singleton swap in reset_services: the hard-exit teardown
-# thread and the atexit hook can race, and both tearing down the same container
+# Serializes the singleton swap in reset_services: a signal's teardown thread
+# and an exiting caller's can race, and both tearing down the same container
 # would double-close the store.
 _reset_swap_lock = threading.Lock()
 
@@ -323,10 +323,10 @@ def reset_services() -> None:
 
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
-    locked so concurrent callers (the hard-exit teardown thread plus atexit)
-    tear the container down exactly once. On the shared HTTP daemon every entry
-    point that would call this mid-flight is refused, so it only ever runs
-    single-client (CLI, TUI, stdio MCP).
+    locked so concurrent callers (a signal's teardown thread plus an exiting
+    one) tear the container down exactly once. On the shared HTTP daemon every
+    entry point that would call this mid-flight is refused, so it only ever
+    runs single-client (CLI, TUI, stdio MCP).
     """
     with _reset_swap_lock:
         old = _state.singleton
@@ -418,7 +418,7 @@ class _EngineLifecycle:
 
 
 def wait_for_hard_exit_teardown() -> None:
-    """Block until a signal-driven teardown thread (if any) finishes.
+    """Block until any teardown thread (signal-driven or exit-driven) finishes.
 
     Lets ``serve`` hold its OS locks through the fleet stop, so a successor
     cannot acquire them while this server's models still occupy memory.
@@ -426,6 +426,20 @@ def wait_for_hard_exit_teardown() -> None:
     for thread in threading.enumerate():
         if thread.name == _HARD_EXIT_THREAD_NAME:
             thread.join()
+
+
+def reset_services_on_exit() -> None:
+    """Tear the container down on a thread no signal reaches, and wait for it.
+
+    Engine release waits on the fleet build lock before it releases anything, so
+    a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
+    singleton is already cleared. The teardown thread is non-daemon and takes no
+    signals, so an interrupt breaks only the join here.
+    """
+    if peek_services() is None:
+        return
+    threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
+    wait_for_hard_exit_teardown()
 
 
 def _teardown_for_signal(signum: int) -> None:
@@ -444,4 +458,4 @@ def install_engine_lifecycle_hooks() -> None:
     _lifecycle.install()
 
 
-atexit.register(reset_services)
+atexit.register(reset_services_on_exit)
