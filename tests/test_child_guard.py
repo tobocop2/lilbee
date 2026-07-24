@@ -9,6 +9,9 @@ binding problem never fails a launch.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -48,7 +51,7 @@ class TestPlatformDispatch:
 
         monkeypatch.setattr(child_guard._spawner, "spawn", _spawn)
 
-        result = child_guard.spawn_llama_swap(["/x/llama-swap"], stdout=7)
+        result = child_guard.spawn_bound_child(["/x/llama-swap"], stdout=7)
 
         assert result == "proc"
         assert callable(captured["kwargs"]["preexec_fn"])  # the death-signal preexec
@@ -69,19 +72,55 @@ class TestPlatformDispatch:
 
         monkeypatch.setattr(child_guard._spawner, "spawn", _spawn)
 
-        child_guard.spawn_llama_swap(["/x/llama-swap"], bind_lifetime=False)
+        child_guard.spawn_bound_child(["/x/llama-swap"], bind_lifetime=False)
 
         assert "preexec_fn" not in captured["kwargs"]
         assert assigned == []  # no job object either
 
-    def test_macos_spawns_plainly_with_no_binding(self, monkeypatch):
+    def test_macos_binds_through_a_death_pipe(self, monkeypatch):
+        # No prctl and no job object here, so the portable pipe-EOF watcher is
+        # what makes a SIGKILLed lilbee take its engine with it.
         monkeypatch.setattr(child_guard.sys, "platform", "darwin")
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc") as popen:
-            result = child_guard.spawn_llama_swap(["/x/llama-swap"], stdout=7)
+        proc = mock.MagicMock(pid=4321)
+        watched: list[int] = []
+        monkeypatch.setattr(child_guard, "_watch_via_death_pipe", watched.append)
+        with mock.patch.object(child_guard.subprocess, "Popen", return_value=proc) as popen:
+            result = child_guard.spawn_bound_child(["/x/llama-swap"], stdout=7)
 
-        assert result == "proc"
-        # No death-signal preexec, no job object: the reap is the macOS backstop.
+        assert result is proc
+        assert watched == [4321]
         assert "preexec_fn" not in popen.call_args.kwargs
+
+    def test_keep_warm_on_macos_gets_no_death_pipe(self, monkeypatch):
+        # The whole point of keep_engine_warm is outliving this process, so the
+        # portable binding must be skipped exactly like the kernel ones.
+        monkeypatch.setattr(child_guard.sys, "platform", "darwin")
+        watched: list[int] = []
+        monkeypatch.setattr(child_guard, "_watch_via_death_pipe", watched.append)
+        with mock.patch.object(child_guard.subprocess, "Popen", return_value=mock.MagicMock()):
+            child_guard.spawn_bound_child(["/x/llama-swap"], bind_lifetime=False)
+
+        assert watched == []
+
+    def test_a_failed_death_signal_spawn_falls_back_to_the_death_pipe(self, monkeypatch):
+        # Losing prctl must not drop the binding entirely where a pipe still works.
+        monkeypatch.setattr(child_guard, "_libc", mock.MagicMock())
+        monkeypatch.setattr(child_guard.sys, "platform", "linux")
+        proc = mock.MagicMock(pid=77)
+        watched: list[int] = []
+        monkeypatch.setattr(child_guard, "_watch_via_death_pipe", watched.append)
+        calls: list[dict] = []
+
+        def _spawn(*args, **kwargs):
+            calls.append(kwargs)
+            if "preexec_fn" in kwargs:
+                raise OSError("preexec unavailable")
+            return proc
+
+        monkeypatch.setattr(child_guard._spawner, "spawn", _spawn)
+
+        assert child_guard.spawn_bound_child(["/x/llama-swap"]) is proc
+        assert watched == [77]
 
     def test_windows_assigns_the_child_to_a_kill_on_close_job(self, monkeypatch):
         monkeypatch.setattr(child_guard.sys, "platform", "win32")
@@ -89,7 +128,7 @@ class TestPlatformDispatch:
         assigned: list[int] = []
         monkeypatch.setattr(child_guard, "_assign_to_kill_on_close_job", assigned.append)
         with mock.patch.object(child_guard.subprocess, "Popen", return_value=proc):
-            result = child_guard.spawn_llama_swap(["/x/llama-swap"])
+            result = child_guard.spawn_bound_child(["/x/llama-swap"])
 
         assert result is proc
         assert assigned == [4321]
@@ -149,22 +188,24 @@ class TestFailureNeverFailsASpawn:
 
         monkeypatch.setattr(child_guard, "_assign_to_kill_on_close_job", _boom)
         with mock.patch.object(child_guard.subprocess, "Popen", return_value=proc):
-            result = child_guard.spawn_llama_swap(["/x/llama-swap"])
+            result = child_guard.spawn_bound_child(["/x/llama-swap"])
 
         assert result is proc  # spawned anyway; the next launch reaps it
 
-    def test_a_linux_spawn_error_falls_back_to_a_plain_spawn(self, monkeypatch):
+    def test_a_linux_spawn_error_still_returns_the_child(self, monkeypatch):
         monkeypatch.setattr(child_guard, "_libc", mock.MagicMock())
+        proc = mock.MagicMock(pid=55)
+        monkeypatch.setattr(child_guard, "_watch_via_death_pipe", lambda _pid: None)
 
         def _spawn(_argv, **kwargs):
             # The binding attempt carries the death-signal preexec; the retry does not.
             if "preexec_fn" in kwargs:
                 raise OSError("preexec rejected")
-            return "plain"
+            return proc
 
         monkeypatch.setattr(child_guard._spawner, "spawn", _spawn)
 
-        assert child_guard.spawn_llama_swap(["/x/llama-swap"]) == "plain"
+        assert child_guard.spawn_bound_child(["/x/llama-swap"]) is proc
 
 
 @pytest.fixture
@@ -206,3 +247,84 @@ class TestTheLifetimeSpawner:
         assert spawner._executor is not None
         spawner.close()
         assert spawner._executor is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the death pipe is the POSIX fallback")
+class TestTheDeathPipe:
+    def test_the_watcher_signals_the_child_when_the_write_end_closes(self, monkeypatch):
+        """The real thing: a live sleeper dies once the pipe's write end is closed.
+
+        Closing the write end by hand is exactly what the kernel does when this
+        process dies, which is the case that cannot be staged from inside a test.
+        """
+        held: list[int] = []
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            child_guard._watch_via_death_pipe(victim.pid)
+            assert held, "no write end was retained"
+            assert victim.poll() is None, "victim died before the pipe closed"
+
+            os.close(held[0])
+
+            victim.wait(timeout=15)
+        finally:
+            if victim.poll() is None:
+                victim.kill()
+                victim.wait(timeout=10)
+
+    def test_the_write_end_is_held_so_only_this_process_death_closes_it(self, monkeypatch):
+        """A dropped reference would close the pipe early and kill a healthy engine."""
+        held: list[int] = []
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
+
+        child_guard._watch_via_death_pipe(1234)
+
+        assert len(held) == 1
+        os.fstat(held[0])  # raises if it was closed
+        os.close(held[0])
+
+    def test_a_watcher_that_cannot_take_the_read_end_never_signals(self, monkeypatch):
+        """A broken binding must degrade to no binding, not to killing the child.
+
+        The first cut dup2'd the read end in a preexec_fn, which subprocess then
+        closed (it closes fds *after* preexec), so the watcher's redirect failed
+        and it fell straight through to the kill: every bound child died within
+        milliseconds of being spawned.
+        """
+        held: list[int] = []
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        try:
+            # pass_fds dropped, so the inherited read end is not there to redirect.
+            real_spawn = child_guard._spawner.spawn
+            monkeypatch.setattr(
+                child_guard._spawner,
+                "spawn",
+                lambda argv, **kw: real_spawn(argv, **{**kw, "pass_fds": ()}),
+            )
+
+            child_guard._watch_via_death_pipe(victim.pid)
+            for fd in held:
+                os.close(fd)
+
+            with pytest.raises(subprocess.TimeoutExpired):
+                victim.wait(timeout=3)
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+
+    def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):
+        """The reap is the fallback, but a leaked fd per failed spawn is not."""
+        held: list[int] = []
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        monkeypatch.setattr(
+            child_guard._spawner, "spawn", mock.MagicMock(side_effect=OSError("no sh"))
+        )
+        before = len(os.listdir("/dev/fd"))
+
+        child_guard._watch_via_death_pipe(1234)
+
+        assert held == []
+        assert len(os.listdir("/dev/fd")) <= before

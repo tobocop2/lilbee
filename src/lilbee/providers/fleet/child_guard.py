@@ -15,12 +15,16 @@ mechanism is unavailable, so a failure here never fails a spawn:
   that thread returned.
 * Windows: the child joins a job object marked kill-on-close. The job handle is
   held for the life of the process, so every child in it dies when the handle does.
-* macOS: no equivalent primitive, so the spawn is plain and the reap covers it.
+* Everywhere else (macOS, and any POSIX host where prctl is unavailable): a death
+  pipe. This process holds the write end open for its lifetime, so the kernel
+  closes it however this process dies, SIGKILL included; a small ``sh`` watcher
+  holding the read end sees EOF and signals the child.
 
 Not a third-party library: ``processfamily`` wraps the same primitives but needs
 ``pywin32`` (the standalone build cannot bundle it) and its ``prctl`` path skips
-macOS. The syscalls are a few ctypes lines and the process-lifetime routing is
-lilbee-specific, so they stay custom; the single-worker executor is the stdlib's.
+macOS, which is the only platform still needing cover. The syscalls are a few
+ctypes lines and the process-lifetime routing is lilbee-specific, so they stay
+custom; the single-worker executor is the stdlib's.
 """
 
 from __future__ import annotations
@@ -62,6 +66,15 @@ _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JOB_OBJECT_EXTENDED_LIMIT_CLASS = 9
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
+
+# Where the watcher parks the read end. POSIX sh only guarantees a single-digit
+# fd as a redirect target, so the inherited fd is moved here before it is read.
+_DEATH_PIPE_CHILD_FD = 3
+
+# Write ends of every live death pipe. Held for the process's lifetime so the
+# kernel is what closes them; dropping a reference would fake this process's
+# death and take the engine down with it.
+_death_pipe_write_fds: list[int] = []
 
 
 def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
@@ -180,16 +193,68 @@ def _assign_to_kill_on_close_job(pid: int) -> None:  # pragma: no cover - Window
         kernel32.CloseHandle(handle)
 
 
-def spawn_llama_swap(
-    argv: list[str], *, bind_lifetime: bool = True, **popen_kwargs: Any
-) -> subprocess.Popen[Any]:
-    """Spawn llama-swap, by default bound to this process's lifetime.
+def _watch_via_death_pipe(pid: int) -> None:
+    """Signal *pid* from a detached watcher once this process's death closes a pipe.
 
-    With ``bind_lifetime`` a crash cannot orphan the engine; the binding is
-    best-effort, so an unavailable platform primitive falls back to a plain spawn
-    and the stale-engine reap on the next launch is the backstop. ``bind_lifetime``
-    is False when the engine is meant to outlive this process on purpose
-    (``keep_engine_warm``), where that same reap is the only cleanup wanted.
+    The portable stand-in for prctl and job objects: this process keeps the write
+    end for its lifetime, so only its death closes it, whatever the cause. The
+    watcher blocks reading the read end and terminates *pid* at EOF.
+
+    Best-effort like the primitives it stands in for. It signals a pid rather than
+    holding a kernel handle, so a pid recycled between this process's death and the
+    signal could be hit; the window is the watcher's wakeup, and the ``kill -0``
+    guard covers the common case of an already-dead child.
+    """
+    read_fd, write_fd = os.pipe()
+    # `|| exit 0` is load-bearing: a watcher that cannot take the read end must
+    # leave without signalling. Falling through to the kill would make a failed
+    # binding destroy the child it exists to protect, which is far worse than
+    # not binding at all. Only the redirect target must be a single digit; the
+    # source may be any fd number, so no dup2 (and no preexec) is needed.
+    script = (
+        f"exec {_DEATH_PIPE_CHILD_FD}<&{read_fd} || exit 0; "
+        f"read -r _ <&{_DEATH_PIPE_CHILD_FD}; "
+        f"kill -0 {pid} 2>/dev/null && kill {pid}"
+    )
+    try:
+        _spawner.spawn(
+            ["/bin/sh", "-c", script],
+            pass_fds=(read_fd,),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        os.close(write_fd)
+        log.info("Could not bind the engine to this process; the next launch reaps it.")
+    else:
+        _death_pipe_write_fds.append(write_fd)
+    finally:
+        os.close(read_fd)
+
+
+def spawn_bound_child(
+    argv: list[str],
+    *,
+    bind_lifetime: bool = True,
+    death_pipe: bool = True,
+    **popen_kwargs: Any,
+) -> subprocess.Popen[Any]:
+    """Spawn *argv*, by default bound to this process's lifetime.
+
+    With ``bind_lifetime`` a crash cannot orphan the child; the binding is
+    best-effort, so an unavailable platform primitive falls back to the stale
+    reap on the next launch. ``bind_lifetime`` is False when the child is meant
+    to outlive this process on purpose (``keep_engine_warm``), where that same
+    reap is the only cleanup wanted.
+
+    ``death_pipe`` is False for a short-lived child. The pipe's watcher lives
+    until this process dies, so binding a child that outlives neither is a
+    process and an fd held for nothing, and by then the pid it would signal may
+    belong to something else. Kernel bindings have neither cost and still apply.
+
+    Callers that also want the child in its own process group pass
+    ``start_new_session=True``; the binding does not depend on it.
     """
     if not bind_lifetime:
         return _spawner.spawn(argv, **popen_kwargs)
@@ -199,8 +264,7 @@ def spawn_llama_swap(
         try:
             return _spawner.spawn(argv, preexec_fn=preexec, **popen_kwargs)
         except OSError:
-            log.info("Could not bind the engine to this process; the next launch reaps it.")
-            return _spawner.spawn(argv, **popen_kwargs)
+            log.info("Could not bind the engine to this process; falling back to a death pipe.")
 
     proc = _spawner.spawn(argv, **popen_kwargs)
     if sys.platform == "win32":
@@ -208,4 +272,6 @@ def spawn_llama_swap(
             _assign_to_kill_on_close_job(proc.pid)
         except OSError:
             log.info("Could not bind the engine to this process; the next launch reaps it.")
+    elif death_pipe:
+        _watch_via_death_pipe(proc.pid)
     return proc

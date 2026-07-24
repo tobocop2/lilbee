@@ -1,6 +1,6 @@
 """Tests for ``lilbee.cli.launchers.server.spawn_server`` stdout/stderr wiring.
 
-``subprocess.Popen`` is patched so no real ``lilbee serve`` process is spawned;
+``spawn_bound_child`` is patched so no real ``lilbee serve`` process is spawned;
 the tests assert how the child's stdout/stderr are routed (DEVNULL in quiet
 mode, a size-capped log file otherwise).
 """
@@ -21,7 +21,7 @@ from tests._mock_effects import repeat_last
 
 @pytest.fixture()
 def _capture_popen():
-    """Patch Popen to record the stdout/stderr kwargs without spawning."""
+    """Patch the bound spawn to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
     def fake_popen(cmd, *, stdout, stderr, env=None):
@@ -31,7 +31,7 @@ def _capture_popen():
         captured["env"] = env
         return mock.MagicMock()
 
-    with mock.patch.object(server_mod.subprocess, "Popen", side_effect=fake_popen):
+    with mock.patch.object(server_mod, "spawn_bound_child", side_effect=fake_popen):
         yield captured
 
 

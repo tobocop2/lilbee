@@ -183,8 +183,29 @@ def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPat
         def communicate(self, timeout: float | None = None) -> tuple[str, None]:
             return (_CUDA_LISTING, None)
 
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
+    monkeypatch.setattr(dev_mod, "spawn_bound_child", lambda *_a, **_k: _HealthyProc())
     assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
+
+
+def test_probe_killed_on_a_ctrl_c_during_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A KeyboardInterrupt while the probe runs must kill it, not only a timeout.
+
+    The probe writes no state file, so no later reap can match it; unless this
+    branch kills it here, a Ctrl-C during startup strands it holding a device.
+    """
+
+    class _InterruptedProc:
+        pid = 4242
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
+            raise KeyboardInterrupt
+
+    killed: list[object] = []
+    monkeypatch.setattr(dev_mod, "spawn_bound_child", lambda *_a, **_k: _InterruptedProc())
+    monkeypatch.setattr(dev_mod, "_kill_probe", killed.append)
+    with pytest.raises(KeyboardInterrupt):
+        dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0)
+    assert len(killed) == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -218,7 +239,7 @@ def test_probe_abandons_an_unreapable_child(
         def communicate(self, timeout: float | None = None) -> tuple[str, str]:
             raise subprocess.TimeoutExpired(cmd="llama-server", timeout=timeout or 0)
 
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _WedgedProc())
+    monkeypatch.setattr(dev_mod, "spawn_bound_child", lambda *_a, **_k: _WedgedProc())
     monkeypatch.setattr(dev_mod.os, "name", "posix")
     monkeypatch.setattr(dev_mod.os, "killpg", lambda *_a: None, raising=False)
     monkeypatch.setattr(dev_mod.signal, "SIGKILL", 9, raising=False)
