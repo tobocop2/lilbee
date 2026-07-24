@@ -4700,3 +4700,74 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
         assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
         for client in clients:
             client.mark_unhealthy.assert_called_once()
+
+
+class TestEmbedCoalescingRoute:
+    """embed() routes through the coalescer only inside a coalesce_embeds() context."""
+
+    def _provider(self, monkeypatch) -> tuple[FleetProvider, list[list[str]]]:
+        """A provider whose fleet-touching dispatch is stubbed to record its input.
+
+        The real ``_embed_coalescer`` factory (built from the live replica count)
+        is exercised on top of the stub; ``calls`` captures what actually reached
+        the dispatch so a test can prove the route, not just the return value.
+        """
+        fleet = FleetProvider()
+        calls: list[list[str]] = []
+
+        def _batch(texts: list[str]) -> list[list[float]]:
+            calls.append(list(texts))
+            return [[float(len(t))] for t in texts]
+
+        monkeypatch.setattr(fleet, "_embed_batch", _batch)
+        return fleet, calls
+
+    def test_direct_dispatch_without_context(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.embed_coalescer import coalescing_enabled
+
+        fleet, calls = self._provider(monkeypatch)
+        assert coalescing_enabled() is False
+        try:
+            assert fleet.embed(["hello"]) == [[5.0]]
+            assert calls == [["hello"]]  # reached _embed_batch directly
+            # No coalescer was ever built for the direct path.
+            assert fleet.__dict__.get("_coalescer") is None
+        finally:
+            fleet.shutdown()
+
+    def test_coalesced_dispatch_inside_context(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, calls = self._provider(monkeypatch)
+        try:
+            with coalesce_embeds():
+                assert fleet.embed(["hello"]) == [[5.0]]
+            assert calls == [["hello"]]  # the coalescer dispatched to _embed_batch
+            assert fleet.__dict__.get("_coalescer") is not None
+        finally:
+            fleet.shutdown()
+
+    def test_empty_never_routes_to_coalescer(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, calls = self._provider(monkeypatch)
+        try:
+            with coalesce_embeds():
+                assert fleet.embed([]) == []
+            # Empty input takes the direct path, never building the coalescer.
+            assert calls == [[]]
+            assert fleet.__dict__.get("_coalescer") is None
+        finally:
+            fleet.shutdown()
+
+    def test_shutdown_closes_the_coalescer(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, _ = self._provider(monkeypatch)
+        with coalesce_embeds():
+            fleet.embed(["warm"])
+        coalescer = fleet.__dict__.get("_coalescer")
+        assert coalescer is not None
+        fleet.shutdown()
+        assert fleet._coalescer is None
+        assert coalescer._thread.is_alive() is False

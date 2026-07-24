@@ -43,6 +43,7 @@ from lilbee.providers.fleet.client import (
     retry_on_busy,
 )
 from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
+from lilbee.providers.fleet.embed_coalescer import EmbedCoalescer, coalescing_enabled
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -177,6 +178,12 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
 # Serializes pick-and-reserve so concurrent routers see each other's assignment.
 # Held only for the O(replicas) selection, never across the request itself.
 _ROUTE_LOCK = threading.Lock()
+
+# Concurrent coalesced-embed batches in flight: a couple per replica so each
+# card's continuous-batching slots stay full while one batch's results are being
+# parsed, with a floor for single-GPU and fleet-size-unknown hosts.
+_EMBED_DISPATCH_PER_REPLICA = 2
+_MIN_EMBED_DISPATCH = 8
 
 
 def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -856,6 +863,11 @@ class FleetProvider:
         # can block until the reload it requested (or the in-flight one that will
         # run its pending pass) has finished.
         self._reload_done = threading.Condition(self._lock)
+        # Bulk-ingest embed coalescer, built lazily on the first coalesced embed
+        # (by when the fleet is up and the replica count is known) and closed at
+        # shutdown. Only engaged inside a ``coalesce_embeds()`` context.
+        self._coalescer: EmbedCoalescer | None = None
+        self._coalescer_lock = threading.Lock()
 
     def _ensure_fleet(self) -> bool:
         """Start one llama-swap per placed role exactly once across concurrent callers.
@@ -1594,11 +1606,43 @@ class FleetProvider:
         return result.messages
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        # Under a bulk ingest, merge concurrent one-passage calls into full
+        # batches so the fixed per-request cost is not paid per passage; the
+        # interactive query/chat path (no coalescing context) dispatches directly.
+        if texts and coalescing_enabled():
+            return self._embed_coalescer().embed(texts)
+        return self._embed_batch(texts)
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         return self._with_rediscover(lambda: self._embed_once(texts))
 
     def _embed_once(self, texts: list[str]) -> list[list[float]]:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
+
+    def _embed_coalescer(self) -> EmbedCoalescer:
+        """The ingest embed coalescer, built on first use from the live fleet size."""
+        with self._coalescer_lock:
+            if self._coalescer is None:
+                from lilbee.core.config import active_config
+                from lilbee.providers.fleet.replicas import (
+                    gpu_device_count,
+                    resolve_replica_count,
+                )
+
+                try:
+                    replicas = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
+                except Exception:
+                    replicas = 1
+                # A few batches per replica in flight keep every card's slots full
+                # without falling back to a request-per-passage flood.
+                concurrency = max(_MIN_EMBED_DISPATCH, replicas * _EMBED_DISPATCH_PER_REPLICA)
+                self._coalescer = EmbedCoalescer(
+                    self._embed_batch,
+                    max_batch=active_config().embed_batch_sequences,
+                    max_concurrency=concurrency,
+                )
+            return self._coalescer
 
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
@@ -2383,4 +2427,9 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
+        # Drain and stop the coalescer before the servers it dispatches to go away.
+        with self._coalescer_lock:
+            coalescer, self._coalescer = self._coalescer, None
+        if coalescer is not None:
+            coalescer.close()
         self._shutdown_swap()

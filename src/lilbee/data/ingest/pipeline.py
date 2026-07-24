@@ -879,11 +879,14 @@ async def sync(
         if first is not None:
             # Hold the embed fleet resident for the whole batch: an unevenly loaded
             # replica must not idle-unload and reload cold mid-run (which snowballs
-            # into a fleet collapse). The ContextVar propagates into the ingest
-            # thread pool, where the fleet actually spawns on the first embed.
+            # into a fleet collapse). coalesce_embeds merges the per-file embed calls
+            # into full batches so a single-chunk corpus does not starve the fleet
+            # with one request per passage. Both ContextVars propagate into the
+            # ingest thread pool, where the fleet actually spawns on the first embed.
+            from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
             from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
-            with keep_fleet_warm():
+            with keep_fleet_warm(), coalesce_embeds():
                 get_services().embedder.validate_model()
                 await ingest_stream(
                     _chain_shards(first, shards),
