@@ -14,6 +14,7 @@ from lilbee.app.services import (
     install_engine_lifecycle_hooks,
     peek_services,
     reset_services,
+    reset_services_on_exit,
     set_services,
     wait_for_hard_exit_teardown,
 )
@@ -193,3 +194,47 @@ def test_wait_for_hard_exit_teardown_joins_the_running_thread():
 
 def test_wait_for_hard_exit_teardown_without_a_teardown_is_a_noop():
     wait_for_hard_exit_teardown()
+
+
+def test_exit_teardown_runs_off_the_main_thread():
+    """Only the main thread takes signals, so an exit teardown must leave it."""
+    provider = _install_stub_services()
+    runners: list[threading.Thread] = []
+    provider.shutdown.side_effect = lambda: runners.append(threading.current_thread())
+
+    reset_services_on_exit()
+
+    assert runners
+    assert runners[0] is not threading.main_thread()
+    assert runners[0].daemon is False
+    assert peek_services() is None
+
+
+def test_exit_teardown_finishes_after_the_wait_is_interrupted(monkeypatch):
+    """A second Ctrl-C must abandon only the wait, never the fleet stop."""
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    monkeypatch.setattr(
+        services_mod,
+        "wait_for_hard_exit_teardown",
+        MagicMock(side_effect=KeyboardInterrupt),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        reset_services_on_exit()
+
+    release.set()
+    _join_teardown()
+    provider.shutdown.assert_called_once()
+
+
+def test_exit_teardown_without_services_starts_no_thread(monkeypatch):
+    """Every process exit runs this hook; an unused container costs no thread."""
+    reset_services()
+    spawned = MagicMock()
+    monkeypatch.setattr(services_mod.threading, "Thread", spawned)
+
+    reset_services_on_exit()
+
+    spawned.assert_not_called()
