@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 from litestar.testing import TestClient
 
@@ -47,7 +48,7 @@ def store():
     store.update_memory.return_value = True
     store.delete_memory.return_value = True
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     svc_mod.set_services(make_mock_services(store=store, embedder=embedder))
     yield store
     svc_mod.set_services(None)

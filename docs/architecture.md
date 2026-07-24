@@ -279,10 +279,33 @@ measured 12% slower, to guard against corruption that loopback HTTP already excl
 wrong buffer length, a wrong response shape, and a wrong vector dimension are each still
 caught, the last by the store on write.
 
-**What headroom is left?** Returning numpy arrays instead of `list[float]` measures
-40 ms per 1k vectors, but it changes the embedding contract across every provider
-backend. GPUs saturate well before decode does at current fleet sizes, so that trade is
-not worth its blast radius yet.
+**Vectors stay numpy to the store.** Most of what was left after base64 was not the wire
+at all. `numpy.frombuffer` gives a float32 array, and the client then called `.tolist()`
+on it, building 4096 Python float objects per vector to satisfy a `list[list[float]]`
+signature. Nothing downstream wanted them: pyarrow and LanceDB take float32 arrays
+directly, and the vector column is float32 either way. So `LLMProvider.embed` returns
+`list[NDArray[float32]]` (`Vector` in `core/vectors.py`) and the conversion is gone.
+
+Measured end to end through `LlamaServerClient.embed` against a mock transport, so the
+figure includes envelope parse, base64 decode, and the client's own batching, not decode
+alone. 4096-dimensional, 64 per batch, median of 7 reps:
+
+| | base64 + `tolist` | base64, numpy |
+|---|---|---|
+| CPU per 1k vectors | 128 ms | **70 ms** |
+
+Base measured against itself across runs varies about 1.5%, so the 46% drop is signal.
+Isolating the decode alone puts the remaining cost near 40 ms per 1k and the one-core
+ceiling around 25,000 vectors/sec, up from roughly 9,000.
+
+Batching the conversion was not the alternative. One contiguous 2D `tolist` measured
+101 ms per 1k against 96 ms per vector: the cost is allocating float objects, not call
+overhead, so only not allocating them helps.
+
+The SDK backends (Ollama, OpenAI via litellm) receive JSON float lists from their SDK
+and convert once at the provider boundary. They are network-bound, so the conversion
+does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
+to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
 ---
 

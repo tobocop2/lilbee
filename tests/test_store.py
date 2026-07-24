@@ -3,9 +3,10 @@
 from contextlib import contextmanager
 from unittest import mock
 
+import numpy as np
 import pytest
 
-from lilbee.core.config import META_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, META_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
@@ -52,6 +53,49 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
         }
         for i in range(n)
     ]
+
+
+def _axis_record(source, axis, dim):
+    """A chunk record whose vector is the float32 array the embedder now returns."""
+    vector = np.zeros(dim, dtype=np.float32)
+    vector[axis] = 1.0
+    return {
+        "source": source,
+        "content_type": "text",
+        "chunk_type": "raw",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": f"{source} body",
+        "chunk_index": 0,
+        "vector": vector,
+    }
+
+
+class TestNumpyVectorRoundTrip:
+    """Embedder vectors reach LanceDB as float32 arrays, never as Python float lists."""
+
+    def test_stores_array_vectors_bit_identically(self, store):
+        dim = cfg.embedding_dim
+        vector = np.linspace(-1.0, 1.0, dim, dtype=np.float32)
+        record = _axis_record("exact.md", 0, dim) | {"vector": vector}
+        store.add_chunks([record])
+        row = store.open_table(CHUNKS_TABLE).search().to_list()[0]
+        assert np.array_equal(np.asarray(row["vector"], dtype=np.float32), vector)
+
+    def test_array_query_vector_finds_its_own_row(self, store):
+        dim = cfg.embedding_dim
+        store.add_chunks([_axis_record("a.md", 0, dim), _axis_record("b.md", 1, dim)])
+        query = np.zeros(dim, dtype=np.float32)
+        query[1] = 1.0
+        hits = store.search(query, top_k=1, max_distance=0, query_text=None)
+        assert [h.source for h in hits] == ["b.md"]
+
+    def test_array_dim_mismatch_is_rejected(self, store):
+        record = _axis_record("wrong.md", 0, cfg.embedding_dim - 1)
+        with pytest.raises(ValueError, match="Vector dimension mismatch"):
+            store.add_chunks([record])
 
 
 class TestWriteLockDir:

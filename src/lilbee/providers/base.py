@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 
 from pydantic import BaseModel
 
+from lilbee.core.vectors import Vector
+
 if TYPE_CHECKING:
     from lilbee.providers.roles import OcrBackend, WorkerRole
     from lilbee.providers.warm_progress import WarmProgress
@@ -258,7 +260,7 @@ last, when the backend reports them)."""
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         """Embed a batch of texts, return list of vectors."""
         ...
 

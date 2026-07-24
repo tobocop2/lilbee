@@ -8,6 +8,7 @@ from itertools import pairwise
 
 import httpx
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from lilbee.providers.base import ProviderError
@@ -35,6 +36,11 @@ def _embed_body(vectors: list[list[float]]) -> dict[str, object]:
             for index, vec in enumerate(vectors)
         ]
     }
+
+
+def _as_lists(vectors: list[npt.NDArray[np.float32]]) -> list[list[float]]:
+    """The float32 vectors ``embed`` returns, as plain lists for value comparison."""
+    return [vec.tolist() for vec in vectors]
 
 
 _STREAM_BODY = (
@@ -138,7 +144,7 @@ def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> Non
             return httpx.Response(502, text="Bad Gateway")
         return httpx.Response(200, json=_embed_body([[0.25, 0.5]]))
 
-    assert _client(handler).embed(["hello"]) == [[0.25, 0.5]]
+    assert _as_lists(_client(handler).embed(["hello"])) == [[0.25, 0.5]]
     assert calls["n"] == 3
 
 
@@ -173,7 +179,7 @@ def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
             return httpx.Response(429, json={"error": "Too many requests"})
         return httpx.Response(200, json=_embed_body([[0.25, 0.5]]))
 
-    assert _client(handler).embed(["hello"]) == [[0.25, 0.5]]
+    assert _as_lists(_client(handler).embed(["hello"])) == [[0.25, 0.5]]
     assert calls["n"] == 3  # two 429s retried, third succeeds
 
 
@@ -211,7 +217,7 @@ def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None
             return httpx.Response(429, json={"error": "warming"})
         return httpx.Response(200, json=_embed_body([[0.75]]))
 
-    assert _client(handler).embed(["x"]) == [[0.75]]
+    assert _as_lists(_client(handler).embed(["x"])) == [[0.75]]
     assert calls["n"] == warmup + 1
 
 
@@ -238,7 +244,7 @@ def test_embed_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(monk
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
     client._needs_alternation = False
-    assert client.embed(["x"]) == [[0.75]]
+    assert _as_lists(client.embed(["x"])) == [[0.75]]
     assert calls["n"] == warmup + 1
 
 
@@ -681,7 +687,13 @@ def test_chat_stream_items_requests_include_usage() -> None:
 
 
 def test_embed_returns_vectors() -> None:
-    assert _client().embed(["a", "b"]) == [[0.25, 0.5], [0.75]]
+    got = _client().embed(["a", "b"])
+    assert [vec.tolist() for vec in got] == [[0.25, 0.5], [0.75]]
+
+
+def test_embed_returns_float32_arrays_not_python_float_lists() -> None:
+    got = _client().embed(["a", "b"])
+    assert all(isinstance(vec, np.ndarray) and vec.dtype == np.float32 for vec in got)
 
 
 def test_embed_requests_base64_encoded_vectors() -> None:
@@ -692,7 +704,8 @@ def test_embed_requests_base64_encoded_vectors() -> None:
         seen["encoding_format"] = body.get("encoding_format")
         return httpx.Response(200, json=_embed_body([[0.25, -0.5]]))
 
-    assert _client(handler).embed(["a"]) == [[0.25, -0.5]]
+    got = _client(handler).embed(["a"])
+    assert [vec.tolist() for vec in got] == [[0.25, -0.5]]
     assert seen["encoding_format"] == "base64"
 
 
@@ -703,8 +716,8 @@ def test_embed_decodes_base64_vectors_exactly() -> None:
         return httpx.Response(200, json=_embed_body(vectors))
 
     decoded = _client(handler).embed(["a", "b"])
-    expected = np.asarray(vectors, dtype="<f4").tolist()
-    assert decoded == expected
+    expected = np.asarray(vectors, dtype="<f4")
+    assert all(np.array_equal(got, want) for got, want in zip(decoded, expected, strict=True))
 
 
 @pytest.mark.parametrize(
@@ -769,7 +782,7 @@ def test_embed_truncates_oversize_input_via_server_tokenizer() -> None:
         return httpx.Response(200, json=_embed_body([[0.5]]))
 
     out = _capped_client(handler, cap=3).embed(["a very long input"])
-    assert out == [[0.5]]
+    assert _as_lists(out) == [[0.5]]
     assert seen["detok_tokens"] == [10, 11, 12]  # first cap tokens
     assert seen["embedded"] == ["trunc"]
 
@@ -785,7 +798,7 @@ def test_embed_keeps_input_within_cap_unchanged() -> None:
         seen["embedded"] = json.loads(request.content)["input"]
         return httpx.Response(200, json=_embed_body([[0.5]]))
 
-    assert _capped_client(handler, cap=3).embed(["short"]) == [[0.5]]
+    assert _as_lists(_capped_client(handler, cap=3).embed(["short"])) == [[0.5]]
     assert seen["embedded"] == ["short"]  # original text passed through
 
 
@@ -1860,7 +1873,7 @@ def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
 
     # cap=10 so "dense" (est 2) is trusted and sent untruncated on the first try.
     out = _capped_client(handler, 10).embed(["dense"])
-    assert out == [[0.5]]
+    assert _as_lists(out) == [[0.5]]
     assert calls["embed"] == 2  # first overflowed, retry succeeded
     assert calls["tokenize"] >= 1  # retry used exact tokenization
 
@@ -1887,7 +1900,7 @@ def test_embed_retries_exact_on_batch_overflow_500() -> None:
             return httpx.Response(200, json=_embed_body([[0.5]]))
         return httpx.Response(404)
 
-    assert _capped_client(handler, 10).embed(["dense"]) == [[0.5]]
+    assert _as_lists(_capped_client(handler, 10).embed(["dense"])) == [[0.5]]
     assert calls["embed"] == 2
 
 

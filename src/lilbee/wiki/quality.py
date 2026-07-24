@@ -16,6 +16,7 @@ import numpy as np
 from lilbee.app.services import get_services
 from lilbee.core.config import Config
 from lilbee.core.text import clean_label_for_display, is_valid_label
+from lilbee.core.vectors import Vector
 from lilbee.data.store import SearchChunk
 from lilbee.wiki.citation import strip_citation_block
 
@@ -110,7 +111,7 @@ def _mean_vector(vectors: list[list[float]]) -> list[float]:
 
 
 def _embedding_faithfulness_score(
-    body_vec: list[float],
+    body_vec: Vector,
     source_vectors: list[list[float]],
 ) -> float:
     """Cosine-similarity score between the body and the mean source vector.
@@ -132,7 +133,7 @@ def _embedding_faithfulness_score(
     from lilbee.data.store import cosine_sim
 
     mean_vec = _mean_vector(source_vectors)
-    if not mean_vec or not body_vec:
+    if len(mean_vec) == 0 or len(body_vec) == 0:
         return 0.0
     if len(mean_vec) != len(body_vec):
         log.warning(
