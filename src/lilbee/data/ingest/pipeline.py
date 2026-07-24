@@ -1182,10 +1182,12 @@ class _ResultFeed:
     """Pull-based source of per-file ingest coroutines over a streamed plan.
 
     ``take(wait=False)`` hands back an already-planned file without blocking, so
-    the collector waits on the planner only when it has nothing left to run --
-    the reason this is a buffer over ``anext`` rather than an ``asyncio.Queue``,
-    which cannot be polled without also owning a producer task. ``planned`` is
-    the file count seen so far: the run's total once the stream is drained.
+    the collector waits on the planner only when it has nothing left to run.
+    Build-vs-buy: an ``asyncio.Queue`` is the stock bounded channel, but it would
+    need a separate producer task to pump the shard generator into it and a
+    sentinel to close it; pulling ``anext`` on demand keeps the plan stream the
+    single driver and needs neither. ``planned`` is the file count seen so far:
+    the run's total once the stream is drained.
     """
 
     def __init__(self, shards: AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]) -> None:
