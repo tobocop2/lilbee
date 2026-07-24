@@ -204,7 +204,7 @@ def build_sync_progress_callback(
         # cancelled mid-batch stops at the next progress tick instead of
         # finishing the current file. update() also checks, but events
         # without a reporter.update call (e.g. BATCH_PROGRESS in the
-        # ingest_batch path) would otherwise miss the cooperative checkpoint.
+        # ingest_stream path) would otherwise miss the cooperative checkpoint.
         reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             pct = int((data.current_file - 1) * 100 / data.total_files)

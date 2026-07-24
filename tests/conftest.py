@@ -654,3 +654,8 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
         ),
     )
     return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
+async def one_shard(files):
+    """Present a known file list to ``ingest_stream`` as a single-shard stream."""
+    yield list(files)

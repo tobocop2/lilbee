@@ -842,12 +842,13 @@ class TestSyncCancellation:
         assert result.added == []
         assert result.unchanged == 0
 
-    async def test_cancel_during_ingest_batch(self, mock_extract_file, isolated_env, mock_svc):
+    async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio
         import threading
 
-        from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest import ingest_stream
+        from tests.conftest import one_shard
 
         (isolated_env / "a.txt").write_text("file a")
         (isolated_env / "b.txt").write_text("file b")
@@ -863,7 +864,7 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_batch(files, added, {}, {}, {}, quiet=True, cancel=cancel)
+            await ingest_stream(one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1048,15 +1049,16 @@ class TestCancellation:
             raise asyncio.CancelledError()
 
         with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_cancel):
-            from lilbee.data.ingest import ingest_batch
+            from lilbee.data.ingest import ingest_stream
             from lilbee.data.ingest.types import FileToProcess
+            from tests.conftest import one_shard
 
             added = {"cancel.txt": None}
             entry = FileToProcess(
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_batch([entry], added, {}, {}, {}, quiet=True)
+                await ingest_stream(one_shard([entry]), added, {}, {}, {}, quiet=True)
 
     @mock.patch(
         "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
@@ -1076,8 +1078,9 @@ class TestCancellation:
         """
         import asyncio
 
-        from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest import ingest_stream
         from lilbee.runtime.cancellation import TaskCancelledError
+        from tests.conftest import one_shard
 
         # The callback flips on the second invocation so the first file makes
         # progress (which exercises the FILE_DONE re-entry path inside the error
@@ -1106,8 +1109,8 @@ class TestCancellation:
         # Should raise asyncio.CancelledError (not TaskCancelledError) so the
         # surrounding try/except in _do_sync catches it cleanly.
         with pytest.raises(asyncio.CancelledError):
-            await ingest_batch(
-                files, added, {}, failed, skipped, quiet=True, on_progress=on_progress
+            await ingest_stream(
+                one_shard(files), added, {}, failed, skipped, quiet=True, on_progress=on_progress
             )
 
 
@@ -2221,6 +2224,52 @@ class TestStreamedPlan:
             await asyncio.wait_for(sync(quiet=True, cancel=cancel), timeout=60)
         assert len(classified) < len(names)
 
+    async def test_cancel_with_nothing_left_to_admit_still_raises(self, isolated_env, mock_svc):
+        # The last admitted file finishes and the planner has stopped, so ingest
+        # returns without any file raising; sync still reports the run cancelled.
+        import threading
+
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "only.txt").write_text("the one file in this corpus")
+        cancel = threading.Event()
+
+        def _extract(*_args, **_kwargs):
+            cancel.set()
+            return _make_kreuzberg_result()
+
+        with (
+            mock.patch("kreuzberg.extract_file_sync", new=Mock(side_effect=_extract)),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await sync(quiet=True, cancel=cancel)
+        # Cancelled before the marker pass: the file is not skip-marked.
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        assert load_skip_markers(cfg.data_root) == {}
+
+    async def test_feed_close_discards_a_shard_that_landed_late(self):
+        # A shard landing between the prefetch and the close still owns unstarted
+        # coroutines; closing the feed has to close them, not leak them.
+        from lilbee.data.ingest.pipeline import _ResultFeed
+        from lilbee.data.ingest.types import _IngestResult
+
+        planned: list = []
+
+        async def _file(name) -> _IngestResult:
+            raise AssertionError("an unstarted file must never run")
+
+        async def _shards():
+            coro = _file("a.txt")
+            planned.append(coro)
+            yield [coro]
+
+        feed = _ResultFeed(_shards())
+        assert await feed.take(wait=False) is None  # starts the prefetch
+        await asyncio.sleep(0)  # let the shard land while nothing is consuming
+        await feed.aclose()
+        assert planned[0].cr_frame is None  # closed, not leaked
+
     async def test_feed_does_not_wait_on_a_shard_that_is_not_ready(self):
         from lilbee.data.ingest.pipeline import _ResultFeed
         from lilbee.data.ingest.types import _IngestResult
@@ -2250,7 +2299,7 @@ class TestStreamedPlan:
         assert feed.planned == 2
         await feed.aclose()
 
-    async def test_collector_does_not_spin_on_a_ready_shard(self, monkeypatch, mock_svc):
+    async def test_collector_wakeups_stay_bounded_per_file(self, monkeypatch, mock_svc):
         # With every window slot busy, an already-planned shard must not wake the
         # collector on every pass: it has nothing to admit until a file finishes.
         from lilbee.data.ingest import pipeline

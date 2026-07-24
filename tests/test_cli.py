@@ -2352,8 +2352,9 @@ class TestIngestShutdownError:
         import asyncio
         from pathlib import Path
 
-        from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest import ingest_stream
         from lilbee.data.ingest.types import FileToProcess
+        from tests.conftest import one_shard
 
         shutdown_err = RuntimeError("cannot schedule new futures after shutdown")
 
@@ -2368,8 +2369,10 @@ class TestIngestShutdownError:
                 ),
                 pytest.raises(asyncio.CancelledError),
             ):
-                await ingest_batch(
-                    [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)],
+                await ingest_stream(
+                    one_shard(
+                        [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)]
+                    ),
                     added,
                     updated,
                     failed,

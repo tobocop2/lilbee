@@ -373,9 +373,7 @@ class _CancelSignal(Protocol):
 class _StreamStop:
     """Stop signal for a streamed plan: the caller's cancel, or the stream closing.
 
-    The streamed planner outlives a single ``_plan_items`` call, so closing the
-    stream has to reach the in-flight shard as well; polling both here keeps a
-    mid-shard stop as prompt as a user cancel.
+    Closing the stream has to reach the shard in flight, not just the next one.
     """
 
     def __init__(self, cancel: _CancelSignal | None) -> None:
@@ -603,10 +601,8 @@ def _absent_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) ->
     ]
 
 
-# Plan shards ramp from _PLAN_SHARD_MIN_FILES up to _PLAN_SHARD_MAX_FILES. The
-# first shard is small so the embed fleet has work within a second of sync
-# starting; the ramp then amortizes each shard's barrier (a shard is only done
-# when its slowest hash is) over larger batches once the fleet is busy.
+# A shard is only done when its slowest hash is, so the first one is small (work
+# reaches the fleet within a second) and later ones amortize that barrier.
 _PLAN_SHARD_MIN_FILES = 256
 _PLAN_SHARD_MAX_FILES = 8192
 
@@ -626,15 +622,12 @@ def _shard_bounds(total: int) -> Iterator[tuple[int, int]]:
 class _StreamedPlan:
     """Bookkeeping a streamed plan accumulates across its shards.
 
-    ``added`` and ``updated`` are the same dicts the ingest pass mutates as files
-    land, so a file planned in a late shard is tracked exactly like one planned
-    in the first.
+    ``added`` and ``updated`` are the dicts the ingest pass mutates as files land.
     """
 
     added: dict[str, None] = field(default_factory=dict)
     updated: dict[str, None] = field(default_factory=dict)
-    # Each processed file's content hash (name -> hash), for the skip markers
-    # written once the run is over.
+    # Processed files' content hashes, for the skip markers written after the run.
     pending_hashes: dict[str, str] = field(default_factory=dict)
     relocated: list[str] = field(default_factory=list)
     unchanged: int = 0
@@ -646,11 +639,8 @@ async def _absorb_shard(
 ) -> list[FileToProcess]:
     """Fold one shard's plan into *state* and return the files it queues for ingest.
 
-    Relocations and stat backfills are applied per shard rather than saved for the
-    end: they are small store writes, and applying them as they are found keeps
-    the shard's plan from being held for the rest of the run. Unlike the
-    plan-everything pass, these now land while ingest is flushing, so they take
-    the same one-shot lock retry the flush does.
+    Relocations and stat backfills are written per shard, so they contend with the
+    batch flushes and take the same one-shot lock retry.
     """
     store = get_services().store
     entries = plan.files_to_process
@@ -689,16 +679,11 @@ async def _plan_shards(
 ) -> AsyncGenerator[list[FileToProcess]]:
     """Plan the corpus shard by shard, yielding each shard's files to ingest.
 
-    The next shard is planned on its own thread while the current one is being
-    extracted and embedded, so a large corpus starts feeding the fleet after its
-    first few hundred files instead of after the last one. Shards are contiguous
-    slices of the same sorted item list, consumed in order, so the plan this
-    produces is the single-pass plan of :func:`_plan_items`, delivered in pieces.
-
-    Planning runs on a dedicated thread rather than the shared ingest pool: that
-    pool is saturated by extraction once ingest is under way, and a planner
-    queued behind it would stall the stream it is feeding. Empty shards are not
-    yielded, so a caller can treat the first yield as "there is work to do".
+    Shards are contiguous slices of one sorted item list consumed in order, so
+    this delivers the single-pass plan of :func:`_plan_items` in pieces. The next
+    shard is planned while the current one ingests, on a dedicated thread: the
+    shared ingest pool is saturated by extraction and would stall the stream it
+    feeds. Empty shards are not yielded, so the first yield means there is work.
     """
     items = sorted(disk_files.items())
     moves = _MovePool(absent, existing_sources)
@@ -875,12 +860,10 @@ async def sync(
     # reappeared identical file to its old key below.
     absent = _absent_sources(sources, disk_files)
 
-    # The planning pass stats (and where needed hashes) every file on disk. It runs
-    # shard by shard off the event loop, overlapped with ingest: on a large corpus
-    # the embed fleet starts on the first few hundred files rather than idling
-    # through a hash of all of them. A brand-new file whose content hash matches an
-    # absent source is folded in per shard as a move, not an add: repointed in place
-    # so its chunks and embeddings are reused rather than rebuilt.
+    # The planning pass stats (and where needed hashes) every file on disk, shard by
+    # shard off the event loop and overlapped with ingest. A brand-new file whose
+    # content hash matches an absent source is folded in per shard as a move, not an
+    # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
     state = _StreamedPlan()
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
     shards = _plan_shards(disk_files, existing_sources, skip_markers, absent, state, cancel)
@@ -889,8 +872,8 @@ async def sync(
     # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
     truncated_before = get_services().embedder.truncated_total
 
-    # Ingest files (with optional progress bar). The stream yields only non-empty
-    # shards, so the first one arriving is what proves there is work to do.
+    # Ingest files (with optional progress bar). Only non-empty shards are yielded,
+    # so the first one arriving is what proves there is work to do.
     try:
         first = await anext(shards, None)
         if first is not None:
@@ -915,15 +898,12 @@ async def sync(
                     reasons=reasons,
                 )
             if cancel is not None and cancel.is_set():
-                # The plan stream stops feeding the moment cancel is set, so the
-                # ingest pass can drain its admitted files and return without
-                # raising. Completed work was flushed on the way out; the run is
-                # still a cancelled one to the caller, and must not go on to
-                # write skip markers or reconcile a corpus it never planned.
+                # The stream stops feeding on cancel, so ingest can drain its
+                # admitted files and return without raising. A cancelled run must
+                # not go on to write skip markers or reconcile an unplanned corpus.
                 raise asyncio.CancelledError
     finally:
-        # Idempotent, and the only close on the paths that never reach the stream
-        # (no work at all, or a failure before ingest starts).
+        # Idempotent, and the only close when the stream is never consumed.
         await shards.aclose()
     relocated = state.relocated
 
@@ -1064,39 +1044,6 @@ async def _chain_shards(
         yield shard
 
 
-async def _one_shard(files: list[FileToProcess]) -> AsyncGenerator[list[FileToProcess]]:
-    """Present a known file list as a single-shard stream."""
-    yield files
-
-
-async def ingest_batch(
-    files_to_process: list[FileToProcess],
-    added: dict[str, None],
-    updated: dict[str, None],
-    failed: dict[str, None],
-    skipped: dict[str, None],
-    *,
-    quiet: bool = False,
-    on_progress: DetailedProgressCallback = noop_callback,
-    cancel: threading.Event | None = None,
-    flush_failed: set[str] | None = None,
-    reasons: dict[str, str] | None = None,
-) -> None:
-    """Ingest a known list of files as one shard (see :func:`ingest_stream`)."""
-    await ingest_stream(
-        _one_shard(files_to_process),
-        added,
-        updated,
-        failed,
-        skipped,
-        quiet=quiet,
-        on_progress=on_progress,
-        cancel=cancel,
-        flush_failed=flush_failed,
-        reasons=reasons,
-    )
-
-
 async def ingest_stream(
     shards: AsyncGenerator[list[FileToProcess]],
     added: dict[str, None],
@@ -1234,11 +1181,11 @@ _WRITE_FLUSH_CHUNKS = 2000
 class _ResultFeed:
     """Pull-based source of per-file ingest coroutines over a streamed plan.
 
-    Bridges the plan stream to the bounded task window: ``take(wait=False)`` hands
-    back an already-planned file without blocking, so the collector waits on the
-    planner only when it has nothing left to run. ``planned`` is the file count
-    seen so far -- the run's total once the stream is drained, and the best
-    estimate of it before that.
+    ``take(wait=False)`` hands back an already-planned file without blocking, so
+    the collector waits on the planner only when it has nothing left to run --
+    the reason this is a buffer over ``anext`` rather than an ``asyncio.Queue``,
+    which cannot be polled without also owning a producer task. ``planned`` is
+    the file count seen so far: the run's total once the stream is drained.
     """
 
     def __init__(self, shards: AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]) -> None:
@@ -1295,15 +1242,36 @@ async def _refill_window(
 ) -> None:
     """Top up the in-flight task set from *feed*, capped at *window* tasks.
 
-    Waits on the planner only when nothing is running: with work in flight the
-    window refills from what is already planned and the collector goes straight
-    back to collecting, so a slow shard never stalls files that are ready.
+    Waits on the planner only when nothing is running, so a slow shard never
+    stalls files that are already planned.
     """
     while len(in_flight) < window:
         coro = await feed.take(wait=not in_flight)
         if coro is None:
             return
         in_flight.add(asyncio.ensure_future(coro))
+
+
+async def _next_completions(
+    in_flight: set[asyncio.Task[_IngestResult]], prefetch: asyncio.Future[Any] | None
+) -> tuple[Iterable[asyncio.Future[Any]], set[asyncio.Task[_IngestResult]]]:
+    """Wait for the next file to finish, returning (completed, still running).
+
+    The feed's shard prefetch waits alongside the running files, so work is
+    admitted as soon as it is planned rather than on the next file completion,
+    and it is filtered out of the still-running set here since it is not a file.
+    """
+    waiting: set[asyncio.Future[Any]] = set(in_flight)
+    if prefetch is not None:
+        waiting.add(prefetch)
+    done, still_running = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+    # Explicit loop, like _cancel_in_flight: Nuitka miscompiled the comprehension
+    # form of this task-set filtering.
+    remaining: set[asyncio.Task[_IngestResult]] = set()
+    for task in still_running:
+        if task is not prefetch:
+            remaining.add(cast("asyncio.Task[_IngestResult]", task))
+    return done, remaining
 
 
 async def _collect_results(
@@ -1323,15 +1291,13 @@ async def _collect_results(
     """Run *feed* through a bounded task window, batching writes and progress.
 
     At most *window* tasks exist at once: results are consumed as they complete
-    and the window is refilled from the feed, so memory stays flat however
-    many files a sync covers. The feed's in-flight shard prefetch is waited on
-    alongside the running files, so newly planned work is admitted as soon as it
-    lands instead of on the next file completion. Successful files are buffered
-    and flushed to LanceDB in batches (one locked transaction per batch) rather
-    than one write per file. The buffer is flushed on the way out too -- even on
-    cancel -- so completed-but-unwritten work is persisted. On exception
-    (typically asyncio.CancelledError from a user cancel), cancel every in-flight
-    sibling and await them with ``return_exceptions=True`` so their pending
+    and the window is refilled from the feed, so memory stays flat however many
+    files a sync covers. Successful files are buffered and flushed to LanceDB in
+    batches (one locked transaction per batch) rather than one write per file.
+    The buffer is flushed on the way out too -- even on cancel -- so
+    completed-but-unwritten work is persisted. On exception (typically
+    asyncio.CancelledError from a user cancel), cancel every in-flight sibling
+    and await them with ``return_exceptions=True`` so their pending
     CancelledErrors don't surface as "Task exception was never retrieved".
     """
     buffer: list[_IngestResult] = []
@@ -1343,12 +1309,7 @@ async def _collect_results(
         await _refill_window(in_flight, feed, window)
         while in_flight:
             prefetch = feed.pull()
-            waiting: set[asyncio.Future[Any]] = {*in_flight, *([prefetch] if prefetch else [])}
-            done, still_running = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-            in_flight = cast(
-                "set[asyncio.Task[_IngestResult]]",
-                {t for t in still_running if t is not prefetch},
-            )
+            done, in_flight = await _next_completions(in_flight, prefetch)
             saw_cancel = False
             for fut in done:
                 if fut is prefetch:
