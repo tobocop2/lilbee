@@ -84,6 +84,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_export",
         aliases=(),
         args_hint="<path>",
+        has_arg_completion=True,
         help_text="Export a per-page text dataset (parquet or jsonl)",
     ),
     SlashCommand(
@@ -91,6 +92,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_import",
         aliases=(),
         args_hint="<path>",
+        has_arg_completion=True,
         help_text="Import a per-page text dataset, re-embedding it",
     ),
     SlashCommand("/status", "_cmd_status", help_text="Show knowledge-base status"),

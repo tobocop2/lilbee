@@ -42,6 +42,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
+    build_import_progress_callback,
     build_sync_progress_callback,
     close_stream,
     open_local_file,
@@ -51,6 +52,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
+    PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
     longest_common_prefix,
@@ -1051,24 +1053,30 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:
-        """Run /export in a worker so the chat screen stays interactive."""
+        """Enqueue /export as a task so progress shows in the task bar."""
         path = args.strip()
         if not path:
             self.notify(msg.CMD_EXPORT_USAGE, severity="warning")
             return
-        self._cmd_export_worker(path)
+        from lilbee.cli.tui.task_queue import TaskType
 
-    @work(thread=True, name="chat_cmd_export", exit_on_error=False)
-    def _cmd_export_worker(self, raw_path: str) -> None:
-        """Build and write the dataset off the UI thread; notify back via dispatch."""
+        def _target(reporter: ProgressReporter) -> None:
+            self._do_export(path, reporter)
+
+        name = msg.TASK_NAME_EXPORT.format(file=Path(path).name)
+        self._task_bar.start_task(name, TaskType.EXPORT, _target, indeterminate=True)
+
+    def _do_export(self, raw_path: str, reporter: ProgressReporter) -> None:
+        """Export body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, export_to_path
 
         output = Path(raw_path).expanduser()
+        reporter.update(0, msg.EXPORT_STATUS_RUNNING, indeterminate=True)
         try:
             summary = export_to_path(output, "", None)
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
-            return
+            raise RuntimeError(str(exc)) from exc
         call_from_thread(
             self,
             self.notify,
@@ -1076,24 +1084,45 @@ class ChatScreen(Screen[None]):
         )
 
     def _cmd_import(self, args: str) -> None:
-        """Run /import in a worker so re-embedding doesn't block the UI."""
+        """Enqueue /import as a task so re-embedding progress shows in the task bar."""
         path = args.strip()
         if not path:
             self.notify(msg.CMD_IMPORT_USAGE, severity="warning")
             return
-        self._cmd_import_worker(path)
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
+        from lilbee.cli.tui.task_queue import TaskType
 
-    @work(thread=True, name="chat_cmd_import", exit_on_error=False)
-    def _cmd_import_worker(self, raw_path: str) -> None:
-        """Load and re-embed the dataset off the UI thread; notify back via dispatch."""
+        self._sync_active = True
+
+        def _target(reporter: ProgressReporter) -> None:
+            try:
+                self._do_import(path, reporter)
+            finally:
+                self._sync_active = False
+                self._task_bar.start_detect_pending()
+
+        name = msg.TASK_NAME_IMPORT.format(file=Path(path).name)
+        self._task_bar.start_task(name, TaskType.IMPORT, _target)
+
+    def _do_import(self, raw_path: str, reporter: ProgressReporter) -> None:
+        """Import body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, import_from_path
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
+        reporter.update(0, msg.IMPORT_STATUS_LOADING, indeterminate=True)
         try:
-            summary = asyncio_loop.run(import_from_path(Path(raw_path).expanduser(), ""))
+            summary = asyncio_loop.run(
+                import_from_path(
+                    Path(raw_path).expanduser(),
+                    "",
+                    on_progress=build_import_progress_callback(reporter),
+                )
+            )
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
-            return
+            raise RuntimeError(str(exc)) from exc
         invalidate_document_cache()
         call_from_thread(
             self,
@@ -1610,10 +1639,10 @@ class ChatScreen(Screen[None]):
         self._extract_memories_worker(question, answer)
 
     def _indexing_active(self) -> bool:
-        """True while a sync/add task is running (embed worker is busy)."""
+        """True while a sync/add/import task is running (embed worker is busy)."""
         from lilbee.cli.tui.task_queue import TaskType
 
-        busy = {TaskType.SYNC.value, TaskType.ADD.value}
+        busy = {TaskType.SYNC.value, TaskType.ADD.value, TaskType.IMPORT.value}
         return any(task.task_type in busy for task in self._task_bar.queue.active_tasks)
 
     @work(thread=True, name="chat_memory_extract", exit_on_error=False)
@@ -2280,7 +2309,7 @@ class ChatScreen(Screen[None]):
         if " " not in text:
             return display
         cmd, _, partial = text.partition(" ")
-        if cmd.lower() == "/add":
+        if cmd.lower() in PATH_ARG_COMMANDS:
             head = path_completion_prefix(partial)
             return f"{cmd} {head}{display}"
         return f"{cmd} {display}"

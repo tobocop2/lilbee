@@ -2827,6 +2827,39 @@ class TestGetCompletions:
         r = get_completions("/add ./")
         assert any("beta.txt" in x for x in r)
 
+    def test_import_arg_completions_offer_paths(self, tmp_path: object) -> None:
+        """``/import`` takes a dataset path, so Tab completes filesystem entries."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "pages.parquet").touch()
+        r = get_completions(f"/import {d}/")
+        assert any("pages.parquet" in x for x in r)
+
+    def test_export_arg_completions_offer_paths(self, tmp_path: object) -> None:
+        """``/export`` takes an output path, so Tab completes filesystem entries."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "out.parquet").touch()
+        r = get_completions(f"/export {d}/")
+        assert any("out.parquet" in x for x in r)
+
+    def test_import_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
+        """A fully-typed existing dataset path yields no completions so Enter submits."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "pages.parquet").touch()
+        assert get_completions(f"/import {d}/pages.parquet") == []
+        assert any("pages.parquet" in x for x in get_completions(f"/import {d}/"))
+
 
 class TestPathCompletionPrefix:
     def test_posix_path_keeps_directory(self) -> None:

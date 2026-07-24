@@ -37,6 +37,8 @@ class TaskType(StrEnum):
     ADD = "add"
     REMOVE = "remove"
     SETUP = "setup"
+    IMPORT = "import"
+    EXPORT = "export"
 
 
 STATUS_ICONS: dict[TaskStatus, str] = {
