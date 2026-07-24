@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
@@ -58,7 +59,7 @@ def mock_svc():
     # No entity schema induced unless a test persists one.
     store.entity_schema_state.return_value = None
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.return_value = []
     services = make_mock_services(searcher=searcher, store=store, embedder=embedder)
     svc_mod.set_services(services)

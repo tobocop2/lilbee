@@ -24,6 +24,7 @@ from lilbee.core.config import (
     SOURCES_TABLE,
     Config,
 )
+from lilbee.core.vectors import Vector
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .fusion import fuse_arms, normalized_bm25, vector_similarity
@@ -515,7 +516,7 @@ class Store:
 
     def search(
         self,
-        query_vector: list[float],
+        query_vector: Vector,
         top_k: int | None = None,
         max_distance: float | None = None,
         query_text: str | None = None,
@@ -576,7 +577,7 @@ class Store:
     def _vector_arm(
         self,
         table: lancedb.table.Table,
-        query_vector: list[float],
+        query_vector: Vector,
         limit: int,
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
@@ -613,7 +614,7 @@ class Store:
         self,
         table: lancedb.table.Table,
         query_text: str,
-        query_vector: list[float],
+        query_vector: Vector,
         top_k: int,
         max_distance: float,
         chunk_type: ChunkType | None = None,
@@ -642,7 +643,7 @@ class Store:
     def _filter_and_rerank(
         self,
         results: list[SearchChunk],
-        query_vector: list[float],
+        query_vector: Vector,
         top_k: int,
         max_distance: float,
     ) -> list[SearchChunk]:
@@ -1343,7 +1344,7 @@ class Store:
 
     def search_memories(
         self,
-        query_vector: list[float],
+        query_vector: Vector,
         *,
         owner_predicate: str,
         top_k: int,
@@ -1404,7 +1405,7 @@ class Store:
         """SQL predicate matching a single memory id within *owner*'s namespace."""
         return f"id = '{escape_sql_string(memory_id)}' AND owner = '{escape_sql_string(owner)}'"
 
-    def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[list[float]]]) -> int:
+    def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[Vector]]) -> int:
         """Re-embed every memory under the current model, recreating the table.
 
         The vector column dimension is immutable, so a different-dim model needs a
@@ -1426,7 +1427,8 @@ class Store:
             memories = [MemoryRow(**r) for r in rows]
             vectors = embed([m.text for m in memories])
             for memory, vector in zip(memories, vectors, strict=True):
-                memory.vector = vector
+                # MemoryRow serializes to JSON on write, which has no ndarray encoding.
+                memory.vector = vector.tolist()
             db = self.get_db()
             db.drop_table(MEMORIES_TABLE)
             new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())

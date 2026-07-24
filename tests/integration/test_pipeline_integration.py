@@ -7,6 +7,7 @@ Run with:
     uv run pytest tests/integration/test_pipeline_integration.py -v
 """
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
@@ -44,9 +45,10 @@ class TestEmbedder:
         from lilbee.app.services import get_services
 
         vec = get_services().embedder.embed("test sentence")
-        assert isinstance(vec, list)
+        assert isinstance(vec, np.ndarray)
+        assert vec.dtype == np.float32
         assert len(vec) > 0
-        assert all(isinstance(v, float) for v in vec)
+        assert np.isfinite(vec).all()
 
     def test_embed_batch_returns_matching_count(self):
         from lilbee.app.services import get_services

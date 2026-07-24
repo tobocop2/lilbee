@@ -19,7 +19,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, overload
 
+import numpy as np
+
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     ChatMessage,
     ChatResult,
@@ -105,8 +108,8 @@ class SdkLLMProvider(LLMProvider):
         inject_provider_keys()
         self._initialized = True
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts via the configured backend."""
+    def embed(self, texts: list[str]) -> list[Vector]:
+        """Embed texts via the configured backend, converting its JSON floats to float32."""
         self._ensure_initialized()
         ref = parse_model_ref(cfg.embedding_model)
         request = EmbeddingRequest(
@@ -123,7 +126,7 @@ class SdkLLMProvider(LLMProvider):
             raise ProviderError(
                 f"Embedding failed: {exc}", provider=self._backend.provider_name
             ) from exc
-        return result.vectors
+        return [np.asarray(vec, dtype=np.float32) for vec in result.vectors]
 
     @overload
     def chat(
