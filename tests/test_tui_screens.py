@@ -2821,7 +2821,13 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
 class _DatasetStubEmbedder:
     truncated_total = 0
 
-    def embed_batch(self, texts, **_kwargs):
+    def embed_batch(self, texts, *, source="", on_progress=None, **_kwargs):
+        if on_progress is not None:
+            from lilbee.runtime.progress import EmbedEvent, EventType
+
+            total = len(texts)
+            for i, _text in enumerate(texts, 1):
+                on_progress(EventType.EMBED, EmbedEvent(file=source, chunk=i, total_chunks=total))
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
 
@@ -2839,8 +2845,30 @@ def _dataset_services(tmp_path, *, seed=True):
     return store, make_mock_services(store=store, embedder=_DatasetStubEmbedder())
 
 
+async def _wait_for_dataset_task(app, _pilot, task_type):
+    """Spin until the queued dataset task reaches a terminal state; return the row."""
+    import time
+
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    terminal = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        await _pilot.pause()
+        done = [
+            t
+            for t in app.task_bar.queue.history
+            if t.task_type == task_type.value and t.status in terminal
+        ]
+        if done:
+            return done[0]
+    raise AssertionError(f"{task_type} task did not finish")
+
+
 async def test_chat_slash_export_writes_file(tmp_path):
     """``/export <path>`` writes the dataset and notifies success."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     out = tmp_path / "pages.parquet"
     app = ChatTestApp()
@@ -2848,8 +2876,8 @@ async def test_chat_slash_export_writes_file(tmp_path):
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_export(str(out))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.EXPORT)
+            assert task.status == TaskStatus.DONE
             assert out.exists()
             assert "Exported" in mock_notify.call_args[0][0]
     set_services(None)
@@ -2870,20 +2898,24 @@ async def test_chat_slash_export_no_arg(tmp_path):
 
 async def test_chat_slash_export_error(tmp_path):
     """An empty store surfaces the DatasetError via an error notification."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path, seed=False)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_export(str(tmp_path / "pages.parquet"))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.EXPORT)
+            assert task.status == TaskStatus.FAILED
             assert "Nothing to export" in mock_notify.call_args[0][0]
     set_services(None)
 
 
 async def test_chat_slash_import_round_trip(tmp_path):
     """``/import <path>`` re-embeds the dataset and notifies success."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     out = tmp_path / "pages.jsonl"
     from lilbee.app.dataset import export_to_path
@@ -2902,8 +2934,8 @@ async def test_chat_slash_import_round_trip(tmp_path):
             ) as mock_invalidate,
         ):
             app.screen._cmd_import(str(out))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+            assert task.status == TaskStatus.DONE
             assert "Imported" in mock_notify.call_args[0][0]
             mock_invalidate.assert_called_once()
     set_services(None)
@@ -2923,15 +2955,46 @@ async def test_chat_slash_import_no_arg(tmp_path):
 
 
 async def test_chat_slash_import_missing_file(tmp_path):
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_import(str(tmp_path / "nope.parquet"))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+            assert task.status == TaskStatus.FAILED
             assert "Dataset not found" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_import_reports_embed_progress(tmp_path):
+    """The import task row ticks determinate progress off EMBED events."""
+    from lilbee.cli.tui.task_queue import TaskType
+
+    _store, services = _dataset_services(tmp_path)
+    out = tmp_path / "pages.jsonl"
+    from lilbee.app.dataset import export_to_path
+
+    set_services(services)
+    export_to_path(out, "", None)
+    set_services(None)
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        updates: list[tuple[float, str]] = []
+        real_update = app.task_bar.queue.update_task
+
+        def _spy(task_id, progress, detail="", **kwargs):
+            updates.append((progress, detail))
+            return real_update(task_id, progress, detail, **kwargs)
+
+        with patch.object(app.task_bar.queue, "update_task", side_effect=_spy):
+            app.screen._cmd_import(str(out))
+            await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+        assert any("Embedding" in detail for _, detail in updates)
     set_services(None)
 
 
@@ -3790,6 +3853,20 @@ async def test_chat_completion_value_preserves_posix_directory():
         app.screen._completion_origin = "/add /var/tmp/docs/quantum_test.md"
         assert (
             app.screen._completion_value("quantum_test.md") == "/add /var/tmp/docs/quantum_test.md"
+        )
+
+
+async def test_chat_completion_value_preserves_directory_for_import_and_export():
+    """Accepting an /import or /export path completion keeps the typed directory."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._completion_origin = "/import /var/tmp/docs/pages.parquet"
+        assert (
+            app.screen._completion_value("pages.parquet") == "/import /var/tmp/docs/pages.parquet"
+        )
+        app.screen._completion_origin = "/export /var/tmp/docs/pages.parquet"
+        assert (
+            app.screen._completion_value("pages.parquet") == "/export /var/tmp/docs/pages.parquet"
         )
 
 
@@ -7340,6 +7417,42 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
     assert "scan.pdf" in args[1]
     assert "2" in args[1] and "5" in args[1]
     assert kwargs.get("indeterminate") is True
+
+
+def test_build_import_progress_callback_routes_embed_events() -> None:
+    """``build_import_progress_callback`` ticks determinate progress on EMBED events."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import build_import_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.runtime.progress import EmbedEvent, EventType
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = build_import_progress_callback(reporter)
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=5, total_chunks=10))
+    reporter.update.assert_called_once()
+    args, kwargs = reporter.update.call_args
+    assert args[0] == 50
+    assert "doc.pdf" in args[1]
+    assert kwargs.get("indeterminate") is False
+
+
+def test_build_import_progress_callback_throttles_and_ignores_other_events() -> None:
+    """A second EMBED inside the throttle window is dropped; non-EMBED events no-op."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import build_import_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = build_import_progress_callback(reporter)
+    callback(EventType.EXTRACT, ExtractEvent(file="doc.pdf", page=1, total_pages=3))
+    reporter.update.assert_not_called()
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=1, total_chunks=10))
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=2, total_chunks=10))
+    assert reporter.update.call_count == 1
+    reporter.check_cancelled.assert_called()
 
 
 async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):

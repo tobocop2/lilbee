@@ -38,9 +38,14 @@ def _option_prompt(value: str) -> Content:
 
 
 _MAX_VISIBLE = 8  # max dropdown items shown at once
-# Hard cap on path completions surfaced for /add so a deep directory doesn't
-# stall the dropdown rebuild.
+# Hard cap on path completions surfaced for path-argument commands so a deep
+# directory doesn't stall the dropdown rebuild.
 _MAX_PATH_COMPLETIONS = 20
+
+# Commands whose argument is a filesystem path. They share _path_options and
+# the path-specific accept rules (typed-directory prefix kept, existing-path
+# collapse).
+PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export"})
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
@@ -68,7 +73,7 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     sources = _ARG_SOURCES.get(cmd)
     if sources is None:
         return []
-    if cmd == "/add":
+    if cmd in PATH_ARG_COMMANDS:
         # A fully-typed existing path (no trailing separator) should submit on
         # Enter rather than keep offering completions, so collapse the dropdown.
         # Without this a complete directory path lists its contents forever and
@@ -211,6 +216,8 @@ _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/remove": _model_options,
     "/theme": _theme_options,
     "/add": _path_options,
+    "/import": _path_options,
+    "/export": _path_options,
 }
 
 
