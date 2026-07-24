@@ -14,6 +14,9 @@ NVIDIA = 0x10DE
 AMD = 0x1002
 INTEL = 0x8086
 VGA_CONTROLLER_CLASS = "0x030000"
+# What an NVIDIA Optimus dGPU and every datacenter card report: the display base
+# class with the 3D-controller subclass, never the VGA one.
+THREE_D_CONTROLLER_CLASS = "0x030200"
 DISPLAY_CONTROLLER_CLASS = "0x038000"
 NETWORK_CONTROLLER_CLASS = "0x020000"
 
@@ -53,13 +56,24 @@ class TestLinuxSysfs:
 
         assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
 
-    def test_non_vga_display_controllers_count(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "class_code",
+        [
+            pytest.param(VGA_CONTROLLER_CLASS, id="vga"),
+            pytest.param(THREE_D_CONTROLLER_CLASS, id="3d-controller"),
+            pytest.param(DISPLAY_CONTROLLER_CLASS, id="other-display"),
+        ],
+    )
+    def test_every_display_subclass_counts(
+        self, class_code: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Class 0x03 covers every display controller, not only the VGA subclass."""
-        _write_pci_device(
-            tmp_path, "0000:01:00.0", class_code=DISPLAY_CONTROLLER_CLASS, vendor="0x1002"
-        )
+        """The whole 0x03 base class is a GPU, not just the VGA subclass.
+
+        An Optimus laptop's discrete card and every datacenter card enumerate as
+        3D controllers, so narrowing this to VGA would report them as absent and
+        disable the driver they need.
+        """
+        _write_pci_device(tmp_path, "0000:01:00.0", class_code=class_code, vendor="0x1002")
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 

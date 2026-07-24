@@ -8,6 +8,9 @@ reads the PnP display-adapter class out of the registry.
 An installed ICD manifest is not evidence of hardware. Mesa ships every vendor's
 driver together on Linux (a Flatpak runtime always carries all of them), and a
 Windows manifest outlives the card it arrived with.
+
+Read directly rather than through pyudev or WMI: this is one attribute read per
+device on either platform, and neither dependency earns its place for that.
 """
 
 from __future__ import annotations
