@@ -4771,3 +4771,23 @@ class TestEmbedCoalescingRoute:
         fleet.shutdown()
         assert fleet._coalescer is None
         assert coalescer._thread.is_alive() is False
+
+    def test_unprobeable_fleet_still_builds_a_coalescer(self, monkeypatch) -> None:
+        # Sizing reads the live replica count; a fleet that cannot be probed yet
+        # must fall back to one replica rather than fail the embed outright.
+        from lilbee.providers.fleet import replicas
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, calls = self._provider(monkeypatch)
+
+        def _unprobeable(*_args: object, **_kwargs: object) -> int:
+            raise RuntimeError("device probe failed")
+
+        monkeypatch.setattr(replicas, "resolve_replica_count", _unprobeable)
+        try:
+            with coalesce_embeds():
+                assert fleet.embed(["hello"]) == [[5.0]]
+            assert calls == [["hello"]]
+            assert fleet.__dict__.get("_coalescer") is not None
+        finally:
+            fleet.shutdown()

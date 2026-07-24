@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 
 import pytest
 
 from lilbee.providers.fleet.embed_coalescer import (
+    _STOP,
     EmbedCoalescer,
+    _Request,
     coalesce_embeds,
     coalescing_enabled,
 )
@@ -178,12 +181,81 @@ def test_length_mismatch_surfaces_as_error() -> None:
         coalescer.close()
 
 
-def test_close_fails_stragglers_and_is_idempotent() -> None:
+def test_close_is_idempotent() -> None:
     calls: list[list[str]] = []
     coalescer = EmbedCoalescer(_recording_dispatch(calls), max_batch=4, max_concurrency=2)
     coalescer.embed(["warm"])  # start the thread
     coalescer.close()
     coalescer.close()  # idempotent
+
+
+def test_close_fails_requests_left_in_the_queue() -> None:
+    # Stop the batcher first, so the request queued after it is a straggler no
+    # thread will ever pick up; close() must fail it rather than hang its caller.
+    calls: list[list[str]] = []
+    coalescer = EmbedCoalescer(_recording_dispatch(calls), max_batch=4, max_concurrency=2)
+    coalescer.embed(["warm"])  # start the batcher thread
+    coalescer._queue.put(_STOP)
+    coalescer._thread.join()  # batcher is gone before the straggler is queued
+
+    straggler: Future[list[list[float]]] = Future()
+    coalescer._queue.put(_Request(["never-dispatched"], straggler))
+    coalescer.close()
+
+    assert isinstance(straggler.exception(), RuntimeError)
+    assert calls == [["warm"]]  # the straggler was never dispatched
+
+
+def test_expired_window_cuts_the_batch_without_waiting() -> None:
+    # A zero window means the deadline has already passed when the fill loop is
+    # entered, so the first request goes out alone instead of blocking on a get.
+    calls: list[list[str]] = []
+    coalescer = EmbedCoalescer(
+        _recording_dispatch(calls), max_batch=8, max_concurrency=1, window_s=0.0
+    )
+    try:
+        assert coalescer.embed(["solo"]) == [_vec_for("solo")]
+        assert calls == [["solo"]]
+    finally:
+        coalescer.close()
+
+
+def test_stop_arriving_mid_batch_is_reposted_for_the_run_loop() -> None:
+    # The batcher must not swallow the stop sentinel it pulls while filling a
+    # batch, or close() would block forever waiting for a run loop that never ends.
+    calls: list[list[str]] = []
+    coalescer = EmbedCoalescer(_recording_dispatch(calls), max_batch=8, max_concurrency=1)
+    pending: Future[list[list[float]]] = Future()
+    coalescer._queue.put(_Request(["queued"], pending))
+    coalescer._queue.put(_STOP)
+
+    batch = coalescer._next_batch()  # drives the loop directly: no thread, no timing
+
+    assert batch is not None
+    assert [req.texts for req in batch] == [["queued"]]
+    assert coalescer._queue.get_nowait() is _STOP  # re-posted, not consumed
+
+
+def test_solo_retry_length_mismatch_fails_only_that_request() -> None:
+    # The batch dispatch fails, and the per-request retry returns the wrong vector
+    # count: that request carries the mismatch error, its batch-mate still succeeds.
+    def dispatch(texts: list[str]) -> list[list[float]]:
+        if len(texts) > 1:
+            raise RuntimeError("batch dispatch failed")
+        if texts == ["bad"]:
+            return []  # zero vectors for one input
+        return [_vec_for(t) for t in texts]
+
+    coalescer = EmbedCoalescer(dispatch, max_batch=8, max_concurrency=1)
+    bad: Future[list[list[float]]] = Future()
+    good: Future[list[list[float]]] = Future()
+    coalescer._fail_batch(
+        [_Request(["bad"], bad), _Request(["good"], good)], RuntimeError("batch dispatch failed")
+    )
+
+    assert isinstance(bad.exception(), ValueError)
+    assert "0 vectors for 1 inputs" in str(bad.exception())
+    assert good.result() == [_vec_for("good")]
 
 
 def test_close_without_use_does_not_start_thread() -> None:
