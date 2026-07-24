@@ -145,6 +145,22 @@ def unregister_added_roots(labels: list[str]) -> None:
         unregister_roots(labels)
 
 
+def _throttled_embed_tick(reporter: ProgressReporter) -> Callable[[EmbedEvent], None]:
+    """Return the throttled EMBED tick shared by the add/sync/import callbacks."""
+    last_update = 0.0
+
+    def _tick(data: EmbedEvent) -> None:
+        nonlocal last_update
+        now = time.monotonic()
+        if now - last_update < _ADD_EMBED_THROTTLE_SECONDS:
+            return
+        last_update = now
+        pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+        reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+
+    return _tick
+
+
 def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
     """Build the on_progress callback used by /add.
 
@@ -155,10 +171,9 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
     as a hang; EMBED ticks per chunk, throttled to a steady cadence.
     """
     in_flight: list[str] = []
-    last_embed_update = 0.0
+    embed_tick = _throttled_embed_tick(reporter)
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        nonlocal last_embed_update
         reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             in_flight.append(data.file)
@@ -178,12 +193,7 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
                 indeterminate=True,
             )
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            embed_tick(data)
 
     return on_progress
 
@@ -196,10 +206,9 @@ def build_sync_progress_callback(
     EXTRACT mirrors the /add path: a 44MB scanned PDF needs a per-page
     tick or the row reads as frozen.
     """
-    last_embed_update = 0.0
+    embed_tick = _throttled_embed_tick(reporter)
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        nonlocal last_embed_update
         # Mirror /add: explicit cancel check on every event so a SYNC task
         # cancelled mid-batch stops at the next progress tick instead of
         # finishing the current file. update() also checks, but events
@@ -223,14 +232,21 @@ def build_sync_progress_callback(
                 indeterminate=True,
             )
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            embed_tick(data)
         elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
             total = data.added + data.updated + data.removed
             reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
+
+    return on_progress
+
+
+def build_import_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+    """Build the on_progress callback used by /import (EMBED events only)."""
+    embed_tick = _throttled_embed_tick(reporter)
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        reporter.check_cancelled()
+        if event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            embed_tick(data)
 
     return on_progress
