@@ -18,7 +18,6 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     args_hint: str = ""
     help_text: str = ""
-    has_arg_completion: bool = False
 
 
 COMMANDS: tuple[SlashCommand, ...] = (
@@ -28,7 +27,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="[name]",
         help_text="Switch chat model (no arg opens the catalog)",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/add",
@@ -36,7 +34,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="<path>",
         help_text="Add file or folder to the knowledge base",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/crawl",
@@ -51,7 +48,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="<name>",
         help_text="Remove a document from the index",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/set",
@@ -59,7 +55,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="<key> <value>",
         help_text="Change a setting",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/theme",
@@ -67,7 +62,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="[name]",
         help_text="Switch theme (no arg opens the theme list)",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/reset",
@@ -124,7 +118,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="<name>",
         help_text="Uninstall a downloaded model",
-        has_arg_completion=True,
     ),
     SlashCommand(
         "/login",
