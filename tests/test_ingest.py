@@ -1458,7 +1458,10 @@ class TestStatShortCircuit:
         assert list(parallel.added) == list(serial.added) == names
         assert parallel.unchanged == serial.unchanged == 0
 
-    def test_cancelled_parallel_plan_returns_partial(self, isolated_env, monkeypatch):
+    @pytest.mark.parametrize("workers", [1, 4])
+    def test_cancelled_plan_returns_partial(self, isolated_env, monkeypatch, workers):
+        # Both planning paths stop on a set cancel: the serial one (single CPU,
+        # and what detect_pending falls back to) and the pooled one.
         import threading
 
         from lilbee.data.ingest import pipeline
@@ -1471,7 +1474,7 @@ class TestStatShortCircuit:
 
         cancel = threading.Event()
         cancel.set()
-        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 4)
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: workers)
         plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
         assert plan.files_to_process == []
 
