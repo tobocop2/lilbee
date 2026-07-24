@@ -100,6 +100,27 @@ def _install_real_store():
     return store
 
 
+def _feed(coros):
+    """A _ResultFeed over one already-planned shard of file coroutines."""
+    from lilbee.data.ingest.pipeline import _ResultFeed
+
+    async def _shards():
+        yield list(coros)
+
+    return _ResultFeed(_shards())
+
+
+def _lazy_feed(coros):
+    """A _ResultFeed that plans one file at a time, as a live plan stream does."""
+    from lilbee.data.ingest.pipeline import _ResultFeed
+
+    async def _shards():
+        for coro in coros:
+            yield [coro]
+
+    return _ResultFeed(_shards())
+
+
 def _real_ingest_result(name, *, file_hash, page_text="page one of a.pdf", stat=None):
     """A store-schema _IngestResult with one chunk and one page-text row."""
     from lilbee.data.ingest.types import _IngestResult
@@ -277,7 +298,7 @@ class TestSync:
         async def _noop_ingest(*_a, **_k):
             return None
 
-        monkeypatch.setattr(pipeline, "ingest_batch", _noop_ingest)
+        monkeypatch.setattr(pipeline, "ingest_stream", _noop_ingest)
         with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
             await sync(quiet=True)
         assert any(
@@ -886,8 +907,7 @@ class TestSyncCancellation:
             pytest.raises(asyncio.CancelledError),
         ):
             await pipeline._collect_results(
-                iter([_ok(), _cancelled()]),
-                total=2,
+                _feed([_ok(), _cancelled()]),
                 added=added,
                 updated={},
                 failed={},
@@ -1583,13 +1603,13 @@ class TestStatShortCircuit:
         (isolated_env / "doc.txt").write_text("content")
         loop_thread = threading.get_ident()
         plan_threads: list[int] = []
-        real_plan = pipeline._plan_file_changes
+        real_plan = pipeline._plan_items
 
         def _spy_plan(*args, **kwargs):
             plan_threads.append(threading.get_ident())
             return real_plan(*args, **kwargs)
 
-        monkeypatch.setattr(pipeline, "_plan_file_changes", _spy_plan)
+        monkeypatch.setattr(pipeline, "_plan_items", _spy_plan)
         with mock.patch(
             "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
         ):
@@ -1921,8 +1941,7 @@ class TestCollectResultsSkipped:
         failed: dict[str, None] = {}
         skipped: dict[str, None] = {}
         await _collect_results(
-            iter([_zero_chunk_result()]),
-            1,
+            _feed([_zero_chunk_result()]),
             added,
             updated,
             failed,
@@ -1945,7 +1964,7 @@ class TestCollectResultsSkipped:
                 "notes.md", Path("notes.md"), chunk_count=0, error=None, needs_cleanup=True
             )
 
-        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        await _collect_results(_feed([_emptied()]), {}, {}, {}, {}, window=2)
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
 
     async def test_zero_text_without_cleanup_does_not_purge(self, mock_svc):
@@ -1957,7 +1976,7 @@ class TestCollectResultsSkipped:
                 "fresh.md", Path("fresh.md"), chunk_count=0, error=None, needs_cleanup=False
             )
 
-        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        await _collect_results(_feed([_emptied()]), {}, {}, {}, {}, window=2)
         mock_svc.store.remove_documents.assert_not_called()
 
     def test_purge_emptied_sources_noop_on_empty(self, mock_svc):
@@ -1994,7 +2013,7 @@ class TestCollectResultsSkipped:
         skipped: dict[str, None] = {}
         with pytest.raises(RuntimeError, match="ingest blew up"):
             await _collect_results(
-                iter([_boom(), _never_finishes()]), 2, added, {}, failed, skipped, window=2
+                _feed([_boom(), _never_finishes()]), added, {}, failed, skipped, window=2
             )
         assert sibling_cancelled.is_set()
 
@@ -2027,7 +2046,7 @@ class TestCollectResultsSkipped:
         monkeypatch.setattr(pipeline, "_flush_writes", _exploding_flush)
         with pytest.raises(RuntimeError, match="flush blew up"):
             await pipeline._collect_results(
-                iter([_boom(), _never_finishes()]), 2, {}, {}, {}, {}, window=2
+                _feed([_boom(), _never_finishes()]), {}, {}, {}, {}, window=2
             )
         assert sibling_cancelled.is_set()
 
@@ -2059,7 +2078,7 @@ class TestTaskWindow:
                 yield _one(i)
 
         skipped: dict[str, None] = {}
-        await _collect_results(_pending(), total, {}, {}, {}, skipped, window=window)
+        await _collect_results(_lazy_feed(_pending()), {}, {}, {}, skipped, window=window)
         assert len(skipped) == total
         assert high_water <= window
         assert created == total
@@ -2092,7 +2111,7 @@ class TestTaskWindow:
 
         added: dict[str, None] = {"f0.txt": None}
         with pytest.raises(asyncio.CancelledError):
-            await _collect_results(_pending(), 10, added, {}, {}, {}, window=1)
+            await _collect_results(_lazy_feed(_pending()), added, {}, {}, {}, window=1)
         # The window kept task creation bounded: only f0 and the cancelling f1 started.
         assert created == [0, 1]
         # The completed file's chunks were flushed on the way out.
@@ -3446,7 +3465,7 @@ class TestDetectMoves:
         to_remove = ["old/a.txt"]
         existing = {"old/a.txt": self._record("old/a.txt", "h1")}
 
-        moves = pipeline._detect_moves(files, added, to_remove, existing)
+        moves = pipeline._detect_moves(files, added, pipeline._MovePool(to_remove, existing))
         assert len(moves) == 1
         assert moves[0].old == "old/a.txt"
         assert moves[0].new == "new/a.txt"
@@ -3458,7 +3477,7 @@ class TestDetectMoves:
         added = {"new/a.txt": None}
         existing = {"old/a.txt": self._record("old/a.txt", "h1")}
 
-        moves = pipeline._detect_moves(files, added, ["old/a.txt"], existing)
+        moves = pipeline._detect_moves(files, added, pipeline._MovePool(["old/a.txt"], existing))
         assert moves == []
 
     def test_update_is_not_a_move(self):
@@ -3467,7 +3486,7 @@ class TestDetectMoves:
         # Same name (an update, not in `added`) is never a move even on hash match.
         files = [self._entry("a.txt", "h1")]
         existing = {"a.txt": self._record("a.txt", "h1")}
-        moves = pipeline._detect_moves(files, {}, [], existing)
+        moves = pipeline._detect_moves(files, {}, pipeline._MovePool([], existing))
         assert moves == []
 
     def test_duplicate_hash_pairs_one_to_one(self):
@@ -3479,7 +3498,9 @@ class TestDetectMoves:
             "old/a.txt": self._record("old/a.txt", "h1"),
             "old/b.txt": self._record("old/b.txt", "h1"),
         }
-        moves = pipeline._detect_moves(files, added, ["old/a.txt", "old/b.txt"], existing)
+        moves = pipeline._detect_moves(
+            files, added, pipeline._MovePool(["old/a.txt", "old/b.txt"], existing)
+        )
         assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
         assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
 
