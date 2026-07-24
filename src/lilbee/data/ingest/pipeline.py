@@ -648,7 +648,9 @@ async def _absorb_shard(
 
     Relocations and stat backfills are applied per shard rather than saved for the
     end: they are small store writes, and applying them as they are found keeps
-    the shard's plan from being held for the rest of the run.
+    the shard's plan from being held for the rest of the run. Unlike the
+    plan-everything pass, these now land while ingest is flushing, so they take
+    the same one-shot lock retry the flush does.
     """
     store = get_services().store
     entries = plan.files_to_process
@@ -658,13 +660,19 @@ async def _absorb_shard(
 
     detected = _detect_moves(entries, plan.added, moves)
     if detected:
-        await to_ingest_thread(store.relocate_sources, [(m.old, m.new, m.stat) for m in detected])
+        relocations = [(m.old, m.new, m.stat) for m in detected]
+        await to_ingest_thread(
+            _retry_after_lock_timeout, lambda: store.relocate_sources(relocations)
+        )
         entries, relocated = _apply_moves(detected, entries, plan.added)
         for name in relocated:
             state.added.pop(name, None)
         state.relocated.extend(relocated)
     if plan.stat_backfills:
-        await to_ingest_thread(store.update_source_stats, plan.stat_backfills)
+        backfills = plan.stat_backfills
+        await to_ingest_thread(
+            _retry_after_lock_timeout, lambda: store.update_source_stats(backfills)
+        )
 
     state.pending_hashes.update((entry.name, entry.file_hash) for entry in entries)
     state.planned += len(entries)

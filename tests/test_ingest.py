@@ -2146,6 +2146,26 @@ class TestStreamedPlan:
         assert sorted(backfilled) == names
         assert mock_svc.store.update_source_stats.call_count == 2
 
+    async def test_shard_backfill_retries_once_on_lock_timeout(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        # A shard's backfill now lands while ingest is flushing, so it can lose the
+        # store lock to a flush; it takes the same one-shot retry the flush does.
+        from lilbee.data.ingest import file_hash, pipeline
+        from lilbee.runtime.lock import LockTimeoutError
+
+        path = isolated_env / "legacy.txt"
+        path.write_text("legacy content")
+        mock_svc.store.upsert_source("legacy.txt", file_hash(path), 1, source_type="document")
+        sleeps: list[float] = []
+        monkeypatch.setattr(pipeline.time, "sleep", sleeps.append)
+        mock_svc.store.update_source_stats.side_effect = [LockTimeoutError("busy"), None]
+
+        result = await self._sync_with_extraction()
+        assert result.unchanged == 1
+        assert mock_svc.store.update_source_stats.call_count == 2
+        assert sleeps == [pipeline._FLUSH_RETRY_DELAY_SECONDS]
+
     async def test_move_pairs_across_shard_boundaries(self, isolated_env, monkeypatch, mock_svc):
         # The absent-source pool is built once for the run, so a file that moved
         # still pairs with its old key when the two land in different shards.
