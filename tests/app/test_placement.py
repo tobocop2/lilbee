@@ -38,7 +38,7 @@ def test_view_surfaces_skipped_not_installed(monkeypatch):
     from lilbee.app.placement import SkippedRole
 
     monkeypatch.setattr(
-        app_placement, "resolve_placement_plan", lambda spec: _resolved_with_skipped()
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_with_skipped()
     )
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     view = app_placement.get_placement()
@@ -50,7 +50,7 @@ def test_view_surfaces_skipped_not_installed(monkeypatch):
 
 
 def test_view_has_no_skipped_when_all_installed(monkeypatch):
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     assert app_placement.get_placement().skipped_not_installed == ()
 
@@ -116,8 +116,37 @@ def test_active_spec_parses_stored_json(monkeypatch):
     assert app_placement._active_spec() == spec
 
 
+def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypatch):
+    """A pin the hardware no longer satisfies is not the effective placement."""
+    from dataclasses import replace
+
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+    monkeypatch.setattr(
+        app_placement,
+        "resolve_placement_plan",
+        lambda _spec, **_kw: replace(_resolved(), spec_applied=False),
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
+
+    view = app_placement.get_placement()
+
+    assert view.manual is False
+    assert view.spec_json is None
+
+
+def test_get_placement_reports_an_applied_spec_as_manual(monkeypatch):
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda _spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
+
+    view = app_placement.get_placement()
+
+    assert view.manual is True
+    assert view.spec_json == spec.to_json()
+
+
 def test_get_placement_renders_view(monkeypatch):
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     view = app_placement.get_placement()
     assert view.manual is False
@@ -140,7 +169,7 @@ def test_preview_passes_candidate_spec(monkeypatch):
 
 
 def test_preview_has_no_side_effects(monkeypatch):
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     peeked = {"called": False}
     monkeypatch.setattr(app_placement, "peek_services", lambda: peeked.__setitem__("called", True))
@@ -165,7 +194,7 @@ class _FakeProviderServices:
 def test_set_persists_and_reloads_live_fleet(monkeypatch):
     writes = {}
     services = _FakeProviderServices()
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: writes.update(d))
     monkeypatch.setattr(app_placement, "peek_services", lambda: services)
@@ -184,7 +213,7 @@ def test_set_persists_and_reloads_live_fleet(monkeypatch):
 def test_set_clears_read_device_cache_when_nothing_runs(monkeypatch):
     """With no services built, the next boot should probe devices fresh."""
     cleared = {"called": False}
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: None)
     monkeypatch.setattr(app_placement, "peek_services", lambda: None)
@@ -203,7 +232,7 @@ def test_set_keeps_device_probe_on_the_live_path(monkeypatch):
     """The surgical reload diffs plans against the same clean-box probe (bb-a8f):
     re-probing under a loaded fleet would poison the chat context sizing."""
     cleared = {"called": False}
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: None)
     monkeypatch.setattr(app_placement, "peek_services", _FakeProviderServices)
@@ -220,7 +249,7 @@ def test_set_keeps_device_probe_on_the_live_path(monkeypatch):
 
 def test_set_none_clears(monkeypatch):
     deletes = {}
-    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(
         app_placement.settings, "delete_values", lambda root, keys: deletes.setdefault("keys", keys)

@@ -1827,7 +1827,7 @@ class TestIterWindowsVulkanManifestPaths:
         assert r"C:\soft\nv-vk64.json" in result
         assert any("amdvlk64.json" in path for path in result)
         # Both PnP class GUIDs (display adapter + software component) must be walked.
-        assert vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID in pnp_calls
+        assert vulkan_icd_discovery.PNP_DISPLAY_ADAPTER_CLASS_GUID in pnp_calls
         assert vulkan_icd_discovery._PNP_SOFTWARE_COMPONENT_CLASS_GUID in pnp_calls
 
 
@@ -2109,7 +2109,7 @@ class TestIterPnpClassManifests:
 
         result = list(
             vulkan_icd_discovery._iter_pnp_class_manifests(
-                winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+                winreg, vulkan_icd_discovery.PNP_DISPLAY_ADAPTER_CLASS_GUID
             )
         )
         assert r"C:\nv-vk64.json" in result
@@ -2128,7 +2128,7 @@ class TestIterPnpClassManifests:
         assert (
             list(
                 vulkan_icd_discovery._iter_pnp_class_manifests(
-                    winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+                    winreg, vulkan_icd_discovery.PNP_DISPLAY_ADAPTER_CLASS_GUID
                 )
             )
             == []
@@ -2157,7 +2157,7 @@ class TestIterPnpClassManifests:
 
         result = list(
             vulkan_icd_discovery._iter_pnp_class_manifests(
-                winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+                winreg, vulkan_icd_discovery.PNP_DISPLAY_ADAPTER_CLASS_GUID
             )
         )
         assert result == [r"C:\nv-vk64.json"]
@@ -2169,7 +2169,70 @@ class TestDisableConflictingVulkanIcds:
     Detection is registry-only: no Vulkan call runs while the disable env var
     is still unset, so the buggy vendor's ICD never gets pre-loaded into
     the process before we ask the loader to skip it.
+
+    Tests that don't name the host's GPUs leave ``installed_gpu_vendor_ids`` empty
+    (the "device tree says nothing" case) so the choice falls to the manifests.
     """
+
+    @pytest.fixture(autouse=True)
+    def _no_hardware_signal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "installed_gpu_vendor_ids", frozenset)
+
+    def test_keeps_the_only_vendor_whose_gpu_is_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mesa ships radeon_icd on an Intel-only laptop; Intel must survive.
+
+        The Flatpak freedesktop runtime carries every Mesa driver, so the manifests
+        alone read as AMD + Intel. Disabling Intel there leaves the host with no
+        working ICD at all and the engine reports zero GPUs.
+        """
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.AMD, PCIVendorID.INTEL},
+        )
+        monkeypatch.setattr(
+            gpu_select, "installed_gpu_vendor_ids", lambda: frozenset({PCIVendorID.INTEL})
+        )
+
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        assert "radeon*" in result
+        assert "intel*" not in result
+        assert "igvk*" not in result
+
+    def test_preference_order_applies_among_installed_gpus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With NVIDIA and Intel both really present, NVIDIA still wins."""
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.INTEL},
+        )
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset({PCIVendorID.NVIDIA, PCIVendorID.INTEL}),
+        )
+
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        assert "intel*" in result
+        assert "nv*" not in result
 
     def test_pins_nvidia_when_amd_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """NVIDIA + AMD installed on Windows -> disable AMD ICD globs, keep NVIDIA."""

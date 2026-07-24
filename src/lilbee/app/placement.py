@@ -126,10 +126,17 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
 
 
 def get_placement() -> PlacementView:
-    """The current effective placement (manual if a spec is set, else auto)."""
+    """The current effective placement (manual if a spec is set, else auto).
+
+    A saved spec that no longer fits the hardware is not the effective placement:
+    the fleet runs the auto plan, and this reports that rather than a manual layout
+    nothing is using.
+    """
     spec = _active_spec()
-    resolved = resolve_placement_plan(spec)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    resolved = resolve_placement_plan(spec, fall_back_to_auto=True)
+    if spec is None or not resolved.spec_applied:
+        return _view(resolved, manual=False, spec_json=None)
+    return _view(resolved, manual=True, spec_json=spec.to_json())
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
