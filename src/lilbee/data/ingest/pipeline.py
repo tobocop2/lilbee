@@ -8,7 +8,8 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -48,6 +49,14 @@ from lilbee.data.ingest.types import (
     FileToProcess,
     SyncResult,
     _IngestResult,
+)
+from lilbee.data.ingest.workers import (
+    BATCH_FILES,
+    BatchDispatcher,
+    WorkerFile,
+    build_pool,
+    error_reason,
+    resolve_process_count,
 )
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
@@ -128,7 +137,7 @@ async def _rebuild_concept_clusters() -> None:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
 
-async def _build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
+async def build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
     """Extract typed entities for ingested chunks. None when the mode is off.
 
     Gated twice: the ``entity_extraction`` config flag, and a schema already
@@ -169,7 +178,7 @@ async def _build_entity_records(records: list[ChunkRecord], source_name: str) ->
         return None
 
 
-async def _build_concept_records(
+async def build_concept_records(
     records: list[ChunkRecord], source_name: str
 ) -> ConceptRecords | None:
     """Extract concepts for ingested chunks and build their table rows. None if disabled.
@@ -195,7 +204,7 @@ async def _build_concept_records(
         return None
 
 
-async def _produce_records(
+async def produce_records(
     path: Path,
     source_name: str,
     content_type: str,
@@ -825,6 +834,114 @@ def _build_admission(
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task
 
 
+def _admission_for(
+    processes: int, pages_done: list[int]
+) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
+    """The compute gate, task window, and adaptive controller for this run.
+
+    With workers, the pool size bounds concurrency and each worker admits its
+    own batch, so the gate is left wide and the controller is not started: it
+    would be hill-climbing a semaphore nothing blocks on. Two batches per worker
+    keep the pool fed while one is being collected.
+    """
+    if processes > 1:
+        window = processes * BATCH_FILES * 2
+        return asyncio.Semaphore(window), window, None
+    return _build_admission(_max_concurrent(), pages_done)
+
+
+async def _collect_from_worker(
+    entry: FileToProcess,
+    file_index: int,
+    dispatcher: BatchDispatcher,
+    *,
+    total_files: int,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+    cancel: threading.Event | None,
+    fallback: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+) -> _IngestResult:
+    """Collect one file's records from a worker, or run it via *fallback* if the pool died.
+
+    Production happened in another process, so there is no compute to admit and
+    no per-page progress to relay; the file-level events still fire in plan
+    order because the parent consumes outcomes in that order.
+    """
+    name = entry.name
+    if cancel and cancel.is_set():
+        raise asyncio.CancelledError
+    try:
+        on_progress(
+            EventType.FILE_START,
+            FileStartEvent(file=name, total_files=total_files, current_file=file_index),
+        )
+    except TaskCancelledError as exc:
+        raise asyncio.CancelledError from exc
+    try:
+        outcome = await dispatcher.outcome_for(file_index - 1)
+    except BrokenProcessPool:
+        # A worker died (typically OOM). The pool cannot be reused, so finish this
+        # file and the rest of the run in-process rather than failing every
+        # remaining file.
+        log.warning("Ingest worker pool broke; falling back to in-process ingest")
+        return await fallback(entry, file_index)
+    if outcome.error is not None:
+        with contextlib.suppress(TaskCancelledError):
+            on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="error", chunks=0))
+        pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
+        return _IngestResult(name, entry.path, 0, error=outcome.error)
+    records = outcome.records or []
+    page_texts = outcome.page_texts or []
+    on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="ok", chunks=len(records)))
+    pages_done[0] += max(1, len(page_texts))
+    return _IngestResult(
+        name,
+        entry.path,
+        len(records),
+        error=None,
+        file_hash=entry.file_hash,
+        records=records,
+        needs_cleanup=entry.needs_cleanup,
+        page_texts=page_texts,
+        stat=entry.stat,
+        concept_records=outcome.concept_records,
+        entity_rows=outcome.entity_rows,
+    )
+
+
+def _dispatch_plan(
+    files_to_process: list[FileToProcess],
+    processes: int,
+    in_process: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+    *,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+    cancel: threading.Event | None,
+) -> tuple[ProcessPoolExecutor | None, Iterator[Coroutine[Any, Any, _IngestResult]]]:
+    """The worker pool (None when ingest stays in-process) and the per-file coroutines."""
+    total_files = len(files_to_process)
+    if processes <= 1:
+        return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
+    pool = build_pool(processes, active_config())
+    log.warning("Ingesting %d files across %d worker processes", total_files, processes)
+    dispatcher = BatchDispatcher(
+        pool, [WorkerFile(e.path, e.name, e.content_type) for e in files_to_process]
+    )
+    return pool, (
+        _collect_from_worker(
+            entry,
+            idx,
+            dispatcher,
+            total_files=total_files,
+            pages_done=pages_done,
+            on_progress=on_progress,
+            cancel=cancel,
+            fallback=in_process,
+        )
+        for idx, entry in enumerate(files_to_process, 1)
+    )
+
+
 async def ingest_batch(
     files_to_process: list[FileToProcess],
     added: dict[str, None],
@@ -847,8 +964,9 @@ async def ingest_batch(
     # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
     # unit of GPU-feeding work for the adaptive controller to hill-climb on.
     pages_done = [0]
-    admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
     total_files = len(files_to_process)
+    processes = resolve_process_count(total_files)
+    admission, window, controller_task = _admission_for(processes, pages_done)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
         name = entry.name
@@ -870,7 +988,7 @@ async def ingest_batch(
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
                 page_texts: list[PageTextRecord] = []
-                records = await _produce_records(
+                records = await produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -878,8 +996,8 @@ async def ingest_batch(
                     on_progress=on_progress,
                     page_texts_out=page_texts,
                 )
-                concept_records = await _build_concept_records(records, name)
-                entity_rows = await _build_entity_records(records, name)
+                concept_records = await build_concept_records(records, name)
+                entity_rows = await build_entity_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=len(records)),
@@ -924,7 +1042,14 @@ async def ingest_batch(
                 pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
                 return _IngestResult(name, entry.path, 0, error=exc)
 
-    pending = (_process_one(entry, idx) for idx, entry in enumerate(files_to_process, 1))
+    pool, pending = _dispatch_plan(
+        files_to_process,
+        processes,
+        _process_one,
+        pages_done=pages_done,
+        on_progress=on_progress,
+        cancel=cancel,
+    )
     try:
         if quiet:
             await _collect_results(
@@ -976,6 +1101,10 @@ async def ingest_batch(
             controller_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await controller_task
+        if pool is not None:
+            # Drop queued batches on a cancel; in-flight ones are not
+            # interruptible, so their files finish rather than being lost.
+            pool.shutdown(cancel_futures=True)
 
 
 # Accumulate roughly this many chunks across documents before one batched
@@ -1166,7 +1295,7 @@ def _classify_result(
         updated.pop(result.name, None)
         failed[result.name] = None
         if reasons is not None:
-            reasons[result.name] = f"{type(result.error).__name__}: {result.error}"
+            reasons[result.name] = error_reason(result.error)
         return BatchStatus.FAILED
     if result.chunk_count == 0:
         # No searchable chunks: never report it as added/updated. With no page

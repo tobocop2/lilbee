@@ -101,6 +101,11 @@ class Config(BaseSettings):
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
     # not the GPU-fed extract/embed batch.
     ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    # Worker PROCESSES for the extract/embed fan-out (distinct from ingest_workers,
+    # which sizes the planning pass's threads). Bulk ingest is GIL-bound, so
+    # throughput scales with processes, not threads. 0 = auto: 1 (in-process,
+    # unchanged behaviour) unless the plan is large and the box has spare cores.
+    ingest_processes: int = ConfigField(default=0, ge=0, writable=True)
     # Passages packed into one embed request. Larger batches keep a GPU's
     # continuous-batching slots full: small per-passage requests leave the card
     # batch-starved (~96% util, low throughput). The engine still re-splits to

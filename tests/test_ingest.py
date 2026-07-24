@@ -725,14 +725,14 @@ class TestSync:
         (isolated_env / "bad.txt").write_text("This will fail.")
 
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.pipeline import _produce_records as orig_ingest
+        from lilbee.data.ingest.pipeline import produce_records as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "bad" in name:
                 raise RuntimeError("simulated failure")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_failing_ingest):
+        with patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_failing_ingest):
             result = await sync()
         # good.txt was added, bad.txt failed
         assert "good.txt" in result.added
@@ -752,14 +752,14 @@ class TestSync:
 
         f.write_text("Version 2, will fail")
 
-        from lilbee.data.ingest.pipeline import _produce_records as orig_ingest
+        from lilbee.data.ingest.pipeline import produce_records as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "flaky" in name:
                 raise RuntimeError("simulated failure on update")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_failing_ingest):
+        with patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_failing_ingest):
             result = await sync()
         assert "flaky.txt" not in result.updated
         assert "flaky.txt" in result.failed
@@ -774,7 +774,7 @@ class TestSync:
         async def _fail(*args):
             raise RuntimeError("boom")
 
-        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_fail):
+        with patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_fail):
             result = await sync(quiet=True)
         assert "bad.txt" in result.failed
         assert "bad.txt" not in result.added
@@ -790,14 +790,14 @@ class TestSync:
         await sync()  # First ingest succeeds
         f.write_text("Version 2, fail quietly")
 
-        from lilbee.data.ingest.pipeline import _produce_records as orig
+        from lilbee.data.ingest.pipeline import produce_records as orig
 
         async def _fail(path, name, ct, **kwargs):
             if "qflaky" in name:
                 raise RuntimeError("quiet fail")
             return await orig(path, name, ct, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_fail):
+        with patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_fail):
             result = await sync(quiet=True)
         assert "qflaky.txt" in result.failed
         assert "qflaky.txt" not in result.updated
@@ -1028,7 +1028,7 @@ class TestCancellation:
         async def _cancel(*args, **kwargs):
             raise asyncio.CancelledError()
 
-        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_cancel):
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_cancel):
             from lilbee.data.ingest import ingest_batch
             from lilbee.data.ingest.types import FileToProcess
 
@@ -1108,7 +1108,7 @@ class TestSkipMarkerLifecycle:
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         with mock.patch(
-            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
         ):
             first = await sync(quiet=True)
             assert "scanned.pdf" in first.skipped
@@ -1123,7 +1123,7 @@ class TestSkipMarkerLifecycle:
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         with mock.patch(
-            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
         ):
             await sync(quiet=True)
             # retry_skipped drops the marker so the file is attempted again.
@@ -1135,7 +1135,7 @@ class TestSkipMarkerLifecycle:
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         with mock.patch(
-            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
         ):
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
@@ -1160,7 +1160,7 @@ class TestZeroChunkPageTextPersistence:
 
         (isolated_env / "blank.pdf").write_bytes(b"%PDF-1.4 whitespace only")
         with mock.patch(
-            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._pages_no_chunks
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._pages_no_chunks
         ):
             first = await sync(quiet=True)
             # 0 searchable chunks: reported as skipped, not added ...
@@ -1189,7 +1189,7 @@ class TestZeroChunkPageTextPersistence:
             (isolated_env / f"blank{i}.pdf").write_bytes(b"%PDF-1.4 whitespace only")
         with (
             mock.patch(
-                "lilbee.data.ingest.pipeline._produce_records",
+                "lilbee.data.ingest.pipeline.produce_records",
                 side_effect=self._pages_no_chunks,
             ),
             mock.patch.object(pipeline_mod, "_WRITE_FLUSH_CHUNKS", 2),
@@ -3365,7 +3365,7 @@ class TestConceptIndexing:
     async def test_concepts_unavailable_skips_indexing(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        """When concepts_available() returns False, _build_concept_records is a no-op."""
+        """When concepts_available() returns False, build_concept_records is a no-op."""
         cfg.concept_graph = True
         (isolated_env / "unavail_index.txt").write_text("Content for unavailable index test.")
 
