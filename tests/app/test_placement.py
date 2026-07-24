@@ -116,6 +116,48 @@ def test_active_spec_parses_stored_json(monkeypatch):
     assert app_placement._active_spec() == spec
 
 
+def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
+    """The read path must not raise on a stale pin, driven through the real planner.
+
+    Stubbing ``resolve_placement_plan`` cannot hold this: the whole point is the
+    keyword ``get_placement`` passes it, so this reaches ``_placement_or_auto`` and
+    only the auto resolve is allowed to answer.
+    """
+    from pathlib import Path
+
+    import lilbee.providers.fleet.cuda_runtime as cuda_runtime
+    import lilbee.providers.fleet.gpu_env as gpu_env
+    from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.placement import Placement
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
+    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
+    monkeypatch.setattr(
+        planning,
+        "_server_model_inputs",
+        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
+    )
+
+    def refuse(placement, *_a, **_kw):
+        if placement is None:
+            return Placement(instances=(), unplaceable_roles=())
+        raise PlacementError("embed pinned to device 1 but only 0 GPU(s) detected")
+
+    monkeypatch.setattr(planning, "_resolve_placement", refuse)
+    planning.clear_read_device_cache()
+
+    view = app_placement.get_placement()
+
+    assert view.manual is False
+    assert view.rejected_spec_json == spec.to_json()
+    planning.clear_read_device_cache()
+
+
 def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypatch):
     """A pin the hardware no longer satisfies is not the effective placement."""
     from dataclasses import replace

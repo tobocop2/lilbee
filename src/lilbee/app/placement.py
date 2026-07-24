@@ -78,6 +78,10 @@ class PlacementView:
     # Roles sharing one swap group: each is placed, but only one is resident at a
     # time, so their footprints do not sum against the card they name.
     co_tenants: tuple[WorkerRole, ...] = ()
+    # A saved spec this hardware no longer satisfies. The auto plan is what runs,
+    # but the spec stays in config.toml and reapplies once it fits again, so a
+    # surface has to say it is there rather than report placement as plain auto.
+    rejected_spec_json: str | None = None
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -85,7 +89,13 @@ def _active_spec() -> PlacementSpec | None:
     return PlacementSpec.from_json(raw) if raw else None
 
 
-def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -> PlacementView:
+def _view(
+    resolved: ResolvedPlacement,
+    *,
+    manual: bool,
+    spec_json: str | None,
+    rejected_spec_json: str | None = None,
+) -> PlacementView:
     gpus = tuple(
         GpuInfo(
             index=d.index,
@@ -122,6 +132,7 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
             for role, ref in resolved.skipped_not_installed.items()
         ),
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
+        rejected_spec_json=rejected_spec_json,
     )
 
 
@@ -134,8 +145,10 @@ def get_placement() -> PlacementView:
     """
     spec = _active_spec()
     resolved = resolve_placement_plan(spec, fall_back_to_auto=True)
-    if spec is None or not resolved.spec_applied:
+    if spec is None:
         return _view(resolved, manual=False, spec_json=None)
+    if not resolved.spec_applied:
+        return _view(resolved, manual=False, spec_json=None, rejected_spec_json=spec.to_json())
     return _view(resolved, manual=True, spec_json=spec.to_json())
 
 
