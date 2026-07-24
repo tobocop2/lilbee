@@ -2225,6 +2225,32 @@ class TestStreamedPlan:
             await asyncio.wait_for(sync(quiet=True, cancel=cancel), timeout=60)
         assert len(classified) < len(names)
 
+    async def test_plan_shards_break_between_shards_is_deterministic(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        # The shard loop's break fires when a cancel is observed between shards.
+        # Driving it through sync relies on a cancel-during-extract race that is
+        # not portable across platforms; drive _plan_shards directly with a cancel
+        # already set, over >1 shard, so the break is hit without any timing.
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.pipeline import _plan_shards, _StreamedPlan
+
+        disk = {f"doc{i}.txt": isolated_env / f"doc{i}.txt" for i in range(4)}
+        for path in disk.values():
+            path.write_text("content")
+        monkeypatch.setattr(pipeline, "_PLAN_SHARD_MIN_FILES", 1)
+        monkeypatch.setattr(pipeline, "_PLAN_SHARD_MAX_FILES", 1)
+
+        cancel = threading.Event()
+        cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
+        state = _StreamedPlan()
+        shards = _plan_shards(disk, {}, {}, [], state, cancel)
+        yielded = [shard async for shard in shards]
+        assert yielded == []  # the break stopped planning the remaining shards
+        assert state.planned == 0
+
     async def test_cancel_with_nothing_left_to_admit_still_raises(self, isolated_env, mock_svc):
         # The last admitted file finishes and the planner has stopped, so ingest
         # returns without any file raising; sync still reports the run cancelled.
