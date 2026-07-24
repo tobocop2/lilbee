@@ -97,21 +97,31 @@ def test_concurrent_singletons_coalesce_into_few_batches() -> None:
     assert max(len(batch) for batch in calls) > 1
 
 
-def test_batch_never_exceeds_max_batch() -> None:
-    calls: list[list[str]] = []
-    coalescer = EmbedCoalescer(
-        _recording_dispatch(calls, delay=0.02), max_batch=8, max_concurrency=2, window_s=0.05
-    )
-    threads = [threading.Thread(target=lambda i=i: coalescer.embed([f"t{i}"])) for i in range(64)]
-    try:
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-    finally:
-        coalescer.close()
-    assert calls  # something was dispatched
-    assert all(len(batch) <= 8 for batch in calls)
+def test_single_text_requests_stop_filling_at_max_batch() -> None:
+    # Queue more single-text requests than fit, then drive the fill loop directly:
+    # no threads, no window timing, so the boundary is asserted deterministically.
+    coalescer = EmbedCoalescer(lambda t: [[0.0]] * len(t), max_batch=8, max_concurrency=1)
+    for i in range(20):
+        coalescer._queue.put(_Request([f"t{i}"], Future()))
+
+    batch = coalescer._next_batch()
+
+    assert batch is not None
+    assert sum(len(req.texts) for req in batch) == 8
+
+
+def test_max_batch_is_a_fill_target_not_a_hard_cap() -> None:
+    # The fill loop checks the count before adding, so a multi-text request can
+    # carry the group past max_batch. That is intended: the fleet client re-splits
+    # by token budget downstream. Pinned so the overshoot cannot change silently.
+    coalescer = EmbedCoalescer(lambda t: [[0.0]] * len(t), max_batch=8, max_concurrency=1)
+    coalescer._queue.put(_Request(["first"], Future()))
+    coalescer._queue.put(_Request([f"t{i}" for i in range(20)], Future()))
+
+    batch = coalescer._next_batch()
+
+    assert batch is not None
+    assert sum(len(req.texts) for req in batch) == 21  # 1 + 20, past max_batch=8
 
 
 def test_multi_text_request_scatters_back_whole() -> None:

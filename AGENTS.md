@@ -100,9 +100,16 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 
 ### Test-Driven Development
 - **100% test coverage required** — enforced by `pytest-cov` with `fail_under = 100`
+- **Check coverage of what you changed before pushing.** Lint, typecheck and a targeted test file are all green in seconds and none of them can see an untested new branch; CI then fails with `Coverage failure: total of 99 is less than fail-under=100` and *every test passing*, which reads like an infra problem and is not. Scope the same check locally instead of skipping it:
+  ```bash
+  uv run coverage run -m pytest tests/test_<suites touching your change>.py
+  uv run coverage report -m --include='*<changed_module>*'
+  ```
 - Write tests BEFORE or alongside implementation, not after
 - Every public function MUST have at least one test
 - **Every test must assert something meaningful** — no zero-assertion coverage padding
+- **A test that cannot fail is not a test.** Before accepting an assertion, mutate the code it guards in your head: if the test still passes, it is decoration. The common shape is a bound asserted against inputs that could never violate it (`assert all(len(b) <= 8 ...)` where every input is a single item), and an error/cleanup path tested without building its precondition.
+- **Reach a branch by construction, not by a thread race.** A test that spawns threads and relies on scheduling to hit the path passes where the scheduler is forgiving and leaves the branch *uncovered* where it is not — a coverage-gate failure on the slowest CI cell. Drive the unit directly (call the internal step, pre-load the queue, pass a zero window). Use real concurrency only when the concurrency is the subject, and then assert an invariant, not a timing-dependent count.
 - Mock all external dependencies (LLM providers, filesystem I/O where needed) — tests must run without a live server
 - Use `pytest.mark.skipif` only for integration tests that genuinely require live services
 - Use `tmp_path` fixtures for filesystem tests — never write to real paths

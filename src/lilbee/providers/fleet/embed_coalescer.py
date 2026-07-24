@@ -11,10 +11,12 @@ enough, not because they cannot compute. ``embed_batch_sequences`` never helps
 because each caller only ever hands the client one sequence.
 
 This merges the concurrent one-passage calls back into full batches. A single
-batcher thread drains the submission queue into groups of up to
+batcher thread drains the submission queue into groups sized toward
 ``embed_batch_sequences`` and hands each group to a bounded dispatch pool, so the
 fixed per-request cost is paid once per batch instead of once per passage while
-the batches still fan out across replicas. Build-vs-buy: no off-the-shelf
+the batches still fan out across replicas. The size is a fill target, not a hard
+cap: a multi-text request can carry a group past it, and the client re-splits by
+token budget downstream regardless. Build-vs-buy: no off-the-shelf
 in-process coalescer fits the fleet's failover routing and token-budget
 sub-batching, and the retired ``llama_cpp_provider`` batch queue set the in-repo
 precedent; this is the same idea rebuilt at the current fleet boundary.
