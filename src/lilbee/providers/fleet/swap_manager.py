@@ -27,7 +27,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
-from lilbee.providers.fleet.child_guard import spawn_bound_child
+from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
@@ -390,6 +390,12 @@ class SwapManager:
             return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
         self._state_path.unlink(missing_ok=True)
+        if self._proc is not None:
+            # Close this engine's death pipe now that it is stopped, so its watcher
+            # wakes and exits instead of parking until we die and then signalling a
+            # pid we already reaped (and may since have been recycled). No-op on the
+            # kernel-bound platforms.
+            release_death_pipe(self._proc.pid)
         self._proc = None
         self._port = None
         self._close_log()

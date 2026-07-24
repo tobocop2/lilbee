@@ -279,6 +279,22 @@ class TestLifecycle:
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
 
+    def test_shutdown_releases_the_stopped_engines_death_pipe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stopping the engine must free its death pipe, or reloads accumulate one
+        parked watcher and one fd per model switch on the pipe-bound platforms."""
+        proc = _FakeProc(poll_result=None)
+        _patch_spawn(monkeypatch, proc)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        released: list[int] = []
+        monkeypatch.setattr(sm, "release_death_pipe", released.append)
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.shutdown()
+        assert released == [proc.pid]
+
 
 class _FakeChild:
     """A stand-in psutil.Process that records the signals it receives."""

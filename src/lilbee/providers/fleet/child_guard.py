@@ -29,6 +29,7 @@ custom; the single-worker executor is the stdlib's.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import os
@@ -71,10 +72,13 @@ _PROCESS_TERMINATE = 0x0001
 # fd as a redirect target, so the inherited fd is moved here before it is read.
 _DEATH_PIPE_CHILD_FD = 3
 
-# Write ends of every live death pipe. Held for the process's lifetime so the
-# kernel is what closes them; dropping a reference would fake this process's
-# death and take the engine down with it.
-_death_pipe_write_fds: list[int] = []
+# The live death pipes, keyed by the pid each one guards. os.pipe() hands back
+# bare ints, which the GC never closes, so this map is the only handle that can
+# close a write end deliberately: on the guarded child's stop (so its watcher
+# wakes and exits instead of parking for our whole lifetime), or left for the
+# kernel to close when we die (which is what fires the binding). Keyed by pid so
+# the fd's lifetime tracks the child's, not ours.
+_death_pipe_write_fds: dict[int, int] = {}
 
 
 def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
@@ -197,15 +201,25 @@ def _watch_via_death_pipe(pid: int) -> None:
     """Signal *pid* from a detached watcher once this process's death closes a pipe.
 
     The portable stand-in for prctl and job objects: this process keeps the write
-    end for its lifetime, so only its death closes it, whatever the cause. The
-    watcher blocks reading the read end and terminates *pid* at EOF.
+    end until the child stops or we die, so the pipe reaches EOF on either. The
+    watcher blocks reading the read end and terminates *pid* at EOF. The write end
+    is O_CLOEXEC (os.pipe's default), so exec'd children never inherit it; a
+    fork-without-exec child would, keeping the pipe open past our death, so a
+    holder of a bound child must not fork workers (serve is single-process).
 
     Best-effort like the primitives it stands in for. It signals a pid rather than
-    holding a kernel handle, so a pid recycled between this process's death and the
-    signal could be hit; the window is the watcher's wakeup, and the ``kill -0``
-    guard covers the common case of an already-dead child.
+    holding a kernel handle, so a pid recycled in the instant between the write end
+    closing and the wakeup could be hit; the ``kill -0`` guard covers the common
+    case of an already-dead child, and :func:`release_death_pipe` keeps that window
+    to the child's own stop rather than letting a stale watcher span our lifetime.
     """
-    read_fd, write_fd = os.pipe()
+    try:
+        read_fd, write_fd = os.pipe()
+    except OSError:
+        # os.pipe() shares the binding's best-effort contract: at the fd ceiling
+        # the engine still runs, unbound, and the next launch reaps it.
+        log.info("Could not bind the engine to this process; the next launch reaps it.")
+        return
     # `|| exit 0` is load-bearing: a watcher that cannot take the read end must
     # leave without signalling. Falling through to the kill would make a failed
     # binding destroy the child it exists to protect, which is far worse than
@@ -228,9 +242,27 @@ def _watch_via_death_pipe(pid: int) -> None:
         os.close(write_fd)
         log.info("Could not bind the engine to this process; the next launch reaps it.")
     else:
-        _death_pipe_write_fds.append(write_fd)
+        # A crashed-without-release child can leave a stale entry the OS then
+        # recycles this pid into; close it first so the overwrite never leaks it.
+        release_death_pipe(pid)
+        _death_pipe_write_fds[pid] = write_fd
     finally:
         os.close(read_fd)
+
+
+def release_death_pipe(pid: int) -> None:
+    """Close the death pipe guarding *pid*, so its watcher wakes and exits.
+
+    Called when the guarded child is stopped while this process lives on (a fleet
+    reload or model switch): closing the write end unblocks the watcher, which
+    finds the child already gone and exits, instead of parking until our death and
+    then signalling a pid that may since have been recycled. A no-op for a pid
+    with no death pipe (the kernel-bound platforms, or an already-released one).
+    """
+    write_fd = _death_pipe_write_fds.pop(pid, None)
+    if write_fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(write_fd)
 
 
 def spawn_bound_child(
@@ -264,7 +296,8 @@ def spawn_bound_child(
         try:
             return _spawner.spawn(argv, preexec_fn=preexec, **popen_kwargs)
         except OSError:
-            log.info("Could not bind the engine to this process; falling back to a death pipe.")
+            # Fall through to the death pipe below, unless this child opted out.
+            log.info("Could not set the death signal on the engine; trying the death pipe.")
 
     proc = _spawner.spawn(argv, **popen_kwargs)
     if sys.platform == "win32":

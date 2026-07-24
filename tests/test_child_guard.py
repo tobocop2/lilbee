@@ -257,15 +257,15 @@ class TestTheDeathPipe:
         Closing the write end by hand is exactly what the kernel does when this
         process dies, which is the case that cannot be staged from inside a test.
         """
-        held: list[int] = []
+        held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         try:
             child_guard._watch_via_death_pipe(victim.pid)
-            assert held, "no write end was retained"
+            assert held == {victim.pid: mock.ANY}, "write end not retained under its pid"
             assert victim.poll() is None, "victim died before the pipe closed"
 
-            os.close(held[0])
+            os.close(held[victim.pid])
 
             victim.wait(timeout=15)
         finally:
@@ -273,17 +273,84 @@ class TestTheDeathPipe:
                 victim.kill()
                 victim.wait(timeout=10)
 
-    def test_the_write_end_is_held_so_only_this_process_death_closes_it(self, monkeypatch):
+    def test_release_death_pipe_closes_the_write_end_for_a_stopped_child(self, monkeypatch):
+        """A reload stops the child and releases its pipe, closing the write end.
+
+        The closed write end is what the parked watcher reads as EOF (proven by
+        the signals-the-child test); without release it stays open until lilbee
+        dies, leaking one fd and one watcher per model switch. Here we pin the
+        release itself: the fd is closed and the entry dropped, idempotently.
+        """
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
+
+        child_guard._watch_via_death_pipe(1234)
+        write_fd = held[1234]
+
+        child_guard.release_death_pipe(1234)
+
+        assert 1234 not in held, "the write end was not dropped"
+        with pytest.raises(OSError):
+            os.fstat(write_fd)  # closed -> EBADF
+        child_guard.release_death_pipe(1234)  # idempotent second call must not raise
+
+    def test_the_write_end_is_held_under_its_pid_until_released(self, monkeypatch):
         """A dropped reference would close the pipe early and kill a healthy engine."""
-        held: list[int] = []
+        held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
 
         child_guard._watch_via_death_pipe(1234)
 
-        assert len(held) == 1
-        os.fstat(held[0])  # raises if it was closed
-        os.close(held[0])
+        assert list(held) == [1234]
+        os.fstat(held[1234])  # raises if it was closed
+        child_guard.release_death_pipe(1234)
+        assert 1234 not in held
+
+    def test_release_is_a_noop_for_an_unbound_pid(self, monkeypatch):
+        """Kernel-bound platforms record no pipe; release must not raise for them."""
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        child_guard.release_death_pipe(999999)  # must not raise
+
+    def test_a_recycled_pid_closes_the_stale_entry_instead_of_leaking_it(self, monkeypatch):
+        """A child that crashed without release leaves an entry; if the OS recycles
+        that pid into a new bound child, the overwrite must close the old fd."""
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
+
+        child_guard._watch_via_death_pipe(1234)
+        stale_fd = held[1234]
+        child_guard._watch_via_death_pipe(1234)  # same pid recycled
+
+        assert held[1234] != stale_fd, "the entry was not replaced"
+        with pytest.raises(OSError):
+            os.fstat(stale_fd)  # the stale write end was closed, not leaked
+        child_guard.release_death_pipe(1234)
+
+    def test_the_watcher_script_guards_the_kill_behind_the_redirect(self):
+        """The `|| exit 0` guard is load-bearing; pin its presence structurally.
+
+        A behavioural test cannot catch its removal: the real /bin/sh exits on a
+        failed `exec` redirect regardless, so deleting the guard stays green. The
+        guard exists for shells that would not, so assert it is emitted, ahead of
+        the kill, rather than trusting the shell to mask its absence.
+        """
+        recorded: dict[str, object] = {}
+
+        def _capture(argv, **_kw):
+            recorded["argv"] = argv
+            return mock.MagicMock()
+
+        with mock.patch.object(child_guard._spawner, "spawn", _capture):
+            child_guard._watch_via_death_pipe(4242)
+        child_guard.release_death_pipe(4242)
+
+        script = recorded["argv"][2]
+        assert "|| exit 0" in script
+        assert script.index("|| exit 0") < script.index("kill")
 
     def test_a_watcher_that_cannot_take_the_read_end_never_signals(self, monkeypatch):
         """A broken binding must degrade to no binding, not to killing the child.
@@ -293,7 +360,7 @@ class TestTheDeathPipe:
         and it fell straight through to the kill: every bound child died within
         milliseconds of being spawned.
         """
-        held: list[int] = []
+        held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
         try:
@@ -306,7 +373,7 @@ class TestTheDeathPipe:
             )
 
             child_guard._watch_via_death_pipe(victim.pid)
-            for fd in held:
+            for fd in list(held.values()):
                 os.close(fd)
 
             with pytest.raises(subprocess.TimeoutExpired):
@@ -317,7 +384,7 @@ class TestTheDeathPipe:
 
     def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):
         """The reap is the fallback, but a leaked fd per failed spawn is not."""
-        held: list[int] = []
+        held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         monkeypatch.setattr(
             child_guard._spawner, "spawn", mock.MagicMock(side_effect=OSError("no sh"))
@@ -326,5 +393,15 @@ class TestTheDeathPipe:
 
         child_guard._watch_via_death_pipe(1234)
 
-        assert held == []
+        assert held == {}
         assert len(os.listdir("/dev/fd")) <= before
+
+    def test_pipe_exhaustion_does_not_fail_the_spawn(self, monkeypatch):
+        """os.pipe() shares the binding's best-effort contract: never fail a spawn."""
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        monkeypatch.setattr(child_guard.os, "pipe", mock.Mock(side_effect=OSError("EMFILE")))
+
+        child_guard._watch_via_death_pipe(1234)  # must not raise
+
+        assert held == {}
