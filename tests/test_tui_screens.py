@@ -7564,6 +7564,8 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
 
 async def test_sync_called_with_quiet_true():
     """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
+    from lilbee.cli.tui.task_queue import TaskType
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         sync_kwargs: list[dict] = []
@@ -7574,9 +7576,10 @@ async def test_sync_called_with_quiet_true():
 
         with patch("lilbee.data.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            # _run_sync dispatches to the task bar's daemon worker thread, not a
+            # Textual worker, so app.screen.workers never tracks it. Wait on the
+            # task queue reaching a terminal state instead.
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
 
         assert len(sync_kwargs) >= 1
         assert sync_kwargs[0].get("quiet") is True
