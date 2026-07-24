@@ -731,6 +731,70 @@ async def test_run_sync_submits_task_to_controller() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cmd_import_submits_task_to_controller() -> None:
+    """_cmd_import routes through TaskBarController.start_task with IMPORT type."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_import("/tmp/pages.parquet")
+        assert mock_start.called
+        assert mock_start.call_args.args[1] == TaskType.IMPORT
+
+
+@pytest.mark.asyncio
+async def test_cmd_export_submits_task_to_controller() -> None:
+    """_cmd_export routes through TaskBarController.start_task with EXPORT type."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_export("/tmp/pages.parquet")
+        assert mock_start.called
+        assert mock_start.call_args.args[1] == TaskType.EXPORT
+
+
+@pytest.mark.asyncio
+async def test_cmd_import_rejects_when_sync_active() -> None:
+    """_cmd_import refuses while an ingest task holds the store."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        screen._sync_active = True
+        notified: list[str] = []
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_import("/tmp/pages.parquet")
+        assert not mock_start.called
+        assert notified
+
+
+@pytest.mark.asyncio
+async def test_indexing_active_true_during_import_task() -> None:
+    """Memory extraction stays gated while an import re-embeds."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        tid = app.task_bar.queue.enqueue(lambda: None, "Import x", TaskType.IMPORT.value)
+        app.task_bar.queue.advance(TaskType.IMPORT.value)
+        assert screen._indexing_active() is True
+        app.task_bar.queue.complete_task(tid)
+        assert screen._indexing_active() is False
+
+
+@pytest.mark.asyncio
 async def test_run_sync_rejects_when_already_active() -> None:
     """_run_sync refuses when another sync is already running."""
 

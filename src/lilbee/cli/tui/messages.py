@@ -113,6 +113,10 @@ CMD_REBUILD_CONFIRM_MESSAGE = (
 )
 TASK_NAME_SYNC = "Sync documents"
 TASK_NAME_REBUILD = "Rebuild index"
+TASK_NAME_IMPORT = "Import {file}"
+TASK_NAME_EXPORT = "Export {file}"
+IMPORT_STATUS_LOADING = "Loading dataset..."
+EXPORT_STATUS_RUNNING = "Exporting..."
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
