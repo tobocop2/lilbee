@@ -2230,6 +2230,33 @@ class TestStreamedPlan:
         assert feed.planned == 2
         await feed.aclose()
 
+    async def test_collector_does_not_spin_on_a_ready_shard(self, monkeypatch, mock_svc):
+        # With every window slot busy, an already-planned shard must not wake the
+        # collector on every pass: it has nothing to admit until a file finishes.
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _slow(name) -> _IngestResult:
+            await asyncio.sleep(0.05)
+            return _IngestResult(name, Path(name), chunk_count=0, error=None)
+
+        async def _shards():
+            yield [_slow("a.txt")]
+            yield [_slow("b.txt")]
+
+        waits = 0
+        real_wait = pipeline.asyncio.wait
+
+        async def _counting_wait(fs, **kwargs):
+            nonlocal waits
+            waits += 1
+            return await real_wait(fs, **kwargs)
+
+        monkeypatch.setattr(pipeline.asyncio, "wait", _counting_wait)
+        await pipeline._collect_results(pipeline._ResultFeed(_shards()), {}, {}, {}, {}, window=1)
+        # One wait per file, plus at most a couple for the shard landings.
+        assert waits <= 6
+
 
 class TestTaskWindow:
     """The ingest pump keeps at most ``window`` tasks alive at once."""
