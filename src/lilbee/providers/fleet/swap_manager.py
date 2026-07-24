@@ -778,7 +778,12 @@ def _is_live_llama_swap(state: SwapState) -> bool:
 
 
 def _stop_stale_swap(state: SwapState) -> None:
-    """TERM-then-KILL a stale llama-swap's group and reap the servers it spawned."""
+    """TERM-then-KILL a stale llama-swap's group and reap the servers it spawned.
+
+    Swept as wide as ``_stop_own_fleet``: a reparented or respawned server is no
+    longer a descendant, and every caller unlinks the record next, so the member
+    ports are the last thing that can match it.
+    """
     children = _live_children(state.pid)
     try:
         proc = psutil.Process(state.pid)
@@ -791,7 +796,7 @@ def _stop_stale_swap(state: SwapState) -> None:
         except psutil.TimeoutExpired:
             _signal_stale(state, _SIGKILL)
             _await_killed([proc])
-    _reap_survivors(children)
+    _reap_survivors(children + _find_orphan_servers(state.member_ports))
 
 
 def _signal_stale(state: SwapState, sig: int) -> None:

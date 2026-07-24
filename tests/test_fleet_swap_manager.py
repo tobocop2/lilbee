@@ -850,6 +850,28 @@ class TestStopStaleSwap:
         sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert survivor.terminated is True
 
+    def test_reaps_member_port_servers_the_descendant_snapshot_missed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A server that was reparented away from the swap, or respawned after
+        # the snapshot, is no longer a descendant; only the recorded member
+        # ports find it. Every caller unlinks the record straight after, so a
+        # miss here strands it with nothing left to match it against.
+        port_server = _FakeChild(running=True)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        swept: list[tuple[int, ...]] = []
+        monkeypatch.setattr(
+            sm,
+            "_find_orphan_servers",
+            lambda ports: swept.append(ports) or [port_server],
+        )
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None, member_ports=(9101, 9102)))
+        assert swept == [(9101, 9102)]
+        assert port_server.terminated is True
+
 
 class TestAtomicStateWrite:
     def test_config_and_state_both_land_via_replace_with_no_tmp_leftovers(
