@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from lilbee.app import services as svc_mod
@@ -24,7 +25,7 @@ def mock_svc():
     store = MagicMock()
     store.add_memory.return_value = "id123"
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embedding_available.return_value = True
     services = make_mock_services(store=store, embedder=embedder)
     svc_mod.set_services(services)
