@@ -9,6 +9,7 @@ from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel
 
+from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     ConceptRecords,
@@ -71,7 +72,7 @@ class ChunkRecord(TypedDict):
     line_end: int
     chunk: str
     chunk_index: int
-    vector: list[float]
+    vector: Vector
 
 
 class SyncResult(BaseModel):
