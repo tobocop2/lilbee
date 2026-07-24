@@ -21,8 +21,12 @@ in-process coalescer fits the fleet's failover routing and token-budget
 sub-batching, and the retired ``llama_cpp_provider`` batch queue set the in-repo
 precedent; this is the same idea rebuilt at the current fleet boundary.
 
-Coalescing is scoped to bulk ingest through a ContextVar so the interactive query
-and chat paths keep their direct, latency-free dispatch.
+Coalescing is scoped twice. A ContextVar limits it to bulk ingest, so the
+interactive query and chat paths keep their direct, latency-free dispatch. A
+fleet-size gate limits it to fleets big enough for dispatch to be the bottleneck:
+an A/B on the same 50k subset regressed to 0.82x on a GPU-bound 2xA40, while
+8xA40 (153 docs/s) and 4xH200 (152 docs/s) both sat at the ~150 docs/s ceiling
+this removes. See ``FleetProvider._fleet_is_dispatch_bound``.
 """
 
 from __future__ import annotations

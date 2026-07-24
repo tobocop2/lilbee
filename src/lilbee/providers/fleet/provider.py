@@ -184,6 +184,10 @@ _ROUTE_LOCK = threading.Lock()
 # parsed, with a floor for single-GPU and fleet-size-unknown hosts.
 _EMBED_DISPATCH_PER_REPLICA = 2
 _MIN_EMBED_DISPATCH = 8
+# Replica count at or above which coalescing pays (see _fleet_is_dispatch_bound).
+# 2 regressed and 4 was already at the ceiling; the crossover between them is
+# untested, so the gate errs toward direct dispatch.
+_COALESCE_MIN_REPLICAS = 4
 
 
 def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -867,6 +871,7 @@ class FleetProvider:
         # (by when the fleet is up and the replica count is known) and closed at
         # shutdown. Only engaged inside a ``coalesce_embeds()`` context.
         self._coalescer: EmbedCoalescer | None = None
+        self._embed_replica_count: int | None = None
         self._coalescer_lock = threading.Lock()
 
     def _ensure_fleet(self) -> bool:
@@ -1606,12 +1611,24 @@ class FleetProvider:
         return result.messages
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        # Under a bulk ingest, merge concurrent one-passage calls into full
-        # batches so the fixed per-request cost is not paid per passage; the
-        # interactive query/chat path (no coalescing context) dispatches directly.
-        if texts and coalescing_enabled():
+        # Under a bulk ingest on a fleet big enough to be dispatch-bound, merge
+        # concurrent one-passage calls into full batches so the fixed per-request
+        # cost is not paid per passage. The interactive query/chat path (no
+        # coalescing context) and small fleets dispatch directly.
+        if texts and coalescing_enabled() and self._fleet_is_dispatch_bound():
             return self._embed_coalescer().embed(texts)
         return self._embed_batch(texts)
+
+    def _fleet_is_dispatch_bound(self) -> bool:
+        """Whether this fleet is large enough for coalescing to be a win.
+
+        Coalescing helps only when emitting requests, not the GPUs, is the limit.
+        A/B measured on the same 50k subset: 2xA40 is GPU-bound and regressed to
+        0.82x with coalescing on, while 8xA40 (153 docs/s) and 4xH200 (152 docs/s)
+        both sat at the same ~150 docs/s ceiling coalescing exists to remove.
+        """
+        with self._coalescer_lock:
+            return self._embed_replicas() >= _COALESCE_MIN_REPLICAS
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         return self._with_rediscover(lambda: self._embed_once(texts))
@@ -1620,23 +1637,35 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
 
+    def _embed_replicas(self) -> int:
+        """The embed fleet's replica count, probed once and cached.
+
+        The probe touches the devices, and both the coalescing gate and the
+        dispatch sizing read it, so it must not run per embed call. Callers hold
+        ``_coalescer_lock``; ``shutdown`` clears it so a re-warmed fleet re-probes.
+        """
+        if self._embed_replica_count is None:
+            from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+
+            try:
+                self._embed_replica_count = resolve_replica_count(
+                    WorkerRole.EMBED, gpu_device_count()
+                )
+            except Exception:
+                self._embed_replica_count = 1
+        return self._embed_replica_count
+
     def _embed_coalescer(self) -> EmbedCoalescer:
         """The ingest embed coalescer, built on first use from the live fleet size."""
         with self._coalescer_lock:
             if self._coalescer is None:
                 from lilbee.core.config import active_config
-                from lilbee.providers.fleet.replicas import (
-                    gpu_device_count,
-                    resolve_replica_count,
-                )
 
-                try:
-                    replicas = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
-                except Exception:
-                    replicas = 1
                 # A few batches per replica in flight keep every card's slots full
                 # without falling back to a request-per-passage flood.
-                concurrency = max(_MIN_EMBED_DISPATCH, replicas * _EMBED_DISPATCH_PER_REPLICA)
+                concurrency = max(
+                    _MIN_EMBED_DISPATCH, self._embed_replicas() * _EMBED_DISPATCH_PER_REPLICA
+                )
                 self._coalescer = EmbedCoalescer(
                     self._embed_batch,
                     max_batch=active_config().embed_batch_sequences,
@@ -2430,6 +2459,7 @@ class FleetProvider:
         # Drain and stop the coalescer before the servers it dispatches to go away.
         with self._coalescer_lock:
             coalescer, self._coalescer = self._coalescer, None
+            self._embed_replica_count = None
         if coalescer is not None:
             coalescer.close()
         self._shutdown_swap()

@@ -4722,6 +4722,14 @@ class TestEmbedCoalescingRoute:
         monkeypatch.setattr(fleet, "_embed_batch", _batch)
         return fleet, calls
 
+    @staticmethod
+    def _dispatch_bound(monkeypatch) -> None:
+        """Force a replica count past the coalescing gate; below it, embed() takes
+        the direct path and no coalescer is built."""
+        from lilbee.providers.fleet import replicas as replicas_mod
+
+        monkeypatch.setattr(replicas_mod, "resolve_replica_count", lambda *_a, **_k: 8)
+
     def test_direct_dispatch_without_context(self, monkeypatch) -> None:
         from lilbee.providers.fleet.embed_coalescer import coalescing_enabled
 
@@ -4739,6 +4747,7 @@ class TestEmbedCoalescingRoute:
         from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
 
         fleet, calls = self._provider(monkeypatch)
+        self._dispatch_bound(monkeypatch)
         try:
             with coalesce_embeds():
                 assert fleet.embed(["hello"]) == [[5.0]]
@@ -4764,6 +4773,7 @@ class TestEmbedCoalescingRoute:
         from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
 
         fleet, _ = self._provider(monkeypatch)
+        self._dispatch_bound(monkeypatch)
         with coalesce_embeds():
             fleet.embed(["warm"])
         coalescer = fleet.__dict__.get("_coalescer")
@@ -4772,9 +4782,55 @@ class TestEmbedCoalescingRoute:
         assert fleet._coalescer is None
         assert coalescer._thread.is_alive() is False
 
-    def test_unprobeable_fleet_still_builds_a_coalescer(self, monkeypatch) -> None:
-        # Sizing reads the live replica count; a fleet that cannot be probed yet
-        # must fall back to one replica rather than fail the embed outright.
+    @pytest.mark.parametrize(
+        "replicas, coalesced",
+        [(1, False), (2, False), (3, False), (4, True), (8, True)],
+    )
+    def test_only_a_dispatch_bound_fleet_coalesces(self, monkeypatch, replicas, coalesced) -> None:
+        # Coalescing regressed to 0.82x on 2xA40 (GPU-bound) and only paid at the
+        # 4+ replica counts that sat at the ~150 docs/s dispatch ceiling, so the
+        # gate turns it off below _COALESCE_MIN_REPLICAS.
+        from lilbee.providers.fleet import replicas as replicas_mod
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, calls = self._provider(monkeypatch)
+        monkeypatch.setattr(replicas_mod, "resolve_replica_count", lambda *_a, **_k: replicas)
+        try:
+            with coalesce_embeds():
+                assert fleet.embed(["hello"]) == [[5.0]]
+            assert calls == [["hello"]]  # same answer either way
+            assert (fleet.__dict__.get("_coalescer") is not None) is coalesced
+        finally:
+            fleet.shutdown()
+
+    def test_replica_probe_runs_once_and_is_cleared_by_shutdown(self, monkeypatch) -> None:
+        # The probe touches devices, so it must not run per embed; shutdown clears
+        # it so a re-warmed fleet of a different size is not sized from stale data.
+        from lilbee.providers.fleet import replicas as replicas_mod
+        from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
+
+        fleet, _ = self._provider(monkeypatch)
+        probes = []
+
+        def _counting(*_a: object, **_k: object) -> int:
+            probes.append(1)
+            return 8
+
+        monkeypatch.setattr(replicas_mod, "resolve_replica_count", _counting)
+        try:
+            with coalesce_embeds():
+                fleet.embed(["one"])
+                fleet.embed(["two"])
+                fleet.embed(["three"])
+            assert len(probes) == 1  # cached across every embed
+        finally:
+            fleet.shutdown()
+        assert fleet._embed_replica_count is None  # cleared for the next fleet
+
+    def test_unprobeable_fleet_falls_back_to_direct_dispatch(self, monkeypatch) -> None:
+        # A fleet that cannot be probed must not fail the embed, and must not
+        # gamble on coalescing either: unknown size falls back to one replica,
+        # which is below the gate, so the safe direct path wins.
         from lilbee.providers.fleet import replicas
         from lilbee.providers.fleet.embed_coalescer import coalesce_embeds
 
@@ -4788,6 +4844,6 @@ class TestEmbedCoalescingRoute:
             with coalesce_embeds():
                 assert fleet.embed(["hello"]) == [[5.0]]
             assert calls == [["hello"]]
-            assert fleet.__dict__.get("_coalescer") is not None
+            assert fleet.__dict__.get("_coalescer") is None
         finally:
             fleet.shutdown()
