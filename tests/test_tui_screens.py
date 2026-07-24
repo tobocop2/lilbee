@@ -40,6 +40,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
+from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
@@ -2846,7 +2847,11 @@ def _dataset_services(tmp_path, *, seed=True):
 
 
 async def _wait_for_dataset_task(app, _pilot, task_type):
-    """Spin until the queued dataset task reaches a terminal state; return the row."""
+    """Spin until the queued dataset task reaches a terminal state; return the row.
+
+    Task-bar work runs on a daemon worker thread, not a Textual worker, so
+    ``app.screen.workers`` never tracks it and cannot be waited on.
+    """
     import time
 
     from lilbee.cli.tui.task_queue import TaskStatus
@@ -6222,9 +6227,7 @@ async def test_chat_run_sync_worker():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -6241,9 +6244,7 @@ async def test_chat_sync_file_done_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
@@ -6265,9 +6266,7 @@ async def test_chat_sync_file_start_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
@@ -6286,9 +6285,7 @@ async def test_chat_sync_embed_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -6302,9 +6299,7 @@ async def test_chat_run_sync_error_worker():
 
         with patch("lilbee.data.ingest.sync", new=failing_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -7367,9 +7362,7 @@ async def test_cmd_add_error_in_background(tmp_path):
             "lilbee.app.ingest.register_sources", side_effect=RuntimeError("register failed")
         ):
             app.screen._handle_slash(f"/add {test_file}")
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.ADD)
             assert app.screen._sync_active is False
 
 
@@ -7564,8 +7557,6 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
 
 async def test_sync_called_with_quiet_true():
     """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
-    from lilbee.cli.tui.task_queue import TaskType
-
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         sync_kwargs: list[dict] = []
@@ -7576,9 +7567,6 @@ async def test_sync_called_with_quiet_true():
 
         with patch("lilbee.data.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
-            # _run_sync dispatches to the task bar's daemon worker thread, not a
-            # Textual worker, so app.screen.workers never tracks it. Wait on the
-            # task queue reaching a terminal state instead.
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
 
         assert len(sync_kwargs) >= 1
