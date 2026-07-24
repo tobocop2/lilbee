@@ -108,24 +108,28 @@ class EmbedCoalescer:
         )
         self._thread = threading.Thread(target=self._run, name="fleet-embed-coalescer", daemon=True)
         self._started = False
+        self._closed = False
         self._start_lock = threading.Lock()
 
     def embed(self, texts: list[str]) -> Vectors:
-        """Submit *texts* for coalesced embedding and block for their vectors."""
+        """Submit *texts* for coalesced embedding and block for their vectors.
+
+        Raises once the coalescer is closed: the caller blocks on the future, so a
+        request queued after the shutdown drain would have nothing left to resolve
+        it and would wait forever. Queueing takes the lock :meth:`close` sets its
+        flag under, which is what makes "closed" and "queued" mutually exclusive.
+        """
         if not texts:
             return []
-        self._ensure_started()
         future: Future[Vectors] = Future()
-        self._queue.put(_Request(texts, future))
-        return future.result()
-
-    def _ensure_started(self) -> None:
-        if self._started:
-            return
         with self._start_lock:
+            if self._closed:
+                raise RuntimeError("embed coalescer closed")
             if not self._started:
                 self._thread.start()
                 self._started = True
+            self._queue.put(_Request(texts, future))
+        return future.result()
 
     def _run(self) -> None:
         while True:
@@ -199,8 +203,15 @@ class EmbedCoalescer:
                 req.future.set_exception(solo_exc)
 
     def close(self) -> None:
-        """Stop the batcher and dispatch pool; fail any un-drained stragglers."""
-        if not self._started:
+        """Stop the batcher and dispatch pool; fail any un-drained stragglers.
+
+        The closed flag is set under the lock :meth:`embed` queues within, so every
+        request is either already queued (and drained below) or rejected outright.
+        """
+        with self._start_lock:
+            self._closed = True
+            started = self._started
+        if not started:
             self._pool.shutdown(wait=False)
             return
         self._queue.put(_STOP)

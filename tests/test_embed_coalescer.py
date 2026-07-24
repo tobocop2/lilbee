@@ -268,6 +268,19 @@ def test_solo_retry_length_mismatch_fails_only_that_request() -> None:
     assert good.result() == [_vec_for("good")]
 
 
+def test_embed_after_close_raises_instead_of_blocking_forever() -> None:
+    # The caller blocks on its future, so a request accepted after the shutdown
+    # drain would never be resolved. Rejecting is the only non-hanging answer.
+    calls: list[list[str]] = []
+    coalescer = EmbedCoalescer(_recording_dispatch(calls), max_batch=4, max_concurrency=2)
+    coalescer.embed(["warm"])
+    coalescer.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        coalescer.embed(["after-close"])
+    assert calls == [["warm"]]  # never dispatched
+
+
 def test_close_without_use_does_not_start_thread() -> None:
     calls: list[list[str]] = []
     coalescer = EmbedCoalescer(_recording_dispatch(calls), max_batch=4, max_concurrency=2)
