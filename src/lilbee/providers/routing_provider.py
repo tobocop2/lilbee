@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     ChatResult,
     ChatStreamItem,
@@ -82,7 +83,7 @@ class RoutingProvider(LLMProvider):
             return self._get_sdk_provider()
         return self._get_local()
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(cfg.embedding_model)
         return self._pick_backend(ref).embed(texts)
 

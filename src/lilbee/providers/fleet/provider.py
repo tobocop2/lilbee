@@ -27,6 +27,7 @@ import httpx
 
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
@@ -1593,10 +1594,10 @@ class FleetProvider:
             )
         return result.messages
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         return self._with_rediscover(lambda: self._embed_once(texts))
 
-    def _embed_once(self, texts: list[str]) -> list[list[float]]:
+    def _embed_once(self, texts: list[str]) -> list[Vector]:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
 

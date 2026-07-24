@@ -24,7 +24,7 @@ The full rules follow; this block is the part that gets skipped under time
 pressure, so it leads.
 
 ## Project
-The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`).
 
 **Framing:** Lead with "the whole local AI stack in one executable". Two pillars, always both: it runs and manages the models (its own model manager, no Ollama or LM Studio needed, works with both), and it is a search engine you can talk to (cited answers). "RAG" and "local-first" are properties, not the identity. lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
@@ -410,14 +410,6 @@ Run this mentally or explicitly before claiming work is done:
 10. **No new test-aware production branches** — `grep -rnE "isinstance\(self\.app, LilbeeApp\)\|test apps aren't" src/` must return zero new sites in your diff. The escape hatch was rip-and-replaced; new occurrences are regressions.
 11. **No new owned-attribute reflection** — `git diff` for added `getattr(self, "X"` and `# type: ignore[attr-defined]` lines. Each must have a written justification in the PR body or be removed.
 12. **Run the Code-Smell Triggers section grep set** — every entry above. Compare counts vs `main`. The number must not increase.
-
-### Behavior Learning (floop)
-- `floop` captures corrections and learned behaviors across sessions
-- Hooks run automatically via `~/.claude/settings.json` (session-start, dynamic-context, detect-correction)
-- `floop active` — show behaviors active in current context
-- `floop learn` — manually capture a correction/behavior
-- `floop list` — list all learned behaviors
-- `floop prompt` — generate prompt section from active behaviors
 
 ### Build & Release Artifacts
 The release ships standalone executables (Nuitka onefile) and pip wheels, each

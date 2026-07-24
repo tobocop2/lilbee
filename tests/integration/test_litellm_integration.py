@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pytest
 
 litellm = pytest.importorskip("litellm")
@@ -65,7 +66,7 @@ class TestSdkEmbed:
 
         assert len(result) == 1
         assert len(result[0]) > 0
-        assert all(isinstance(v, float) for v in result[0])
+        assert result[0].dtype == np.float32
 
     def test_embed_batch(self) -> None:
         """Batch embedding returns one vector per input."""

@@ -6,6 +6,7 @@ import threading
 import numpy as np
 
 from lilbee.core.config import Config
+from lilbee.core.vectors import Vector
 from lilbee.data.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
@@ -101,7 +102,7 @@ class Embedder:
             self._truncated_total += 1
         return text[:budget]
 
-    def validate_vector(self, vector: list[float]) -> None:
+    def validate_vector(self, vector: Vector) -> None:
         """Validate embedding vector dimension and values."""
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
@@ -130,11 +131,11 @@ class Embedder:
         """Instruction profile for the configured embedder (symmetric if unrecognized)."""
         return resolve_embedding_profile(self._config.embedding_model)
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str) -> Vector:
         """Embed a single document string, return vector."""
         return self._embed_with([text], self._profile().doc_prefix)[0]
 
-    def embed_query(self, text: str) -> list[float]:
+    def embed_query(self, text: str) -> Vector:
         """Embed a single query string, applying the model's query instruction if any."""
         return self._embed_with([text], self._profile().query_instruction)[0]
 
@@ -144,7 +145,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed document texts with adaptive batching, return list of vectors."""
         return self._embed_with(
             texts, self._profile().doc_prefix, source=source, on_progress=on_progress
@@ -156,7 +157,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed query texts (query instruction applied), adaptive batching."""
         return self._embed_with(
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
@@ -169,7 +170,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Adaptive-batched embed of *texts*, each prefixed (query/document instruction).
 
         Fires ``embed`` progress events per batch when *on_progress* is provided.
@@ -180,7 +181,7 @@ class Embedder:
         truncated_before = self.truncated_total
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
-        vectors: list[list[float]] = []
+        vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
