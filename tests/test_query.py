@@ -758,6 +758,47 @@ class TestStreamingCitationFilter:
         assert shown == "Grounded answer [1]."
         assert f.answer == "Grounded answer [1]."
 
+    def test_drops_a_bold_sources_block(self):
+        shown, f = self._run(["Grounded answer [1].", "\n\n**Sources:**\n- made-up.pdf"])
+        assert "made-up.pdf" not in shown
+        assert "Sources" not in shown
+        assert shown.startswith("Grounded answer [1].")
+        assert "made-up.pdf" not in f.answer
+
+    def test_drops_a_dangling_bold_heading_at_stream_end(self):
+        # The model emitted a bold citation heading and stopped; left in place it
+        # would sit directly above lilbee's authoritative block as a second header.
+        shown, f = self._run(["Grounded answer [1].", "\n\n**Sources:**\n"])
+        assert "Sources" not in shown
+        assert shown == "Grounded answer [1]."
+        assert f.answer == "Grounded answer [1]."
+
+    def test_drops_a_dangling_italic_heading_at_stream_end(self):
+        shown, _f = self._run(["Grounded answer [1].", "\n\n*References:*"])
+        assert "References" not in shown
+        assert shown == "Grounded answer [1]."
+
+    def test_drops_a_heading_with_colon_outside_the_emphasis(self):
+        shown, _ = self._run(["Grounded answer [1].", "\n\n**Sources**:\n- made-up.pdf"])
+        assert "made-up.pdf" not in shown
+        assert "Sources" not in shown
+
+    def test_bold_heading_split_across_chunks_never_leaks(self):
+        chunks = ["Body text.", "\n\n**Sou", "rces:**", "\n- x.pdf"]
+        shown, _ = self._run(chunks)
+        assert "Sources" not in shown
+        assert "x.pdf" not in shown
+        assert shown.startswith("Body text.")
+
+    def test_prose_after_a_bold_heading_line_streams_through(self):
+        # A bold heading the answer legitimately discusses is not a citation
+        # block: no list follows, so heading and prose both reach the reader.
+        chunks = ["The paper is structured simply.", "\n\n**References:**", "\nIt lists 40 works."]
+        shown, f = self._run(chunks)
+        assert "**References:**" in shown
+        assert "It lists 40 works." in shown
+        assert f.answer.endswith("It lists 40 works.")
+
     def test_heading_is_held_not_shown_while_ambiguous(self):
         # Mid-stream, a bare heading must not be emitted until the next line
         # decides list (drop) versus prose (show).
