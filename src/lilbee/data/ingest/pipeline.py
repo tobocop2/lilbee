@@ -904,6 +904,13 @@ async def sync(
                     flush_failed=flush_failed,
                     reasons=reasons,
                 )
+            if cancel is not None and cancel.is_set():
+                # The plan stream stops feeding the moment cancel is set, so the
+                # ingest pass can drain its admitted files and return without
+                # raising. Completed work was flushed on the way out; the run is
+                # still a cancelled one to the caller, and must not go on to
+                # write skip markers or reconcile a corpus it never planned.
+                raise asyncio.CancelledError
     finally:
         # Idempotent, and the only close on the paths that never reach the stream
         # (no work at all, or a failure before ingest starts).
