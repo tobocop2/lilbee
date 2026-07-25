@@ -220,6 +220,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             env=_probe_env(),
             merge_stderr=True,
             label=f"{binary.name} --list-devices",
+            bind_lifetime=True,
         )
     except subprocess.TimeoutExpired:
         raise ProviderError(

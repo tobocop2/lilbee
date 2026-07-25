@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import subprocess
+from typing import Any
 
 from lilbee.providers.fleet.child_guard import spawn_bound_child
 
@@ -28,27 +29,37 @@ def run_bounded(
     env: dict[str, str] | None = None,
     merge_stderr: bool = False,
     label: str | None = None,
+    bind_lifetime: bool = False,
 ) -> tuple[str, int]:
     """Run *argv*, returning ``(stdout, returncode)``.
 
-    The child is bound to this process's lifetime, so a crash cannot orphan it,
-    and runs in its own session so its whole group can be killed. It skips the
-    death pipe: the watcher would outlive a child that lives for seconds. With
+    The child runs in its own session so its whole group can be killed. With
     *merge_stderr* stderr is folded into the returned stdout; otherwise it is
     discarded (the caller wants clean stdout, e.g. JSON). The group is SIGKILLed
     and awaited for at most *kill_wait_s* on timeout and on any other abort -- a
     Ctrl-C reaches this process, not the child's own session -- then the
     exception is re-raised, abandoning an unkillable child rather than waiting.
+
+    *bind_lifetime* additionally binds the child to this process, for a child
+    that holds a resource nothing can reclaim by record (the device probe holds
+    a GPU context and writes no state file). It is off by default because the
+    Windows binding leaks a job-object handle per spawn by design, which is
+    right for a handful of engines and wrong for a probe sampled every second.
     """
-    proc = spawn_bound_child(
-        argv,
-        death_pipe=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
-        text=True,
-        env=env,
-        start_new_session=os.name == "posix",
-    )
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+        "text": True,
+        "env": env,
+        "start_new_session": os.name == "posix",
+    }
+    if bind_lifetime:
+        # Short-lived, so no death pipe: its watcher would outlive the child.
+        proc = spawn_bound_child(argv, death_pipe=False, **popen_kwargs)
+    else:
+        proc = subprocess.Popen(  # noqa: S603 - argv is trusted: a resolved binary or a fixed literal
+            argv, **popen_kwargs
+        )
     try:
         stdout, _ = proc.communicate(timeout=timeout_s)
     except BaseException:
