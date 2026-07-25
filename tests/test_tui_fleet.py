@@ -18,7 +18,12 @@ GIB = 1024**3
 
 
 def _make_view(  # type: ignore[type-arg]
-    *, manual: bool = False, unplaceable: tuple = (), spec_json=None, co_tenants: tuple = ()
+    *,
+    manual: bool = False,
+    unplaceable: tuple = (),
+    spec_json=None,
+    co_tenants: tuple = (),
+    rejected_spec_json=None,
 ):
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
     from lilbee.providers.roles import WorkerRole
@@ -35,6 +40,7 @@ def _make_view(  # type: ignore[type-arg]
         manual=manual,
         spec_json=spec_json,
         co_tenants=co_tenants,
+        rejected_spec_json=rejected_spec_json,
     )
 
 
@@ -452,6 +458,26 @@ async def test_unplaceable_warns(monkeypatch):
         await pilot.pause()
 
     assert any("vision" in n.lower() for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_ignored_saved_placement_warns(monkeypatch):
+    """A stale pin reaches the surface the user is looking at, not just the log."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    view = _make_view(rejected_spec_json='{"embed": {"devices": [7]}}')
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    notes: list[str] = []
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one("FleetBody")
+        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        body._load_worker()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert any("does not fit this hardware" in n for n in notes)
 
 
 @pytest.mark.asyncio
