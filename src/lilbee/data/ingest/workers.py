@@ -57,13 +57,18 @@ _MIN_FILES_FOR_POOL = 2000
 # workers would contend with the parent's flush thread.
 _MIN_CPUS_FOR_POOL = 4
 
-# Auto never asks for more than this, however many cores the box has. A sweep on
-# 4xA40 with the 0.6B embedder measured 174 docs/sec at 1 process, 220 at 2, 218
-# at 4 and 210 at 8: the win is real but it plateaus immediately and then decays,
-# because what limits it is the fleet's dispatch evenness rather than CPU. Each
-# worker routes with its own least-loaded view and they cannot see each other, so
-# more of them pile onto the same replicas -- per-card utilisation was 90/90/50/40
-# at 8. Scaling this with the core count would pick the wrong end of that curve.
+# Auto never asks for more than this, however many cores the box has. Two sweeps
+# with the 0.6B embedder put the plateau at four workers and a decay past it:
+# 4xA40 measured 174 docs/sec at 1 process, 220 at 2, 218 at 4, 210 at 8; 8xA40
+# measured 175, 236, 266, 230. Past the plateau extra workers contend rather than
+# scale, so following the core count would pick the decaying end of both curves.
+#
+# What they contend for is a shared consumer downstream, not the fleet: on 8 cards
+# per-card utilisation is even and low (42/41/41/41/41/38/41/37 at 8 workers) and
+# doubling the cards moved throughput only 220 -> 266, so total useful GPU work is
+# roughly flat. Even-and-low is uniform starvation by one drain -- the parent
+# collecting every worker's records over IPC and writing the single LanceDB --
+# rather than the uneven routing an earlier 4-card reading suggested.
 _MAX_AUTO_PROCESSES = 4
 
 # One short string, embedded in the parent to force the engine up before the
