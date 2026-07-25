@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # build-multigpu publishes the engines it builds to the mirror release
 
 concurrency:
   group: warm-engine-cache

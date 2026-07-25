@@ -27,7 +27,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write  # publish freshly built engines to the engine-binaries mirror release
 
 jobs:
   build-multigpu:
@@ -146,6 +146,15 @@ jobs:
         with:
           path: packaging/engine-wheel/lilbee_engine/bin
           key: ${{ steps.engine-cache.outputs.cache-primary-key }}
+
+      # The durable copy the executable builds read first. Same key, so a mirror
+      # asset and a cache entry for one engine can never disagree.
+      - name: Mirror the built engine
+        if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
+        uses: ./.github/actions/publish-engine-asset
+        with:
+          engine-key: ${{ steps.engine-cache.outputs.cache-primary-key }}
+          token: ${{ github.token }}
 
       - name: Set wheel version to the lilbee version
         shell: bash

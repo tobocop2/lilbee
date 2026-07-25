@@ -1,0 +1,89 @@
+name: Publish an engine to the mirror release
+description: >-
+  Upload a freshly built engine bin/ directory to the engine mirror release under
+  its content-addressed asset name. The mirror is what lets a release restore an
+  engine in ~2 min instead of building it for ~50: release assets have no 10 GB
+  repo cap, no 7-day idle eviction and no ref scoping, unlike the Actions cache.
+  No-op unless the caller just built the engine on a non-tag ref.
+
+inputs:
+  engine-key:
+    description: "The engine cache key. Mapped to the asset name by tools/wheel-build/engine_asset_name.sh."
+    required: true
+  engine-dir:
+    description: "Directory holding the built engine binaries."
+    required: false
+    default: packaging/engine-wheel/lilbee_engine/bin
+  release-tag:
+    description: "Release holding the mirror."
+    required: false
+    default: engine-binaries
+  token:
+    description: "Token with contents: write on this repo."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # curl, not gh: the manylinux container the Linux release legs run in ships
+    # no gh CLI. Every failure here is non-fatal -- the mirror is an optimisation
+    # and the Actions cache plus the source build remain behind it.
+    - name: Upload the engine to the mirror release
+      shell: bash
+      env:
+        ENGINE_KEY: ${{ inputs.engine-key }}
+        ENGINE_DIR: ${{ inputs.engine-dir }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+        ASSET="$(bash tools/wheel-build/engine_asset_name.sh "${ENGINE_KEY}")"
+        api="https://api.github.com/repos/${REPO}"
+        auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json")
+
+        if [ ! -d "${ENGINE_DIR}" ] || [ -z "$(ls -A "${ENGINE_DIR}" 2>/dev/null)" ]; then
+          echo "No engine at ${ENGINE_DIR}; nothing to mirror." >&2
+          exit 0
+        fi
+
+        tmp="$(mktemp -d)"
+        if ! tar -czf "${tmp}/${ASSET}" -C "${ENGINE_DIR}" .; then
+          echo "Could not pack the engine; skipping the mirror upload." >&2
+          exit 0
+        fi
+
+        # The release object's own id is the first "id" in the response; asset ids
+        # only appear later, inside "assets".
+        first_id() { grep -o '"id"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$'; }
+
+        release_id="$(curl -fsSL "${auth[@]}" "${api}/releases/tags/${RELEASE_TAG}" 2>/dev/null | first_id)"
+
+        if [ -z "${release_id}" ]; then
+          echo "Creating the ${RELEASE_TAG} mirror release."
+          release_id="$(curl -fsSL -X POST "${auth[@]}" "${api}/releases" \
+            -d "{\"tag_name\":\"${RELEASE_TAG}\",\"name\":\"Engine binaries\",\"prerelease\":true,\"body\":\"Content-addressed prebuilt engines consumed by the release builds. Managed by CI; not a user-facing release.\"}" 2>/dev/null | first_id)"
+        fi
+
+        if [ -z "${release_id}" ]; then
+          echo "Could not resolve or create ${RELEASE_TAG}; skipping the mirror upload." >&2
+          exit 0
+        fi
+
+        # Content-addressed, so an existing asset under this name is already the
+        # bytes we would upload. Leave it alone.
+        if curl -fsSL "${auth[@]}" "${api}/releases/${release_id}/assets?per_page=100" 2>/dev/null \
+          | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -qF "\"${ASSET}\""; then
+          echo "Mirror already carries ${ASSET}."
+          exit 0
+        fi
+
+        if curl -fsSL -X POST \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Content-Type: application/gzip" \
+          --data-binary @"${tmp}/${ASSET}" \
+          "https://uploads.github.com/repos/${REPO}/releases/${release_id}/assets?name=${ASSET}" >/dev/null 2>&1; then
+          echo "Mirrored ${ASSET}."
+        else
+          echo "Mirror upload of ${ASSET} failed; the Actions cache still has it." >&2
+        fi
