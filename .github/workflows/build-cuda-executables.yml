@@ -109,34 +109,21 @@ jobs:
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
-      # The toolkit exists only to compile the engine; build_lilbee_binary.sh
-      # never touches CUDA. If the mirror already carries this engine the whole
-      # install is dead weight (4.9 min on Windows, 3.1 on Linux) on the job that
-      # ends the release. Probes the mirror only, not the Actions cache: a mirror
-      # miss the cache would have served just installs the toolkit as before.
-      - name: Probe the engine mirror
-        id: engine-probe
-        shell: bash
-        env:
-          ENGINE_KEY: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ matrix.llama-cpp-version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          if bash tools/wheel-build/engine_mirror.sh probe "${ENGINE_KEY}"; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
+      # Installed unconditionally on purpose. Gating it on an engine-available
+      # probe would save 4.9 min here, but the probe and the fetch are separate
+      # requests: an asset present at probe time and unfetchable a minute later
+      # leaves the cell building the engine with no CUDA_PATH. This job is
+      # continue-on-error, so that failure would not stop the release, it would
+      # ship without this CUDA binary.
       - name: Install CUDA Toolkit (Linux)
-        if: runner.os == 'Linux' && steps.engine-probe.outputs.available != 'true'
+        if: runner.os == 'Linux'
         shell: bash
         env:
           BACKEND: ${{ matrix.backend }}
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install CUDA Toolkit (Windows)
-        if: runner.os == 'Windows' && steps.engine-probe.outputs.available != 'true'
+        if: runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda }}
