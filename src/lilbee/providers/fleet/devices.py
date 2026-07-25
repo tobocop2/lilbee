@@ -209,8 +209,9 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     reap; ``run_bounded`` abandons an unkillable child after a short wait.
 
     The probe holds a device context and writes no state file, so nothing can reap
-    it later by record: ``run_bounded`` binds it to this process, and kills it on
-    the way out of every abort, not just the timeout.
+    it later by record. It is the one caller that opts into the lifetime binding,
+    where the kernel offers one, and it is killed on the way out of every abort,
+    not just the timeout.
     """
     try:
         return run_bounded(
