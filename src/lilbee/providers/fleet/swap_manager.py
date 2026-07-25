@@ -27,7 +27,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
-from lilbee.providers.fleet.child_guard import spawn_llama_swap
+from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
@@ -254,7 +254,7 @@ class SwapManager:
         self._close_log()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
-        self._proc = spawn_llama_swap(
+        self._proc = spawn_bound_child(
             [
                 str(resolve_llama_swap()),
                 _CONFIG_FLAG,
@@ -390,6 +390,9 @@ class SwapManager:
             return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
         self._state_path.unlink(missing_ok=True)
+        if self._proc is not None:
+            # Free this engine's death pipe so its watcher exits now, not at our death.
+            release_death_pipe(self._proc.pid)
         self._proc = None
         self._port = None
         self._close_log()

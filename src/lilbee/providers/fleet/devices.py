@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.child_guard import spawn_bound_child
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
 
 log = logging.getLogger(__name__)
@@ -209,9 +210,16 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     ``subprocess.run``'s timeout path waits indefinitely for the killed child to
     be reaped, so a probe wedged in uninterruptible GPU-driver I/O would hang the
     caller forever; this bounds the reap and abandons an unkillable child.
+
+    The probe holds a device context and writes no state file, so nothing can reap
+    it later by record: it is bound to this process, and killed on the way out of
+    every abort, not just the timeout.
     """
-    proc = subprocess.Popen(  # noqa: S603 - binary is the resolved llama-server
+    proc = spawn_bound_child(
         [str(binary), "--list-devices"],
+        # Short-lived and killed on every exit path below; skip the death-pipe
+        # watcher (kernel bindings still apply).
+        death_pipe=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -230,6 +238,11 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from None
+    except BaseException:
+        # A Ctrl-C lands here, not the timeout branch; the probe is in its own
+        # session so the tty's SIGINT never reached it.
+        _kill_probe(proc)
+        raise
     return output or "", proc.returncode
 
 
