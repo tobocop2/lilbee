@@ -307,11 +307,8 @@ def spawn_server(
         stdout = log_file
         stderr = subprocess.STDOUT
 
-    # A dict replaces the environment wholesale, so merge onto a copy of
-    # os.environ to keep PATH and the rest. LILBEE_PARENT_PID arms the serve
-    # process's own parent-death watcher: a launcher killed outright skips the
-    # finally that stops it, and the orphan keeps server_lock, so the next
-    # `lilbee serve` is refused until someone finds it by hand.
+    # LILBEE_PARENT_PID arms serve's parent-death watcher, so a hard-killed
+    # launcher (whose finally never runs) does not orphan serve holding server_lock.
     child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
     try:

@@ -252,11 +252,7 @@ class TestTheLifetimeSpawner:
 @pytest.mark.skipif(sys.platform == "win32", reason="the death pipe is the POSIX fallback")
 class TestTheDeathPipe:
     def test_the_watcher_signals_the_child_when_the_write_end_closes(self, monkeypatch):
-        """The real thing: a live sleeper dies once the pipe's write end is closed.
-
-        Closing the write end by hand is exactly what the kernel does when this
-        process dies, which is the case that cannot be staged from inside a test.
-        """
+        """Closing the write end (what the kernel does at our death) reaps the child."""
         held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -274,13 +270,7 @@ class TestTheDeathPipe:
                 victim.wait(timeout=10)
 
     def test_release_death_pipe_closes_the_write_end_for_a_stopped_child(self, monkeypatch):
-        """A reload stops the child and releases its pipe, closing the write end.
-
-        The closed write end is what the parked watcher reads as EOF (proven by
-        the signals-the-child test); without release it stays open until lilbee
-        dies, leaking one fd and one watcher per model switch. Here we pin the
-        release itself: the fd is closed and the entry dropped, idempotently.
-        """
+        """Release closes the write end and drops the entry, idempotently."""
         held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
@@ -315,8 +305,7 @@ class TestTheDeathPipe:
         child_guard.release_death_pipe(999999)  # must not raise
 
     def test_a_recycled_pid_closes_the_stale_entry_instead_of_leaking_it(self, monkeypatch):
-        """A child that crashed without release leaves an entry; if the OS recycles
-        that pid into a new bound child, the overwrite must close the old fd."""
+        """Re-binding a pid whose stale entry was never released closes the old fd."""
         held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
         monkeypatch.setattr(child_guard._spawner, "spawn", lambda *a, **k: mock.MagicMock())
@@ -330,57 +319,23 @@ class TestTheDeathPipe:
             os.fstat(stale_fd)  # the stale write end was closed, not leaked
         child_guard.release_death_pipe(1234)
 
-    def test_the_watcher_script_guards_the_kill_behind_the_redirect(self):
-        """The `|| exit 0` guard is load-bearing; pin its presence structurally.
-
-        A behavioural test cannot catch its removal: the real /bin/sh exits on a
-        failed `exec` redirect regardless, so deleting the guard stays green. The
-        guard exists for shells that would not, so assert it is emitted, ahead of
-        the kill, rather than trusting the shell to mask its absence.
-        """
-        recorded: dict[str, object] = {}
-
-        def _capture(argv, **_kw):
-            recorded["argv"] = argv
-            return mock.MagicMock()
-
-        with mock.patch.object(child_guard._spawner, "spawn", _capture):
-            child_guard._watch_via_death_pipe(4242)
-        child_guard.release_death_pipe(4242)
-
-        script = recorded["argv"][2]
-        assert "|| exit 0" in script
-        assert script.index("|| exit 0") < script.index("kill")
-
-    def test_a_watcher_that_cannot_take_the_read_end_never_signals(self, monkeypatch):
-        """A broken binding must degrade to no binding, not to killing the child.
-
-        The first cut dup2'd the read end in a preexec_fn, which subprocess then
-        closed (it closes fds *after* preexec), so the watcher's redirect failed
-        and it fell straight through to the kill: every bound child died within
-        milliseconds of being spawned.
-        """
+    def test_the_watcher_reads_the_pipe_as_stdin_with_no_fd_redirect(self, monkeypatch):
+        """Pin the stdin design: dash mis-dups a multi-digit fd in a ``<&N`` redirect."""
         held: dict[int, int] = {}
         monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
-        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
-        try:
-            # pass_fds dropped, so the inherited read end is not there to redirect.
-            real_spawn = child_guard._spawner.spawn
-            monkeypatch.setattr(
-                child_guard._spawner,
-                "spawn",
-                lambda argv, **kw: real_spawn(argv, **{**kw, "pass_fds": ()}),
-            )
+        recorded: dict[str, object] = {}
 
-            child_guard._watch_via_death_pipe(victim.pid)
-            for fd in list(held.values()):
-                os.close(fd)
+        def _capture(argv, **kw):
+            recorded["argv"], recorded["kw"] = argv, kw
+            return mock.MagicMock()
 
-            with pytest.raises(subprocess.TimeoutExpired):
-                victim.wait(timeout=3)
-        finally:
-            victim.kill()
-            victim.wait(timeout=10)
+        monkeypatch.setattr(child_guard._spawner, "spawn", _capture)
+        child_guard._watch_via_death_pipe(4242)
+
+        assert "<&" not in recorded["argv"][2]  # no fd-number redirect
+        assert "pass_fds" not in recorded["kw"]
+        # The read end is the watcher's stdin, so it is the fd not retained as write.
+        assert recorded["kw"]["stdin"] not in held.values()
 
     def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):
         """The reap is the fallback, but a leaked fd per failed spawn is not."""

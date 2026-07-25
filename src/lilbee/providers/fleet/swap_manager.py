@@ -391,10 +391,7 @@ class SwapManager:
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
         self._state_path.unlink(missing_ok=True)
         if self._proc is not None:
-            # Close this engine's death pipe now that it is stopped, so its watcher
-            # wakes and exits instead of parking until we die and then signalling a
-            # pid we already reaped (and may since have been recycled). No-op on the
-            # kernel-bound platforms.
+            # Free this engine's death pipe so its watcher exits now, not at our death.
             release_death_pipe(self._proc.pid)
         self._proc = None
         self._port = None

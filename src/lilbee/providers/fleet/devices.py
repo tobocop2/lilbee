@@ -217,9 +217,8 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     """
     proc = spawn_bound_child(
         [str(binary), "--list-devices"],
-        # Seconds-long and killed on every exit path below, so a watcher process
-        # outliving it would cost more than it protects; the kernel bindings the
-        # spawn still applies are free.
+        # Short-lived and killed on every exit path below; skip the death-pipe
+        # watcher (kernel bindings still apply).
         death_pipe=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -240,8 +239,8 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             kind=ProviderErrorKind.SERVER,
         ) from None
     except BaseException:
-        # A Ctrl-C during startup lands here, not on the timeout branch, and the
-        # probe is in its own session so the tty's SIGINT never reached it.
+        # A Ctrl-C lands here, not the timeout branch; the probe is in its own
+        # session so the tty's SIGINT never reached it.
         _kill_probe(proc)
         raise
     return output or "", proc.returncode
