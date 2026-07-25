@@ -249,8 +249,14 @@ class TestTheLifetimeSpawner:
         assert spawner._executor is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the death pipe is the POSIX fallback")
+_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="spawns a real /bin/sh watcher")
+
+
 class TestTheDeathPipe:
+    """The mock-based cases run on every platform (the death-pipe code is POSIX but
+    exercised through a mocked spawn); only the real-``sh`` cases are POSIX-gated."""
+
+    @_POSIX_ONLY
     def test_the_watcher_signals_the_child_when_the_write_end_closes(self, monkeypatch):
         """Closing the write end (what the kernel does at our death) reaps the child."""
         held: dict[int, int] = {}
@@ -336,6 +342,7 @@ class TestTheDeathPipe:
         assert "pass_fds" not in recorded["kw"]
         # The read end is the watcher's stdin, so it is the fd not retained as write.
         assert recorded["kw"]["stdin"] not in held.values()
+        child_guard.release_death_pipe(4242)
 
     def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):
         """The reap is the fallback, but a leaked fd per failed spawn is not."""
@@ -344,12 +351,13 @@ class TestTheDeathPipe:
         monkeypatch.setattr(
             child_guard._spawner, "spawn", mock.MagicMock(side_effect=OSError("no sh"))
         )
-        before = len(os.listdir("/dev/fd"))
+        before = len(os.listdir("/dev/fd")) if sys.platform != "win32" else None
 
         child_guard._watch_via_death_pipe(1234)
 
         assert held == {}
-        assert len(os.listdir("/dev/fd")) <= before
+        if before is not None:
+            assert len(os.listdir("/dev/fd")) <= before
 
     def test_pipe_exhaustion_does_not_fail_the_spawn(self, monkeypatch):
         """os.pipe() shares the binding's best-effort contract: never fail a spawn."""
