@@ -8,6 +8,7 @@ The mechanics are agnostic to what they front.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -33,9 +34,10 @@ _BUILD_LOCK_NAME = "engine.lock"
 _BUILD_LOCK_TIMEOUT_S = 90.0
 _USERS_DIRNAME = "engine-users"
 _USER_LOCK_SUFFIX = ".lock"
-# Marks an engine whose users asked it to outlive them. A plain file, not a
-# lock: it outlives every process by design.
-_KEEP_WARM_NAME = "keep-warm"
+# One opt-in file per installation, keyed by config root (not pid, which changes
+# every run). Plain files, not locks: an opt-in outlives its process. Per-install
+# so a restart reclaims its own prior mark while a peer's stays distinct.
+_KEEP_WARM_SUFFIX = ".keep-warm"
 # Throwaway per-process file used to ask whether flock really works here.
 _FLOCK_PROBE_PREFIX = ".flock-probe."
 # Non-blocking probe: a live peer refuses instantly.
@@ -140,29 +142,47 @@ def _users_dir(engine_dir: Path) -> Path:
     return engine_dir / _USERS_DIRNAME
 
 
-def request_keep_warm(engine_dir: Path) -> None:
-    """Record that a user of *engine_dir* wants the engine to outlive it.
+def _keep_warm_path(engine_dir: Path, config_root: Path) -> Path:
+    token = hashlib.blake2b(str(config_root).encode(), digest_size=8).hexdigest()
+    return _users_dir(engine_dir) / f"{token}{_KEEP_WARM_SUFFIX}"
 
-    The opt-in belongs to the engine, not to a process: the machine slot is
-    shared across installations whose configs differ, so reading the setting
-    from whichever process happens to exit last hands the decision to an
-    arbitrary sibling. Any user that opts in marks the engine, and the mark
-    lasts exactly as long as the engine instance it describes -- ``stop_engine``
-    clears it, so a rebuilt engine starts from whoever opts in next.
+
+def request_keep_warm(engine_dir: Path, config_root: Path) -> None:
+    """Record that the installation at *config_root* wants *engine_dir*'s engine warm.
+
+    The slot is shared across installations whose configs differ, so any one's
+    opt-in keeps the engine warm even when a default-config sibling is last out.
+    Keyed by config root, not pid: a restart of the same installation reclaims
+    its own mark. ``stop_engine`` clears the set, so a rebuilt engine starts
+    unmarked.
     """
-    marker = engine_dir / _KEEP_WARM_NAME
+    marker = _keep_warm_path(engine_dir, config_root)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
 
 
+def withdraw_keep_warm(engine_dir: Path, config_root: Path) -> None:
+    """Drop this installation's opt-in for *engine_dir*, leaving every peer's intact.
+
+    Reclaims the mark this installation left, so flipping the setting off (even
+    across a restart) lets the engine stop instead of staying warm forever.
+    """
+    _keep_warm_path(engine_dir, config_root).unlink(missing_ok=True)
+
+
 def keep_warm_requested(engine_dir: Path) -> bool:
-    """Whether any user of *engine_dir* asked for the engine to stay resident."""
-    return (engine_dir / _KEEP_WARM_NAME).exists()
+    """Whether any user of *engine_dir* asked for the engine to stay resident.
+
+    Not gated on liveness: an opt-in means "outlive me", so an exited user's
+    marker is the case it exists for.
+    """
+    return any(_users_dir(engine_dir).glob(f"*{_KEEP_WARM_SUFFIX}"))
 
 
 def clear_keep_warm(engine_dir: Path) -> None:
-    """Forget *engine_dir*'s persistence opt-in; the engine it applied to is gone."""
-    (engine_dir / _KEEP_WARM_NAME).unlink(missing_ok=True)
+    """Forget every persistence opt-in for *engine_dir*; the engine they applied to is gone."""
+    for marker in _users_dir(engine_dir).glob(f"*{_KEEP_WARM_SUFFIX}"):
+        marker.unlink(missing_ok=True)
 
 
 def _user_lock_path(engine_dir: Path, pid: int) -> Path:
