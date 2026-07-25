@@ -1,5 +1,10 @@
 # Release pipeline speedup
 
+> **Implementation status.** Branch `perf/release-ci-wallclock`. Tier 1 and the
+> load-bearing parts of Tier 2 are applied; see "What was implemented" at the end
+> for what shipped, what was skipped, and where the audit below was wrong.
+
+
 Audit of `release-candidate.yml` and its called workflows against measured run data
 (runs 30003020138 and 29960035783). Every number below is either measured from `gh`
 job/step timestamps or explicitly labelled unverified.
@@ -588,3 +593,72 @@ Things that need a measurement run before they can be trusted.
   cache at once.
 - `engine-ubuntu-22.04-cu121` (753.8 MB, the largest engine cache in the repo) is pure ballast: its
   key can never be produced by anything on main, so it is written on every release and read never.
+
+---
+
+## 9. What was implemented
+
+Branch `perf/release-ci-wallclock`, three commits off `a629c64b`.
+
+### Applied
+
+| Report item | Change | Files |
+|---|---|---|
+| 1.2 | Engine cache split into `restore` + `save` behind `github.ref_type != 'tag'` | `bundle-llama-server/action.yml`, `build-multigpu.yml` |
+| 1.3 | `warm-cuda` job so the CUDA matrix runs on main | `warm-executables-cache.yml` |
+| 1.4 | `CCACHE_DIR` exported so Nuitka and ccache-action agree | `release.yml`, `build-cuda-executables.yml` |
+| 1.5 | `--nofollow-import-to=litellm.proxy` | `build_lilbee_binary.sh` |
+| 1.6 | `compression-level: 0` on the executable uploads | `release.yml`, `build-cuda-executables.yml` |
+| 1.1 | Playwright keyed on browser revision; HF block deleted; ollama caches trimmed | `ci.yml` |
+| 2.1 (partial) | ccache keys gain the `march` discriminator; Windows Nuitka keys share a restore prefix | `release.yml`, `build-cuda-executables.yml` |
+| 2.2 | Engine mirror on a release tag, read before the Actions cache | `bundle-llama-server`, new `publish-engine-asset`, `engine_asset_name.sh` |
+| 6 | Nuitka object cache on the CUDA **Windows** cells, which had none | `build-cuda-executables.yml` |
+| 2.4 | CUDA toolkit install gated on a mirror probe | `build-cuda-executables.yml` |
+| 10 | Weekly cron on `warm-engine-cache.yml` | `warm-engine-cache.yml` |
+
+`actionlint` passes clean across `.github/`.
+
+### Corrections to the audit above
+
+- **§1.1 on the ollama caches is wrong.** It reads `qa-matrix.yml:155` ("macOS/Windows
+  lanes skip") as meaning those model caches are unused. `ci.yml:399-413` pulls
+  `qwen3:0.6b` and `nomic-embed-text` on all three OSes. The caches were live. They
+  were still dropped for non-Linux, but as a deliberate cap trade (~750 MB per OS
+  against a ~2 min pull), not as dead weight. Same for the 1.4 GB
+  `ollama-bin-Windows` entry.
+- **§1.6's CI-gate poll was not applied.** Waiting for an in-flight CI run delays the
+  293 min Windows build by however long CI still needs, while the duplicated
+  lint+test costs runner slots and no critical path. Polling trades wall clock for
+  slots, which is backwards for this goal.
+- **Item 8 (cu121 cell in `build-multigpu`) is obsolete.** With the mirror, any
+  non-tag run of `build-cuda-executables` publishes the cu121 engine itself, so the
+  gap closes without a new matrix row.
+- **§2.3 (onefile compression cache) was not applied.** It is the largest new cache
+  consumer (~1.25 GB/leg) and every leg it would help is 2-4 h off the critical
+  path. Cap spent there evicts the Windows object caches that gate the release.
+- **The subset `backends:` input was attempted and reverted.** Gating it correctly
+  needs a dynamically generated matrix, since job-level `if:` cannot see `matrix`
+  context. Restructuring the release's most fragile workflow for something that does
+  not speed up a real release was the wrong trade.
+
+### Incident: the Actions cache was emptied
+
+While applying §1.1 the entire cache was deleted, not just the tag-scoped entries.
+
+The purge itself was correct and removed exactly the 14 tag-scoped entries (35 → 21).
+The follow-up diagnostic resolved a cache id into an empty variable and ran
+`gh cache delete ""`, which GitHub's CLI treats as delete-all, taking the remaining
+21 main-scoped entries with it.
+
+Nothing is permanently lost; every entry is regenerable. Practical impact:
+
+- Several were already invalidated by this branch anyway (Playwright key, ccache keys
+  gaining `march`, Windows Nuitka keys, the removed ollama and HF blocks).
+- The genuine loss is the main-scoped `engine-*` entries, whose keys this branch does
+  **not** change. Until `warm-engine-cache.yml` runs again, the next release builds
+  every engine from source, the ~50 min/leg path.
+- Recovery is a `workflow_dispatch` of `warm-engine-cache.yml` on main, ~22 runner
+  hours, free on a public repo.
+
+Guard for next time: never pass an unvalidated id into `gh cache delete`; require a
+non-empty match first.
