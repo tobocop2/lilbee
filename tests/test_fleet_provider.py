@@ -3782,25 +3782,27 @@ def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
     monkeypatch, tmp_path: Path
 ) -> None:
     """The machine slot is shared; whose config decides must not be exit order."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
     swap, _machine = _bindable_machine(monkeypatch, tmp_path)
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    warm = FleetProvider()
-    assert warm._ensure_fleet() is True
+    # The warm user is a sibling installation, seeded under its own config root.
+    request_keep_warm(_machine, tmp_path / "peer-install")
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
-    assert swap.started == []  # both bound the one machine engine
+    assert swap.started == []  # bound the one machine engine
 
-    warm.shutdown()
     plain.shutdown()  # last out, and its own config says stop
     assert stopped == []
 
 
 def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
     """The opt-in belongs to the engine, so it outlives the process that made it."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
     _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
@@ -3808,12 +3810,10 @@ def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    warm = FleetProvider()
-    assert warm._ensure_fleet() is True
+    # A sibling installation opted in and has already left: only its mark
+    # remains, which is exactly what "outlive me" means.
+    request_keep_warm(_machine, tmp_path / "peer-install")
 
-    warm.shutdown()  # the opt-in user leaves first
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain.shutdown()  # last out, reading a config that says stop
     assert stopped == []
 
@@ -3873,7 +3873,7 @@ def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
     from lilbee.providers.fleet.swap_manager import stop_engine
     from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
 
-    request_keep_warm(tmp_path)
+    request_keep_warm(tmp_path, tmp_path / "cfgroot")
     assert keep_warm_requested(tmp_path) is True
     stop_engine(tmp_path)
     assert keep_warm_requested(tmp_path) is False
@@ -3888,6 +3888,49 @@ def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> N
     assert p._ensure_fleet() is True
     p.shutdown()
     assert stopped == []
+
+
+def test_turning_warm_off_mid_session_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """A withdrawn opt-in must not keep the engine: the mark is this user's, not the engine's.
+
+    Without withdrawal the mark outlives the setting, and because the mark is
+    what suppresses ``stop_engine`` -- the only thing that clears it -- the
+    engine stays resident on every later run too.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p.shutdown()
+    assert stopped == [machine]
+
+
+def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A mark left by an earlier run of this install (new pid, same config root)
+
+    is reclaimed on a later warm-off run, so the engine stops rather than staying
+    warm forever. The opt-in is keyed by config root precisely so a restart can
+    reach its own prior mark.
+    """
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    # An earlier run of this same installation opted in, then exited.
+    request_keep_warm(machine, prov_mod.cfg.data_root)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    restarted_pid = os.getpid() + 4242
+    monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # this run is a new process
+    p.shutdown()
+    assert stopped == [machine]
 
 
 def test_warm_on_pins_weights_resident(monkeypatch) -> None:
