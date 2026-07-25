@@ -26,12 +26,31 @@ class TestBindOnlyFlag:
             raise RuntimeError("boom")
         assert bind_only_active() is False
 
-    async def test_reaches_the_ingest_offload_pool(self):
-        """Workers embed via to_ingest_thread; the guard must reach that thread.
+    def test_a_plain_thread_sees_the_flag(self):
+        """warm_up_pool runs the acquisition ladder on a threading.Thread it spawns.
 
-        Plain ThreadPoolExecutor.submit does NOT carry contextvars -- the offload
-        helper copies the context per call, and that is the path being pinned.
+        A new thread starts with a fresh context, so a ContextVar-backed flag read
+        its default there and the worker built a fleet anyway -- the exact bug this
+        guard exists to stop.
         """
+        import threading
+
+        seen: list[bool] = []
+        with bind_only_engine():
+            t = threading.Thread(target=lambda: seen.append(bind_only_active()))
+            t.start()
+            t.join()
+        assert seen == [True]
+
+    def test_nesting_does_not_clear_the_outer_scope(self):
+        with bind_only_engine():
+            with bind_only_engine():
+                assert bind_only_active() is True
+            assert bind_only_active() is True
+        assert bind_only_active() is False
+
+    async def test_reaches_the_ingest_offload_pool(self):
+        """Workers embed via to_ingest_thread, so the guard must hold on that thread too."""
         from lilbee.data.ingest.offload import to_ingest_thread
 
         with bind_only_engine():
