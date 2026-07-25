@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import ExitStack
@@ -193,15 +194,29 @@ async def _produce_one(entry: WorkerFile) -> WorkerOutcome:
 
 
 def build_pool(processes: int, config: Config) -> ProcessPoolExecutor:
-    """A pool of *processes* workers, each bound to *config* and its CPU share."""
+    """A pool of *processes* workers, each bound to *config* and its CPU share.
+
+    Forced to ``spawn``. By the time ingest starts, this process holds the ingest
+    thread pool, httpx connection pools and LanceDB; ``fork`` (the default on
+    Linux, which is where bulk ingest runs) copies their locks without the
+    threads that would release them, so a child can deadlock on its first embed.
+    A fresh interpreter per worker is the cost, which is part of why the pool is
+    gated to plans big enough to amortise it.
+    """
     share = max(1, cpu_quota() // processes)
     return ProcessPoolExecutor(
-        max_workers=processes, initializer=init_worker, initargs=(config, share)
+        max_workers=processes,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=init_worker,
+        initargs=(config, share),
     )
 
 
 def batched(files: list[Any], size: int = BATCH_FILES) -> list[list[Any]]:
-    """Split *files* into contiguous batches of at most *size*."""
+    """Split *files* into contiguous batches of at most *size*.
+
+    Hand-rolled because ``itertools.batched`` is 3.12+ and lilbee supports 3.11.
+    """
     return [files[i : i + size] for i in range(0, len(files), size)]
 
 

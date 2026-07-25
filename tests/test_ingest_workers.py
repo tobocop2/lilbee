@@ -411,6 +411,9 @@ class TestBuildPool:
         workers.build_pool(4, mock.sentinel.config)
 
         assert captured["max_workers"] == 4
+        # spawn, never fork: the parent holds thread-pool and httpx locks that a
+        # forked child would inherit held (see build_pool).
+        assert captured["mp_context"].get_start_method() == "spawn"
         assert captured["initializer"] is workers.init_worker
         assert captured["initargs"] == (mock.sentinel.config, 4)  # 16 // 4
 
