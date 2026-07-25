@@ -93,7 +93,7 @@ def test_spawn_server_applies_env_overrides_over_inherited_env(monkeypatch) -> N
         captured["env"] = env
         return MagicMock()
 
-    monkeypatch.setattr(server_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server_mod, "spawn_bound_child", fake_popen)
     server_mod.spawn_server(8080, env_overrides={"LILBEE_CHAT_N_CTX_TARGET": "65536"})
 
     assert captured["env"]["LILBEE_CHAT_N_CTX_TARGET"] == "65536"
@@ -101,8 +101,12 @@ def test_spawn_server_applies_env_overrides_over_inherited_env(monkeypatch) -> N
     assert captured["env"]["LILBEE_LAUNCHER_SERVE_QUIET"] == "1"
 
 
-def test_spawn_server_without_overrides_inherits_process_env(monkeypatch) -> None:
+def test_spawn_server_without_overrides_still_arms_the_parent_watcher(monkeypatch) -> None:
+    """Even with nothing to override, serve must learn the pid it should outlive."""
+    import os
+
     from lilbee.cli.launchers import server as server_mod
+    from lilbee.parent_monitor import PARENT_PID_ENV
 
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     captured: dict = {}
@@ -111,8 +115,9 @@ def test_spawn_server_without_overrides_inherits_process_env(monkeypatch) -> Non
         captured["env"] = env
         return MagicMock()
 
-    monkeypatch.setattr(server_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server_mod, "spawn_bound_child", fake_popen)
     server_mod.spawn_server(8080)
 
-    # None means Popen inherits the parent environment unchanged.
-    assert captured["env"] is None
+    assert captured["env"][PARENT_PID_ENV] == str(os.getpid())
+    # The rest of the environment still comes through the merge.
+    assert captured["env"]["LILBEE_LAUNCHER_SERVE_QUIET"] == "1"

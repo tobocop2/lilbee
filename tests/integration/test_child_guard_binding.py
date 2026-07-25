@@ -2,12 +2,12 @@
 
 The unit tests in tests/test_child_guard.py mock the kernel calls, so they prove the
 dispatch and fallbacks but not that the binding fires. These do the real thing on
-each OS: a middle process spawns a child through the actual spawn_llama_swap path,
+each OS: a middle process spawns a child through the actual spawn_bound_child path,
 the middle is killed, and the child's fate is checked against the platform contract.
 
   Linux:   PR_SET_PDEATHSIG -> the child dies with its parent.
   Windows: kill-on-close job object -> the child dies with its parent.
-  macOS:   no primitive -> the child survives; the stale-engine reap is the backstop.
+  macOS:   death pipe -> the watcher sees EOF and the child dies with its parent.
 
 Run on CI's real ubuntu/windows/macos integration jobs (make test-integration).
 """
@@ -30,8 +30,8 @@ pytestmark = pytest.mark.slow
 _CHILD = [sys.executable, "-c", "import time; time.sleep(600)"]
 _MIDDLE_SRC = (
     "import sys, time\n"
-    "from lilbee.providers.fleet.child_guard import spawn_llama_swap\n"
-    f"proc = spawn_llama_swap({_CHILD!r}, start_new_session=(sys.platform != 'win32'))\n"
+    "from lilbee.providers.fleet.child_guard import spawn_bound_child\n"
+    f"proc = spawn_bound_child({_CHILD!r}, start_new_session=(sys.platform != 'win32'))\n"
     "print(proc.pid, flush=True)\n"
     "time.sleep(600)\n"
 )
@@ -96,16 +96,16 @@ def test_job_object_kills_the_child_when_the_parent_exits() -> None:
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.skipif(sys.platform != "darwin", reason="documents the macOS no-binding contract")
-def test_macos_child_survives_and_relies_on_the_reap() -> None:
+@pytest.mark.skipif(sys.platform != "darwin", reason="the death pipe covers macOS")
+def test_death_pipe_reaps_the_child_when_the_parent_is_killed() -> None:
+    # SIGKILL specifically: no handler, no atexit, nothing in-process runs. Only
+    # the kernel closing the pipe's write end can reach the child here.
     middle, child_pid = _spawn_child_via_middle()
     try:
         assert psutil.pid_exists(child_pid), "child was not running before the kill"
         middle.kill()
         middle.wait(timeout=10)
-        # macOS has no death-binding primitive, so the child outlives its parent;
-        # the stale-engine reap on the next launch is what reclaims it.
-        assert not _child_gone_within(child_pid, 2), "child unexpectedly died without a binding"
+        assert _child_gone_within(child_pid, 15), "the death pipe did not reap the child"
     finally:
         _kill(child_pid)
         _kill(middle)

@@ -216,16 +216,23 @@ def _reset_services_after_test():
 
 @pytest.fixture(autouse=True)
 def _join_fleet_background_threads():
-    """Join lingering fleet warm-up / reload daemon threads after each test.
+    """Retire the fleet's background threads after each test.
 
-    ``warm_up_pool`` / ``reload_role`` dispatch fire-and-forget daemon threads; on a
-    host without the engine binary they fail fast and log a warning. Joining them
-    here keeps that warning inside the test that started the thread instead of
-    leaking it into a later test's log capture.
+    Two shapes need retiring. ``warm_up_pool`` / ``reload_role`` dispatch
+    fire-and-forget daemon threads that end on their own once joined; on a host
+    without the engine binary they fail fast, and joining keeps that warning
+    inside the test that started them. The child-guard spawner is different: its
+    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    never ends (it parks waiting for the next spawn), so any test that ran a real
+    probe or launch must close it, or the leak guard flags it against whatever
+    test happens to run next.
     """
     yield
     import threading
 
+    from lilbee.providers.fleet import child_guard
+
+    child_guard._spawner.close()
     for thread in threading.enumerate():
         if thread.name.startswith("fleet-") and thread.is_alive():
             thread.join(timeout=5.0)
