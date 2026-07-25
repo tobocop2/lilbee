@@ -506,6 +506,10 @@ FLEET_GPU_PROBE_FAILED = "GPU probe failed: {reason}"
 # Shown for a role that has no placement because its model isn't downloaded, so the
 # empty slot reads as a fixable state instead of "GPU placement is broken".
 FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"
+FLEET_SAVED_PLACEMENT_IGNORED = (
+    "A saved placement does not fit this hardware and is being ignored. "
+    "Press the auto command to clear it, or set a new one."
+)
 # Shown when an Intel GPU's utilization is unreadable only because intel_gpu_top
 # lacks the CAP_PERFMON grant, so the muted "--" reads as a fixable state.
 FLEET_INTEL_UTIL_GRANT = (

@@ -58,6 +58,35 @@ def test_show_renders_not_downloaded_note(monkeypatch: object) -> None:
     assert "not downloaded" in result.stdout
 
 
+def _view_with_rejected_spec() -> PlacementView:
+    return PlacementView(
+        gpus=(GpuInfo(0, "Vulkan", "Vulkan0", "Intel Iris Xe", 8 * _GIB, 6 * _GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json='{"embed": {"devices": [1]}}',
+    )
+
+
+def test_show_reports_a_saved_placement_that_is_being_ignored(monkeypatch: object) -> None:
+    """A stale pin is named on the surface, not only in the server log."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_rejected_spec)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "does not fit this hardware" in result.stdout
+    assert "placement clear" in result.stdout
+
+
+def test_show_json_includes_the_rejected_spec(monkeypatch: object) -> None:
+    """HTTP, MCP and CLI all read the rejected pin off the same canonical JSON."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_rejected_spec)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["rejected_spec_json"] == '{"embed": {"devices": [1]}}'
+
+
 def test_show_json_includes_skipped_not_installed(monkeypatch: object) -> None:
     """The canonical JSON surfaces skipped-not-installed roles for HTTP/MCP/CLI parity."""
     monkeypatch.setattr(cli_placement, "get_placement", _view_with_skipped)

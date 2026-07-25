@@ -41,7 +41,7 @@ from lilbee.providers.fleet.placement import (
     placement_from_spec,
     plan_placement,
 )
-from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
 from lilbee.providers.model_ref import parse_model_ref
@@ -1584,6 +1584,43 @@ def _resolve_placement(
     )
 
 
+def _placement_or_auto(
+    placement: PlacementSpec | None,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    unified_budget: int | None,
+) -> tuple[Placement, bool]:
+    """Resolve a saved spec, falling back to auto when it no longer fits the hardware.
+
+    Returns the placement and whether the spec was the one applied. Hardware moves
+    under a saved placement: a card is removed, a driver stops enumerating a GPU, a
+    container starts without one. Refusing to plan there takes chat, embed and
+    ingest down over a pin set on hardware the host no longer has, so the fleet
+    degrades to automatic placement and logs why. An interactive apply still fails
+    loud (:func:`lilbee.app.placement.set_placement`), where the pin is what the
+    caller just asked for and a silent substitution would be the surprise.
+    """
+    if placement is None:
+        return _resolve_placement(
+            None, inputs, model_refs, devices, unified_budget=unified_budget
+        ), False
+    try:
+        return _resolve_placement(
+            placement, inputs, model_refs, devices, unified_budget=unified_budget
+        ), True
+    except PlacementError as exc:
+        log.warning(
+            "The saved GPU placement does not fit this hardware (%s); using automatic "
+            "placement instead. Set a new placement to replace it.",
+            exc,
+        )
+    return _resolve_placement(
+        None, inputs, model_refs, devices, unified_budget=unified_budget
+    ), False
+
+
 @dataclass(frozen=True)
 class ResolvedPlacement:
     """Devices + resolved instance plans + model refs for the placement view."""
@@ -1593,14 +1630,24 @@ class ResolvedPlacement:
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
     co_tenants: frozenset[WorkerRole] = frozenset()
+    # False when a spec was given but did not fit the hardware, so these instances
+    # are the auto planner's and a surface must not present them as the manual plan.
+    spec_applied: bool = True
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
 
 
-def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
-    """Probe devices and resolve the auto-or-manual placement, without launching."""
+def resolve_placement_plan(
+    placement: PlacementSpec | None, *, fall_back_to_auto: bool = False
+) -> ResolvedPlacement:
+    """Probe devices and resolve the auto-or-manual placement, without launching.
+
+    ``fall_back_to_auto`` reads *placement* as a saved setting rather than a
+    request: one that no longer fits the hardware resolves to the auto plan with
+    ``spec_applied`` False instead of raising.
+    """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
@@ -1612,13 +1659,16 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
     )
-    resolved = _resolve_placement(
-        placement,
-        inputs,
-        model_refs,
-        devices,
-        unified_budget=_unified_admission_budget(devices),
-    )
+    admission_budget = _unified_admission_budget(devices)
+    if fall_back_to_auto:
+        resolved, spec_applied = _placement_or_auto(
+            placement, inputs, model_refs, devices, unified_budget=admission_budget
+        )
+    else:
+        resolved = _resolve_placement(
+            placement, inputs, model_refs, devices, unified_budget=admission_budget
+        )
+        spec_applied = placement is not None
     return ResolvedPlacement(
         devices=tuple(devices),
         instances=resolved.instances,
@@ -1626,6 +1676,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         model_refs=model_refs,
         co_tenants=resolved.co_tenants,
         skipped_not_installed=skipped_not_installed,
+        spec_applied=spec_applied,
     )
 
 
@@ -1689,7 +1740,7 @@ def plan_launches(
         total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
-    placement = _resolve_placement(
+    placement, _spec_applied = _placement_or_auto(
         spec,
         inputs,
         model_refs,
