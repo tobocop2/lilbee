@@ -845,7 +845,9 @@ class TestSyncCancellation:
                 super().shutdown(wait=wait)
 
         monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
-        monkeypatch.setattr(pipeline_mod, "build_pool", lambda n, cfg: RecordingPool(max_workers=2))
+        monkeypatch.setattr(
+            pipeline_mod, "build_pool", lambda n, cfg, inflight: RecordingPool(max_workers=2)
+        )
         monkeypatch.setattr(
             workers,
             "run_batch",

@@ -109,9 +109,10 @@ class _WorkerBindings:
 
     def __init__(self) -> None:
         self._stack: ExitStack | None = None
+        self.inflight = 1
 
-    def enter(self, config: Config, cpu_share: int) -> None:
-        """Bind *config* and this worker's CPU share; replaces any previous binding."""
+    def enter(self, config: Config, cpu_share: int, inflight: int) -> None:
+        """Bind *config* and this worker's budgets; replaces any previous binding."""
         from lilbee.core.config.context import config_scope
         from lilbee.providers.fleet.guest import bind_only_engine
         from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
@@ -127,6 +128,7 @@ class _WorkerBindings:
         # an unevenly loaded replica must not idle-unload mid-run. The worker binds
         # to the parent's engine, so its teardown drops the binding and stops nothing.
         stack.enter_context(keep_fleet_warm())
+        self.inflight = max(1, inflight)
         self._stack = stack
 
     def close(self) -> None:
@@ -143,14 +145,18 @@ class _WorkerBindings:
 _bindings = _WorkerBindings()
 
 
-def init_worker(config: Config, cpu_share: int) -> None:
-    """Bind the parent's config and this worker's CPU share, once per process.
+def init_worker(config: Config, cpu_share: int, inflight: int) -> None:
+    """Bind the parent's config and this worker's budgets, once per process.
 
-    The budgets are divided by the worker count before they are read: each
-    worker otherwise sizes its own thread pool and admission to the whole box
-    and the pool oversubscribes it N times over.
+    Both budgets are the box's divided by the worker count, but they are
+    different quantities. *cpu_share* bounds CPU-bound work (extraction threads),
+    so N workers do not oversubscribe the cores. *inflight* bounds files in their
+    embed phase, which are I/O waits, not CPU: sizing that from the CPU share
+    would cap a whole 8-worker run at 8 concurrent embeds against a single
+    process's 32-64, and multiprocessing would measure slower than the baseline
+    it is meant to beat.
     """
-    _bindings.enter(config, cpu_share)
+    _bindings.enter(config, cpu_share, inflight)
 
 
 def run_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
@@ -164,7 +170,7 @@ def run_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
 
 async def _produce_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
     """Run the batch concurrently so embed waits overlap within the worker."""
-    limit = asyncio.Semaphore(max(1, cpu_quota()))
+    limit = asyncio.Semaphore(_bindings.inflight)
 
     async def one(entry: WorkerFile) -> WorkerOutcome:
         async with limit:
@@ -197,8 +203,8 @@ async def _produce_one(entry: WorkerFile) -> WorkerOutcome:
         return WorkerOutcome(name=entry.name, error=WorkerIngestError(error_reason(exc)))
 
 
-def build_pool(processes: int, config: Config) -> ProcessPoolExecutor:
-    """A pool of *processes* workers, each bound to *config* and its CPU share.
+def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExecutor:
+    """A pool of *processes* workers, each bound to *config* and its share of the budgets.
 
     Forced to ``spawn``. By the time ingest starts, this process holds the ingest
     thread pool, httpx connection pools and LanceDB; ``fork`` (the default on
@@ -207,12 +213,13 @@ def build_pool(processes: int, config: Config) -> ProcessPoolExecutor:
     A fresh interpreter per worker is the cost, which is part of why the pool is
     gated to plans big enough to amortise it.
     """
-    share = max(1, cpu_quota() // processes)
+    cpu_share = max(1, cpu_quota() // processes)
+    inflight_share = max(1, inflight // processes)
     return ProcessPoolExecutor(
         max_workers=processes,
         mp_context=multiprocessing.get_context("spawn"),
         initializer=init_worker,
-        initargs=(config, share),
+        initargs=(config, cpu_share, inflight_share),
     )
 
 

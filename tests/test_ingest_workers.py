@@ -270,8 +270,9 @@ class TestDispatchPlan:
     def test_multiple_processes_build_a_pool_over_every_file(self, monkeypatch):
         built = {}
 
-        def fake_build_pool(processes, config):
+        def fake_build_pool(processes, config, inflight):
             built["processes"] = processes
+            built["inflight"] = inflight
             return mock.MagicMock()
 
         monkeypatch.setattr(pipeline, "build_pool", fake_build_pool)
@@ -290,6 +291,7 @@ class TestDispatchPlan:
         )
         assert pool is not None
         assert built["processes"] == 4
+        assert built["inflight"] > 0  # admission is passed through, not defaulted
         coros = list(pending)
         assert len(coros) == len(entries)
         for coro in coros:
@@ -380,12 +382,13 @@ class TestWorkerBootstrap:
             yield
 
         monkeypatch.setattr("lilbee.providers.fleet.ingest_warmth.keep_fleet_warm", fake_keep_warm)
-        workers.init_worker(parent, 3)
+        workers.init_worker(parent, 3, 12)
         try:
             assert active_config().chunk_size == 4242
             assert os.environ["LILBEE_CPU_QUOTA"] == "3"
             assert entered == [True]  # the fleet is held resident for the worker's life
             assert workers._bindings.bound
+            assert workers._bindings.inflight == 12
         finally:
             workers._bindings.close()
 
@@ -408,22 +411,22 @@ class TestBuildPool:
     def test_each_worker_gets_an_equal_share_of_the_cpu_quota(self, monkeypatch):
         captured = self._capture(monkeypatch, quota=16)
 
-        workers.build_pool(4, mock.sentinel.config)
+        workers.build_pool(4, mock.sentinel.config, 64)
 
         assert captured["max_workers"] == 4
         # spawn, never fork: the parent holds thread-pool and httpx locks that a
         # forked child would inherit held (see build_pool).
         assert captured["mp_context"].get_start_method() == "spawn"
         assert captured["initializer"] is workers.init_worker
-        assert captured["initargs"] == (mock.sentinel.config, 4)  # 16 // 4
+        assert captured["initargs"] == (mock.sentinel.config, 4, 16)  # cpu 16//4, inflight 64//4
 
     def test_the_share_never_rounds_down_to_zero(self, monkeypatch):
         """More workers than cores must still leave each worker a usable budget."""
         captured = self._capture(monkeypatch, quota=2)
 
-        workers.build_pool(8, mock.sentinel.config)
+        workers.build_pool(8, mock.sentinel.config, 4)
 
-        assert captured["initargs"] == (mock.sentinel.config, 1)
+        assert captured["initargs"] == (mock.sentinel.config, 1, 1)
 
 
 class TestAdmissionFor:
@@ -442,3 +445,43 @@ class TestAdmissionFor:
         monkeypatch.setattr(pipeline, "_max_concurrent", lambda: 7)
 
         assert pipeline._admission_for(1, [0]) == sentinel
+
+
+class TestInflightIsNotTheCpuBudget:
+    """In-flight files are embed waits, not CPU work; sizing them from the CPU
+    share would cap an 8-worker run below a single process's admission."""
+
+    def test_inflight_share_comes_from_admission_not_cpu_quota(self, monkeypatch):
+        captured: dict = {}
+
+        class FakeExecutor:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(workers, "ProcessPoolExecutor", FakeExecutor)
+        monkeypatch.setattr(workers, "cpu_quota", lambda: 16)
+
+        # A thin CPU budget must not drag the in-flight budget down with it.
+        workers.build_pool(8, mock.sentinel.config, 64)
+
+        _config, cpu_share, inflight_share = captured["initargs"]
+        assert cpu_share == 2  # 16 // 8
+        assert inflight_share == 8  # 64 // 8, and 8 workers x 8 == the 64 admission
+
+    @pytest.mark.asyncio
+    async def test_the_batch_semaphore_uses_the_bound_inflight(self, monkeypatch):
+        """Pins the wiring: _produce_batch must read the injected budget."""
+        seen: list[int] = []
+
+        class Recorder(asyncio.Semaphore):
+            def __init__(self, value):
+                seen.append(value)
+                super().__init__(value)
+
+        monkeypatch.setattr(workers.asyncio, "Semaphore", Recorder)
+        monkeypatch.setattr(workers._bindings, "inflight", 7, raising=False)
+        monkeypatch.setattr(workers, "_produce_one", mock.AsyncMock(return_value=None))
+
+        await workers._produce_batch([WorkerFile(Path("/c/a.txt"), "a.txt", "text")])
+
+        assert seen == [7]

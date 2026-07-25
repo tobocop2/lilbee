@@ -922,7 +922,7 @@ def _dispatch_plan(
     total_files = len(files_to_process)
     if processes <= 1:
         return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
-    pool = build_pool(processes, active_config())
+    pool = build_pool(processes, active_config(), _max_concurrent())
     log.warning("Ingesting %d files across %d worker processes", total_files, processes)
     dispatcher = BatchDispatcher(
         pool, [WorkerFile(e.path, e.name, e.content_type) for e in files_to_process]
