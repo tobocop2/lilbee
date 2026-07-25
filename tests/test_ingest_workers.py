@@ -418,7 +418,7 @@ class TestBuildPool:
         # forked child would inherit held (see build_pool).
         assert captured["mp_context"].get_start_method() == "spawn"
         assert captured["initializer"] is workers.init_worker
-        assert captured["initargs"] == (mock.sentinel.config, 4, 64)  # cpu 16//4, inflight whole
+        assert captured["initargs"] == (mock.sentinel.config, 4, 16)  # cpu 16//4, inflight 64//4
 
     def test_the_share_never_rounds_down_to_zero(self, monkeypatch):
         """More workers than cores must still leave each worker a usable budget."""
@@ -426,7 +426,7 @@ class TestBuildPool:
 
         workers.build_pool(8, mock.sentinel.config, 4)
 
-        assert captured["initargs"] == (mock.sentinel.config, 1, 4)
+        assert captured["initargs"] == (mock.sentinel.config, 1, 1)
 
 
 class TestAdmissionFor:
@@ -448,8 +448,8 @@ class TestAdmissionFor:
 
 
 class TestInflightIsNotTheCpuBudget:
-    """In-flight files are embed waits, not CPU work; sizing them from the CPU
-    share would cap an 8-worker run below a single process's admission."""
+    """In-flight is divided like the CPU budget but derived from admission, not
+    cores: a thin CPU quota must not drag the fleet's in-flight target down."""
 
     def test_inflight_share_comes_from_admission_not_cpu_quota(self, monkeypatch):
         captured: dict = {}
@@ -466,10 +466,10 @@ class TestInflightIsNotTheCpuBudget:
 
         _config, cpu_share, inflight_share = captured["initargs"]
         assert cpu_share == 2  # 16 // 8, cores are shared
-        # Undivided: 8 workers x 64 drives 8x the concurrent requests one process
-        # sent. Dividing gave 8 x 8 == 64 == the single-process total, and measured
-        # 1.00x on a real pod with the GPUs still at 63%.
-        assert inflight_share == 64
+        # Divided, so the aggregate targets the fleet's admission ceiling: a sweep
+        # on 2xA40 measured 155.6 docs/sec at 32 in flight and 147.6 at 128, so
+        # multiplying the load by the worker count makes a small fleet slower.
+        assert inflight_share == 8
 
     @pytest.mark.asyncio
     async def test_the_batch_semaphore_uses_the_bound_inflight(self, monkeypatch):

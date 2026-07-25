@@ -159,12 +159,10 @@ _bindings = _WorkerBindings()
 def init_worker(config: Config, cpu_share: int, inflight: int) -> None:
     """Bind the parent's config and this worker's budgets, once per process.
 
-    The two budgets are different quantities. *cpu_share* is the box's CPU quota
-    divided by the worker count, because cores are genuinely shared. *inflight*
-    is the whole admission target, undivided, because files in their embed phase
-    are I/O waits: the point of N processes is N times the concurrent requests at
-    the fleet, and any division of a fixed budget hands the fleet the same
-    aggregate a single process already sent.
+    Both are the box's budget divided by the worker count: *cpu_share* because
+    cores are shared, *inflight* because the embed fleet is shared and has a knee
+    past which more concurrent requests lower its throughput. What N processes buy
+    is the CPU headroom to sustain that aggregate, not a larger aggregate.
     """
     _bindings.enter(config, cpu_share, inflight)
 
@@ -234,13 +232,14 @@ def warm_parent_engine() -> None:
 def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExecutor:
     """A pool of *processes* workers bound to *config*, the CPU share, and *inflight*.
 
-    Cores are shared, so the CPU budget is divided. In-flight files are not: each
-    worker gets the whole admission target, and the fleet sees ``processes`` times
-    the concurrent requests one process sent. Dividing it instead makes the
-    aggregate identical to a single process by construction, which is what an
-    8-worker A/B measured -- 131.6 against 131.9 docs/sec, 1.00x, with the GPUs at
-    63%. Same concurrency and same latency cannot produce a different throughput
-    however many processes are asking.
+    Both budgets are divided, for different reasons. Cores are shared. In-flight
+    files are shared too, because the fleet is what they queue at: an admission
+    sweep on 2xA40 measured 32 in flight at 155.6 docs/sec and 76% GPU, then
+    147.6 at 128, 137.9 at 256 and 134.2 at 512 -- past the knee, more concurrent
+    requests make a small fleet slower, not faster. So the aggregate across
+    workers targets the fleet's admission ceiling and the worker count divides it,
+    rather than each worker taking the whole target and multiplying the load by
+    ``processes``.
 
     Forced to ``spawn``. By the time ingest starts, this process holds the ingest
     thread pool, httpx connection pools and LanceDB; ``fork`` (the default on
@@ -254,7 +253,7 @@ def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExec
         max_workers=processes,
         mp_context=multiprocessing.get_context("spawn"),
         initializer=init_worker,
-        initargs=(config, cpu_share, max(1, inflight)),
+        initargs=(config, cpu_share, max(1, inflight // processes)),
     )
 
 
