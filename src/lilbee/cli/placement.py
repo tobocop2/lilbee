@@ -112,6 +112,12 @@ def _render_view(view: PlacementView) -> None:
             f"pull it to place it[/{theme.WARNING}]"
         )
 
+    if view.rejected_spec_json:
+        console.print(
+            f"  [{theme.WARNING}]a saved placement does not fit this hardware and is being "
+            f"ignored; run 'lilbee placement clear' or set a new one[/{theme.WARNING}]"
+        )
+
 
 @placement_app.command("show")
 def show(

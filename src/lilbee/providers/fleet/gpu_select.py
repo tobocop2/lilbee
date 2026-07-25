@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from functools import lru_cache
 
+from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 from lilbee.providers.fleet.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
 )
@@ -933,6 +934,19 @@ def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
     return None
 
 
+def _vendors_with_hardware(vendors: set[PCIVendorID]) -> set[PCIVendorID]:
+    """The subset of *vendors* whose silicon is in this host's device tree.
+
+    An installed ICD proves a driver is present, not a card: Mesa ships
+    ``radeon_icd`` beside ``intel_icd`` on every Linux desktop, so an Intel-only
+    laptop reads as dual-vendor and the preference order would pick AMD and
+    disable the one ICD that drives the machine. Empty when the device tree
+    cannot be read, which leaves the choice to the manifests alone.
+    """
+    present = installed_gpu_vendor_ids()
+    return {vendor for vendor in vendors if vendor in present}
+
+
 def _platform_supports_icd_pin() -> bool:
     """True on Windows + Linux, where dual-vendor ICD crashes are documented."""
     return sys.platform == "win32" or sys.platform.startswith("linux")
@@ -962,10 +976,12 @@ def _platform_supports_icd_pin() -> bool:
 def disable_conflicting_vulkan_icds() -> str | None:
     """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
 
-    Preferred-vendor order is NVIDIA > AMD > Intel. Returns ``None`` when the
-    user has pinned a GPU, when fewer than two vendors are present, or when the
-    platform has no documented dual-vendor crash class. Discovery reads manifests
-    from disk (registry on Windows, XDG on Linux); enumerating via
+    Preferred-vendor order is NVIDIA > AMD > Intel, applied to the vendors whose
+    hardware this host actually has, so the survivor is always a driver for a card
+    that is present. Returns ``None`` when the user has pinned a GPU, when fewer
+    than two vendors are installed, or when the platform has no documented
+    dual-vendor crash class. Discovery reads manifests from disk (registry on
+    Windows, XDG on Linux) and the device tree from the OS; enumerating via
     ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
     from lilbee.core.config import cfg
@@ -979,7 +995,7 @@ def disable_conflicting_vulkan_icds() -> str | None:
     vendors = _vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
-    best = _select_best_vendor(vendors)
+    best = _select_best_vendor(_vendors_with_hardware(vendors) or vendors)
     if best is None:  # pragma: no cover - invariant: vendors is non-empty here
         return None
     return ",".join(_icds_to_disable(best, vendors))

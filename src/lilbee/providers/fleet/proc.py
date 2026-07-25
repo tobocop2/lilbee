@@ -15,6 +15,8 @@ import os
 import signal
 import subprocess
 
+from lilbee.providers.fleet.child_guard import spawn_bound_child
+
 log = logging.getLogger(__name__)
 
 
@@ -29,14 +31,18 @@ def run_bounded(
 ) -> tuple[str, int]:
     """Run *argv*, returning ``(stdout, returncode)``.
 
-    The child runs in its own session so its whole group can be killed. With
+    The child is bound to this process's lifetime, so a crash cannot orphan it,
+    and runs in its own session so its whole group can be killed. It skips the
+    death pipe: the watcher would outlive a child that lives for seconds. With
     *merge_stderr* stderr is folded into the returned stdout; otherwise it is
-    discarded (the caller wants clean stdout, e.g. JSON). On timeout the group
-    is SIGKILLed and awaited for at most *kill_wait_s*, then ``TimeoutExpired``
-    is re-raised -- an unkillable child is abandoned rather than waited on.
+    discarded (the caller wants clean stdout, e.g. JSON). The group is SIGKILLed
+    and awaited for at most *kill_wait_s* on timeout and on any other abort -- a
+    Ctrl-C reaches this process, not the child's own session -- then the
+    exception is re-raised, abandoning an unkillable child rather than waiting.
     """
-    proc = subprocess.Popen(  # noqa: S603 - argv is trusted: a resolved binary or a fixed literal
+    proc = spawn_bound_child(
         argv,
+        death_pipe=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
         text=True,
@@ -45,7 +51,7 @@ def run_bounded(
     )
     try:
         stdout, _ = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
+    except BaseException:
         _abandon_group(proc, kill_wait_s, label or argv[0])
         raise
     return stdout or "", proc.returncode

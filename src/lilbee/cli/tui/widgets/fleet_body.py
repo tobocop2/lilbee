@@ -266,6 +266,8 @@ class FleetBody(Widget):
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
+        if view.rejected_spec_json:
+            self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
         """Show a 'not downloaded' line per role skipped for a missing model."""

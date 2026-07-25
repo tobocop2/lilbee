@@ -41,8 +41,9 @@ def iter_vulkan_manifest_paths() -> Iterator[str]:
 # https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#driver-discovery-on-windows
 # (the GUIDs themselves are the public Windows
 # https://learn.microsoft.com/en-us/windows-hardware/drivers/install/system-defined-device-setup-classes-available-to-vendors).
-_PNP_DISPLAY_ADAPTER_CLASS_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
+PNP_DISPLAY_ADAPTER_CLASS_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
 _PNP_SOFTWARE_COMPONENT_CLASS_GUID = "{5c4c3332-344d-483c-8739-259e934c9cc8}"
+_PNP_CLASS_ROOT = r"SYSTEM\CurrentControlSet\Control\Class"
 
 # Legacy software-driver paths (HKLM + WOW6432Node mirror for 32-bit ICDs).
 # Each value name is a manifest path; the DWORD value is 0=enabled.
@@ -61,7 +62,7 @@ def _iter_windows_vulkan_manifest_paths() -> Iterator[str]:
     except ImportError:  # pragma: no cover - winreg ships with CPython on Windows
         return
     yield from _iter_khronos_software_manifests(winreg)
-    yield from _iter_pnp_class_manifests(winreg, _PNP_DISPLAY_ADAPTER_CLASS_GUID)
+    yield from _iter_pnp_class_manifests(winreg, PNP_DISPLAY_ADAPTER_CLASS_GUID)
     yield from _iter_pnp_class_manifests(winreg, _PNP_SOFTWARE_COMPONENT_CLASS_GUID)
 
 
@@ -87,18 +88,16 @@ def _iter_khronos_software_manifests(winreg: Any) -> Iterator[str]:
             winreg.CloseKey(key)
 
 
-def _iter_pnp_class_manifests(winreg: Any, class_guid: str) -> Iterator[str]:
-    """Yield manifest paths from PnP keys under one device-class GUID.
+def iter_pnp_class_subkeys(winreg: Any, class_guid: str) -> Iterator[Any]:
+    """Yield each open device subkey under one PnP device-class GUID.
 
     Walks ``HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{GUID}\\NNNN``,
-    reading each subkey's ``VulkanDriverName`` and ``VulkanDriverNameWow``
-    values. Both ``REG_SZ`` (single path) and ``REG_MULTI_SZ`` (path list)
-    are honoured because the loader spec allows both.
+    closing every handle once the consumer has read it. A subkey that cannot be
+    opened is skipped rather than ending the walk.
     """
     hklm = winreg.HKEY_LOCAL_MACHINE
-    class_root_path = rf"SYSTEM\CurrentControlSet\Control\Class\{class_guid}"
     try:
-        class_root = winreg.OpenKey(hklm, class_root_path)
+        class_root = winreg.OpenKey(hklm, rf"{_PNP_CLASS_ROOT}\{class_guid}")
     except OSError:
         return
     try:
@@ -114,11 +113,22 @@ def _iter_pnp_class_manifests(winreg: Any, class_guid: str) -> Iterator[str]:
             except OSError:
                 continue
             try:
-                yield from _read_vulkan_driver_name_values(winreg, subkey)
+                yield subkey
             finally:
                 winreg.CloseKey(subkey)
     finally:
         winreg.CloseKey(class_root)
+
+
+def _iter_pnp_class_manifests(winreg: Any, class_guid: str) -> Iterator[str]:
+    """Yield manifest paths from PnP keys under one device-class GUID.
+
+    Reads each subkey's ``VulkanDriverName`` and ``VulkanDriverNameWow`` values.
+    Both ``REG_SZ`` (single path) and ``REG_MULTI_SZ`` (path list) are honoured
+    because the loader spec allows both.
+    """
+    for subkey in iter_pnp_class_subkeys(winreg, class_guid):
+        yield from _read_vulkan_driver_name_values(winreg, subkey)
 
 
 def _read_vulkan_driver_name_values(winreg: Any, subkey: Any) -> Iterator[str]:

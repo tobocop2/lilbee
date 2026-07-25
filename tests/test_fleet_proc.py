@@ -46,7 +46,7 @@ def test_an_unkillable_child_is_abandoned_with_a_warning(monkeypatch, caplog) ->
         subprocess.TimeoutExpired(cmd="x", timeout=0.1),
         subprocess.TimeoutExpired(cmd="x", timeout=0.1),
     ]
-    monkeypatch.setattr(proc.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(proc, "spawn_bound_child", lambda *a, **k: fake)
     # Force the POSIX group-kill path so the same lines run on every OS. os.killpg
     # and signal.SIGKILL are absent on Windows, so seed them with raising=False.
     monkeypatch.setattr(proc.os, "name", "posix")
@@ -55,3 +55,36 @@ def test_an_unkillable_child_is_abandoned_with_a_warning(monkeypatch, caplog) ->
     with pytest.raises(subprocess.TimeoutExpired), caplog.at_level("WARNING"):
         proc.run_bounded(["stuck"], timeout_s=0.1, kill_wait_s=0.1, label="stuck")
     assert any("abandoned" in r.message for r in caplog.records)
+
+
+def test_a_ctrl_c_kills_the_child_not_just_a_timeout(monkeypatch) -> None:
+    """A KeyboardInterrupt must kill the child, which has its own session.
+
+    The child writes no state file, so no later reap can match it; without this
+    path a Ctrl-C during startup strands it holding a device context.
+    """
+    fake = MagicMock()
+    fake.pid = 4242
+    fake.communicate.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(proc, "spawn_bound_child", lambda *a, **k: fake)
+    killed: list[object] = []
+    monkeypatch.setattr(proc, "_abandon_group", lambda p, *_a: killed.append(p))
+    with pytest.raises(KeyboardInterrupt):
+        proc.run_bounded(["probe"], timeout_s=10, kill_wait_s=1)
+    assert killed == [fake]
+
+
+def test_the_child_is_bound_to_this_process_without_a_death_pipe(monkeypatch) -> None:
+    """A crash must not orphan the child, but a seconds-long child needs no watcher."""
+    seen: dict[str, object] = {}
+
+    def _spy(argv: list[str], **kwargs: object) -> MagicMock:
+        seen.update(kwargs)
+        fake = MagicMock()
+        fake.communicate.return_value = ("", None)
+        fake.returncode = 0
+        return fake
+
+    monkeypatch.setattr(proc, "spawn_bound_child", _spy)
+    proc.run_bounded(["probe"], timeout_s=10, kill_wait_s=1)
+    assert seen["death_pipe"] is False

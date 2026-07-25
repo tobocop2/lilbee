@@ -207,6 +207,10 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     A probe wedged in uninterruptible GPU-driver I/O would otherwise hang the
     caller forever, since ``subprocess.run``'s timeout waits unbounded for the
     reap; ``run_bounded`` abandons an unkillable child after a short wait.
+
+    The probe holds a device context and writes no state file, so nothing can reap
+    it later by record: ``run_bounded`` binds it to this process, and kills it on
+    the way out of every abort, not just the timeout.
     """
     try:
         return run_bounded(

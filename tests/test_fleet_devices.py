@@ -176,13 +176,7 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
 
 
 def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _HealthyProc:
-        returncode = 0
-
-        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
-            return (_CUDA_LISTING, None)
-
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: (_CUDA_LISTING, 0))
     assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
 
 
