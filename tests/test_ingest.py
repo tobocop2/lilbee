@@ -822,6 +822,54 @@ class TestSyncCancellation:
         assert result.added == []
         assert result.unchanged == 0
 
+    async def test_worker_mode_releases_the_pool_and_routes_every_file(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """ingest_batch in worker mode must shut the pool down, happy path included.
+
+        Drives the whole worker dispatch (plan -> batch -> collect -> flush) with the
+        pool faked out, which is the only place _dispatch_plan, _collect_from_worker
+        and the pool teardown run together.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from lilbee.data.ingest import ingest_batch, workers
+        from lilbee.data.ingest import pipeline as pipeline_mod
+        from lilbee.data.ingest.types import FileToProcess
+
+        shutdowns: list[dict] = []
+
+        class RecordingPool(ThreadPoolExecutor):
+            def shutdown(self, wait=True, **kwargs):
+                shutdowns.append(kwargs)
+                super().shutdown(wait=wait)
+
+        monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
+        monkeypatch.setattr(pipeline_mod, "build_pool", lambda n, cfg: RecordingPool(max_workers=2))
+        monkeypatch.setattr(
+            workers,
+            "run_batch",
+            lambda batch: [
+                workers.WorkerOutcome(name=f.name, records=[], page_texts=[]) for f in batch
+            ],
+        )
+
+        (isolated_env / "w1.txt").write_text("one")
+        (isolated_env / "w2.txt").write_text("two")
+        files = [
+            FileToProcess("w1.txt", isolated_env / "w1.txt", "text", "h1", False),
+            FileToProcess("w2.txt", isolated_env / "w2.txt", "text", "h2", False),
+        ]
+        added = {"w1.txt": None, "w2.txt": None}
+        skipped: dict[str, None] = {}
+
+        await ingest_batch(files, added, {}, {}, skipped, quiet=True)
+
+        assert shutdowns == [{"cancel_futures": True}]
+        # Zero chunks is a skip, not an add: the worker produced no searchable text.
+        assert set(skipped) == {"w1.txt", "w2.txt"}
+        assert added == {}
+
     async def test_cancel_during_ingest_batch(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio

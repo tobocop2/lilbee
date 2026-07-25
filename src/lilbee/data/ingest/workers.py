@@ -103,7 +103,39 @@ class WorkerOutcome:
     error: WorkerIngestError | None = None
 
 
-_WORKER_STACK: ExitStack | None = None
+class _WorkerBindings:
+    """The contexts a worker holds open for its whole process lifetime."""
+
+    def __init__(self) -> None:
+        self._stack: ExitStack | None = None
+
+    def enter(self, config: Config, cpu_share: int) -> None:
+        """Bind *config* and this worker's CPU share; replaces any previous binding."""
+        from lilbee.core.config.context import config_scope
+        from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
+
+        self.close()
+        os.environ["LILBEE_CPU_QUOTA"] = str(cpu_share)
+        stack = ExitStack()
+        stack.enter_context(config_scope(config))
+        # Hold the fleet resident for this worker's lifetime, matching the parent:
+        # an unevenly loaded replica must not idle-unload mid-run. The worker binds
+        # to the parent's engine, so its teardown drops the binding and stops nothing.
+        stack.enter_context(keep_fleet_warm())
+        self._stack = stack
+
+    def close(self) -> None:
+        """Release the bindings. Normally only tests call this; workers exit instead."""
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+
+    @property
+    def bound(self) -> bool:
+        return self._stack is not None
+
+
+_bindings = _WorkerBindings()
 
 
 def init_worker(config: Config, cpu_share: int) -> None:
@@ -113,18 +145,7 @@ def init_worker(config: Config, cpu_share: int) -> None:
     worker otherwise sizes its own thread pool and admission to the whole box
     and the pool oversubscribes it N times over.
     """
-    global _WORKER_STACK
-    from lilbee.core.config.context import config_scope
-    from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
-
-    os.environ["LILBEE_CPU_QUOTA"] = str(cpu_share)
-    stack = ExitStack()
-    stack.enter_context(config_scope(config))
-    # Hold the fleet resident for this worker's lifetime, matching the parent:
-    # an unevenly loaded replica must not idle-unload mid-run. The worker binds
-    # to the parent's engine, so its teardown drops the binding and stops nothing.
-    stack.enter_context(keep_fleet_warm())
-    _WORKER_STACK = stack
+    _bindings.enter(config, cpu_share)
 
 
 def run_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:

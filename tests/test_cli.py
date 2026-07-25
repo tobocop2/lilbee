@@ -2364,9 +2364,7 @@ class TestIngestShutdownError:
             failed: dict[str, None] = {}
             skipped: dict[str, None] = {}
             with (
-                mock.patch(
-                    "lilbee.data.ingest.pipeline.produce_records", side_effect=shutdown_err
-                ),
+                mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=shutdown_err),
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(

@@ -23,6 +23,7 @@ from lilbee.data.ingest.workers import (
     error_reason,
     resolve_process_count,
 )
+from lilbee.runtime.cancellation import TaskCancelledError
 
 
 def _entry(name: str = "a.txt") -> FileToProcess:
@@ -199,6 +200,29 @@ class TestCollectFromWorker:
         assert result.chunk_count == 7
 
     @pytest.mark.asyncio
+    async def test_a_cooperative_cancel_on_file_start_becomes_asyncio_cancellation(self):
+        """The TUI raises TaskCancelledError inside on_progress; siblings must drain."""
+
+        def raising_progress(*args, **kwargs):
+            raise TaskCancelledError
+
+        class Dispatcher:
+            async def outcome_for(self, index):  # pragma: no cover - not reached
+                raise AssertionError("cancelled files must not be collected")
+
+        with pytest.raises(asyncio.CancelledError):
+            await pipeline._collect_from_worker(
+                _entry(),
+                1,
+                Dispatcher(),
+                total_files=1,
+                pages_done=[0],
+                on_progress=raising_progress,
+                cancel=None,
+                fallback=mock.AsyncMock(),
+            )
+
+    @pytest.mark.asyncio
     async def test_a_set_cancel_flag_stops_the_file_before_it_is_collected(self):
         import threading
 
@@ -347,12 +371,6 @@ class TestWorkerBootstrap:
         monkeypatch.delenv("LILBEE_CPU_QUOTA", raising=False)
         parent = cfg.model_copy(update={"chunk_size": 4242})
         entered = []
-        monkeypatch.setattr(
-            workers,
-            "_WORKER_STACK",
-            None,
-            raising=False,
-        )
 
         import contextlib
 
@@ -361,14 +379,63 @@ class TestWorkerBootstrap:
             entered.append(True)
             yield
 
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.ingest_warmth.keep_fleet_warm", fake_keep_warm
-        )
+        monkeypatch.setattr("lilbee.providers.fleet.ingest_warmth.keep_fleet_warm", fake_keep_warm)
         workers.init_worker(parent, 3)
         try:
             assert active_config().chunk_size == 4242
             assert os.environ["LILBEE_CPU_QUOTA"] == "3"
             assert entered == [True]  # the fleet is held resident for the worker's life
+            assert workers._bindings.bound
         finally:
-            workers._WORKER_STACK.close()
-            workers._WORKER_STACK = None
+            workers._bindings.close()
+
+
+class TestBuildPool:
+    """Pool sizing is the guard against N workers oversubscribing the box."""
+
+    @staticmethod
+    def _capture(monkeypatch, quota):
+        captured: dict = {}
+
+        class FakeExecutor:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(workers, "ProcessPoolExecutor", FakeExecutor)
+        monkeypatch.setattr(workers, "cpu_quota", lambda: quota)
+        return captured
+
+    def test_each_worker_gets_an_equal_share_of_the_cpu_quota(self, monkeypatch):
+        captured = self._capture(monkeypatch, quota=16)
+
+        workers.build_pool(4, mock.sentinel.config)
+
+        assert captured["max_workers"] == 4
+        assert captured["initializer"] is workers.init_worker
+        assert captured["initargs"] == (mock.sentinel.config, 4)  # 16 // 4
+
+    def test_the_share_never_rounds_down_to_zero(self, monkeypatch):
+        """More workers than cores must still leave each worker a usable budget."""
+        captured = self._capture(monkeypatch, quota=2)
+
+        workers.build_pool(8, mock.sentinel.config)
+
+        assert captured["initargs"] == (mock.sentinel.config, 1)
+
+
+class TestAdmissionFor:
+    """With workers, the adaptive controller would tune a gate nothing blocks on."""
+
+    def test_worker_runs_get_a_wide_gate_and_no_controller(self):
+        admission, window, controller = pipeline._admission_for(4, [0])
+
+        assert controller is None
+        assert window == 4 * BATCH_FILES * 2
+        assert admission._value == window
+
+    def test_in_process_runs_keep_the_existing_admission(self, monkeypatch):
+        sentinel = (mock.sentinel.gate, 99, mock.sentinel.task)
+        monkeypatch.setattr(pipeline, "_build_admission", lambda baseline, pages: sentinel)
+        monkeypatch.setattr(pipeline, "_max_concurrent", lambda: 7)
+
+        assert pipeline._admission_for(1, [0]) == sentinel
