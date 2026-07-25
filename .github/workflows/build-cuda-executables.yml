@@ -48,7 +48,7 @@ jobs:
       matrix:
         include:
           # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
-          # cu121 pins llama-cpp-python to 0.3.20: CUDA 12.1's nvcc can't compile
+          # cu121 pins llama-cpp-version explicitly: CUDA 12.1's nvcc can't compile
           # the newer llama.cpp CUDA kernels (half-conversion in allreduce.cu).
           - os: ubuntu-22.04
             backend: cu121
@@ -130,8 +130,18 @@ jobs:
         with:
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
           save: ${{ github.ref_type != 'tag' }}
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          # The compat cell compiles at -march=x86-64-v2; without it in the key it
+          # shares an entry with the stock cell and each poisons the other.
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}${{ matrix.march && format('-{0}', matrix.march) || '' }}
           max-size: '2G'
+
+      # ccache-action only writes a config file, and Nuitka overrides that with its
+      # own CCACHE_DIR unless one is already exported (nuitka/build/SconsCaching.py),
+      # so none of its C objects ever reached the cached directory. Env beats config.
+      - name: Point ccache at the cached directory
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
@@ -254,6 +264,8 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
+          # The onefile payload is already zstd-compressed; deflating it again buys nothing.
+          compression-level: 0
 
       # workflow_call eager attach: the caller created the pre-release shell,
       # so each cell's exe appears on the release as soon as it builds.

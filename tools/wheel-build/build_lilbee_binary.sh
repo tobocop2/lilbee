@@ -110,6 +110,13 @@ fi
 # following misses it; include it explicitly or the splash subprocess dies.
 SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
 
+# litellm's FastAPI server component. lilbee uses litellm as a client and
+# imports nothing under .proxy, but --include-package=litellm drags in all 581
+# of its modules; litellm.proxy._types is the slowest translation unit in the
+# build. --nofollow-import-to wins over --include-package (Recursion.py checks
+# the no_case patterns first).
+LITELLM_TRIM_FLAGS=(--nofollow-import-to=litellm.proxy)
+
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
@@ -124,6 +131,7 @@ uv run --no-sync python -m nuitka \
     --assume-yes-for-downloads \
     --nofollow-import-to=*.tests.* \
     --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
+    "${LITELLM_TRIM_FLAGS[@]}" \
     --include-package=lancedb            --include-package-data=lancedb \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \

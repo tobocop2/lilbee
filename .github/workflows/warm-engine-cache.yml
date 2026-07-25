@@ -15,6 +15,10 @@ on:
       - 'tools/wheel-build/install_gpu_toolkit.sh'
       - '.github/workflows/build-multigpu.yml'
       - '.github/workflows/warm-engine-cache.yml'
+  # GitHub evicts caches unaccessed for 7 days. Without a cron the pins can sit
+  # unchanged past that window and the next release rebuilds every engine cold.
+  schedule:
+    - cron: '0 5 * * 1'
   workflow_dispatch:
 
 permissions:

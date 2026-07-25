@@ -30,11 +30,10 @@ runs:
   steps:
     # Same key scheme as build-multigpu.yml: pinned sources, so identical keys
     # mean byte-identical binaries. Hits come from warm-engine-cache.yml on main
-    # or an earlier cell in the same run; a miss builds and saves for the rest
-    # of the run (tag-scoped saves are still restorable across a moved tag).
+    # or an earlier cell in the same run.
     - name: Restore the built engine
       id: engine-cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: packaging/engine-wheel/lilbee_engine/bin
         key: engine-${{ inputs.cache-env }}-${{ inputs.backend }}-tk${{ inputs.toolkit-version }}-llcp${{ inputs.llama-cpp-version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
@@ -52,6 +51,15 @@ runs:
         # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
         LLAMA_BUILD_DIR: ${{ runner.os == 'Windows' && '/c/lsb' || '/tmp/llama-server-build' }}
       run: bash tools/wheel-build/build_llama_server.sh
+    # A tag ref is its own cache scope, so a save here is unreadable by every
+    # later run and evicts the main-scoped entry that would have hit. Warm the
+    # key on main (warm-engine-cache.yml) instead.
+    - name: Save the built engine
+      if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
+      uses: actions/cache/save@v4
+      with:
+        path: packaging/engine-wheel/lilbee_engine/bin
+        key: ${{ steps.engine-cache.outputs.cache-primary-key }}
     - name: Install lilbee_engine into the build venv
       shell: bash
       # The wheel carries all three binaries (llama-server self-contained with its
