@@ -72,6 +72,7 @@ from lilbee.runtime.engine_lock import (
     machine_engine_dir,
     private_engine_dir,
     request_keep_warm,
+    withdraw_keep_warm,
 )
 
 log = logging.getLogger(__name__)
@@ -1045,7 +1046,7 @@ class FleetProvider:
         if engine_dir not in self._engine_holds:
             self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
         if cfg.keep_engine_warm:
-            request_keep_warm(engine_dir)
+            request_keep_warm(engine_dir, cfg.data_root)
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -1374,13 +1375,15 @@ class FleetProvider:
         for engine_dir, hold in list(self._engine_holds.items()):
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
-                # Any user's opt-in keeps the engine: the mark left by a peer, or
-                # this process's own setting, which it may have flipped after
-                # binding (the setting doesn't affect the load, so a flip never
-                # re-acquires and never reaches the mark).
-                keep = not config_changed and (
-                    keep_warm_requested(engine_dir) or cfg.keep_engine_warm
-                )
+                # A flip after binding never re-acquires, so reconcile our own mark
+                # here. Skipped on a config change, which stops and clears regardless.
+                if not config_changed:
+                    if cfg.keep_engine_warm:
+                        request_keep_warm(engine_dir, cfg.data_root)
+                    else:
+                        withdraw_keep_warm(engine_dir, cfg.data_root)
+                # Any remaining opt-in keeps the engine, including a peer's.
+                keep = not config_changed and keep_warm_requested(engine_dir)
                 if last and not keep:
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
