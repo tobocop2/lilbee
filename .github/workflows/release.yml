@@ -232,17 +232,22 @@ jobs:
       # dependency-analysis caches) is what cuts the ~4h cold compile. Restored
       # from main-saved caches (warm-executables-cache.yml) -- tag-scoped saves
       # are unrestorable, same story as ccache above.
-      # Keyed on compile inputs, not asset name: the stock and compat Windows cells
-      # both build vulkan with MSVC's default baseline, so their object caches are
-      # interchangeable. The asset name stays in the primary key only to keep two
-      # concurrent cells from saving the same key; restore-keys is what shares them.
+      # One namespace per Windows runner image, not per backend or asset. Every
+      # Windows cell compiles the same C: MSVC takes no baseline override here, the
+      # CUDA difference is bundled DLLs, and the compat difference is a lancedb
+      # .pyd. Splitting them gave four ~1-3 GB object caches that evicted each
+      # other out of the 10 GiB cap every run, which is why clcache never once hit.
+      # Sharing is safe by construction: clcache keys each entry on the
+      # preprocessed source plus flags, so a mismatched entry misses, never lies.
+      # The asset name stays in the primary key only so concurrent cells do not
+      # save the same key; restore-keys is what shares them.
       - name: Restore Nuitka cache (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache/restore@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
-          restore-keys: nuitka-${{ matrix.os }}-${{ matrix.backend }}-
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-
 
       - name: Point Nuitka at the cache dir (Windows)
         if: runner.os == 'Windows'
@@ -312,7 +317,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.

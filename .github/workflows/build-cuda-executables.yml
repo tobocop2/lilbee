@@ -174,8 +174,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
-          restore-keys: nuitka-${{ matrix.os }}-${{ matrix.backend }}-
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-
 
       - name: Point Nuitka at the cache dir (Windows)
         if: runner.os == 'Windows'
@@ -245,7 +245,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The wheel gate can't cover the executable: Nuitka rebundles the engine, and on
       # Linux it takes the .so files through --include-package-data rather than the
