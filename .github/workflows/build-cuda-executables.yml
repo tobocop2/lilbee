@@ -109,15 +109,36 @@ jobs:
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
+      # The toolkit exists only to compile the engine; build_lilbee_binary.sh
+      # never touches CUDA. If the mirror already carries this engine the whole
+      # install is dead weight (4.9 min on Windows, 3.1 on Linux) on the job that
+      # ends the release. Probes the mirror only, not the Actions cache: a mirror
+      # miss the cache would have served just installs the toolkit as before.
+      - name: Probe the engine mirror
+        id: engine-probe
+        shell: bash
+        env:
+          ENGINE_KEY: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ matrix.llama-cpp-version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          asset="$(bash tools/wheel-build/engine_asset_name.sh "${ENGINE_KEY}")"
+          if curl -fsI --retry 2 "https://github.com/${REPO}/releases/download/engine-binaries/${asset}" >/dev/null 2>&1; then
+            echo "Mirror carries ${asset}; skipping the toolkit install."
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install CUDA Toolkit (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.engine-probe.outputs.available != 'true'
         shell: bash
         env:
           BACKEND: ${{ matrix.backend }}
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install CUDA Toolkit (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.engine-probe.outputs.available != 'true'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda }}
@@ -142,6 +163,26 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+
+      # Windows only, and it is the whole point: these cells are the release
+      # terminus, MSVC has no ccache, and this workflow had no object cache of
+      # any kind, so every CUDA Windows build compiled ~9056 files from cold.
+      # release.yml has carried the same mechanism for its Windows cells.
+      # Not added on Linux: ccache above already caches those objects, and a
+      # second copy would only consume a cap these legs do not need (they finish
+      # hours before the Windows terminus).
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-${{ matrix.backend }}-
+
+      - name: Point Nuitka at the cache dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "NUITKA_CACHE_DIR=${GITHUB_WORKSPACE}/nuitka-cache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
@@ -198,6 +239,15 @@ jobs:
           CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      # Save even when the smoke test later fails: the objects are still valid
+      # and make the retry fast. Non-tag only, like ccache.
+      - name: Save Nuitka cache (Windows)
+        if: runner.os == 'Windows' && github.ref_type != 'tag'
+        uses: actions/cache/save@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The wheel gate can't cover the executable: Nuitka rebundles the engine, and on
       # Linux it takes the .so files through --include-package-data rather than the
