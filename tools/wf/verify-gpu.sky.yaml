@@ -11,11 +11,8 @@ resources:
   cloud: runpod
   accelerators: {A40:2, RTX4090:2, A5000:2, L40S:2}
   disk_size: 80
-  # Idle protection in case the run dies and nobody notices.
-  any_of:
-    - region: EU-SE-1
-    - region: US-KS-2
-    - region: CA-MTL-3
+  # No region pin: nothing here mounts a network volume, so any datacentre with
+  # a spare pair will do, and pinning only narrows capacity.
 
 envs:
   LILBEE_REF: fix/ctx-slots-from-placed-device
@@ -26,16 +23,23 @@ envs:
 
 setup: |
   set -euo pipefail
+  # The RunPod image defaults to 3.10 and lilbee needs 3.11+, so pick the newest
+  # interpreter the image actually ships rather than whatever python3 points at.
+  PY=$(for v in 3.13 3.12 3.11; do command -v python$v && break; done)
+  echo "interpreter: $PY ($($PY --version))"
+  echo "$PY" > /workspace/py
+  $PY -m venv /workspace/venv
+  VPY=/workspace/venv/bin/python
   # Prebuilt engine only: compiling llama.cpp on a pod wastes 10+ minutes and
   # produces a single-arch binary.
-  python3 -m pip install --quiet --upgrade pip
-  python3 -m pip install --quiet --pre lilbee --extra-index-url https://lilbee.sh/cu124/
+  $VPY -m pip install --quiet --upgrade pip
+  $VPY -m pip install --quiet --pre lilbee --extra-index-url https://lilbee.sh/cu124/
   # Overlay the branch under test without disturbing the engine wheel.
-  python3 -m pip install --quiet --no-deps --force-reinstall \
+  $VPY -m pip install --quiet --no-deps --force-reinstall \
       "git+https://github.com/tobocop2/lilbee@${LILBEE_REF}"
-  python3 -c "import lilbee_engine, os; p=lilbee_engine.get_llama_server_path(); assert os.access(p, os.X_OK), p; print('engine ok:', p)"
-  python3 -m pip install --quiet huggingface_hub
-  python3 - <<'PY'
+  $VPY -c "import lilbee_engine, os; p=lilbee_engine.get_llama_server_path(); assert os.access(p, os.X_OK), p; print('engine ok:', p)"
+  $VPY -m pip install --quiet huggingface_hub
+  $VPY - <<'PYEOF'
   import os
   from huggingface_hub import hf_hub_download
   path = hf_hub_download(os.environ["MODEL_REPO"], os.environ["MODEL_FILE"])
@@ -43,11 +47,12 @@ setup: |
   with open("/workspace/model-path", "w") as fh:
       fh.write(path)
   print("model:", path)
-  PY
+  PYEOF
 
 run: |
   set -uo pipefail
   curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${LILBEE_REF}/tools/wf/verify_gpu_readback.sh" \
       -o /workspace/verify.sh
   chmod +x /workspace/verify.sh
-  MODEL="$(cat /workspace/model-path)" OUT=/workspace/verify-out /workspace/verify.sh
+  PATH=/workspace/venv/bin:$PATH MODEL="$(cat /workspace/model-path)" \
+      OUT=/workspace/verify-out /workspace/verify.sh
