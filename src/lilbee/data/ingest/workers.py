@@ -113,12 +113,16 @@ class _WorkerBindings:
     def enter(self, config: Config, cpu_share: int) -> None:
         """Bind *config* and this worker's CPU share; replaces any previous binding."""
         from lilbee.core.config.context import config_scope
+        from lilbee.providers.fleet.guest import bind_only_engine
         from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
         self.close()
         os.environ["LILBEE_CPU_QUOTA"] = str(cpu_share)
         stack = ExitStack()
         stack.enter_context(config_scope(config))
+        # Attach to the engine the parent started; never build one. A worker that
+        # built its own would put a second fleet on the same GPUs.
+        stack.enter_context(bind_only_engine())
         # Hold the fleet resident for this worker's lifetime, matching the parent:
         # an unevenly loaded replica must not idle-unload mid-run. The worker binds
         # to the parent's engine, so its teardown drops the binding and stops nothing.
