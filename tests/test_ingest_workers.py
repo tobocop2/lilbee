@@ -61,6 +61,9 @@ class TestResolveProcessCount:
             workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=0)
         )
         monkeypatch.setattr(workers, "cpu_quota", lambda: 48)
+        # Guards the assertion below from passing vacuously if the cap is ever
+        # raised above the quota this test hands it.
+        assert workers._MAX_AUTO_PROCESSES < 48
         assert resolve_process_count(100_000) == workers._MAX_AUTO_PROCESSES
 
     def test_an_explicit_setting_may_exceed_the_auto_cap(self, monkeypatch):

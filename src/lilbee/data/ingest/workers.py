@@ -92,10 +92,11 @@ def resolve_process_count(file_count: int) -> int:
 
     Auto (the default) opts a run in only when the plan is big enough to amortise
     worker startup and the box has cores to spare, so an interactive sync of a
-    vault never pays for a pool, and it stops at ``_MAX_AUTO_PROCESSES`` because
-    throughput plateaus there and then decays. An explicit ``ingest_processes``
-    always wins, including past that cap, so a fleet big enough to want more can
-    ask for it.
+    vault never pays for a pool, and it stops at ``_MAX_AUTO_PROCESSES``, which is
+    the top of the plateau measured on one fleet (4xA40, 0.6B embedder). Whether
+    the plateau sits there on other card counts or model sizes is unmeasured, so
+    the cap is a conservative default rather than a known optimum: an explicit
+    ``ingest_processes`` always wins, including past it.
     """
     configured = active_config().ingest_processes
     if configured:
