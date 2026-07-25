@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -53,12 +51,12 @@ def _patch_parser(
     """Stub out the gguf-parser binary path and its subprocess invocation."""
     monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+    def fake_run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
         if recorder is not None:
             recorder.append(argv)
-        return SimpleNamespace(stdout=stdout)
+        return stdout, 0
 
-    monkeypatch.setattr(vram_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(vram_mod, "run_bounded", fake_run)
 
 
 class TestFootprint:
@@ -228,24 +226,35 @@ class TestEstimateInstanceFootprint:
         estimate_instance_footprint(model_file, **kwargs)
         assert len(calls) == 2
 
-    def test_run_failure_raises_provider_error(
+    def _estimate(self, model_file: Path) -> None:
+        estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+        )
+
+    def test_a_nonzero_exit_raises_provider_error(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+        monkeypatch.setattr(vram_mod, "run_bounded", lambda *a, **k: ("", 1))
+        with pytest.raises(ProviderError, match="failed to run"):
+            self._estimate(model_file)
+
+    def test_a_spawn_or_timeout_failure_raises_provider_error(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-        def boom(argv: list[str], **_kwargs: object) -> SimpleNamespace:
-            raise subprocess.CalledProcessError(1, argv)
+        def boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("no such binary")
 
-        monkeypatch.setattr(vram_mod.subprocess, "run", boom)
+        monkeypatch.setattr(vram_mod, "run_bounded", boom)
         with pytest.raises(ProviderError, match="failed to run"):
-            estimate_instance_footprint(
-                model_file,
-                ctx=2048,
-                slots=1,
-                gpu_layers=-1,
-                flash_attn=True,
-                kv_cache_type=KvCacheType.F16,
-            )
+            self._estimate(model_file)
 
     def test_unparseable_output_raises_provider_error_with_cause(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -367,12 +376,12 @@ class TestProjectorCorrection:
     ) -> None:
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-        def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        def fake_run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
             if recorder is not None:
                 recorder.append(argv)
-            return SimpleNamespace(stdout=mmproj_json if "--mmproj-path" in argv else base_json)
+            return (mmproj_json if "--mmproj-path" in argv else base_json), 0
 
-        monkeypatch.setattr(vram_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(vram_mod, "run_bounded", fake_run)
 
     def _estimate(self, model_file: Path, mmproj: Path) -> GgufVramEstimate:
         return estimate_instance_footprint(

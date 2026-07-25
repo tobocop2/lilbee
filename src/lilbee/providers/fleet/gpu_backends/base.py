@@ -9,7 +9,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from lilbee.providers.fleet.proc import run_bounded
+
 _SMI_TIMEOUT_S = 5.0
+# Bounded wait for a timed-out smi tool to die before abandoning it: a driver-
+# wedged sampler must not hang the util-sampling thread (it holds a lock).
+_SMI_KILL_WAIT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -38,16 +43,12 @@ def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> 
     """
     binary = shutil.which(tool) or tool
     try:
-        proc = subprocess.run(  # noqa: S603 - caller supplies fixed args from named constants
-            [binary, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+        stdout, returncode = run_bounded(
+            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return proc.stdout if proc.returncode == 0 else ""
+    return stdout if returncode == 0 else ""
 
 
 def extract_int(obj: object, keys: tuple[str, ...]) -> int | None:
