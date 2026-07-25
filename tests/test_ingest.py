@@ -838,6 +838,7 @@ class TestSyncCancellation:
         from lilbee.data.ingest.types import FileToProcess
 
         shutdowns: list[dict] = []
+        order: list[str] = []
 
         class RecordingPool(ThreadPoolExecutor):
             def shutdown(self, wait=True, **kwargs):
@@ -845,8 +846,11 @@ class TestSyncCancellation:
                 super().shutdown(wait=wait)
 
         monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
+        monkeypatch.setattr(pipeline_mod, "warm_parent_engine", lambda: order.append("warm"))
         monkeypatch.setattr(
-            pipeline_mod, "build_pool", lambda n, cfg, inflight: RecordingPool(max_workers=2)
+            pipeline_mod,
+            "build_pool",
+            lambda n, cfg, inflight: order.append("pool") or RecordingPool(max_workers=2),
         )
         monkeypatch.setattr(
             workers,
@@ -867,6 +871,9 @@ class TestSyncCancellation:
 
         await ingest_batch(files, added, {}, {}, skipped, quiet=True)
 
+        # Ordering is the fix for the A/B that embedded 0 of 50k: a pool built
+        # first spawns attach-only workers against an engine nothing has started.
+        assert order == ["warm", "pool"]
         assert shutdowns == [{"cancel_futures": True}]
         # Zero chunks is a skip, not an add: the worker produced no searchable text.
         assert set(skipped) == {"w1.txt", "w2.txt"}

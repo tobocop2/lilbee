@@ -276,7 +276,6 @@ class TestDispatchPlan:
             return mock.MagicMock()
 
         monkeypatch.setattr(pipeline, "build_pool", fake_build_pool)
-        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: None)
         entries = [_entry(f"{i}.txt") for i in range(3)]
 
         async def in_process(entry, index):  # pragma: no cover - never awaited here
@@ -514,51 +513,29 @@ class TestParentWarmsTheEngine:
         with pytest.raises(RuntimeError, match="engine down"):
             workers.warm_parent_engine()
 
-    def test_dispatch_warms_the_engine_before_building_the_pool(self, monkeypatch):
-        """Ordering is the fix: a pool built first would spawn attach-only workers
-        against an engine that does not exist yet."""
-        order: list[str] = []
-        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: order.append("warm"))
-        monkeypatch.setattr(
-            pipeline,
-            "build_pool",
-            lambda n, cfg, inflight: order.append("pool") or mock.MagicMock(),
-        )
+    @pytest.mark.asyncio
+    async def test_warm_runs_off_the_event_loop(self, monkeypatch):
+        """A cold start spawns llama-swap and loads the model; inline it would
+        freeze the TUI and every progress callback for that long."""
+        offloaded: list[object] = []
 
-        async def in_process(entry, index):  # pragma: no cover - never awaited here
-            raise AssertionError
+        async def fake_offload(fn, *args, **kwargs):
+            offloaded.append(fn)
 
-        _pool, pending = pipeline._dispatch_plan(
-            [_entry()],
-            4,
-            in_process,
-            pages_done=[0],
-            on_progress=lambda *a, **k: None,
-            cancel=None,
-        )
-        for coro in pending:
-            coro.close()
+        monkeypatch.setattr(pipeline, "to_ingest_thread", fake_offload)
+        await pipeline._warm_engine_for_workers(8)
 
-        assert order == ["warm", "pool"]
+        assert offloaded == [pipeline.warm_parent_engine]
 
-    def test_the_in_process_path_does_not_warm(self, monkeypatch):
-        """At one process the parent embeds itself, so the lazy start still applies."""
-        warmed: list[str] = []
-        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: warmed.append("warm"))
+    @pytest.mark.asyncio
+    async def test_one_process_does_not_warm(self, monkeypatch):
+        """At one process the parent embeds anyway, so the lazy start covers it."""
+        offloaded: list[object] = []
 
-        async def in_process(entry, index):  # pragma: no cover - never awaited here
-            raise AssertionError
+        async def fake_offload(fn, *args, **kwargs):
+            offloaded.append(fn)
 
-        pool, pending = pipeline._dispatch_plan(
-            [_entry()],
-            1,
-            in_process,
-            pages_done=[0],
-            on_progress=lambda *a, **k: None,
-            cancel=None,
-        )
-        for coro in pending:
-            coro.close()
+        monkeypatch.setattr(pipeline, "to_ingest_thread", fake_offload)
+        await pipeline._warm_engine_for_workers(1)
 
-        assert pool is None
-        assert warmed == []
+        assert offloaded == []

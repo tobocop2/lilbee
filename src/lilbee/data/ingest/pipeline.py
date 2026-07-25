@@ -910,6 +910,21 @@ async def _collect_from_worker(
     )
 
 
+async def _warm_engine_for_workers(processes: int) -> None:
+    """Start the embed engine here before any worker spawns; no-op in-process.
+
+    Workers may only attach to an engine, so one has to exist before the first
+    spawns, and the parent is the only process that can start it. At one process
+    the parent embeds anyway, so the lazy start still covers it.
+
+    Offloaded rather than called inline: a cold start spawns llama-swap and loads
+    the model, and blocking the event loop for that would freeze the TUI and every
+    progress callback until it finished.
+    """
+    if processes > 1:
+        await to_ingest_thread(warm_parent_engine)
+
+
 def _dispatch_plan(
     files_to_process: list[FileToProcess],
     processes: int,
@@ -923,9 +938,6 @@ def _dispatch_plan(
     total_files = len(files_to_process)
     if processes <= 1:
         return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
-    # Workers may only attach to an engine, so it has to exist before the first
-    # one spawns; the parent is the only process that can start it.
-    warm_parent_engine()
     pool = build_pool(processes, active_config(), _max_concurrent())
     log.warning("Ingesting %d files across %d worker processes", total_files, processes)
     dispatcher = BatchDispatcher(
@@ -1046,6 +1058,7 @@ async def ingest_batch(
                 pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
                 return _IngestResult(name, entry.path, 0, error=exc)
 
+    await _warm_engine_for_workers(processes)
     pool, pending = _dispatch_plan(
         files_to_process,
         processes,
