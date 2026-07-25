@@ -23,6 +23,8 @@ from lilbee.cli.commands.servers import port_file
 from lilbee.cli.launchers.warm_render import render_warm
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.parent_monitor import PARENT_PID_ENV
+from lilbee.providers.fleet.child_guard import spawn_bound_child
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.server.auth import server_json_path
 
@@ -305,13 +307,12 @@ def spawn_server(
         stdout = log_file
         stderr = subprocess.STDOUT
 
-    # None inherits the parent environment; a dict replaces it wholesale, so
-    # merge the overrides onto a copy of os.environ to keep PATH and the rest.
-    child_env = {**os.environ, **env_overrides} if env_overrides else None
+    # LILBEE_PARENT_PID arms serve's parent-death watcher, so a hard-killed
+    # launcher (whose finally never runs) does not orphan serve holding server_lock.
+    child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
     try:
-        # Only caller-controlled value is the validated integer port; no shell.
-        return subprocess.Popen(  # noqa: S603
+        return spawn_bound_child(
             cmd,
             stdout=stdout,
             stderr=stderr,
