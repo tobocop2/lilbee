@@ -122,9 +122,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
-          asset="$(bash tools/wheel-build/engine_asset_name.sh "${ENGINE_KEY}")"
-          if curl -fsI --retry 2 "https://github.com/${REPO}/releases/download/engine-binaries/${asset}" >/dev/null 2>&1; then
-            echo "Mirror carries ${asset}; skipping the toolkit install."
+          if bash tools/wheel-build/engine_mirror.sh probe "${ENGINE_KEY}"; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"

@@ -47,42 +47,24 @@ runs:
         SOURCES_HASH: ${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
       run: |
         set -euo pipefail
-        key="engine-${CACHE_ENV}-${BACKEND}-tk${TOOLKIT}-llcp${LLCP}-${SOURCES_HASH}"
-        echo "key=${key}" >> "$GITHUB_OUTPUT"
-        echo "asset=$(bash tools/wheel-build/engine_asset_name.sh "${key}")" >> "$GITHUB_OUTPUT"
+        echo "key=engine-${CACHE_ENV}-${BACKEND}-tk${TOOLKIT}-llcp${LLCP}-${SOURCES_HASH}" >> "$GITHUB_OUTPUT"
 
-    # The mirror is the durable copy: release assets have no 10 GB repo cap, no
-    # 7-day idle eviction and no ref scoping, all three of which the Actions
-    # cache imposes and all three of which had been sending release builds down
-    # the 50-minute source-build path. Plain curl, not gh: the manylinux
-    # container this runs in for the Linux release legs ships no gh CLI.
+    # The durable copy, read before the Actions cache. See engine_mirror.sh for
+    # why these do not belong in the cache at all.
     - name: Restore the engine from the release mirror
       id: engine-mirror
       if: inputs.asset-release-tag != ''
       shell: bash
       env:
-        ASSET: ${{ steps.engine-key.outputs.asset }}
-        RELEASE_TAG: ${{ inputs.asset-release-tag }}
-        REPO: ${{ github.repository }}
+        ENGINE_RELEASE_TAG: ${{ inputs.asset-release-tag }}
       run: |
         set -uo pipefail
-        url="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET}"
-        dest="packaging/engine-wheel/lilbee_engine/bin"
-        tmp="$(mktemp -d)"
-        if ! curl -fsSL --retry 3 --retry-delay 2 -o "${tmp}/engine.tar.gz" "${url}"; then
-          echo "No engine mirror asset ${ASSET}; falling back to the Actions cache."
+        if bash tools/wheel-build/engine_mirror.sh fetch \
+          "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
           echo "restored=false" >> "$GITHUB_OUTPUT"
-          exit 0
         fi
-        mkdir -p "${dest}"
-        if ! tar -xzf "${tmp}/engine.tar.gz" -C "${dest}"; then
-          echo "Engine mirror asset ${ASSET} did not extract; falling back." >&2
-          rm -rf "${dest:?}"/*
-          echo "restored=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        echo "Restored the engine from ${ASSET}"
-        echo "restored=true" >> "$GITHUB_OUTPUT"
 
     # Second chance for an engine the mirror does not carry yet: a sibling cell
     # earlier in this same run, or warm-engine-cache.yml on main.
