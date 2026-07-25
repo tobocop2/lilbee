@@ -418,7 +418,7 @@ class TestBuildPool:
         # forked child would inherit held (see build_pool).
         assert captured["mp_context"].get_start_method() == "spawn"
         assert captured["initializer"] is workers.init_worker
-        assert captured["initargs"] == (mock.sentinel.config, 4, 16)  # cpu 16//4, inflight 64//4
+        assert captured["initargs"] == (mock.sentinel.config, 4, 64)  # cpu 16//4, inflight whole
 
     def test_the_share_never_rounds_down_to_zero(self, monkeypatch):
         """More workers than cores must still leave each worker a usable budget."""
@@ -426,7 +426,7 @@ class TestBuildPool:
 
         workers.build_pool(8, mock.sentinel.config, 4)
 
-        assert captured["initargs"] == (mock.sentinel.config, 1, 1)
+        assert captured["initargs"] == (mock.sentinel.config, 1, 4)
 
 
 class TestAdmissionFor:
@@ -465,8 +465,11 @@ class TestInflightIsNotTheCpuBudget:
         workers.build_pool(8, mock.sentinel.config, 64)
 
         _config, cpu_share, inflight_share = captured["initargs"]
-        assert cpu_share == 2  # 16 // 8
-        assert inflight_share == 8  # 64 // 8, and 8 workers x 8 == the 64 admission
+        assert cpu_share == 2  # 16 // 8, cores are shared
+        # Undivided: 8 workers x 64 drives 8x the concurrent requests one process
+        # sent. Dividing gave 8 x 8 == 64 == the single-process total, and measured
+        # 1.00x on a real pod with the GPUs still at 63%.
+        assert inflight_share == 64
 
     @pytest.mark.asyncio
     async def test_the_batch_semaphore_uses_the_bound_inflight(self, monkeypatch):

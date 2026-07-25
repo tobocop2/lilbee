@@ -1,9 +1,12 @@
 """Worker processes for bulk ingest: one GIL per worker.
 
-Profiling the 8.8M-passage MS MARCO ingest found the ~155 docs/sec ceiling is
-GIL-saturated and diffuse -- embed dispatch ~37% of GIL-held time, file I/O
-~13%, asyncio ~9%, with no single hotspot to remove. One process is one GIL, so
-throughput scales with processes, not with threads or GPUs.
+Bulk ingest throughput is concurrent embeds divided by their latency, and a
+single process is limited in how many it can keep in flight -- a ``--gil``
+profile of the 8.8M-passage MS MARCO ingest charges that dispatch ~37% of
+GIL-held time, file I/O ~13% and asyncio ~9%, diffuse with no single hotspot to
+remove. More processes raise that ceiling only by raising the aggregate
+concurrency: an 8-worker A/B that kept the total in flight unchanged measured
+1.00x with the GPUs still at 63%, so the process count alone buys nothing.
 
 Only per-file production (extract, chunk, embed) runs here. The parent keeps
 the plan, the single LanceDB writer, skip markers, move detection,
@@ -41,7 +44,9 @@ log = logging.getLogger(__name__)
 
 # Files per worker task. A worker runs its batch on one asyncio loop, so the
 # batch must be big enough to overlap embed waits and small enough that the
-# parent keeps flushing steadily rather than in rare large bursts.
+# parent keeps flushing steadily rather than in rare large bursts. It also caps
+# a worker's real concurrency: a batch of this many files cannot have more than
+# this many embeds in flight, whatever the admission target says.
 BATCH_FILES = 32
 
 # Under this many files the pool costs more than it saves: every worker pays a
@@ -154,13 +159,12 @@ _bindings = _WorkerBindings()
 def init_worker(config: Config, cpu_share: int, inflight: int) -> None:
     """Bind the parent's config and this worker's budgets, once per process.
 
-    Both budgets are the box's divided by the worker count, but they are
-    different quantities. *cpu_share* bounds CPU-bound work (extraction threads),
-    so N workers do not oversubscribe the cores. *inflight* bounds files in their
-    embed phase, which are I/O waits, not CPU: sizing that from the CPU share
-    would cap a whole 8-worker run at 8 concurrent embeds against a single
-    process's 32-64, and multiprocessing would measure slower than the baseline
-    it is meant to beat.
+    The two budgets are different quantities. *cpu_share* is the box's CPU quota
+    divided by the worker count, because cores are genuinely shared. *inflight*
+    is the whole admission target, undivided, because files in their embed phase
+    are I/O waits: the point of N processes is N times the concurrent requests at
+    the fleet, and any division of a fixed budget hands the fleet the same
+    aggregate a single process already sent.
     """
     _bindings.enter(config, cpu_share, inflight)
 
@@ -228,7 +232,15 @@ def warm_parent_engine() -> None:
 
 
 def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExecutor:
-    """A pool of *processes* workers, each bound to *config* and its share of the budgets.
+    """A pool of *processes* workers bound to *config*, the CPU share, and *inflight*.
+
+    Cores are shared, so the CPU budget is divided. In-flight files are not: each
+    worker gets the whole admission target, and the fleet sees ``processes`` times
+    the concurrent requests one process sent. Dividing it instead makes the
+    aggregate identical to a single process by construction, which is what an
+    8-worker A/B measured -- 131.6 against 131.9 docs/sec, 1.00x, with the GPUs at
+    63%. Same concurrency and same latency cannot produce a different throughput
+    however many processes are asking.
 
     Forced to ``spawn``. By the time ingest starts, this process holds the ingest
     thread pool, httpx connection pools and LanceDB; ``fork`` (the default on
@@ -238,12 +250,11 @@ def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExec
     gated to plans big enough to amortise it.
     """
     cpu_share = max(1, cpu_quota() // processes)
-    inflight_share = max(1, inflight // processes)
     return ProcessPoolExecutor(
         max_workers=processes,
         mp_context=multiprocessing.get_context("spawn"),
         initializer=init_worker,
-        initargs=(config, cpu_share, inflight_share),
+        initargs=(config, cpu_share, max(1, inflight)),
     )
 
 
