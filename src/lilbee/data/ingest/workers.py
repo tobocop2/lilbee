@@ -57,6 +57,15 @@ _MIN_FILES_FOR_POOL = 2000
 # workers would contend with the parent's flush thread.
 _MIN_CPUS_FOR_POOL = 4
 
+# Auto never asks for more than this, however many cores the box has. A sweep on
+# 4xA40 with the 0.6B embedder measured 174 docs/sec at 1 process, 220 at 2, 218
+# at 4 and 210 at 8: the win is real but it plateaus immediately and then decays,
+# because what limits it is the fleet's dispatch evenness rather than CPU. Each
+# worker routes with its own least-loaded view and they cannot see each other, so
+# more of them pile onto the same replicas -- per-card utilisation was 90/90/50/40
+# at 8. Scaling this with the core count would pick the wrong end of that curve.
+_MAX_AUTO_PROCESSES = 4
+
 # One short string, embedded in the parent to force the engine up before the
 # workers (which may only attach) are spawned.
 _ENGINE_PROBE = "lilbee ingest engine warm-up"
@@ -83,7 +92,10 @@ def resolve_process_count(file_count: int) -> int:
 
     Auto (the default) opts a run in only when the plan is big enough to amortise
     worker startup and the box has cores to spare, so an interactive sync of a
-    vault never pays for a pool. An explicit ``ingest_processes`` always wins.
+    vault never pays for a pool, and it stops at ``_MAX_AUTO_PROCESSES`` because
+    throughput plateaus there and then decays. An explicit ``ingest_processes``
+    always wins, including past that cap, so a fleet big enough to want more can
+    ask for it.
     """
     configured = active_config().ingest_processes
     if configured:
@@ -91,7 +103,9 @@ def resolve_process_count(file_count: int) -> int:
     if file_count < _MIN_FILES_FOR_POOL:
         return 1
     usable = cpu_quota()
-    return usable if usable >= _MIN_CPUS_FOR_POOL else 1
+    if usable < _MIN_CPUS_FOR_POOL:
+        return 1
+    return min(usable, _MAX_AUTO_PROCESSES)
 
 
 @dataclass(frozen=True)

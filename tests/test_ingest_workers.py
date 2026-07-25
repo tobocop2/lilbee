@@ -47,12 +47,29 @@ class TestResolveProcessCount:
         monkeypatch.setattr(workers, "cpu_quota", lambda: 16)
         assert resolve_process_count(files) == 1
 
-    def test_large_plan_on_a_big_box_uses_the_cpu_quota(self, monkeypatch):
+    def test_large_plan_uses_the_cpu_quota_up_to_the_cap(self, monkeypatch):
         monkeypatch.setattr(
             workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=0)
         )
-        monkeypatch.setattr(workers, "cpu_quota", lambda: 8)
-        assert resolve_process_count(100_000) == 8
+        monkeypatch.setattr(workers, "cpu_quota", lambda: 4)
+        assert resolve_process_count(100_000) == 4
+
+    def test_auto_stops_at_the_cap_however_many_cores(self, monkeypatch):
+        """Measured: 220 docs/sec at 2 processes, 218 at 4, 210 at 8. Scaling with
+        the core count picks the decaying end of that curve."""
+        monkeypatch.setattr(
+            workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=0)
+        )
+        monkeypatch.setattr(workers, "cpu_quota", lambda: 48)
+        assert resolve_process_count(100_000) == workers._MAX_AUTO_PROCESSES
+
+    def test_an_explicit_setting_may_exceed_the_auto_cap(self, monkeypatch):
+        """A fleet big enough to want more processes can still ask for them."""
+        monkeypatch.setattr(
+            workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=16)
+        )
+        monkeypatch.setattr(workers, "cpu_quota", lambda: 48)
+        assert resolve_process_count(100_000) == 16
 
     def test_large_plan_on_a_small_box_stays_in_process(self, monkeypatch):
         """Few cores: a pool would only contend with the parent's flush thread."""
