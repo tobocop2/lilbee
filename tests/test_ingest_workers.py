@@ -276,6 +276,7 @@ class TestDispatchPlan:
             return mock.MagicMock()
 
         monkeypatch.setattr(pipeline, "build_pool", fake_build_pool)
+        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: None)
         entries = [_entry(f"{i}.txt") for i in range(3)]
 
         async def in_process(entry, index):  # pragma: no cover - never awaited here
@@ -485,3 +486,79 @@ class TestInflightIsNotTheCpuBudget:
         await workers._produce_batch([WorkerFile(Path("/c/a.txt"), "a.txt", "text")])
 
         assert seen == [7]
+
+
+class TestParentWarmsTheEngine:
+    """Workers may only attach, so the parent has to start the engine first.
+
+    The first multiprocess A/B embedded 0 of 50k because nothing did: the engine
+    starts lazily on the first embed and the dispatching parent never embeds.
+    """
+
+    def test_warm_embeds_through_the_parents_embedder(self, monkeypatch):
+        embedded: list[str] = []
+        services = mock.MagicMock()
+        services.embedder.embed.side_effect = lambda text: embedded.append(text)
+        monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+
+        workers.warm_parent_engine()
+
+        assert len(embedded) == 1  # one probe, not a batch
+
+    def test_a_dead_embedder_fails_before_any_worker_is_spawned(self, monkeypatch):
+        """Fail fast with the embedder's own error rather than N processes' worth."""
+        services = mock.MagicMock()
+        services.embedder.embed.side_effect = RuntimeError("engine down")
+        monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+
+        with pytest.raises(RuntimeError, match="engine down"):
+            workers.warm_parent_engine()
+
+    def test_dispatch_warms_the_engine_before_building_the_pool(self, monkeypatch):
+        """Ordering is the fix: a pool built first would spawn attach-only workers
+        against an engine that does not exist yet."""
+        order: list[str] = []
+        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: order.append("warm"))
+        monkeypatch.setattr(
+            pipeline,
+            "build_pool",
+            lambda n, cfg, inflight: order.append("pool") or mock.MagicMock(),
+        )
+
+        async def in_process(entry, index):  # pragma: no cover - never awaited here
+            raise AssertionError
+
+        _pool, pending = pipeline._dispatch_plan(
+            [_entry()],
+            4,
+            in_process,
+            pages_done=[0],
+            on_progress=lambda *a, **k: None,
+            cancel=None,
+        )
+        for coro in pending:
+            coro.close()
+
+        assert order == ["warm", "pool"]
+
+    def test_the_in_process_path_does_not_warm(self, monkeypatch):
+        """At one process the parent embeds itself, so the lazy start still applies."""
+        warmed: list[str] = []
+        monkeypatch.setattr(pipeline, "warm_parent_engine", lambda: warmed.append("warm"))
+
+        async def in_process(entry, index):  # pragma: no cover - never awaited here
+            raise AssertionError
+
+        pool, pending = pipeline._dispatch_plan(
+            [_entry()],
+            1,
+            in_process,
+            pages_done=[0],
+            on_progress=lambda *a, **k: None,
+            cancel=None,
+        )
+        for coro in pending:
+            coro.close()
+
+        assert pool is None
+        assert warmed == []

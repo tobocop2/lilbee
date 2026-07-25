@@ -57,6 +57,7 @@ from lilbee.data.ingest.workers import (
     build_pool,
     error_reason,
     resolve_process_count,
+    warm_parent_engine,
 )
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
@@ -922,6 +923,9 @@ def _dispatch_plan(
     total_files = len(files_to_process)
     if processes <= 1:
         return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
+    # Workers may only attach to an engine, so it has to exist before the first
+    # one spawns; the parent is the only process that can start it.
+    warm_parent_engine()
     pool = build_pool(processes, active_config(), _max_concurrent())
     log.warning("Ingesting %d files across %d worker processes", total_files, processes)
     dispatcher = BatchDispatcher(

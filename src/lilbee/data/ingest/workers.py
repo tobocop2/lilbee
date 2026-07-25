@@ -10,10 +10,12 @@ the plan, the single LanceDB writer, skip markers, move detection,
 reconciliation, progress and cancellation, so the one-index invariant holds by
 construction rather than by a merge step.
 
-Workers never build an engine: ``sync()`` forces the fleet up before ingest
-starts, and the provider binds to that running engine (see
-``SwapManager.bind``). A worker that could not bind would spawn a second fleet
-and double-book the GPUs.
+Workers never build an engine; they attach to the parent's (see
+``SwapManager.bind``), because a second fleet would double-book the GPUs. That
+makes starting it the parent's job: the engine otherwise comes up lazily on the
+first embed, and in this path the parent dispatches every file and never embeds,
+so nothing would start it and every worker would fail to attach. The parent
+warms it before the first worker spawns and holds it for the whole run.
 """
 
 from __future__ import annotations
@@ -49,6 +51,10 @@ _MIN_FILES_FOR_POOL = 2000
 # Under this many usable cores there is nothing to parallelise onto, and the
 # workers would contend with the parent's flush thread.
 _MIN_CPUS_FOR_POOL = 4
+
+# One short string, embedded in the parent to force the engine up before the
+# workers (which may only attach) are spawned.
+_ENGINE_PROBE = "lilbee ingest engine warm-up"
 
 
 class WorkerIngestError(Exception):
@@ -201,6 +207,24 @@ async def _produce_one(entry: WorkerFile) -> WorkerOutcome:
         )
     except Exception as exc:
         return WorkerOutcome(name=entry.name, error=WorkerIngestError(error_reason(exc)))
+
+
+def warm_parent_engine() -> None:
+    """Bring the embed engine up in this process and hold it, before any worker spawns.
+
+    The engine starts lazily on the first embed. Workers are attach-only, and the
+    parent never embeds once it is dispatching, so without this nothing starts the
+    engine and every worker fails to attach -- which is exactly how the first
+    multiprocess A/B embedded 0 of 50k files.
+
+    Embedding one probe string is what forces the acquisition ladder to run here:
+    it starts (or binds) the engine and takes this process's membership, so
+    last-user-out cannot stop it under the workers. It also fails fast, with the
+    embedder's own error, before N processes are spawned.
+    """
+    from lilbee.app.services import get_services
+
+    get_services().embedder.embed(_ENGINE_PROBE)
 
 
 def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExecutor:
