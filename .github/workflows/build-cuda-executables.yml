@@ -204,7 +204,7 @@ jobs:
       # pre-Haswell build from the private index. --no-deps leaves the rest of the
       # synced venv untouched, so this swap is local to this cell -- pyproject and
       # uv.lock never change, and no other cell or job sees it. Pinned to the latest
-      # stable lancedb for Python (0.33), served by the fork as +compat; bump when the
+      # stable lancedb for Python (0.34), served by the fork as +compat; bump when the
       # fork moves. continue-on-error keeps a missing wheel off the release.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
@@ -212,7 +212,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.33.0+compat
+            lancedb==0.34.0+compat
 
       # Build the self-contained CUDA llama-server (binary + ggml/llama/mtmd libs
       # with a baked rpath) and install lilbee_engine so Nuitka bundles the
