@@ -3067,3 +3067,48 @@ class TestRelocateSources:
 
     def test_relocate_empty_is_noop(self, store):
         store.relocate_sources([])  # must not raise or acquire the lock
+
+
+class TestRelocateTitles:
+    """Relocation re-derives stem titles; extraction titles survive the move."""
+
+    def test_stem_derived_title_follows_the_new_filename(self, store):
+        from lilbee.data.store import SourceMeta, SourceType
+
+        store.add_chunks(_titled_records("old_report.md", 2, title="old report"))
+        store.upsert_source(
+            "old_report.md", "h1", 2, SourceType.DOCUMENT, meta=SourceMeta(title="old report")
+        )
+        store.relocate_sources([("old_report.md", "annual_summary.md", None)])
+        row = next(s for s in store.get_sources() if s["filename"] == "annual_summary.md")
+        assert row["title"] == "annual summary"
+        chunks = store.get_chunks_by_source("annual_summary.md")
+        assert all(c.title == "annual summary" for c in chunks)
+
+    def test_extraction_title_survives_the_move(self, store):
+        from lilbee.data.store import SourceMeta, SourceType
+
+        store.add_chunks(_titled_records("notes-2024.md", 2, title="Frankenstein Analysis"))
+        store.upsert_source(
+            "notes-2024.md",
+            "h1",
+            2,
+            SourceType.DOCUMENT,
+            meta=SourceMeta(title="Frankenstein Analysis"),
+        )
+        store.relocate_sources([("notes-2024.md", "renamed.md", None)])
+        row = next(s for s in store.get_sources() if s["filename"] == "renamed.md")
+        assert row["title"] == "Frankenstein Analysis"
+        chunks = store.get_chunks_by_source("renamed.md")
+        assert all(c.title == "Frankenstein Analysis" for c in chunks)
+
+    def test_junk_new_stem_clears_the_stem_title(self, store):
+        from lilbee.data.store import SourceMeta, SourceType
+
+        store.add_chunks(_titled_records("real_notes.md", 1, title="real notes"))
+        store.upsert_source(
+            "real_notes.md", "h1", 1, SourceType.DOCUMENT, meta=SourceMeta(title="real notes")
+        )
+        store.relocate_sources([("real_notes.md", "IMG_1234.md", None)])
+        row = next(s for s in store.get_sources() if s["filename"] == "IMG_1234.md")
+        assert row["title"] is None

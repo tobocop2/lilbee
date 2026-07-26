@@ -183,6 +183,9 @@ _PER_SOURCE_TABLES = (
 # source_filename so citations keep pointing at the source after a move.
 _RELOCATABLE_TABLES = (*_PER_SOURCE_TABLES, (CITATIONS_TABLE, "source_filename"))
 
+# Sentinel: relocation must leave the stored title untouched (extraction-derived).
+_KEEP_TITLE = "\x00keep"
+
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
@@ -1567,22 +1570,65 @@ class Store:
         """
         if not moves:
             return
+        from lilbee.data.ingest.title import derive_title  # circular at module scope
+
         with self._write_lock():
             tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
             sources = self.open_table(SOURCES_TABLE)
             for old, new, stat in moves:
                 where_old = f"= '{escape_sql_string(old)}'"
+                new_title = self._relocated_title(sources, old, new, derive_title)
                 for table, column in tables:
-                    if table is not None:
-                        table.update(where=f"{column} {where_old}", values={column: new})
+                    if table is None:
+                        continue
+                    values: dict[str, object] = {column: new}
+                    # Stem titles track the filename; re-derive them on the same
+                    # handle and statement as the re-key.
+                    if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
+                        values[_TITLE_COLUMN] = new_title
+                    table.update(where=f"{column} {where_old}", values=values)
                 if sources is not None:
-                    values: dict[str, object] = {"filename": new}
+                    row_values: dict[str, object] = {"filename": new}
+                    if new_title is not _KEEP_TITLE:
+                        row_values["title"] = new_title
                     if stat is not None:
-                        values["size_bytes"] = stat.size_bytes
-                        values["mtime_ns"] = stat.mtime_ns
-                        values["stat_captured_ns"] = stat.captured_ns
-                    sources.update(where=f"filename {where_old}", values=values)
+                        row_values["size_bytes"] = stat.size_bytes
+                        row_values["mtime_ns"] = stat.mtime_ns
+                        row_values["stat_captured_ns"] = stat.captured_ns
+                    sources.update(where=f"filename {where_old}", values=row_values)
         self._invalidate_source_cache()
+
+    def _relocated_title(
+        self,
+        sources: lancedb.table.Table | None,
+        old: str,
+        new: str,
+        derive: Callable[[str], str],
+    ) -> str | None:
+        """New title for a moved source, or ``_KEEP_TITLE`` when it must not change.
+
+        Extraction-derived titles survive a move (the content is unchanged);
+        a stem-derived title tracks the filename it was derived from, so it is
+        re-derived from the new name instead of matching the old one forever.
+        """
+        if sources is None:
+            return _KEEP_TITLE
+        try:
+            rows = (
+                sources.search()
+                .where(f"filename = '{escape_sql_string(old)}'")
+                .select(["title"])
+                .limit(1)
+                .to_list()
+            )
+        except Exception:
+            return _KEEP_TITLE
+        if not rows or "title" not in rows[0]:
+            return _KEEP_TITLE
+        stored = rows[0]["title"] or ""
+        if stored != (derive(old) or ""):
+            return _KEEP_TITLE
+        return derive(new) or None
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
