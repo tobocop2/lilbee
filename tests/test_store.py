@@ -867,11 +867,9 @@ class TestHybridSearch:
         assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(
             test_config.lexical_fusion_weight * 0.5
         )
-        # The normalization denominator is the configured budget (constant), not
-        # the adapted weight, so scores stay comparable across sub-searches.
-        assert fuse.call_args.kwargs["weight_total"] == pytest.approx(
-            1.0 + test_config.lexical_fusion_weight
-        )
+        # fuse_arms normalizes by the effective arms itself; no fixed budget
+        # is threaded through (a shared denominator capped confident queries).
+        assert "weight_total" not in fuse.call_args.kwargs
         assert len(results) > 0
 
     def test_fixed_fusion_pins_the_config_weight(self, store, test_config):
@@ -2603,6 +2601,23 @@ class TestTitleSearch:
         assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
         assert all(r.chunk_index == 0 for r in rows)
 
+    def test_title_arm_long_document_does_not_starve_other_matches(
+        self, store, test_config, monkeypatch
+    ):
+        """A long document's tied title rows saturating the fetch window must
+        widen the fetch, not crowd every other title-matching document out."""
+        from lilbee.data.store import core as store_core
+
+        monkeypatch.setattr(store_core, "_TITLE_FETCH_FACTOR", 1)
+        monkeypatch.setattr(store_core, "_TITLE_MIN_FETCH", 4)
+        test_config.title_search = True
+        store.add_chunks(_titled_records("tome.pdf", 6, title="zebra atlas"))
+        store.add_chunks(_titled_records("note.pdf", 1, title="zebra"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        rows = store._title_arm(table, "zebra", 2, None)
+        assert sorted(r.source for r in rows) == ["note.pdf", "tome.pdf"]
+
     def test_title_search_weight_reaches_fusion(self, store, test_config):
         """A non-default title_search_weight is threaded into fuse_arms, not
         hardcoded: the config value is what weights the title arm."""
@@ -2616,11 +2631,9 @@ class TestTitleSearch:
         with mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse:
             store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
         assert fuse.call_args.kwargs["title_weight"] == pytest.approx(0.2)
-        # With the title arm enabled, its weight is part of the constant
-        # denominator whether or not this query's title arm returned rows.
-        assert fuse.call_args.kwargs["weight_total"] == pytest.approx(
-            1.0 + test_config.lexical_fusion_weight + 0.2
-        )
+        # fuse_arms counts the title weight in its denominator only when title
+        # rows exist, so titleless queries keep their undeflated scores.
+        assert "weight_total" not in fuse.call_args.kwargs
 
     def test_adaptive_fusion_scales_the_title_arm_too(self, store, test_config):
         """Adaptive fusion downweights lexical; the title arm is also lexical, so

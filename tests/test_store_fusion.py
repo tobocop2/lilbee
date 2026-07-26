@@ -104,61 +104,72 @@ class TestFuseArms:
         assert all(r.score is not None for r in fused)
 
 
-class TestWeightTotalNormalization:
-    """A constant reference denominator keeps scores comparable across the
-    separate sub-searches that Searcher merges. Without it, each sub-search
-    normalizes by its own per-query total_weight, so a peaked sub-search
-    (lexical silenced) inflates its rows against a flat one's."""
+class TestEffectiveWeightNormalization:
+    """Scores normalize against the arms taking part in the call, so every
+    call lands on one canonical [0, 1] scale. A fixed shared denominator was
+    tried and capped confident sub-searches (lexical adaptively quieted) at
+    the vector arm's share, demoting the original query's hits below
+    paraphrase-variant hits when Searcher merged them."""
 
-    def test_weight_total_pins_the_denominator(self):
-        # Lexical silenced (weight 0): the vector-only top hit must still be
-        # scored against the supplied constant denominator, not 1.0.
-        fused = fuse_arms(
-            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
-        )
-        assert fused[0].score == pytest.approx(0.5)
+    def test_quieted_lexical_restores_canonical_scale(self):
+        # Lexical arm quieted to the adaptive floor: the vector-only top hit
+        # approaches full scale instead of being capped near the vector share.
+        fused = fuse_arms([_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.05)
+        assert fused[0].score == pytest.approx(1.0 / 1.05)
 
-    def test_cross_subsearch_scores_share_one_scale(self):
-        # Same identical-strength vector-only top hit, two sub-searches whose
-        # adaptive lexical weight differs: with one shared weight_total they land
-        # on the same score instead of 1.0 vs 0.5.
-        peaked = fuse_arms(
-            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
-        )
-        flat = fuse_arms(
-            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=1.0, weight_total=2.0
-        )
-        assert peaked[0].score == pytest.approx(flat[0].score)
+    def test_confident_call_is_not_demoted_below_flat_call(self):
+        # The same vector-only top hit scores at least as high in a call whose
+        # lexical arm was quieted as in one at full lexical weight: confidence
+        # must never demote.
+        quieted = fuse_arms([_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.05)
+        flat = fuse_arms([_chunk("a.md", 0, distance=0.3)], [], lexical_weight=1.0)
+        assert quieted[0].score > flat[0].score
 
-    def test_weight_total_preserves_within_call_order(self):
-        # A uniform denominator is a monotonic rescale, so the ranking inside one
-        # call is identical to the default per-call normalization.
+    def test_normalization_is_a_uniform_rescale_within_a_call(self):
+        # The denominator is one constant per call, so it never changes the
+        # ranking inside that call.
         vec = [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 1, distance=0.9)]
         lex = [_chunk("far.md", 1, bm25=30.0)]
-        default = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0)]
-        pinned = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0, weight_total=2.0)]
-        assert default == pinned
+        half = [r.source for r in fuse_arms(vec, lex, lexical_weight=0.5)]
+        full = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0)]
+        assert half == full
 
-    def test_weight_total_defaults_to_per_call_when_absent(self):
-        # Direct callers that omit weight_total keep the original behavior.
-        no_arg = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
-        explicit = fuse_arms(
+    def test_empty_title_arm_does_not_deflate_scores(self):
+        # title_weight only enters the denominator when title rows exist, so
+        # enabling title search does not silently rescale titleless queries.
+        without = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)], title_weight=0.5
+        )
+        with_empty = fuse_arms(
             [_chunk("a.md", 0, distance=0.3)],
             [_chunk("a.md", 0, bm25=9.0)],
-            weight_total=2.0,
+            [],
+            title_weight=0.5,
         )
-        assert no_arg[0].score == pytest.approx(explicit[0].score)
+        assert without[0].score == pytest.approx(1.0)
+        assert with_empty[0].score == pytest.approx(without[0].score)
 
 
 class TestAdaptiveWeightScale:
     """Per-query weight scale gated by the vector arm's confidence."""
 
-    def test_peaked_dense_silences_lexical(self):
-        # top similarity 1.0 (distance 0), field ~0.3: a wide margin => scale ~0.
+    def test_peaked_dense_quiets_lexical_to_the_floor(self):
+        # top similarity 1.0 (distance 0), field ~0.3: a wide margin bottoms
+        # out at the floor, never exactly zero, so BM25 provenance (and the
+        # distance-cut exemption it grants) survives full vector confidence.
         rows = [_chunk("a.md", 0, distance=0.0)] + [
             _chunk("b.md", i, distance=0.7) for i in range(1, 5)
         ]
-        assert adaptive_weight_scale(rows, 0.3) == pytest.approx(0.0)
+        assert adaptive_weight_scale(rows, 0.3) == pytest.approx(0.05)
+
+    def test_scale_is_independent_of_pool_depth(self):
+        # The margin reads a fixed window of runners-up, so retrieving more
+        # rows (a reranker deepening the pool) must not change the scale.
+        top = [_chunk("a.md", 0, distance=0.4)] + [
+            _chunk("b.md", i, distance=0.6) for i in range(1, 6)
+        ]
+        deep = top + [_chunk("tail.md", i, distance=1.4) for i in range(6, 60)]
+        assert adaptive_weight_scale(deep, 0.3) == pytest.approx(adaptive_weight_scale(top, 0.3))
 
     def test_flat_dense_keeps_full_weight(self):
         # every row equally similar: zero margin => full scale.

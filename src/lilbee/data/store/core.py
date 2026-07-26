@@ -187,6 +187,7 @@ _TERM_SCAN_BATCH_ROWS = 20_000
 # hits a huge document can't scan the whole corpus.
 _TITLE_FETCH_FACTOR = 20
 _TITLE_MIN_FETCH = 200
+_TITLE_FETCH_CEILING = 4096
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -813,22 +814,25 @@ class Store:
         """
         if not _has_fts_index(table, _TITLE_COLUMN):
             return []
-        try:
-            rows = _lexical_rows(
-                table,
-                query_text,
-                max(limit * _TITLE_FETCH_FACTOR, _TITLE_MIN_FETCH),
-                chunk_type,
-                column=_TITLE_COLUMN,
-            )
-        except Exception:
-            log.debug("Title arm search failed; contributing no title rows", exc_info=True)
-            return []
-        best: dict[str, SearchChunk] = {}
-        for row in rows:
-            seen = best.get(row.source)
-            if seen is None or row.chunk_index < seen.chunk_index:
-                best[row.source] = row
+        # Every chunk of one document ties on title BM25, so a fixed window can
+        # fill up with a single long document's chunks and starve every other
+        # title-matching document. Widen the fetch until enough distinct
+        # documents surface, the matches run out, or the ceiling is hit.
+        fetch = max(limit * _TITLE_FETCH_FACTOR, _TITLE_MIN_FETCH)
+        while True:
+            try:
+                rows = _lexical_rows(table, query_text, fetch, chunk_type, column=_TITLE_COLUMN)
+            except Exception:
+                log.debug("Title arm search failed; contributing no title rows", exc_info=True)
+                return []
+            best: dict[str, SearchChunk] = {}
+            for row in rows:
+                seen = best.get(row.source)
+                if seen is None or row.chunk_index < seen.chunk_index:
+                    best[row.source] = row
+            if len(best) >= limit or len(rows) < fetch or fetch >= _TITLE_FETCH_CEILING:
+                break
+            fetch = min(fetch * 4, _TITLE_FETCH_CEILING)
         ordered = sorted(best.values(), key=lambda r: (-(r.bm25_score or 0.0), r.source))
         return ordered[:limit]
 
@@ -869,25 +873,20 @@ class Store:
         lexical_weight = base_lexical_weight
         title_weight = base_title_weight
         if self._config.adaptive_fusion:
-            # Gate the lexical arms per query by how peaked the vector ranking is.
+            # Quiet the lexical arms per query by how peaked the vector ranking is.
             # The title arm is lexical too, so the same factor scales it; leaving
-            # it at full weight would re-admit the signal this just silenced.
+            # it at full weight would re-admit the signal this just quieted. The
+            # scale is floored above zero so BM25 provenance (and the distance
+            # exemption it grants) survives even a fully confident vector arm.
             scale = adaptive_weight_scale(vector_rows, self._config.adaptive_fusion_margin)
             lexical_weight = base_lexical_weight * scale
             title_weight = base_title_weight * scale
-        # Normalize against the configured weight budget, not this query's adapted
-        # weights or whether its title arm happened to return rows, so scores stay
-        # comparable across the sub-searches Searcher merges (query + variants).
-        weight_total = (
-            1.0 + base_lexical_weight + (base_title_weight if self._config.title_search else 0.0)
-        )
         fused = fuse_arms(
             vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
             title_rows,
             lexical_weight=lexical_weight,
             title_weight=title_weight,
-            weight_total=weight_total,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
         return fused[:top_k]
