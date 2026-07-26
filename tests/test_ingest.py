@@ -38,12 +38,19 @@ def isolated_env(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def mock_svc():
+def mock_svc(monkeypatch):
     """Provide a mock Services container for all ingest tests."""
+    # Keep ingest on the parent-writes path regardless of whether the dev
+    # machine has the bulk-ingest extra installed; fragment-mode tests opt in.
+    from lilbee.data.ingest import pipeline as _pipeline
     from tests.conftest import make_mock_services
+
+    monkeypatch.setattr(_pipeline, "fragments_available", lambda: False)
 
     _sources: dict[str, dict] = {}
     store = MagicMock()
+    # MagicMock refuses to auto-create attributes named assert_*; assign it.
+    store.assert_embedding_compatible = MagicMock(return_value=None)
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.side_effect = lambda: list(_sources.values())
@@ -62,7 +69,7 @@ def mock_svc():
 
     store.upsert_source.side_effect = _upsert
 
-    def _write_batch(items):
+    def _write_batch(items, **_kw):
         # Mirror the real write: each batched doc upserts a source record so
         # multi-sync tests see it via get_sources().
         for it in items:
@@ -584,6 +591,49 @@ class TestSync:
         assert failed == {}
         assert flush_failed == set()
 
+    def test_flush_writes_forwards_the_rowid_ceiling_to_the_store(self, _mock_extract_file):
+        # Fragment ingest: the ceiling captured before the workers spawned must
+        # reach write_chunks_batch untouched, so the cleanup spares their rows.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        result = _IngestResult(
+            name="a.txt",
+            path=Path("a.txt"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[{"text": "x"}],
+            needs_cleanup=True,
+        )
+
+        pipeline._flush_writes([result], {"a.txt": None}, {}, {}, {}, set(), 12345)
+
+        store = get_services().store
+        assert store.write_chunks_batch.call_args.kwargs["rowid_ceiling"] == 12345
+
+    def test_flush_writes_defaults_to_no_ceiling(self, _mock_extract_file):
+        # The ordinary single-writer path must not suddenly spare old rows.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        result = _IngestResult(
+            name="a.txt",
+            path=Path("a.txt"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[{"text": "x"}],
+            needs_cleanup=True,
+        )
+
+        pipeline._flush_writes([result], {"a.txt": None}, {}, {}, {}, set())
+
+        store = get_services().store
+        assert store.write_chunks_batch.call_args.kwargs["rowid_ceiling"] is None
+
     def test_flush_writes_lock_timeout_twice_marks_flush_failed(
         self, _mock_extract_file, monkeypatch
     ):
@@ -850,7 +900,9 @@ class TestSyncCancellation:
         monkeypatch.setattr(
             pipeline_mod,
             "build_pool",
-            lambda n, cfg, inflight: order.append("pool") or RecordingPool(max_workers=2),
+            lambda n, cfg, inflight, chunks_uri: (
+                order.append("pool") or RecordingPool(max_workers=2)
+            ),
         )
         monkeypatch.setattr(
             workers,
@@ -878,6 +930,59 @@ class TestSyncCancellation:
         # Zero chunks is a skip, not an add: the worker produced no searchable text.
         assert set(skipped) == {"w1.txt", "w2.txt"}
         assert added == {}
+
+    async def test_worker_mode_with_pylance_wires_the_fragment_dataset_end_to_end(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """The parent prepares one chunks dataset: its URI flows to the pool and
+        its rowid ceiling to the flush, so worker-appended rows survive cleanup."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from lilbee.data.ingest import ingest_batch, workers
+        from lilbee.data.ingest import pipeline as pipeline_mod
+        from lilbee.data.ingest.types import FileToProcess
+        from lilbee.data.store import ChunksDataset
+
+        async def passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        captured: dict = {}
+        monkeypatch.setattr(pipeline_mod, "to_ingest_thread", passthrough)
+        monkeypatch.setattr(pipeline_mod, "fragments_available", lambda: True)
+        monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
+        monkeypatch.setattr(pipeline_mod, "warm_parent_engine", lambda: None)
+        mock_svc.store.ensure_chunks_dataset.return_value = ChunksDataset("/fake/chunks.lance", 999)
+
+        def fake_pool(n, cfg, inflight, chunks_uri):
+            captured["chunks_uri"] = chunks_uri
+            return ThreadPoolExecutor(max_workers=2)
+
+        monkeypatch.setattr(pipeline_mod, "build_pool", fake_pool)
+        monkeypatch.setattr(
+            workers,
+            "run_batch",
+            lambda batch: [
+                workers.WorkerOutcome(name=f.name, records=None, page_texts=[], chunks_written=1)
+                for f in batch
+            ],
+        )
+        real_collect = pipeline_mod._collect_results
+
+        async def spy_collect(pending, total, added, updated, failed, skipped, **kwargs):
+            captured["rowid_ceiling"] = kwargs["rowid_ceiling"]
+            await real_collect(pending, total, added, updated, failed, skipped, **kwargs)
+
+        monkeypatch.setattr(pipeline_mod, "_collect_results", spy_collect)
+
+        (isolated_env / "w1.txt").write_text("one")
+        files = [FileToProcess("w1.txt", isolated_env / "w1.txt", "text", "h1", True)]
+        added: dict[str, None] = {"w1.txt": None}
+
+        await ingest_batch(files, added, {}, {}, {}, quiet=True)
+
+        assert captured["chunks_uri"] == "/fake/chunks.lance"
+        assert captured["rowid_ceiling"] == 999
+        assert added == {"w1.txt": None}  # the fragment-mode outcome stays ingested
 
     async def test_cancel_during_ingest_batch(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
@@ -918,7 +1023,7 @@ class TestSyncCancellation:
         added: dict[str, None] = {}
         flushed: list[str] = []
 
-        def _record_flush(buffer, _added, _updated, _failed, _skipped, _flush_failed):
+        def _record_flush(buffer, _added, _updated, _failed, _skipped, _flush_failed, _ceiling):
             flushed.extend(r.name for r in buffer)
 
         # `done` is a set, so the order the loop sees the two completed futures is

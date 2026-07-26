@@ -193,6 +193,33 @@ class TestCollectFromWorker:
         assert error_reason(result.error) == "OSError: disk gone"
 
     @pytest.mark.asyncio
+    async def test_a_fragment_outcome_carries_the_written_count_without_vectors(self):
+        """In fragment mode the records stay in the worker; only their count travels."""
+        from lilbee.runtime.progress import EventType
+
+        events: list = []
+
+        class Dispatcher:
+            async def outcome_for(self, index):
+                return WorkerOutcome(name="a.txt", records=None, chunks_written=3)
+
+        result = await pipeline._collect_from_worker(
+            _entry(),
+            1,
+            Dispatcher(),
+            total_files=1,
+            pages_done=[0],
+            on_progress=lambda *a: events.append(a),
+            cancel=None,
+            fallback=mock.AsyncMock(),
+        )
+        assert result.error is None
+        assert result.chunk_count == 3
+        assert result.records == []  # nothing to flush; the worker already persisted
+        file_done = next(e[1] for e in events if e[0] is EventType.FILE_DONE)
+        assert file_done.chunks == 3
+
+    @pytest.mark.asyncio
     async def test_a_broken_pool_falls_back_to_in_process_ingest(self):
         """A worker OOM must not fail every remaining file in the sync."""
         calls = []
@@ -276,9 +303,10 @@ class TestDispatchPlan:
     def test_multiple_processes_build_a_pool_over_every_file(self, monkeypatch):
         built = {}
 
-        def fake_build_pool(processes, config, inflight):
+        def fake_build_pool(processes, config, inflight, chunks_uri):
             built["processes"] = processes
             built["inflight"] = inflight
+            built["chunks_uri"] = chunks_uri
             return mock.MagicMock()
 
         monkeypatch.setattr(pipeline, "build_pool", fake_build_pool)
@@ -291,6 +319,7 @@ class TestDispatchPlan:
             entries,
             4,
             in_process,
+            chunks_uri="/data/chunks.lance",
             pages_done=[0],
             on_progress=lambda *a, **k: None,
             cancel=None,
@@ -298,6 +327,7 @@ class TestDispatchPlan:
         assert pool is not None
         assert built["processes"] == 4
         assert built["inflight"] > 0  # admission is passed through, not defaulted
+        assert built["chunks_uri"] == "/data/chunks.lance"  # fragment mode reaches the pool
         coros = list(pending)
         assert len(coros) == len(entries)
         for coro in coros:
@@ -356,6 +386,144 @@ class TestRunBatch:
         assert workers.run_batch([]) == []
 
 
+class TestProduceBatchFragmentMode:
+    """With a chunks dataset bound, the worker commits its own fragment per batch
+    and ships no vectors back across IPC."""
+
+    @staticmethod
+    def _patch_fragment_mode(monkeypatch, failing: set[str] | None = None, append_error=None):
+        TestRunBatch._patch_producers(monkeypatch, failing)
+        calls: dict = {}
+
+        def fake_append(uri, records, schema):
+            calls["uri"] = uri
+            calls["records"] = records
+            calls["schema"] = schema
+            if append_error is not None:
+                raise append_error
+            return len(records)
+
+        async def passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(workers, "append_chunk_fragment", fake_append)
+        monkeypatch.setattr(workers, "to_ingest_thread", passthrough)
+        monkeypatch.setattr(workers._bindings, "chunks_uri", "/fake/chunks.lance")
+        return calls
+
+    def test_one_fragment_per_batch_and_no_vectors_cross_back(self, monkeypatch):
+        calls = self._patch_fragment_mode(monkeypatch)
+
+        outcomes = workers.run_batch([_entry(f"{i}.txt") for i in range(3)])
+
+        assert calls["uri"] == "/fake/chunks.lance"
+        assert calls["records"] == [{"chunk": f"{i}.txt"} for i in range(3)]
+        # The Arrow table is built against the live embedding dim, not a constant.
+        assert calls["schema"].field("vector").type.list_size > 0
+        for i, outcome in enumerate(outcomes):
+            assert outcome.error is None
+            assert outcome.records is None  # vectors stay off the IPC channel
+            assert outcome.chunks_written == 1
+            # Side-table rows still travel: the parent writes those.
+            assert outcome.entity_rows == [{"entity": f"{i}.txt"}]
+
+    def test_a_failed_file_contributes_no_records_and_keeps_its_error(self, monkeypatch):
+        calls = self._patch_fragment_mode(monkeypatch, failing={"1.txt"})
+
+        outcomes = workers.run_batch([_entry(f"{i}.txt") for i in range(3)])
+
+        assert calls["records"] == [{"chunk": "0.txt"}, {"chunk": "2.txt"}]
+        assert error_reason(outcomes[1].error) == "OSError: disk gone"
+        assert outcomes[1].chunks_written is None  # not a fragment-mode outcome
+        assert outcomes[0].chunks_written == 1 and outcomes[2].chunks_written == 1
+
+    def test_an_append_failure_fails_every_produced_file(self, monkeypatch):
+        """All-or-nothing per batch, matching the parent flush's semantics."""
+        self._patch_fragment_mode(
+            monkeypatch, failing={"1.txt"}, append_error=OSError("read-only fs")
+        )
+
+        outcomes = workers.run_batch([_entry(f"{i}.txt") for i in range(3)])
+
+        assert error_reason(outcomes[0].error) == "OSError: read-only fs"
+        assert error_reason(outcomes[2].error) == "OSError: read-only fs"
+        assert outcomes[0].chunks_written == 0 and outcomes[0].records is None
+        # The file that failed before the append keeps its own reason.
+        assert error_reason(outcomes[1].error) == "OSError: disk gone"
+
+    def test_no_successful_records_means_no_commit(self, monkeypatch):
+        calls = self._patch_fragment_mode(monkeypatch, failing={"0.txt", "1.txt"})
+
+        outcomes = workers.run_batch([_entry(f"{i}.txt") for i in range(2)])
+
+        assert "uri" not in calls
+        assert all(o.error is not None for o in outcomes)
+
+    def test_parent_writes_mode_never_appends(self, monkeypatch):
+        TestRunBatch._patch_producers(monkeypatch)
+
+        def fake_append(uri, records, schema):  # pragma: no cover - must not run
+            raise AssertionError("parent-writes mode must not touch fragments")
+
+        monkeypatch.setattr(workers, "append_chunk_fragment", fake_append)
+        monkeypatch.setattr(workers._bindings, "chunks_uri", None)
+
+        outcomes = workers.run_batch([_entry("a.txt")])
+
+        assert outcomes[0].records == [{"chunk": "a.txt"}]
+        assert outcomes[0].chunks_written is None
+
+
+class TestPrepareFragmentWrites:
+    """Fragment mode is gated to bulk multiprocess runs with pylance installed."""
+
+    class _FakeStore:
+        """MagicMock cannot auto-mock a method named ``assert_*``."""
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def assert_embedding_compatible(self) -> None:
+            self.calls.append("gate")
+
+        def ensure_chunks_dataset(self) -> pipeline.ChunksDataset:
+            self.calls.append("ensure")
+            return pipeline.ChunksDataset("/d/chunks.lance", 7)
+
+    async def _prepare(self, monkeypatch, processes, available):
+        monkeypatch.setattr(pipeline, "fragments_available", lambda: available)
+
+        async def passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "to_ingest_thread", passthrough)
+        store = self._FakeStore()
+        monkeypatch.setattr(pipeline, "get_services", lambda: mock.MagicMock(store=store))
+        return await pipeline._prepare_fragment_writes(processes), store
+
+    @pytest.mark.asyncio
+    async def test_single_process_keeps_the_atomic_writer(self, monkeypatch):
+        result, store = await self._prepare(monkeypatch, 1, True)
+
+        assert result is None
+        assert store.calls == []
+
+    @pytest.mark.asyncio
+    async def test_without_pylance_keeps_parent_writes(self, monkeypatch):
+        result, store = await self._prepare(monkeypatch, 4, False)
+
+        assert result is None
+        assert store.calls == []
+
+    @pytest.mark.asyncio
+    async def test_multiprocess_with_pylance_prepares_the_dataset(self, monkeypatch):
+        result, store = await self._prepare(monkeypatch, 4, True)
+
+        assert result == pipeline.ChunksDataset("/d/chunks.lance", 7)
+        # The gate runs pre-spawn because worker commits bypass the per-flush gate.
+        assert store.calls == ["gate", "ensure"]
+
+
 class TestWorkerBootstrap:
     """What has to survive the process boundary before a worker can do anything."""
 
@@ -410,6 +578,24 @@ class TestWorkerBootstrap:
         finally:
             workers._bindings.close()
 
+    def test_init_worker_binds_the_chunks_dataset_for_fragment_writes(self, monkeypatch):
+        """A bound URI is what flips the worker from parent-writes to fragment mode."""
+        import contextlib
+
+        from lilbee.core.config import cfg
+
+        @contextlib.contextmanager
+        def fake_keep_warm():
+            yield
+
+        monkeypatch.setattr("lilbee.providers.fleet.ingest_warmth.keep_fleet_warm", fake_keep_warm)
+        workers.init_worker(cfg, 3, 12, "/data/chunks.lance")
+        try:
+            assert workers._bindings.chunks_uri == "/data/chunks.lance"
+        finally:
+            workers._bindings.close()
+        assert workers._bindings.chunks_uri is None
+
 
 class TestBuildPool:
     """Pool sizing is the guard against N workers oversubscribing the box."""
@@ -436,7 +622,8 @@ class TestBuildPool:
         # forked child would inherit held (see build_pool).
         assert captured["mp_context"].get_start_method() == "spawn"
         assert captured["initializer"] is workers.init_worker
-        assert captured["initargs"] == (mock.sentinel.config, 4, 16)  # cpu 16//4, inflight 64//4
+        # cpu 16//4, inflight 64//4, no fragment dataset
+        assert captured["initargs"] == (mock.sentinel.config, 4, 16, None)
 
     def test_the_share_never_rounds_down_to_zero(self, monkeypatch):
         """More workers than cores must still leave each worker a usable budget."""
@@ -444,7 +631,15 @@ class TestBuildPool:
 
         workers.build_pool(8, mock.sentinel.config, 4)
 
-        assert captured["initargs"] == (mock.sentinel.config, 1, 1)
+        assert captured["initargs"] == (mock.sentinel.config, 1, 1, None)
+
+    def test_a_chunks_dataset_uri_is_handed_to_every_worker(self, monkeypatch):
+        """Fragment mode: the parent's dataset URI must survive into init_worker."""
+        captured = self._capture(monkeypatch, quota=16)
+
+        workers.build_pool(4, mock.sentinel.config, 64, "/data/chunks.lance")
+
+        assert captured["initargs"] == (mock.sentinel.config, 4, 16, "/data/chunks.lance")
 
 
 class TestAdmissionFor:
@@ -482,7 +677,7 @@ class TestInflightIsNotTheCpuBudget:
         # A thin CPU budget must not drag the in-flight budget down with it.
         workers.build_pool(8, mock.sentinel.config, 64)
 
-        _config, cpu_share, inflight_share = captured["initargs"]
+        _config, cpu_share, inflight_share, _chunks_uri = captured["initargs"]
         assert cpu_share == 2  # 16 // 8, cores are shared
         # Divided, so the aggregate targets the fleet's admission ceiling: a sweep
         # on 2xA40 measured 155.6 docs/sec at 32 in flight and 147.6 at 128, so

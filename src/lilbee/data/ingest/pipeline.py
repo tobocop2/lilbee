@@ -36,6 +36,7 @@ from lilbee.data.ingest.adaptive import (
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
+from lilbee.data.ingest.fragment_writer import fragments_available
 from lilbee.data.ingest.offload import embed_inflight_target, max_workers, to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
@@ -60,6 +61,7 @@ from lilbee.data.ingest.workers import (
 )
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
+    ChunksDataset,
     ChunkWrite,
     ConceptRecords,
     PageTextRecord,
@@ -891,13 +893,15 @@ async def _collect_from_worker(
         pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
         return _IngestResult(name, entry.path, 0, error=outcome.error)
     records = outcome.records or []
+    # Fragment mode strips records after the worker commits them; the count still travels.
+    chunk_count = outcome.chunks_written if outcome.chunks_written is not None else len(records)
     page_texts = outcome.page_texts or []
-    on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="ok", chunks=len(records)))
+    on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="ok", chunks=chunk_count))
     pages_done[0] += max(1, len(page_texts))
     return _IngestResult(
         name,
         entry.path,
-        len(records),
+        chunk_count,
         error=None,
         file_hash=entry.file_hash,
         records=records,
@@ -924,11 +928,27 @@ async def _warm_engine_for_workers(processes: int) -> None:
         await to_ingest_thread(warm_parent_engine)
 
 
+async def _prepare_fragment_writes(processes: int) -> ChunksDataset | None:
+    """The shared chunks dataset workers append fragments to; None keeps parent-writes.
+
+    Only bulk multiprocess runs qualify (one process keeps the atomic
+    single-writer path) and only when pylance is installed (the bulk-ingest
+    extra; servers). The embedding gate runs up front because a worker's
+    fragment commit bypasses the per-flush gate in ``write_chunks_batch``.
+    """
+    if processes <= 1 or not fragments_available():
+        return None
+    store = get_services().store
+    await to_ingest_thread(store.assert_embedding_compatible)
+    return await to_ingest_thread(store.ensure_chunks_dataset)
+
+
 def _dispatch_plan(
     files_to_process: list[FileToProcess],
     processes: int,
     in_process: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
     *,
+    chunks_uri: str | None = None,
     pages_done: list[int],
     on_progress: DetailedProgressCallback,
     cancel: threading.Event | None,
@@ -937,7 +957,7 @@ def _dispatch_plan(
     total_files = len(files_to_process)
     if processes <= 1:
         return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
-    pool = build_pool(processes, active_config(), _max_concurrent())
+    pool = build_pool(processes, active_config(), _max_concurrent(), chunks_uri)
     log.warning("Ingesting %d files across %d worker processes", total_files, processes)
     dispatcher = BatchDispatcher(pool, files_to_process)
     return pool, (
@@ -979,6 +999,7 @@ async def ingest_batch(
     pages_done = [0]
     total_files = len(files_to_process)
     processes = resolve_process_count(total_files)
+    fragment = await _prepare_fragment_writes(processes)
     admission, window, controller_task = _admission_for(processes, pages_done)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
@@ -1060,10 +1081,12 @@ async def ingest_batch(
         files_to_process,
         processes,
         _process_one,
+        chunks_uri=fragment.uri if fragment is not None else None,
         pages_done=pages_done,
         on_progress=on_progress,
         cancel=cancel,
     )
+    rowid_ceiling = fragment.rowid_ceiling if fragment is not None else None
     try:
         if quiet:
             await _collect_results(
@@ -1077,6 +1100,7 @@ async def ingest_batch(
                 on_progress=on_progress,
                 flush_failed=flush_failed,
                 reasons=reasons,
+                rowid_ceiling=rowid_ceiling,
             )
         else:
             with Progress(
@@ -1107,6 +1131,7 @@ async def ingest_batch(
                     ptask=ptask,
                     flush_failed=flush_failed,
                     reasons=reasons,
+                    rowid_ceiling=rowid_ceiling,
                 )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
@@ -1154,6 +1179,7 @@ async def _collect_results(
     ptask: Any = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
+    rowid_ceiling: int | None = None,
 ) -> None:
     """Run *pending* through a bounded task window, batching writes and progress.
 
@@ -1202,6 +1228,7 @@ async def _collect_results(
                         failed,
                         skipped,
                         flush_failed,
+                        rowid_ceiling,
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
                     # Zero-text result is never buffered; collect it for the
@@ -1220,7 +1247,7 @@ async def _collect_results(
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
             await to_ingest_thread(
-                _flush_writes, buffer, added, updated, failed, skipped, flush_failed
+                _flush_writes, buffer, added, updated, failed, skipped, flush_failed, rowid_ceiling
             )
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
@@ -1249,13 +1276,16 @@ async def _buffer_and_maybe_flush(
     failed: dict[str, None],
     skipped: dict[str, None],
     flush_failed: set[str] | None,
+    rowid_ceiling: int | None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
     buffer.append(result)
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await to_ingest_thread(_flush_writes, buffer, added, updated, failed, skipped, flush_failed)
+        await to_ingest_thread(
+            _flush_writes, buffer, added, updated, failed, skipped, flush_failed, rowid_ceiling
+        )
         buffered_chunks = 0
     return buffered_chunks
 
@@ -1346,7 +1376,7 @@ def _retry_after_lock_timeout(write: Callable[[], object]) -> None:
         write()
 
 
-def _flush_batch(buffer: list[_IngestResult]) -> None:
+def _flush_batch(buffer: list[_IngestResult], rowid_ceiling: int | None = None) -> None:
     """Persist one flush unit in a single locked ``write_chunks_batch`` transaction.
 
     Page texts travel inside each :class:`ChunkWrite` so the store writes them
@@ -1367,7 +1397,9 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         )
         for r in buffer
     ]
-    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
+    _retry_after_lock_timeout(
+        lambda: store.write_chunks_batch(items, rowid_ceiling=rowid_ceiling)
+    )
     _flush_concept_records(buffer)
     _flush_entity_rows(buffer)
 
@@ -1426,6 +1458,7 @@ def _flush_writes(
     failed: dict[str, None],
     skipped: dict[str, None],
     flush_failed: set[str] | None = None,
+    rowid_ceiling: int | None = None,
 ) -> None:
     """Flush the buffered documents to the store; track a write failure.
 
@@ -1439,7 +1472,7 @@ def _flush_writes(
     if not buffer:
         return
     try:
-        _flush_batch(buffer)
+        _flush_batch(buffer, rowid_ceiling)
     except Exception as exc:
         for r in buffer:
             log.warning("Failed to write %s: %s", r.name, exc)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .core import Store
+from .core import ChunksDataset, Store, chunks_schema
 from .lance_helpers import (
     agent_recall_predicate,
     ensure_table,
@@ -43,6 +43,7 @@ __all__ = [
     "SOURCE_STAT_UNKNOWN",
     "ChunkType",
     "ChunkWrite",
+    "ChunksDataset",
     "CitationRecord",
     "ConceptRecords",
     "EmbeddingModelMismatchError",
@@ -60,6 +61,7 @@ __all__ = [
     "Store",
     "agent_owner",
     "agent_recall_predicate",
+    "chunks_schema",
     "cosine_sim",
     "ensure_table",
     "escape_sql_string",

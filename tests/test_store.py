@@ -474,6 +474,85 @@ class TestWriteChunksBatch:
         )
         assert len(store.get_chunks_by_source("a.md")) == 2
 
+    def test_cleanup_below_a_rowid_ceiling_spares_run_appended_rows(self, store):
+        """Bulk fragment ingest: workers append a re-ingested source's new chunks
+        before the parent's flush runs, so the cleanup delete must remove only the
+        rows written before the run started (below the ceiling), never the ones
+        this run appended (at or above it)."""
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 3))  # fragment 0: the pre-run rows
+        store.add_chunks(_records_for("keep.md", 2))  # fragment 1
+        ceiling = 2 << 32  # fragment ids 0 and 1 are below; anything appended next is above
+        store.add_chunks(_records_for("a.md", 5))  # fragment 2: the run's appended rows
+
+        store.write_chunks_batch(
+            [ChunkWrite("a.md", "hash_new", [], needs_cleanup=True)], rowid_ceiling=ceiling
+        )
+
+        # Only the 5 run-appended rows survive; the 3 pre-run rows are gone.
+        assert len(store.get_chunks_by_source("a.md")) == 5
+        assert len(store.get_chunks_by_source("keep.md")) == 2
+
+    def test_cleanup_without_a_ceiling_removes_every_matching_row(self, store):
+        """The default path stays total: no fragment ingest, no spared rows."""
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 3))
+        store.add_chunks(_records_for("a.md", 5))
+
+        store.write_chunks_batch([ChunkWrite("a.md", "hash_new", [], needs_cleanup=True)])
+
+        assert store.get_chunks_by_source("a.md") == []
+
+
+class TestEnsureChunksDataset:
+    """The fragment-ingest pre-spawn step: table and meta exist, ceiling captured."""
+
+    @staticmethod
+    def _fake_lance(monkeypatch, fragment_ids):
+        """Inject a fake ``lance`` exposing only what ensure_chunks_dataset reads."""
+        import sys
+        import types
+
+        fake = types.ModuleType("lance")
+        fake.dataset = lambda uri: types.SimpleNamespace(
+            get_fragments=lambda: [types.SimpleNamespace(fragment_id=i) for i in fragment_ids]
+        )
+        # lancedb's scannable registry looks the type up when a table opens.
+        fake.LanceDataset = type("LanceDataset", (), {})
+        monkeypatch.setitem(sys.modules, "lance", fake)
+
+    def test_fresh_store_gets_table_meta_and_a_zero_ceiling(self, store, test_config, monkeypatch):
+        self._fake_lance(monkeypatch, [])
+
+        dataset = store.ensure_chunks_dataset()
+
+        assert dataset.uri == str(test_config.lancedb_dir / "chunks.lance")
+        assert dataset.rowid_ceiling == 0
+        assert store.open_table("chunks") is not None
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_dim"] == test_config.embedding_dim
+
+    def test_idempotent_and_the_ceiling_covers_every_existing_fragment(self, store, monkeypatch):
+        self._fake_lance(monkeypatch, [0, 1])  # two fragments already committed
+
+        first = store.ensure_chunks_dataset()
+        second = store.ensure_chunks_dataset()
+
+        assert first == second
+        assert first.rowid_ceiling == 2 << 32
+
+    def test_existing_meta_is_not_rewritten(self, store, monkeypatch):
+        store.add_chunks(_make_records(1))  # first write pins the meta row
+        before = store.get_meta()
+        self._fake_lance(monkeypatch, [])
+
+        store.ensure_chunks_dataset()
+
+        assert store.get_meta() == before
+
     def test_empty_batch_is_noop(self, store):
         assert store.write_chunks_batch([]) == 0
         assert store.get_sources() == []

@@ -7,7 +7,7 @@ import math
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -141,6 +141,40 @@ _SOURCE_STAT_BATCH_ROWS = 2000
 # bounds the decoded-text working set while the scan stays columnar.
 _TERM_SCAN_BATCH_ROWS = 20_000
 
+# A lance rowid packs its fragment id into the high bits: (fragment_id << 32) | offset.
+_ROWID_FRAGMENT_SHIFT = 32
+
+
+class ChunksDataset(NamedTuple):
+    """The on-disk chunks dataset, and the rowid ceiling below which its rows predate now.
+
+    ``uri`` is the dataset path workers commit fragments to. ``rowid_ceiling``
+    is the first rowid no existing row reaches: appends made after the capture
+    land at or above it, so a cleanup delete bounded by it removes a source's
+    older rows without touching rows this run appended.
+    """
+
+    uri: str
+    rowid_ceiling: int
+
+
+def chunks_schema(embedding_dim: int) -> pa.Schema:
+    """The chunks table schema for *embedding_dim*-wide vectors."""
+    return pa.schema(
+        [
+            pa.field("source", pa.utf8()),
+            pa.field("content_type", pa.utf8()),
+            pa.field("chunk_type", pa.utf8()),
+            pa.field("page_start", pa.int32()),
+            pa.field("page_end", pa.int32()),
+            pa.field("line_start", pa.int32()),
+            pa.field("line_end", pa.int32()),
+            pa.field("chunk", pa.utf8()),
+            pa.field("chunk_index", pa.int32()),
+            pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
+        ]
+    )
+
 
 def _ann_nprobes(row_count: int) -> int:
     """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
@@ -211,20 +245,7 @@ class Store:
         return mapping
 
     def _chunks_schema(self) -> pa.Schema:
-        return pa.schema(
-            [
-                pa.field("source", pa.utf8()),
-                pa.field("content_type", pa.utf8()),
-                pa.field("chunk_type", pa.utf8()),
-                pa.field("page_start", pa.int32()),
-                pa.field("page_end", pa.int32()),
-                pa.field("line_start", pa.int32()),
-                pa.field("line_end", pa.int32()),
-                pa.field("chunk", pa.utf8()),
-                pa.field("chunk_index", pa.int32()),
-                pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
-            ]
-        )
+        return chunks_schema(self._config.embedding_dim)
 
     def get_meta(self) -> StoreMeta | None:
         """Return the persisted store metadata row, or ``None`` if unset."""
@@ -863,20 +884,29 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
-    def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
+    def _delete_by_sources_unlocked(
+        self, sources: list[str], *, rowid_ceiling: int | None = None
+    ) -> None:
         """Delete the sources' chunks, page texts, and chunk-concept rows.
 
         Caller must hold ``write_lock()``. One ``IN`` delete per table covers
         every source, so a batched flush pays a constant number of predicate
         deletes instead of one set per document. A delete failure propagates:
         swallowed, it would leave every flushed file silently stale; raised,
-        the flush fails and the files replan on the next sync.
+        the flush fails and the files replan on the next sync. With
+        *rowid_ceiling* the chunks-table delete spares rows at or above it
+        (appended by this run's workers); the side tables keep no such bound
+        because the parent writes their new rows after the delete.
         """
         quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
         for name, column in _PER_SOURCE_TABLES:
             table = self.open_table(name)
-            if table is not None:
-                table.delete(f"{column} IN ({quoted})")
+            if table is None:
+                continue
+            predicate = f"{column} IN ({quoted})"
+            if rowid_ceiling is not None and name == CHUNKS_TABLE:
+                predicate += f" AND _rowid < {rowid_ceiling}"
+            table.delete(predicate)
 
     def _delete_by_source_unlocked(self, source: str) -> None:
         """Delete a single source's chunks, page texts, and chunk-concept rows."""
@@ -1047,7 +1077,9 @@ class Store:
             except Exception:
                 log.debug("Sources table optimize failed", exc_info=True)
 
-    def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
+    def write_chunks_batch(
+        self, items: list[ChunkWrite], *, rowid_ceiling: int | None = None
+    ) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
 
         One ``write_lock`` acquisition covers the batch's cleanup deletes, page
@@ -1058,6 +1090,11 @@ class Store:
         texts and source row. The embedding-identity gate and per-vector
         dimension check mirror ``add_chunks``; a dimension mismatch raises and
         the whole batch is rejected.
+
+        With *rowid_ceiling* (bulk fragment ingest) the chunks-table cleanup
+        deletes only rows below it: workers commit this run's chunks as their
+        own fragments above the ceiling, so the cleanup removes a source's
+        pre-run rows without deleting the ones this run already appended.
         """
         if not items:
             return 0
@@ -1069,21 +1106,21 @@ class Store:
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
-            self._cleanup_batch_unlocked(items)
+            self._cleanup_batch_unlocked(items, rowid_ceiling=rowid_ceiling)
             self._add_page_texts_unlocked(db, items)
             self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
             self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
 
-    def ensure_chunks_dataset(self) -> str:
-        """Create the empty chunks table and meta up front; return its lance dataset URI.
+    def ensure_chunks_dataset(self) -> ChunksDataset:
+        """Create the chunks table and meta up front; return the dataset URI and rowid ceiling.
 
         The parent calls this before spawning ingest workers so a worker's first
         ``write_fragments`` has a dataset to append to. Idempotent: an existing
-        table and meta are left as they are. The return is the on-disk lance
-        dataset path, not a lancedb handle, because workers commit fragments
-        through pylance rather than the table ``add`` API.
+        table and meta are left as they are. The ceiling marks every row written
+        before this call as pre-run, so a later cleanup delete can remove a
+        source's old rows without touching rows workers append during the run.
         """
         with self._write_lock():
             db = self.get_db()
@@ -1093,13 +1130,22 @@ class Store:
                     embedding_model=self._config.embedding_model,
                     embedding_dim=self._config.embedding_dim,
                 )
-        return str(self._config.lancedb_dir / f"{CHUNKS_TABLE}.lance")
+            uri = str(self._config.lancedb_dir / f"{CHUNKS_TABLE}.lance")
+            # optional dep: the bulk-ingest extra; callers gate on fragments_available
+            import lance
 
-    def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
+            max_fragment = max(
+                (f.fragment_id for f in lance.dataset(uri).get_fragments()), default=-1
+            )
+        return ChunksDataset(uri, (max_fragment + 1) << _ROWID_FRAGMENT_SHIFT)
+
+    def _cleanup_batch_unlocked(
+        self, items: list[ChunkWrite], *, rowid_ceiling: int | None = None
+    ) -> None:
         """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
         cleanup_sources = [it.source for it in items if it.needs_cleanup]
         if cleanup_sources:
-            self._delete_by_sources_unlocked(cleanup_sources)
+            self._delete_by_sources_unlocked(cleanup_sources, rowid_ceiling=rowid_ceiling)
 
     def _add_page_texts_unlocked(self, db: lancedb.DBConnection, items: list[ChunkWrite]) -> None:
         """Add the batch's page-text rows. Caller holds ``write_lock()``."""

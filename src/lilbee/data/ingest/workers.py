@@ -9,9 +9,14 @@ concurrency: an 8-worker A/B that kept the total in flight unchanged measured
 1.00x with the GPUs still at 63%, so the process count alone buys nothing.
 
 Only per-file production (extract, chunk, embed) runs here. The parent keeps
-the plan, the single LanceDB writer, skip markers, move detection,
+the plan, skip markers, move detection, sources/side-table writes,
 reconciliation, progress and cancellation, so the one-index invariant holds by
-construction rather than by a merge step.
+construction rather than by a merge step. Chunk vectors are the exception:
+when pylance is installed the parent hands each worker the shared chunks
+dataset URI and the worker commits its batch's chunks as its own lance
+fragment (see :mod:`lilbee.data.ingest.fragment_writer`), so vectors never
+cross IPC and the Arrow build parallelises; without pylance the parent stays
+the single chunk writer.
 
 Workers never build an engine; they attach to the parent's (see
 ``SwapManager.bind``), because a second fleet would double-book the GPUs. That
@@ -30,9 +35,12 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from lilbee.core.config import active_config
+from lilbee.data.ingest.fragment_writer import append_chunk_fragment
+from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.store import chunks_schema
 from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
@@ -120,13 +128,19 @@ def resolve_process_count(file_count: int) -> int:
 
 @dataclass
 class WorkerOutcome:
-    """What a worker produced for one file; ``error`` set means it failed."""
+    """What a worker produced for one file; ``error`` set means it failed.
+
+    ``chunks_written`` is set when the worker committed the file's chunks to
+    the shared dataset itself (fragment mode): ``records`` is then ``None``
+    because the vectors never cross IPC.
+    """
 
     name: str
     records: list[ChunkRecord] | None = None
     page_texts: list[PageTextRecord] | None = None
     concept_records: ConceptRecords | None = None
     entity_rows: list[dict] | None = None
+    chunks_written: int | None = None
     error: WorkerIngestError | None = None
 
 
@@ -136,8 +150,9 @@ class _WorkerBindings:
     def __init__(self) -> None:
         self._stack: ExitStack | None = None
         self.inflight = 1
+        self.chunks_uri: str | None = None
 
-    def enter(self, config: Config, cpu_share: int, inflight: int) -> None:
+    def enter(self, config: Config, cpu_share: int, inflight: int, chunks_uri: str | None) -> None:
         """Bind *config* and this worker's budgets; replaces any previous binding."""
         from lilbee.core.config.context import config_scope
         from lilbee.providers.fleet.guest import bind_only_engine
@@ -155,10 +170,12 @@ class _WorkerBindings:
         # to the parent's engine, so its teardown drops the binding and stops nothing.
         stack.enter_context(keep_fleet_warm())
         self.inflight = max(1, inflight)
+        self.chunks_uri = chunks_uri
         self._stack = stack
 
     def close(self) -> None:
         """Release the bindings. Normally only tests call this; workers exit instead."""
+        self.chunks_uri = None
         if self._stack is not None:
             self._stack.close()
             self._stack = None
@@ -167,15 +184,17 @@ class _WorkerBindings:
 _bindings = _WorkerBindings()
 
 
-def init_worker(config: Config, cpu_share: int, inflight: int) -> None:
+def init_worker(config: Config, cpu_share: int, inflight: int, chunks_uri: str | None = None) -> None:
     """Bind the parent's config and this worker's budgets, once per process.
 
     Both are the box's budget divided by the worker count: *cpu_share* because
     cores are shared, *inflight* because the embed fleet is shared and has a knee
     past which more concurrent requests lower its throughput. What N processes buy
     is the CPU headroom to sustain that aggregate, not a larger aggregate.
+    *chunks_uri* is the shared chunks dataset the worker appends fragments to;
+    None keeps the parent as the single chunk writer.
     """
-    _bindings.enter(config, cpu_share, inflight)
+    _bindings.enter(config, cpu_share, inflight, chunks_uri)
 
 
 def run_batch(files: list[FileToProcess]) -> list[WorkerOutcome]:
@@ -195,7 +214,34 @@ async def _produce_batch(files: list[FileToProcess]) -> list[WorkerOutcome]:
         async with limit:
             return await _produce_one(entry)
 
-    return await asyncio.gather(*(one(entry) for entry in files))
+    outcomes = await asyncio.gather(*(one(entry) for entry in files))
+    if _bindings.chunks_uri is not None:
+        await _flush_fragment(_bindings.chunks_uri, outcomes)
+    return outcomes
+
+
+async def _flush_fragment(dataset_uri: str, outcomes: list[WorkerOutcome]) -> None:
+    """Append the batch's chunks as one lance fragment; strip them from the outcomes.
+
+    One commit per batch keeps the manifest small (per-file commits would be
+    millions on a corpus-scale run). The Arrow table build enforces the schema,
+    including the fixed vector width. A failure fails every produced file in
+    the batch, matching the parent flush's all-or-nothing semantics; rows a
+    lost commit race may have landed are pre-run rows to the next sync, whose
+    cleanup ceiling deletes them before the re-ingest appends again.
+    """
+    produced = [o for o in outcomes if o.error is None]
+    records = [record for o in produced for record in (o.records or [])]
+    if records:
+        schema = chunks_schema(active_config().embedding_dim)
+        try:
+            await to_ingest_thread(append_chunk_fragment, dataset_uri, cast("list[dict]", records), schema)
+        except Exception as exc:
+            for outcome in produced:
+                outcome.error = WorkerIngestError(error_reason(exc))
+    for outcome in produced:
+        outcome.chunks_written = len(outcome.records or []) if outcome.error is None else 0
+        outcome.records = None
 
 
 async def _produce_one(entry: FileToProcess) -> WorkerOutcome:
@@ -240,7 +286,9 @@ def warm_parent_engine() -> None:
     get_services().embedder.embed(_ENGINE_PROBE)
 
 
-def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExecutor:
+def build_pool(
+    processes: int, config: Config, inflight: int, chunks_uri: str | None = None
+) -> ProcessPoolExecutor:
     """A pool of *processes* workers bound to *config*, the CPU share, and *inflight*.
 
     Both budgets are divided, for different reasons. Cores are shared. In-flight
@@ -258,13 +306,16 @@ def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExec
     threads that would release them, so a child can deadlock on its first embed.
     A fresh interpreter per worker is the cost, which is part of why the pool is
     gated to plans big enough to amortise it.
+
+    *chunks_uri* is handed to each worker untouched: when set, workers commit
+    their batches as fragments of that dataset instead of returning vectors.
     """
     cpu_share = max(1, cpu_quota() // processes)
     return ProcessPoolExecutor(
         max_workers=processes,
         mp_context=multiprocessing.get_context("spawn"),
         initializer=init_worker,
-        initargs=(config, cpu_share, max(1, inflight // processes)),
+        initargs=(config, cpu_share, max(1, inflight // processes), chunks_uri),
     )
 
 
