@@ -81,4 +81,41 @@ for log in sorted(out.glob("*.log")):
 PY
 
 echo
+echo "=== 4. the planner's own decisions against these real devices ==="
+python3 - <<'PYINNER'
+import lilbee_engine
+from lilbee.providers.fleet.placement import _split_ratio_candidates, _tight_device_group
+from lilbee.providers.fleet.planning import (
+    apply_ctx_downshift, record_ctx_downshift, resolve_devices,
+)
+from lilbee.providers.fleet.swap_manager import _ephemeral_range, _pick_free_ports
+from lilbee.providers.roles import WorkerRole
+
+print("--- ports")
+rng = _ephemeral_range()
+print("  kernel ephemeral range :", rng)
+ports = _pick_free_ports(3)
+print("  picked                 :", ports)
+if rng:
+    ok = all(p < rng[0] for p in ports)
+    print("  verdict                :", "BELOW (cannot be auto-assigned)" if ok else "INSIDE THE RANGE")
+
+print("--- tensor-split ratio ladder against this box")
+devices = resolve_devices(lilbee_engine.get_llama_server_path())
+remaining = {d.index: float(d.free_bytes) for d in devices}
+print("  free per device        :", {k: round(v / 1024**3, 1) for k, v in remaining.items()})
+if len(remaining) >= 2:
+    idxs = sorted(remaining)
+    print("  candidates             :", _split_ratio_candidates(idxs, remaining))
+    print("  tight group for 1 TiB  :", _tight_device_group(1024**4, remaining))
+
+print("--- context downshift ladder")
+steps = 0
+while record_ctx_downshift(WorkerRole.CHAT) and steps < 20:
+    steps += 1
+    print("  step", steps, "-> ", apply_ctx_downshift(WorkerRole.CHAT, 32768))
+print("  terminates after", steps, "steps")
+PYINNER
+
+echo
 echo "=== done; artifacts in $OUT ==="

@@ -15,7 +15,10 @@ resources:
   # a spare pair will do, and pinning only narrows capacity.
 
 envs:
+  # The branch under test, and the branch these scripts live on. They are
+  # separate so the harness never has to ride along in the PR it verifies.
   LILBEE_REF: fix/ctx-slots-from-placed-device
+  HARNESS_REF: tools/gpu-verification-harness
   # A small model keeps the load fast; the buffer report is the same shape at
   # any size, and this runs once per case.
   MODEL_REPO: bartowski/SmolLM2-135M-Instruct-GGUF
@@ -51,12 +54,12 @@ setup: |
 
 run: |
   set -uo pipefail
-  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${LILBEE_REF}/tools/wf/verify_gpu_readback.sh" \
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${HARNESS_REF}/tools/wf/verify_gpu_readback.sh" \
       -o /workspace/verify.sh
   chmod +x /workspace/verify.sh
   PATH=/workspace/venv/bin:$PATH MODEL="$(cat /workspace/model-path)" \
       OUT=/workspace/verify-out /workspace/verify.sh
-  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${LILBEE_REF}/tools/wf/verify_driver_accounting.sh" \
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${HARNESS_REF}/tools/wf/verify_driver_accounting.sh" \
       -o /workspace/driver.sh
   chmod +x /workspace/driver.sh
   PATH=/workspace/venv/bin:$PATH MODEL="$(cat /workspace/model-path)" \
