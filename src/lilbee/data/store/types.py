@@ -91,7 +91,9 @@ class ChunkType(StrEnum):
 
 # ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
 # add or rename a meta column without forcing every store to drop_all.
-META_SCHEMA_VERSION = 1
+# 2: nomic-embed document prefixes are stamped at ingest (see
+# lilbee.retrieval.embedding_profiles doc_prefix_since).
+META_SCHEMA_VERSION = 2
 
 # Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
 # Lance's ``Table.delete`` requires a SQL where clause; this matches every row without

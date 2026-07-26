@@ -43,9 +43,11 @@ class TestEmbed:
         assert vec == [0.1] * 768
 
     def test_passes_truncated_text(self, embedder, mock_provider):
+        # The default model is nomic-embed, whose documents carry its
+        # required search_document: prefix.
         mock_provider.embed.return_value = [[0.0] * 768]
         embedder.embed("hello")
-        mock_provider.embed.assert_called_once_with(["hello"])
+        mock_provider.embed.assert_called_once_with(["search_document: hello"])
 
     def test_truncates_long_input(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768]
@@ -82,7 +84,9 @@ class TestEmbedBatch:
     def test_passes_list_as_input(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768, [0.0] * 768]
         embedder.embed_batch(["hello", "world"])
-        mock_provider.embed.assert_called_once_with(["hello", "world"])
+        mock_provider.embed.assert_called_once_with(
+            ["search_document: hello", "search_document: world"]
+        )
 
     def test_batches_large_input(self, embedder, mock_provider):
         """Texts exceeding the batch char budget split into multiple API calls."""
@@ -119,7 +123,7 @@ class TestEmbedBatch:
         embedder.embed_batch(texts)
         mock_provider.embed.assert_called_once()
         call_input = mock_provider.embed.call_args[0][0]
-        assert call_input[0] == "short"
+        assert call_input[0] == "search_document: short"
         assert len(call_input[1]) == embedder.embed_char_budget
 
 

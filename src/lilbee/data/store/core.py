@@ -27,6 +27,8 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
 
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
+
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _CHUNK_COLUMN,
@@ -230,6 +232,7 @@ class Store:
         self._config = config
         self._fts_ready: bool = False
         self._title_fts_ready: bool = False
+        self._doc_prefix_warned: bool = False
         # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
         # store builds them lazily from the search path.
         self._scalar_ready: bool = False
@@ -428,6 +431,26 @@ class Store:
             current_model=current_model,
             current_dim=current_dim,
         )
+
+    def _warn_stale_doc_prefix(self) -> None:
+        """Warn once when the embedding family's document prefix postdates this store.
+
+        Queries would carry the family prefix while stored documents do not;
+        the mismatch degrades quality silently until a rebuild re-embeds.
+        """
+        if self._doc_prefix_warned:
+            return
+        self._doc_prefix_warned = True
+        meta = self.get_meta()
+        if meta is None:
+            return
+        profile = resolve_embedding_profile(self._config.embedding_model)
+        if profile.doc_prefix and meta["schema_version"] < profile.doc_prefix_since:
+            log.warning(
+                "This index predates '%s' document prefixes: queries are prefixed "
+                "but stored documents are not. Run `lilbee rebuild` to re-embed.",
+                self._config.embedding_model,
+            )
 
     def assert_embedding_compatible(self) -> None:
         """Run the full embedding-identity gate (legacy init, canonicalize, check).
@@ -807,6 +830,7 @@ class Store:
         self.initialize_meta_if_legacy()
         self.canonicalize_meta_if_legacy()
         self._ensure_embedding_compat()
+        self._warn_stale_doc_prefix()
 
         if not self._scalar_ready:
             # A serve-only store never ran ingest, where scalar indexes are

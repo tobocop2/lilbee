@@ -505,6 +505,23 @@ class TestEnsureScalarIndexes:
         assert _has_scalar_index(table, "source")
         assert _has_scalar_index(table, "chunk_type")
 
+    def test_pre_prefix_store_warns_once_for_a_doc_prefix_family(self, store, test_config, caplog):
+        """A store built before its family's document prefixes existed warns
+        (once) to rebuild instead of silently mixing embedding spaces."""
+        import logging
+
+        test_config.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/n.gguf"
+        store.add_chunks(_make_records())
+        old_meta = {**store.get_meta(), "schema_version": 1}
+        with (
+            mock.patch.object(type(store), "get_meta", return_value=old_meta),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.search([0.5] * test_config.embedding_dim, top_k=1)
+            store.search([0.5] * test_config.embedding_dim, top_k=1)
+        warned = [r for r in caplog.records if "document prefixes" in r.message]
+        assert len(warned) == 1
+
     def test_search_survives_index_build_lock_contention(self, store, test_config):
         """Read-path index builds skip when the write lock is held elsewhere;
         the query serves (vector-only if need be) instead of raising."""
@@ -2051,7 +2068,9 @@ class TestEmbeddingModelGate:
         assert meta is not None
         assert meta["embedding_model"] == test_config.embedding_model
         assert meta["embedding_dim"] == test_config.embedding_dim
-        assert meta["schema_version"] == 1
+        from lilbee.data.store.types import META_SCHEMA_VERSION
+
+        assert meta["schema_version"] == META_SCHEMA_VERSION
         assert meta["updated_at"]
 
     def test_add_chunks_raises_when_model_drifts_same_dim(self, store, test_config):
