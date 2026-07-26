@@ -56,3 +56,8 @@ run: |
   chmod +x /workspace/verify.sh
   PATH=/workspace/venv/bin:$PATH MODEL="$(cat /workspace/model-path)" \
       OUT=/workspace/verify-out /workspace/verify.sh
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${LILBEE_REF}/tools/wf/verify_driver_accounting.sh" \
+      -o /workspace/driver.sh
+  chmod +x /workspace/driver.sh
+  PATH=/workspace/venv/bin:$PATH MODEL="$(cat /workspace/model-path)" \
+      OUT=/workspace/driver-out /workspace/driver.sh
