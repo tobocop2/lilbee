@@ -154,6 +154,26 @@ def _is_sibling_shard(name: str, match: re.Match[str]) -> bool:
     )
 
 
+def _embed_slots() -> int:
+    """Continuous-batching slots (``--parallel``) for the embed server.
+
+    One by default, because a pooled embed request batches its own sequences in a
+    single pass: a second slot buys nothing when each request already carries
+    many. Bulk ingest of single-chunk documents is the opposite shape -- one
+    ~100-token sequence per request -- and there every pass streams the whole
+    model to embed one passage. Measured on 8xA40 with an 8B Q8 embedder at
+    ``--parallel 1``: 143 docs/sec, ~18 per card, roughly 21% of the cards'
+    memory bandwidth while nvidia-smi reported 73% busy. Raising this lets
+    concurrent requests share one weight load.
+
+    Both the launch and the placement estimate read this, so the KV reserved
+    matches the slots the server actually opens.
+    """
+    from lilbee.core.config import cfg
+
+    return max(1, cfg.embed_slots) if cfg.embed_slots else _AUX_SLOTS
+
+
 def _slots_for(
     role: WorkerRole,
     model_path: Path,
@@ -188,6 +208,8 @@ def _slots_for(
         )
     if role is WorkerRole.RERANK and rerank_mode is RerankMode.LLM:
         return _resolve_llm_rerank_slots(model_path, ctx, unified_budget=unified_budget)
+    if role is WorkerRole.EMBED:
+        return _embed_slots()
     return _AUX_SLOTS
 
 
@@ -614,6 +636,8 @@ def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> 
         return max(1, cfg.vision_ocr_concurrency)
     if role is WorkerRole.RERANK and _rerank_mode_for(meta) is RerankMode.LLM:
         return LLM_RERANK_CONCURRENCY
+    if role is WorkerRole.EMBED:
+        return _embed_slots()
     return _AUX_SLOTS
 
 

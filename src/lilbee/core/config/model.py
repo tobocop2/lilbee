@@ -111,6 +111,11 @@ class Config(BaseSettings):
     # batch-starved (~96% util, low throughput). The engine still re-splits to
     # its physical batch, so raising this only helps up to the server's --batch.
     embed_batch_sequences: int = ConfigField(default=64, ge=1, writable=True)
+    # Continuous-batching slots (--parallel) on each embed server. 0 = the single
+    # slot a pooled request needs. Bulk ingest of one-chunk documents sends one
+    # short sequence per request instead, so every forward pass streams the whole
+    # model for one passage; more slots let concurrent requests share that load.
+    embed_slots: int = ConfigField(default=0, ge=0, writable=True)
     # Files allowed in their compute phase at once during ingest. 0 = auto: the
     # ceiling scales with the detected embed fleet (replicas x per-replica
     # in-flight) so a multi-GPU box is kept fed without a manual cap, falling back
