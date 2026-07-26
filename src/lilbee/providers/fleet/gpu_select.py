@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from functools import lru_cache
 
+from lilbee.core.config import cfg
 from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 from lilbee.providers.fleet.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
@@ -984,7 +985,6 @@ def disable_conflicting_vulkan_icds() -> str | None:
     Windows, XDG on Linux) and the device tree from the OS; enumerating via
     ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
-    from lilbee.core.config import cfg
 
     if not _platform_supports_icd_pin():
         return None

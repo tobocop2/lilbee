@@ -146,9 +146,27 @@ def test_saturated_and_falling_steps_back() -> None:
 
 def test_latency_gradient_vetoes_increase() -> None:
     # An established low baseline (w_min) plus an inflated current residence time
-    # (permits high, throughput low) vetoes the climb before throughput rolls over.
-    out = decide(CONSERVATIVE, _state(20, ewma=100, direction=1, w_min=0.1), _signals(10), MIN, MAX)
-    assert out.permits == 20  # held: w_est 20/73 ~ 0.27 > 0.1 * 1.5
+    # vetoes the climb before throughput rolls over: throughput is still rising
+    # here, so without the veto this tick would step up.
+    out = decide(
+        CONSERVATIVE, _state(60, ewma=100, direction=1, w_min=0.1), _signals(500), MIN, MAX
+    )
+    assert out.permits == 60  # held: w_est 60/220 ~ 0.27 > 0.1 * 1.5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("cpu_pct", 92.0), ("ram_free_frac", 0.15), ("gpu_temp_c", 82.0)],
+)
+def test_soft_pressure_still_allows_the_retreat(field: str, value: float) -> None:
+    """The veto is against climbing, not against backing off. Suppressing the
+    hill-climb's step down would leave the controller riding sustained soft
+    pressure past the knee until a critical threshold forced a 50% cut."""
+    out = decide(
+        CONSERVATIVE, _state(10, ewma=100, direction=1), _signals(0, **{field: value}), MIN, MAX
+    )
+    assert out.permits == 9
+    assert out.direction == -1
 
 
 def test_residence_baseline_is_tracked() -> None:

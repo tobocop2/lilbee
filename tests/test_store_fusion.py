@@ -3,7 +3,12 @@
 import pytest
 
 from lilbee.data.store import SearchChunk
-from lilbee.data.store.fusion import fuse_arms, normalized_bm25, vector_similarity
+from lilbee.data.store.fusion import (
+    adaptive_lexical_weight,
+    fuse_arms,
+    normalized_bm25,
+    vector_similarity,
+)
 
 
 def _chunk(source, idx, *, distance=None, bm25=None, dim=4):
@@ -99,6 +104,126 @@ class TestFuseArms:
         assert all(r.score is not None for r in fused)
 
 
+class TestWeightTotalNormalization:
+    """A constant reference denominator keeps scores comparable across the
+    separate sub-searches that Searcher merges. Without it, each sub-search
+    normalizes by its own per-query total_weight, so a peaked sub-search
+    (lexical silenced) inflates its rows against a flat one's."""
+
+    def test_weight_total_pins_the_denominator(self):
+        # Lexical silenced (weight 0): the vector-only top hit must still be
+        # scored against the supplied constant denominator, not 1.0.
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
+        )
+        assert fused[0].score == pytest.approx(0.5)
+
+    def test_cross_subsearch_scores_share_one_scale(self):
+        # Same identical-strength vector-only top hit, two sub-searches whose
+        # adaptive lexical weight differs: with one shared weight_total they land
+        # on the same score instead of 1.0 vs 0.5.
+        peaked = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
+        )
+        flat = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=1.0, weight_total=2.0
+        )
+        assert peaked[0].score == pytest.approx(flat[0].score)
+
+    def test_weight_total_preserves_within_call_order(self):
+        # A uniform denominator is a monotonic rescale, so the ranking inside one
+        # call is identical to the default per-call normalization.
+        vec = [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 1, distance=0.9)]
+        lex = [_chunk("far.md", 1, bm25=30.0)]
+        default = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0)]
+        pinned = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0, weight_total=2.0)]
+        assert default == pinned
+
+    def test_weight_total_defaults_to_per_call_when_absent(self):
+        # Direct callers that omit weight_total keep the original behavior.
+        no_arg = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
+        explicit = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)],
+            [_chunk("a.md", 0, bm25=9.0)],
+            weight_total=2.0,
+        )
+        assert no_arg[0].score == pytest.approx(explicit[0].score)
+
+
+class TestAdaptiveLexicalWeight:
+    """Per-query lexical weight gated by the vector arm's confidence."""
+
+    def test_peaked_dense_silences_lexical(self):
+        # top similarity 1.0 (distance 0), field ~0.3: a wide margin => weight ~0.
+        rows = [_chunk("a.md", 0, distance=0.0)] + [
+            _chunk("b.md", i, distance=0.7) for i in range(1, 5)
+        ]
+        assert adaptive_lexical_weight(rows, 1.0, 0.3) == pytest.approx(0.0)
+
+    def test_flat_dense_keeps_full_weight(self):
+        # every row equally similar: zero margin => the arm keeps base_weight.
+        rows = [_chunk("a.md", i, distance=0.5) for i in range(5)]
+        assert adaptive_lexical_weight(rows, 1.0, 0.3) == pytest.approx(1.0)
+
+    def test_scales_linearly_between(self):
+        # top sim 0.6, field 0.3, margin 0.3, scale 0.6 => confidence 0.5 => half.
+        rows = [_chunk("a.md", 0, distance=0.4)] + [
+            _chunk("b.md", i, distance=0.7) for i in range(1, 4)
+        ]
+        assert adaptive_lexical_weight(rows, 1.0, 0.6) == pytest.approx(0.5)
+
+    def test_respects_base_weight(self):
+        rows = [_chunk("a.md", i, distance=0.5) for i in range(3)]
+        assert adaptive_lexical_weight(rows, 0.5, 0.3) == pytest.approx(0.5)
+
+    def test_too_few_rows_returns_base(self):
+        assert adaptive_lexical_weight([_chunk("a.md", 0, distance=0.1)], 1.0, 0.3) == 1.0
+        assert adaptive_lexical_weight([], 1.0, 0.3) == 1.0
+
+    def test_non_positive_margin_scale_disables(self):
+        rows = [_chunk("a.md", 0, distance=0.0), _chunk("b.md", 1, distance=0.9)]
+        assert adaptive_lexical_weight(rows, 1.0, 0.0) == 1.0
+
+    def test_ignores_rows_without_distance(self):
+        # lexical-only rows carry no distance; they must not enter the signal.
+        rows = [
+            _chunk("a.md", 0, distance=0.0),
+            _chunk("b.md", 1, distance=0.6),
+            _chunk("c.md", 2, bm25=9.0),
+        ]
+        both = adaptive_lexical_weight(rows, 1.0, 0.4)
+        two = adaptive_lexical_weight(rows[:2], 1.0, 0.4)
+        assert both == pytest.approx(two)
+
+
+class TestLexicalFusionWeight:
+    """The BM25 arm's fusion weight can be lowered so a strong dense arm dominates."""
+
+    def _lex_row(self, weight: float):
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        return next(r for r in fuse_arms(vec, lex, lexical_weight=weight) if r.source == "cat.pdf")
+
+    def test_default_weight_gives_the_arms_equal_voice(self):
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        default = {r.source: r.score for r in fuse_arms(vec, lex)}
+        explicit = {r.source: r.score for r in fuse_arms(vec, lex, lexical_weight=1.0)}
+        assert default == explicit
+
+    def test_zero_weight_drops_the_lexical_only_arm(self):
+        """A fully-silenced lexical arm contributes no rows at all, so a
+        BM25-only hit never enters the pool carrying lexical provenance (and
+        with it the downstream distance/structural exemptions)."""
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        fused = fuse_arms(vec, lex, lexical_weight=0.0)
+        assert "cat.pdf" not in [r.source for r in fused]
+
+    def test_lower_weight_shrinks_the_lexical_contribution(self):
+        assert self._lex_row(0.5).score < self._lex_row(1.0).score
+
+
 class TestRegressionMechanism:
     """Synthetic reproduction of the graded-A/B regression shape: a lexical
     query whose relevant passages are mutually similar (they all quote the
@@ -186,3 +311,59 @@ class TestDropUnsupportedFarRows:
         far_supported = _chunk("identifier.md", 0, distance=1.4, bm25=25.0)
         kept = _drop_unsupported_far_rows([far_unsupported, far_supported], 0.75)
         assert [r.source for r in kept] == ["identifier.md"]
+
+
+class TestTitleArmFusion:
+    """The optional third arm: BM25 over document titles, weight-normalized."""
+
+    def test_top_of_all_three_arms_scores_one(self):
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)],
+            [_chunk("a.md", 0, bm25=12.0)],
+            [_chunk("a.md", 0, bm25=3.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].score == pytest.approx(1.0)
+
+    def test_title_only_row_scores_its_weight_share(self):
+        weight = 0.5
+        fused = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=weight)
+        assert fused[0].score == pytest.approx(weight / (2.0 + weight))
+
+    def test_empty_title_arm_matches_two_arm_scores(self):
+        """No title rows = the classic two-arm fusion, share-for-share."""
+        vector = [_chunk("a.md", 0, distance=0.3), _chunk("b.md", 0, distance=0.4)]
+        fts = [_chunk("a.md", 0, bm25=12.0)]
+        two_arm = fuse_arms(vector, fts)
+        with_empty_title = fuse_arms(vector, fts, [], title_weight=0.5)
+        assert [(r.source, r.score) for r in two_arm] == [
+            (r.source, r.score) for r in with_empty_title
+        ]
+
+    def test_title_match_counts_as_lexical_support(self):
+        """A row only the title arm matched carries bm25_score, so the
+        distance exemption sees lexical support."""
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=1.5)],
+            [],
+            [_chunk("a.md", 0, bm25=4.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].bm25_score == pytest.approx(4.0)
+        assert fused[0].distance == pytest.approx(1.5)
+
+    def test_chunk_arm_bm25_provenance_wins_over_title(self):
+        """When both lexical arms match a row, the first-seen bm25_score is kept."""
+        fused = fuse_arms(
+            [],
+            [_chunk("a.md", 0, bm25=12.0)],
+            [_chunk("a.md", 0, bm25=3.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].bm25_score == pytest.approx(12.0)
+
+    def test_title_weight_scales_contribution(self):
+        low = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=0.2)
+        high = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=1.0)
+        assert low[0].score < high[0].score
+        assert high[0].score == pytest.approx(1.0 / 3.0)

@@ -197,7 +197,7 @@ def test_merged_notes_over_the_cap_get_one_compression_pass() -> None:
     long_note = "note " * 300  # ~375 tokens, well over summary_cap(2048)
     provider = _provider(long_note)
     cfg.chat_n_ctx_target = 2048
-    plan = plan_compaction(_msgs(60), "", ctx_target=2048)
+    plan = plan_compaction(_msgs(60), ctx_target=2048)
     result = _searcher(provider).summarize_history(_msgs(60))
     assert provider.chat.call_count == len(plan.batches) + 1, "one merge pass on top of the batches"
     assert result.summary

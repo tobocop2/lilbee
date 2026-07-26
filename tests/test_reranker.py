@@ -190,6 +190,27 @@ class TestRerank:
         assert [c.chunk for c in out] == ["A", "B"]
         assert all(r.rerank_score is None for r in out)
 
+    @pytest.mark.parametrize("returned", [[0.9], [0.9, 0.5, 0.1], []])
+    def test_score_count_mismatch_skips_the_pass(self, reranker, returned, caplog):
+        """A provider returning the wrong number of scores is provider
+        misbehavior, which the pass is meant to contain: skip reranking and
+        keep the retrieval order rather than killing the whole turn."""
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
+        with _patch_provider(lambda query, cands: returned), caplog.at_level("WARNING"):
+            out = reranker.rerank("test", results)
+        assert [c.chunk for c in out] == ["A", "B"]
+        assert all(r.rerank_score is None for r in out)
+        assert any("score" in rec.message for rec in caplog.records)
+
+    def test_score_count_mismatch_skips_the_pass_without_blending(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_blend = False
+        results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
+        with _patch_provider(lambda query, cands: [0.9]):
+            out = reranker.rerank("test", results)
+        assert [c.chunk for c in out] == ["A", "B"]
+
     def test_stamps_rerank_score_on_candidates_only(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         results = [

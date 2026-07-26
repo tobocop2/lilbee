@@ -21,19 +21,20 @@ _CITE_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 # Ranges wider than this are page spans or line numbers, not citation lists.
 _MAX_CITE_RANGE = 32
 
-# A citation-block heading line: "Sources:"/"References:"/..., optionally
-# markdown-decorated (ATX hashes, emphasis around the word or the colon:
-# "**Sources:**", "*References:*", "**Sources**:").
+# A citation heading, optionally markdown-decorated (**Sources:**, *References:*,
+# **Sources**:), anchored to a newline or start-of-text so a block at position 0 is caught.
 _HEADING_WORDS = r"(?:(?:Key\s+)?Sources|References|Bibliography|Citations)"
-_HEADING_LINE = rf"\n{{1,3}}(?:#+\s*)?[*_]{{0,3}}{_HEADING_WORDS}[*_]{{0,3}}\s*:?\s*[*_]{{0,3}}"
+_HEADING_LINE = (
+    rf"(?:\n{{1,3}}|\A)(?:#+\s*)?[*_]{{0,3}}{_HEADING_WORDS}[*_]{{0,3}}\s*:?\s*[*_]{{0,3}}"
+)
 
-# An LLM-generated citation block: a heading line followed by a list (bullets,
-# arrows, "[1]" or "1." numbering). Requiring the list keeps an answer that
-# legitimately discusses such a heading in prose (e.g. "References:\n\nIt
-# lists 40 works.") from being clipped.
+_CITE_LIST_LINE = r"[ \t]*(?:[-*•→\[]|\d+[.)])[^\n]*"
+
+# Heading + list. Requiring the list spares prose that merely discusses such a heading;
+# ending at the last list line (not end-of-text) keeps any continuation after the block.
 _LLM_CITATION_BLOCK_RE = re.compile(
-    _HEADING_LINE + r"\n\s*(?:[-*•→\[]|\d+[.)]).*",
-    re.IGNORECASE | re.DOTALL,
+    _HEADING_LINE + r"\n\s*" + _CITE_LIST_LINE + r"(?:\n" + _CITE_LIST_LINE + r")*",
+    re.IGNORECASE,
 )
 
 # A citation-style heading at the very end of the text, nothing after it yet.
@@ -54,8 +55,10 @@ def display_source_path(source: str) -> str:
     user's filesystem and substitute ``~`` for the home directory so the path
     is unambiguous without being noisy.
 
-    Falls back to the raw source string if the file no longer exists on disk
-    (e.g. the user moved the documents directory since ingestion).
+    Falls back to the raw source string only if resolution itself fails (an
+    exotic OSError such as a symlink loop). A missing file is not a failure:
+    ``resolve(strict=False)`` still returns the absolute path to where the
+    file would be, so a moved documents directory renders its old location.
     """
     from lilbee.data.ingest.discovery import resolve_source_path
 
@@ -102,13 +105,8 @@ def _source_file_url(source: str) -> str | None:
 
 def _source_locator(result: SearchChunk) -> str:
     """The ``, page N`` / ``, lines A-B`` suffix for a source line, or ''."""
-    if result.content_type == "pdf" and (result.page_start or result.page_end):
-        ps, pe = result.page_start, result.page_end
-        return f", page {ps}" if ps == pe else f", pages {ps}-{pe}"
-    if result.content_type == "code" and (result.line_start or result.line_end):
-        ls, le = result.line_start, result.line_end
-        return f", line {ls}" if ls == le else f", lines {ls}-{le}"
-    return ""
+    location = _location_suffix(result)
+    return f", {location}" if location else ""
 
 
 def _format_citation(citation: CitationRecord) -> str:
@@ -126,11 +124,17 @@ def _format_citation(citation: CitationRecord) -> str:
 
 
 def _location_suffix(result: SearchChunk) -> str:
-    """The page or line span of a chunk, or empty when neither applies."""
-    if result.content_type == "pdf":
+    """The page or line span of a chunk, or empty when neither applies.
+
+    Zero means "no location": PDF chunks whose page metadata was missing are
+    stored with page 0, so a locator is only rendered when at least one end
+    of the span is set. Sole owner of the rule -- ``_source_locator`` adds
+    the leading separator and nothing else.
+    """
+    if result.content_type == "pdf" and (result.page_start or result.page_end):
         ps, pe = result.page_start, result.page_end
         return f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-    if result.content_type == "code":
+    if result.content_type == "code" and (result.line_start or result.line_end):
         ls, le = result.line_start, result.line_end
         return f"line {ls}" if ls == le else f"lines {ls}-{le}"
     return ""
@@ -265,9 +269,23 @@ def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
             continue
         name = Path(source.source).name.lower()
         stem = Path(source.source).stem
-        if name in lowered or (_identifier_shaped(stem) and stem.lower() in lowered):
+        if _mentions(lowered, name) or (
+            _identifier_shaped(stem) and _mentions(lowered, stem.lower())
+        ):
             picked.add(i)
     return [uniq[i] for i in sorted(picked)]
+
+
+def _mentions(answer_lower: str, needle: str) -> bool:
+    """Whether *answer_lower* names *needle* as a whole token.
+
+    Plain containment marks a source cited whenever its name embeds in a
+    longer one ("log-1" inside "catalog-10", "notes.md" inside
+    "footnotes.md"), which inflates the grounding signal. Filename
+    characters are what must not abut the match; surrounding punctuation
+    and whitespace still count as a mention.
+    """
+    return re.search(rf"(?<![\w.-]){re.escape(needle)}(?![\w-])", answer_lower) is not None
 
 
 def _stream_safe_prefix(text: str) -> str:

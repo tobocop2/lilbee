@@ -16,6 +16,7 @@ from lilbee.core.config.enums import (
     KvCacheType,
     LlmProvider,
     RerankerType,
+    TableModel,
     WikiEntityMode,
 )
 
@@ -184,6 +185,50 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
+    ),
+    "token_sizing": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Size chunks by real embedder tokens, not chars (changes invalidate the index)",
+    ),
+    "table_extraction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Index each extracted table as its own chunk (changes invalidate the index)",
+    ),
+    "layout_detection": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Layout-aware PDF extraction: reading order plus header/footer "
+            "stripping (changes invalidate the index)"
+        ),
+    ),
+    "table_model": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        choices=tuple(m.value for m in TableModel),
+        help_text=(
+            "Table structure model used when layout detection is on: slanet_auto "
+            "(docling-parity default), other slanet variants, tatr, or disabled "
+            "(changes invalidate the index)"
+        ),
+    ),
+    "batch_extraction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Coalesce concurrent extractions into one xberg batch call",
+    ),
+    "batch_extraction_size": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Max files per extract_batch call when batch extraction is on",
     ),
     "embedding_model": SettingDef(
         str,
@@ -824,6 +869,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
+    "ocr_language": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu",
+    ),
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,
@@ -902,6 +953,42 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
+    "title_search": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Match queries against document titles as a third hybrid-search arm",
+    ),
+    "title_search_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
+    ),
+    "lexical_fusion_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="BM25 arm weight in fusion (1.0 = equal to vector; lower to favor dense)",
+    ),
+    "adaptive_fusion": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Scale the BM25 weight per query by vector-arm confidence, not a fixed value",
+    ),
+    "adaptive_fusion_margin": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Vector-similarity margin at which adaptive fusion fully silences the BM25 arm",
+    ),
+    "filter_structural_chunks": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Drop tables-of-contents and classification-banner cover pages from results",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,
@@ -947,6 +1034,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum unique sources contributing chunks to a single answer",
+    ),
+    "neighbor_expansion": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Adjacent chunks merged into each retrieved passage per side (0 = off)",
     ),
     "diversity_max_per_source": SettingDef(
         int,

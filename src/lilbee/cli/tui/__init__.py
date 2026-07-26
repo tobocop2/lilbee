@@ -45,14 +45,14 @@ def _redirect_native_stderr_to(log_path: Path) -> _StderrRedirect | None:
     Textual's Linux/macOS driver writes its alternate-screen ANSI to
     ``sys.__stderr__`` (see
     ``textual.drivers.linux_driver.LinuxDriver.write``). Native deps
-    like kreuzberg's vendored tesseract write directly to fd 2 and leak
+    like xberg's vendored tesseract write directly to fd 2 and leak
     onto the same buffer, e.g. "Detected N diacritics", which corrupts
     the TUI.
 
     Strategy: dup the original fd 2 to a saved fd, repoint
     ``sys.__stderr__`` and ``sys.stderr`` at that saved fd so Textual
     keeps drawing to the real terminal, then dup2 fd 2 itself to the
-    log file so any fd-2 writer (kreuzberg, tesseract, poppler) lands
+    log file so any fd-2 writer (xberg, tesseract, poppler) lands
     in ``tui.log`` instead of on top of the screen.
     """
     try:

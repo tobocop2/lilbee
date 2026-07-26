@@ -6,14 +6,44 @@ import hashlib
 import logging
 import os
 import time
+from functools import cache
 from pathlib import Path
 
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.code_chunker import is_code_file
-from lilbee.data.ingest.types import DOCUMENT_EXTENSION_MAP
+from lilbee.data.ingest.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE
 
 log = logging.getLogger(__name__)
+
+_PDF_MIME = "application/pdf"
+
+
+def _content_type_for(ext: str, mime: str) -> str:
+    """content_type for a xberg format: PDFs and images grouped, others keyed by extension."""
+    if mime == _PDF_MIME:
+        return PDF_CONTENT_TYPE
+    if mime.startswith("image/"):
+        return IMAGE_CONTENT_TYPE
+    return ext.lstrip(".")
+
+
+@cache
+def supported_extension_map() -> dict[str, str]:
+    """Extension -> content_type for every format xberg can extract.
+
+    Built from ``xberg.list_supported_formats()`` so lilbee covers the full set
+    without a hand-maintained list. Source-code files are routed separately (their
+    extensions are absent here), so ``classify_file`` falls through to the code path.
+    """
+    from xberg import list_supported_formats
+
+    out: dict[str, str] = {}
+    for fmt in list_supported_formats():
+        ext = (fmt.extension if fmt.extension.startswith(".") else f".{fmt.extension}").lower()
+        out[ext] = _content_type_for(ext, fmt.mime_type)
+    return out
+
 
 # How often the discovery walk logs progress. The walk runs before the file count
 # is known (it is what produces the count), so it cannot show an ETA; it just
@@ -59,16 +89,17 @@ class _ScanProgress:
 
 def file_hash(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
     with open(path, "rb") as f:
-        for block in iter(lambda: f.read(8192), b""):
-            h.update(block)
-    return h.hexdigest()
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def classify_file(path: Path) -> str | None:
-    """Classify file by extension. Returns content_type or None if unsupported."""
-    doc_type = DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
+    """Classify a file by extension: a xberg content_type, "code", or None.
+
+    xberg-extractable formats win; source code (not in xberg's set) routes
+    to the code chunker; anything else is unsupported.
+    """
+    doc_type = supported_extension_map().get(path.suffix.lower())
     if doc_type is not None:
         return doc_type
     if is_code_file(path):

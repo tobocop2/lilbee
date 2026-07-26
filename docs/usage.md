@@ -876,10 +876,17 @@ something feels off.
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
+| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks. Documents indexed before this feature existed have no stored title; run `lilbee rebuild` to make them title-searchable |
+| `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
+| `LILBEE_LEXICAL_FUSION_WEIGHT` | `1.0` | BM25 arm weight in rank fusion (1.0 = equal to the vector arm; lower it when a strong embedder should dominate a corpus where the lexical arm adds noise) |
+| `LILBEE_ADAPTIVE_FUSION` | `true` | Scale the BM25 arm's weight per query by how confident the vector arm is (a peaked dense ranking downweights lexical, a flat one keeps it) instead of using a fixed `LILBEE_LEXICAL_FUSION_WEIGHT`. That weight becomes the ceiling the adaptive rule scales down from. Set to `false` to pin the fixed weight |
+| `LILBEE_ADAPTIVE_FUSION_MARGIN` | `0.15` | Vector-similarity margin (top hit minus the field) at which adaptive fusion fully silences the BM25 arm; smaller values downweight lexical more aggressively. `0` disables adaptation, leaving the lexical arm at its full fixed weight |
+| `LILBEE_FILTER_STRUCTURAL_CHUNKS` | `false` | Drop tables-of-contents and classification-banner cover/title pages from search results. Off by default: an evaluation A/B found the filter net-negative, since its cover-page heuristic (which fires only on classified-document banners) also caught short banner-carrying body pages. When on, a query-matched or top-ranked page is never dropped. Re-validate per corpus before turning it on |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
 | `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
 | `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
 | `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
@@ -899,6 +906,8 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
+| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction: text follows the detected reading order and running headers/footers are stripped |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
 | `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
@@ -1266,7 +1275,7 @@ chunk is more likely to contain the full section that matches rather than the
 first half of it plus unrelated setup.
 
 **Trade-off:** Enabling semantic chunking triggers a one-time download of
-kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder)
+xberg's ONNX embedding model (separate from the chunk-to-vector embedder)
 and runs roughly 9x more downstream embedding calls during indexing. Indexing
 takes longer; retrieval latency is unchanged.
 
@@ -1311,6 +1320,7 @@ vision model is configured, it takes precedence.
 | | Tesseract | Vision model |
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
+| **Languages** | 100+ via `LILBEE_OCR_LANGUAGE` (e.g. `eng+deu`) | Many scripts (model-dependent) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
@@ -1326,6 +1336,19 @@ when no vision model is configured. No flags needed.
 brew install tesseract          # macOS
 sudo apt install tesseract-ocr  # Ubuntu/Debian
 ```
+
+By default Tesseract reads English (`eng`). To OCR other languages, set the
+language codes; xberg downloads the Tesseract data on first use. Join multiple
+languages with `+` (Tesseract's own convention), for example `eng+deu` for
+English and German. The setting is the same value everywhere:
+
+```bash
+export LILBEE_OCR_LANGUAGE=eng+deu   # environment
+lilbee set ocr_language eng+deu      # CLI / persisted to config.toml
+```
+
+You can also set it in the `/settings` screen in the TUI, or over the HTTP and
+MCP settings APIs. Commas work in place of `+` if you prefer (`eng,deu`).
 
 ### Vision models
 

@@ -31,6 +31,7 @@ from .enums import (
     KvCacheType,
     LlmProvider,
     RerankerType,
+    TableModel,
     WikiEntityMode,
 )
 from .parsing import parse_bool
@@ -117,10 +118,11 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
-    # Abstention floor against the canonical [0, 1] relevance score
-    # (0.0 = no filtering). When every retrieved chunk falls below it, ask
-    # refuses instead of feeding noise as context. On the fused reciprocal-rank
-    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
+    # Abstention floor against the [0, 1] fused relevance score (0.0 = no
+    # filtering). When every retrieved chunk falls below it, ask refuses instead
+    # of feeding noise as context. The fused score normalizes against the
+    # configured weight budget (a constant), so an arm's top hit scores a stable
+    # share of it; useful floors start around 0.4. Tune against your own corpus.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
@@ -158,6 +160,10 @@ class Config(BaseSettings):
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
+    # Tesseract OCR language codes for the scanned-document fallback (used when no
+    # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
+    # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
+    ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
     # Opt-in typed entity extraction (an entities table for exact counting
     # and cross-referencing). Fully automatic: sync induces a schema from the
     # corpus and extracts across the index; new files extract at ingest. Off
@@ -166,6 +172,36 @@ class Config(BaseSettings):
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size chunk budgets (chunk_size/chunk_overlap) in real tokens from the
+    # embedder's own tokenizer via xberg's registered tokenizer backend, instead of
+    # the chars-per-token heuristic. Off by default: turning it on re-partitions
+    # chunks, so a library must be reindexed. Applies to the plain and heading
+    # chunkers; the semantic chunker sizes by characters and ignores it.
+    token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Index each extracted table as its own chunk: xberg recognizes table
+    # structure during extraction and the markdown serialization is embedded
+    # alongside the prose chunks, so tabular data is retrievable as a unit.
+    # Off by default: recognition costs extraction time, and toggling changes
+    # what gets indexed, so a library must be reindexed.
+    table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Layout-aware PDF extraction: xberg's layout detection orders page text
+    # by detected reading order (multi-column PDFs stop interleaving) and the
+    # running header/footer bands are stripped. Off by default: detection runs
+    # an extra model pass per page, and toggling changes extracted text, so a
+    # library must be reindexed.
+    layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Table structure recognition model, applied when layout detection is on.
+    # slanet_auto is the docling-parity default; toggling changes extracted
+    # tables, so a library must be reindexed.
+    table_model: TableModel = ConfigField(
+        default=TableModel.SLANET_AUTO, writable=True, reindex=True
+    )
+    # Coalesce concurrent extractions into one xberg extract_batch call. Off by
+    # default: the streaming pipeline already parallelizes extraction per file.
+    # Extraction output is unchanged, so no reindex. batch_extraction_size caps
+    # files per batch.
+    batch_extraction: bool = ConfigField(default=False, writable=True)
+    batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
@@ -224,6 +260,42 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 gives the two arms equal voice; lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
+    # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
+    # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
+    # lexical, a flat one keeps it). On by default. lexical_fusion_weight is the
+    # ceiling the rule scales down from. Set adaptive_fusion=false to pin the
+    # fixed weight.
+    adaptive_fusion: bool = ConfigField(default=True, writable=True)
+
+    # Vector-similarity margin at which the lexical arm is fully silenced; smaller
+    # = more aggressive downweighting. 0 disables adaptation entirely (the lexical
+    # arm keeps its full fixed weight).
+    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+
+    # Drop tables-of-contents and classification-banner cover/title pages from
+    # search results. OFF by default: an evaluation A/B on a government-document
+    # corpus found the filter net-negative, because its cover-page heuristic also
+    # fires on short banner-carrying body pages. When on, a query-matched or
+    # top-ranked page is never dropped (searcher.search), so removal is limited to
+    # structural chunks the query did not hit. Re-validate per corpus before use.
+    filter_structural_chunks: bool = ConfigField(default=False, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
@@ -272,6 +344,15 @@ class Config(BaseSettings):
 
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
+
+    # Adjacent chunks pulled from the same source on each side of every
+    # selected chunk and merged into one contiguous passage, so a hit that
+    # lands mid-argument regains the text before and after it. 0 disables.
+    # Capped: it is a small chunk radius (useful values are single digits), and
+    # the merged text is token-budget-bounded anyway, so a large value only
+    # inflates per-query fetch cost -- and a misread as a token count (e.g.
+    # 50000) would build a megabyte-long IN-predicate per source.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, le=100, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
@@ -801,6 +882,24 @@ class Config(BaseSettings):
                 return None
         return bool(v)
 
+    @field_validator("ocr_language", mode="before")
+    @classmethod
+    def _parse_ocr_language(cls, v: Any) -> list[str]:
+        """Accept a list or a ``+``/comma/newline-separated string; never empty.
+
+        Tesseract joins languages with ``+`` (e.g. ``eng+deu``), so that is the
+        canonical user-facing form. Commas are also accepted. Newlines are
+        accepted because ``app.settings`` joins list values with ``\\n`` when it
+        persists them to config.toml; without splitting on it a multi-language
+        value would reload as one malformed token. Blank input falls back to
+        English, since xberg errors on an empty list.
+        """
+        if isinstance(v, str):
+            v = v.replace("+", ",").replace("\n", ",").split(",")
+        items = v or []
+        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        return langs or ["eng"]
+
     @field_validator("flash_attention", mode="before")
     @classmethod
     def _parse_flash_attention(cls, v: Any) -> bool | None:
@@ -1014,11 +1113,20 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import (
+            canonical_data_root,
+            canonical_models_dir,
+            default_data_dir,
+            find_local_root,
+        )
 
         if not isinstance(data, dict):
             return data
 
+        # An empty LILBEE_DATA_ROOT (delivered as "") must fall through to default
+        # resolution like an unset one, not become Path(".") = the process cwd.
+        if isinstance(data.get("data_root"), str) and not data["data_root"].strip():
+            data["data_root"] = None
         if data.get("data_root") in (None, _UNSET_PATH):
             data_env = os.environ.get("LILBEE_DATA", "").strip()
             if data_env:
@@ -1026,7 +1134,11 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # Every child path below derives from this, and the server lock keys on
+        # those, so canonicalizing here is what makes one directory key one lock.
+        # Also coerces a raw string (LILBEE_DATA_ROOT) to Path.
+        root = canonical_data_root(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):
@@ -1047,15 +1159,19 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import default_data_dir, find_local_root
+        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-        data_env = os.environ.get("LILBEE_DATA", "")
+        # .strip() to match _resolve_defaults; a padded value would otherwise
+        # send the root and its config.toml to different directories.
+        data_env = os.environ.get("LILBEE_DATA", "").strip()
         if data_env:
             toml_dir = Path(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
-        toml_path = toml_dir / "config.toml"
+        # Same call as the root itself, so this looks where the root resolves to;
+        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+        toml_path = canonical_data_root(toml_dir) / "config.toml"
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]

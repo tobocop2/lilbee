@@ -183,9 +183,10 @@ def effective_reasoning_cap() -> int:
 
     A per-model ``ModelDefaults.max_reasoning_chars`` value (including
     ``0`` for "this model is allowed to think forever") beats the global
-    ``cfg.max_reasoning_chars`` setting. Only ``None`` falls through to
-    the global, so a per-model 0 means the user explicitly opted that
-    model out of the cap.
+    ``cfg.max_reasoning_chars`` setting. A missing (``None``) or negative
+    per-model value falls through to the global: ModelDefaults is an
+    unvalidated dataclass, so a negative is treated as "unset" rather than
+    trusted as a cap.
     """
     defaults = cfg.model_defaults
     override = defaults.max_reasoning_chars if defaults is not None else None
@@ -207,33 +208,56 @@ def stream_chat_with_cap(
     in the first pass. If reasoning exceeds *cap_chars*, the upstream
     iterator is closed, a single ``CapNotice`` is yielded, and the
     continuation stream starts (same messages plus a user message asking
-    the model to answer directly). Continuation tokens stream as
-    ``StreamToken(is_reasoning=False)``.
+    the model to answer directly).
+
+    The continuation is parsed too: a chat template can force-open a
+    ``<think>`` block whatever the nudge asks, and that reasoning must not
+    reach the visible answer. Its cap is disabled (the cap already fired
+    once, and re-capping would cut the answer off), and every continuation
+    token is reported as final-answer text, matching the async HTTP path.
+
+    A run that reasoned but never produced final-answer text closes with
+    ``REASONING_EXHAUSTED_NOTICE``, so the CLI/TUI/library path ends with an
+    explanation rather than silence -- the same close the HTTP path makes.
     """
     cap_fired = False
+    reasoned = False
+    answered = False
 
     def _on_cap() -> None:
-        nonlocal cap_fired
+        nonlocal cap_fired, reasoned
         cap_fired = True
+        reasoned = True
+
+    def _on_reasoning(_chars: int) -> None:
+        nonlocal reasoned
+        reasoned = True
 
     first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
-    yield from filter_reasoning(
+    for token in filter_reasoning(
         _text_only(first_stream),
         show=show_reasoning,
         cap_chars=cap_chars,
         on_cap=_on_cap,
-    )
-    if not cap_fired:
-        return
-    yield CapNotice(cap_chars=cap_chars)
-    nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
-    second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
-    try:
-        for chunk in _text_only(second_stream):
-            if chunk:
-                yield StreamToken(content=chunk, is_reasoning=False)
-    finally:
-        _close_iterator(second_stream)
+        on_progress=_on_reasoning,
+    ):
+        answered = answered or not token.is_reasoning
+        yield token
+    if cap_fired:
+        yield CapNotice(cap_chars=cap_chars)
+        nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
+        second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
+        try:
+            for token in filter_reasoning(
+                _text_only(second_stream), show=show_reasoning, cap_chars=0
+            ):
+                if token.content:
+                    answered = True
+                    yield StreamToken(content=token.content, is_reasoning=False)
+        finally:
+            _close_iterator(second_stream)
+    if reasoned and not answered:
+        yield StreamToken(content=REASONING_EXHAUSTED_NOTICE, is_reasoning=False)
 
 
 def _text_only(stream: Iterator[Any]) -> Iterator[str]:

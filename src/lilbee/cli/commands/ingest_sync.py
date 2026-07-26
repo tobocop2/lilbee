@@ -417,6 +417,7 @@ def index(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     store = get_services().store
     store.ensure_fts_index()
+    store.ensure_scalar_indexes()
     built = store.ensure_vector_index(force=True)
     if cfg.json_mode:
         json_output({"command": "index", "vector_index": built})

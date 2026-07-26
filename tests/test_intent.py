@@ -125,6 +125,8 @@ class TestParseLlmAggregate:
             '{"kind": "distinct_type"}',
             '{"kind": "type_association", "noun": "flights"}',
             '{"kind": 3}',
+            '{"kind": ["term_mentions"], "term": "war"}',
+            '{"kind": {"name": "term_mentions"}, "term": "war"}',
             "",
         ],
     )
@@ -155,6 +157,20 @@ class TestMatchesReference:
     def test_filename_ref_matches_whole_name(self):
         assert matches_reference("survey_report.pdf", "survey_report.pdf")
         assert matches_reference("survey_report.pdf", "archive/survey_report.pdf")
+
+    def test_unicode_digit_ref_does_not_crash(self):
+        """str.isdigit() is True for Unicode No characters like the
+        superscript two, but int() rejects them. The reference pattern
+        matches \\w so such a ref is reachable; it must decline to match
+        rather than raise and kill the turn."""
+        assert not matches_reference("²", "report-2-final.pdf")
+        assert not matches_reference("2", "report-²-final.pdf")
+
+    def test_zero_padding_equivalence_survives_the_unicode_guard(self):
+        """The guard must not cost the zero-padded numeric matching it wraps."""
+        assert matches_reference("0482", "ARC-REC-482.pdf")
+        assert matches_reference("482", "ARC-REC-00482.pdf")
+        assert not matches_reference("482", "ARC-REC-483.pdf")
 
 
 class TestParseAggregate:

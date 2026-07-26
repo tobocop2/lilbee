@@ -263,3 +263,47 @@ class TestImportDataset:
         assert legacy == []  # none of the old per-op unlocked writes were used
         # The atomic write still landed the source as IMPORTED.
         assert store.get_sources()[0]["source_type"] == SourceType.IMPORTED
+
+    async def test_import_stamps_stem_title(self, services):
+        # A dataset exported before the metadata columns existed carries none, so
+        # the stem-derived title keeps imported chunks visible to the title arm.
+        store = services
+        await import_dataset(store, [_page("field_notes.pdf", 1, "page body")])
+        chunks = store.get_chunks_by_source("field_notes.pdf")
+        assert chunks and all(c.title == "field notes" for c in chunks)
+        assert store.get_sources()[0]["title"] == "field notes"
+
+    async def test_import_restores_extraction_metadata_from_the_dataset(self, services):
+        """A dataset carrying the metadata columns restores the real extracted
+        title/authors/created_at instead of downgrading to the filename stem."""
+        store = services
+        row = {
+            **_page("report_2021.pdf", 1, "page body"),
+            "title": "Annual Report",
+            "authors": "Ada, Grace",
+            "created_at": "2021-05-01",
+        }
+        await import_dataset(store, [row])
+        chunks = store.get_chunks_by_source("report_2021.pdf")
+        assert chunks and all(c.title == "Annual Report" for c in chunks)
+        source = store.get_sources()[0]
+        assert source["title"] == "Annual Report"
+        assert source["authors"] == "Ada, Grace"
+        assert source["created_at"] == "2021-05-01"
+
+    async def test_export_round_trips_the_metadata_back_out(self, services):
+        """The exported dataset carries each source's metadata on its page rows,
+        so an export/import cycle preserves it instead of losing it."""
+        store = services
+        row = {
+            **_page("report_2021.pdf", 1, "page body"),
+            "title": "Annual Report",
+            "authors": "Ada, Grace",
+            "created_at": "2021-05-01",
+        }
+        await import_dataset(store, [row])
+        exported = build_page_dataset(store).to_pylist()
+        assert exported
+        assert all(r["title"] == "Annual Report" for r in exported)
+        assert all(r["authors"] == "Ada, Grace" for r in exported)
+        assert all(r["created_at"] == "2021-05-01" for r in exported)

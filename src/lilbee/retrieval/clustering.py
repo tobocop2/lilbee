@@ -73,18 +73,27 @@ def _select_backend(config: Config, store: Store) -> SourceClusterer:
 
 
 class Clusterer:
-    """Wiki synthesis clusterer facade with backend selection."""
+    """Wiki synthesis clusterer facade with live backend selection.
+
+    The backend is selected on each access rather than pinned at
+    construction: the services container caches this facade for the process
+    lifetime, and a concept graph built later in the same process must be
+    picked up without a restart. Selection is cheap -- backend construction
+    just captures config and store, and availability is a config flag plus
+    a table-existence check.
+    """
 
     def __init__(self, config: Config, store: Store) -> None:
-        self._backend: SourceClusterer = _select_backend(config, store)
+        self._config = config
+        self._store = store
 
     @property
     def backend(self) -> SourceClusterer:
-        """Return the underlying backend (useful for tests and introspection)."""
-        return self._backend
+        """Select and return the backend for the store's current state."""
+        return _select_backend(self._config, self._store)
 
     def available(self) -> bool:
-        return self._backend.available()
+        return self.backend.available()
 
     def get_clusters(self, min_sources: int = 3) -> list[SourceCluster]:
-        return self._backend.get_clusters(min_sources=min_sources)
+        return self.backend.get_clusters(min_sources=min_sources)

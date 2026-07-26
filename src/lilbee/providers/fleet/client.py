@@ -1045,6 +1045,10 @@ class LlamaServerClient:
         _raise_for_status(resp)
         return str(resp.json()["content"])
 
+    def count_tokens(self, text: str) -> int:
+        """Exact token count from this server's tokenizer (embed/rerank servers)."""
+        return len(self._tokenize(text))
+
     @contextlib.contextmanager
     def _abortable(self, resp: httpx.Response) -> Generator[None]:
         """Expose *resp* to ``abort_streams`` for the duration of its read loop."""

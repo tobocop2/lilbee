@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -39,7 +38,26 @@ _EXTRACT_SYSTEM_PROMPT = (
 
 _EXTRACT_USER_TEMPLATE = "User said:\n{question}\n\nAssistant replied:\n{answer}"
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
+
+def _first_json_array(text: str) -> list | None:
+    """The first JSON array in *text*, or None.
+
+    ``raw_decode`` from each ``[`` lets the stdlib find where the array
+    actually ends. A greedy ``\\[.*\\]`` span runs to the LAST bracket in the
+    reply, so a conforming array followed by prose containing any ``]`` (a
+    footnote marker, a second fence) fails to parse and drops every memory.
+    """
+    decoder = json.JSONDecoder()
+    start = text.find("[")
+    while start >= 0:
+        try:
+            parsed, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            start = text.find("[", start + 1)
+            continue
+        # A value starting at "[" can only decode to a list.
+        return parsed if isinstance(parsed, list) else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -78,14 +96,8 @@ def parse_extraction(raw: str) -> list[ExtractedMemory]:
     code fence), keeps only objects with a usable-length ``text``, and decodes
     the kind. Any parse failure yields an empty list.
     """
-    match = _JSON_ARRAY_RE.search(raw)
-    if match is None:
-        return []
-    try:
-        # The regex captures a bracketed span, so a successful parse is always
-        # a list (a malformed span raises and is caught below).
-        items = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    items = _first_json_array(raw)
+    if items is None:
         return []
 
     memories: list[ExtractedMemory] = []
