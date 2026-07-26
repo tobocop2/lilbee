@@ -2428,7 +2428,7 @@ class TestImageOcr:
         records, meta = await ingest_document(f, "scan.png", "image")
         assert records  # chunks were produced from OCR
         assert mock_svc.provider.vision_ocr.called
-        assert meta.title == "scan"  # no EXIF title in the test png -> stem
+        assert meta.title == ""  # no EXIF title and a junk stem -> untitled
 
     async def test_image_metadata_failure_falls_back_to_the_stem_title(
         self, isolated_env, mock_svc
@@ -2501,7 +2501,7 @@ class TestImageOcr:
         # A skipped image contributes no text, so it must not pay for a metadata
         # extraction either: an image-heavy library would run one per file.
         mock_meta.assert_not_called()
-        assert meta.title == "scan"
+        assert meta.title == ""  # junk stem -> untitled
 
     async def test_vision_ocr_cache_key_includes_timeout(self, isolated_env, mock_svc, monkeypatch):
         """The vision OCR cache key carries the per-page timeout so raising it

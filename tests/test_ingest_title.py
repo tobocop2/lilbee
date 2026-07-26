@@ -94,3 +94,73 @@ class TestJunkStems:
 
     def test_extracted_title_bypasses_the_junk_guard(self):
         assert derive_title("IMG_1234.jpg", "Sunset over the harbor") == "Sunset over the harbor"
+
+
+class TestImageExifMeta:
+    """_image_meta reads EXIF directly; no kreuzberg (and no OCR pass) involved."""
+
+    def test_exif_title_and_artist_read_without_ocr(self, tmp_path):
+        from unittest import mock
+
+        from PIL import Image
+
+        from lilbee.data.ingest.extract import _image_meta
+
+        f = tmp_path / "IMG_1234.jpg"
+        im = Image.new("RGB", (4, 4))
+        exif = im.getexif()
+        exif[0x010E] = "Sunset over the harbor"
+        exif[0x013B] = "Ada"
+        im.save(f, exif=exif)
+        with mock.patch("kreuzberg.extract_file_sync") as kz:
+            meta = _image_meta(f, "IMG_1234.jpg")
+        kz.assert_not_called()
+        assert meta.title == "Sunset over the harbor"
+        assert meta.authors == "Ada"
+
+    def test_untagged_image_falls_back_to_stem_guarded(self, tmp_path):
+        from PIL import Image
+
+        from lilbee.data.ingest.extract import _image_meta
+
+        f = tmp_path / "IMG_1234.jpg"
+        Image.new("RGB", (4, 4)).save(f)
+        assert _image_meta(f, "IMG_1234.jpg").title == ""
+
+
+class TestMarkdownFrontmatter:
+    """YAML frontmatter feeds SourceMeta; the H1 search skips the fence and BOM."""
+
+    def test_frontmatter_title_authors_created(self):
+        from lilbee.data.ingest.extract import _frontmatter_meta, _split_frontmatter
+
+        text = (
+            "---\ntitle: Frankenstein Analysis\nauthors: [Mary, Percy]\n"
+            "created: 2024-01-01\n---\n# Other heading\nbody\n"
+        )
+        fields, body = _split_frontmatter(text)
+        meta = _frontmatter_meta(fields, "notes-2024.md", body)
+        assert meta.title == "Frankenstein Analysis"
+        assert meta.authors == "Mary, Percy"
+        assert meta.created_at == "2024-01-01"
+
+    def test_h1_found_past_frontmatter_and_bom(self):
+        from lilbee.data.ingest.extract import _frontmatter_meta, _split_frontmatter
+
+        text = "\ufeff---\ntags: [x]\n---\n\n# Real Title\nbody\n"
+        fields, body = _split_frontmatter(text)
+        assert _frontmatter_meta(fields, "note.md", body).title == "Real Title"
+
+    def test_no_frontmatter_passthrough(self):
+        from lilbee.data.ingest.extract import _split_frontmatter
+
+        fields, body = _split_frontmatter("# T\nbody")
+        assert fields == {}
+        assert body.startswith("# T")
+
+    def test_malformed_frontmatter_degrades_to_h1(self):
+        from lilbee.data.ingest.extract import _frontmatter_meta, _split_frontmatter
+
+        text = "---\n[not: valid: yaml\n---\n# Fallback\nbody\n"
+        fields, body = _split_frontmatter(text)
+        assert _frontmatter_meta(fields, "note.md", body).title == "Fallback"

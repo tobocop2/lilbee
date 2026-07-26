@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import re
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
 from PIL import Image, ImageSequence
 
 if TYPE_CHECKING:
@@ -508,19 +510,37 @@ async def _handle_scanned_pdf_fallback(
     return chunks
 
 
-def _image_meta(path: Path, source_name: str) -> SourceMeta:
-    """Extraction metadata (EXIF/XMP title, authors, date) for an image.
+# EXIF tags: ImageDescription, Artist, DateTime, XPTitle (UTF-16LE bytes).
+_EXIF_DESCRIPTION = 0x010E
+_EXIF_ARTIST = 0x013B
+_EXIF_DATETIME = 0x0132
+_EXIF_XP_TITLE = 0x9C9B
 
-    The OCR path never touches kreuzberg, so this is a separate metadata-only
-    read; any failure degrades to the stem-derived title.
+
+def _image_meta(path: Path, source_name: str) -> SourceMeta:
+    """EXIF title/author/date for an image, read directly with PIL.
+
+    kreuzberg's extract would run a full OCR pass just to reach the metadata
+    and yields no title on the pinned version; any failure here degrades to
+    the stem-derived title.
     """
     try:
-        from kreuzberg import extract_file_sync
-
-        result = extract_file_sync(str(path), config=extraction_config(ExtractMode.MARKDOWN))
-        return source_meta_from_extraction(result.metadata or {}, source_name)
+        with Image.open(path) as im:
+            exif = im.getexif()
+        title = exif.get(_EXIF_DESCRIPTION)
+        if not title:
+            xp = exif.get(_EXIF_XP_TITLE)
+            if xp:
+                title = bytes(xp).decode("utf-16-le", errors="ignore").rstrip("\x00")
+        artist = exif.get(_EXIF_ARTIST)
+        taken = exif.get(_EXIF_DATETIME)
+        return SourceMeta(
+            title=derive_title(source_name, title if isinstance(title, str) else None),
+            authors=str(artist).strip() if artist else "",
+            created_at=str(taken).strip() if taken else "",
+        )
     except Exception:
-        log.debug("Image metadata extraction failed for %s; using the stem title", source_name)
+        log.debug("Image metadata read failed for %s; using the stem title", source_name)
         return SourceMeta(title=derive_title(source_name))
 
 
@@ -644,6 +664,41 @@ async def ingest_document(
     return records, meta
 
 
+# YAML frontmatter fence at the start of a note (BOM tolerated).
+_FRONTMATTER_RE = re.compile(r"\A\ufeff?---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)", re.DOTALL)
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """(frontmatter mapping, body) for a note; ({}, text) when there is none."""
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text.lstrip("\ufeff")
+    try:
+        loaded = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        loaded = None
+    fields = loaded if isinstance(loaded, dict) else {}
+    return fields, text[match.end() :]
+
+
+def _frontmatter_meta(fields: dict, source_name: str, body: str) -> SourceMeta:
+    """SourceMeta from frontmatter fields, falling back to the body H1, then the stem."""
+    title = fields.get("title")
+    raw_authors = fields.get("authors") or fields.get("author")
+    if isinstance(raw_authors, (list, tuple)):
+        authors = ", ".join(str(a) for a in raw_authors if a)
+    else:
+        authors = str(raw_authors).strip() if raw_authors else ""
+    created = fields.get("created") or fields.get("created_at") or fields.get("date")
+    return SourceMeta(
+        title=derive_title(
+            source_name, title if isinstance(title, str) else _markdown_h1(body)
+        ),
+        authors=authors,
+        created_at=str(created).strip() if created else "",
+    )
+
+
 def _markdown_h1(text: str) -> str | None:
     """The document's leading ``# Heading``, the best title a note carries.
 
@@ -674,7 +729,8 @@ async def ingest_markdown(
     title is the note's leading ``# Heading`` when it has one, else the stem.
     """
     raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
-    meta = SourceMeta(title=derive_title(source_name, _markdown_h1(raw_text)))
+    fields, body = _split_frontmatter(raw_text)
+    meta = _frontmatter_meta(fields, source_name, body)
     if not raw_text.strip():
         return [], meta
 
