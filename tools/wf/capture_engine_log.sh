@@ -23,6 +23,14 @@ LILBEE_REF=${LILBEE_REF:-fix/ctx-slots-from-placed-device}
 VENV=${VENV:-/tmp/lilbee-capture-venv}
 mkdir -p "$OUT"
 
+# Both of these are missing from a minimal cloud image and both fail late and
+# confusingly: no libgomp is a dynamic linker error at first exec, no git is a
+# pip error after the model has already downloaded.
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -q >/dev/null 2>&1 || true
+    sudo apt-get install -y -q python3-venv libgomp1 git >/dev/null 2>&1 || true
+fi
+
 PY=$(for v in 3.13 3.12 3.11; do command -v "python$v" && break; done)
 [ -n "$PY" ] || { echo "need python 3.11+"; exit 1; }
 "$PY" -m venv "$VENV"
@@ -30,6 +38,16 @@ PY=$(for v in 3.13 3.12 3.11; do command -v "python$v" && break; done)
 "$VENV/bin/pip" install -q --pre lilbee-engine --extra-index-url "$ENGINE_INDEX"
 "$VENV/bin/pip" install -q huggingface_hub
 B=$("$VENV/bin/python" -c "import lilbee_engine;print(lilbee_engine.get_llama_server_path())")
+
+# The wheel declares manylinux_2_17 and actually needs a much newer glibc, so a
+# current-stable distro installs it and then cannot exec it. Say which it is
+# rather than leaving a linker error to be decoded.
+if ! "$B" --version >/dev/null 2>&1; then
+    echo "ENGINE WILL NOT RUN HERE"
+    "$B" --version 2>&1 | head -3
+    echo "host glibc: $(ldd --version 2>/dev/null | head -1)"
+    exit 1
+fi
 
 echo "=== engine ==="
 "$B" --version 2>&1 | head -2
