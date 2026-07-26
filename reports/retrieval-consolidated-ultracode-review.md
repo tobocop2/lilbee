@@ -57,3 +57,16 @@ Highest-value gaps, ranked by impact against effort under local-first constraint
 3. Decide posture on the reranker (offered small CPU model) and title-into-embedding, both gated on the PR #581 harness.
 4. Re-architect the two heuristic layers at ingest time when next touched: structural classification as persisted chunk metadata, neighbor windows stored at chunk time.
 5. Merge posture: nothing found regresses the default configuration vs main. After the routine main re-sync, the branch is safe to merge with the above tracked as follow-ups.
+
+## Resolution (same-day fix pass)
+
+Every confirmed finding above, plus the two pre-existing open bugs (the scalar-index latch and the banner cover-page false positive), was fixed on this branch in fifteen commits. The substance:
+
+- **Adaptive fusion** measures its margin over a fixed window of runners-up (depth-independent), never scales to exactly zero (BM25 provenance and the distance exemption survive), and fusion normalizes per call against the arms in play, which also fixed the min_relevance_score cap, the title-arm score deflation, and the cross-variant demotion the critic flagged. The fixed weight budget and its plumbing are gone.
+- **Title pipeline end to end**: escalating distinct-source fetch (no long-document starvation), EXIF read via PIL with no OCR pass, YAML frontmatter and BOM handling, a junk-stem guard, stem-title backfill for upgraded stores, runtime title_search enablement, and known-item routing by stored title.
+- **Neighbor expansion** dedups overlap through heading breadcrumbs, refuses coincidental short matches, caches seam scans (radius-100 worst case ~130ms), and respects the structural filter.
+- **Structural filter** requires ordered page numbers for TOCs, normalizes leader variants, counts banner lines instead of caps words, runs before the concept boost, and can no longer be re-imported by expansion.
+- **Concept/entity layer** clears stale graphs on degenerate rebuilds and isolates poisoned chunks instead of redoing full corpus extraction forever.
+- **New retrieval capability**, all wired through config, settings, and docs: nomic and bge v1.5 embedding prefixes (with a rebuild warning for pre-prefix stores), fts_language for non-English BM25, near-duplicate passage suppression, an absolute reranker score floor, title-aware reranker input, opt-in embed_titles, and opt-in contextual enrichment.
+
+Verification: make lint, format-check, and typecheck green; 1,631 tests across every touched file plus the adjacent API/server/memory suites pass; the full suite collects clean. The remaining open items are measurement runs on the PR #581 eval harness (feature-default decisions), not code work.
