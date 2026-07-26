@@ -241,7 +241,11 @@ class TestExcludedNeighbors:
         center = _chunk(index=2, text="looks excluded but is the original hit")
         rows = [_chunk(index=2, text="looks excluded but is the original hit")]
         out = expand_neighbors(
-            [center], _store_with(rows), radius=1, budget=1000, cost=_cost,
+            [center],
+            _store_with(rows),
+            radius=1,
+            budget=1000,
+            cost=_cost,
             exclude=lambda t: "excluded" in t,
         )
         assert out == [center]

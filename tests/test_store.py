@@ -2776,9 +2776,7 @@ class TestTitleSearch:
         rows = store.get_chunks_by_source("new.pdf")
         assert [r.title for r in rows] == ["fresh document"]
 
-    def test_title_search_enable_at_runtime_builds_index_on_next_query(
-        self, store, test_config
-    ):
+    def test_title_search_enable_at_runtime_builds_index_on_next_query(self, store, test_config):
         """Enabling title_search after _fts_ready latched builds the title
         index on the next query instead of no-opping until restart."""
         from lilbee.data.store.lance_helpers import _has_fts_index

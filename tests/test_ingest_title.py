@@ -182,9 +182,7 @@ class TestEmbedTitles:
 
         cfg.embed_titles = True
         try:
-            assert _embed_inputs(["chunk text"], "Annual Report") == [
-                "Annual Report\nchunk text"
-            ]
+            assert _embed_inputs(["chunk text"], "Annual Report") == ["Annual Report\nchunk text"]
             assert _embed_inputs(["chunk text"], "") == ["chunk text"]
         finally:
             cfg.embed_titles = False
@@ -230,9 +228,7 @@ class TestContextualEnrichment:
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
-        assert out == [
-            "This chunk covers the budget section of the annual report.\nchunk text"
-        ]
+        assert out == ["This chunk covers the budget section of the annual report.\nchunk text"]
 
     def test_failure_keeps_the_bare_chunk(self):
         from unittest.mock import patch

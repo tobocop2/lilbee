@@ -89,10 +89,7 @@ class TestLeaderVariants:
         assert is_structural_chunk(toc) is True
 
     def test_spaced_dot_leaders_are_a_toc(self):
-        toc = (
-            "Introduction . . . . 1\nMethods . . . . 4\n"
-            "Findings . . . . 9\nAppendix . . . . 12"
-        )
+        toc = "Introduction . . . . 1\nMethods . . . . 4\nFindings . . . . 9\nAppendix . . . . 12"
         assert is_structural_chunk(toc) is True
 
 

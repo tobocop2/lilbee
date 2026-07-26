@@ -942,19 +942,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Stemmer/stop-word language for the BM25 indexes (tantivy name; rebuild to apply)",
+        help_text="Stemmer/stop-word language for BM25 indexes (tantivy name; rebuild to apply)",
     ),
     "embed_titles": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Prefix document titles to chunk embeddings (rebuild to apply; stored text unchanged)",
+        help_text="Prefix document titles to chunk embeddings (rebuild to apply)",
     ),
     "contextual_enrichment": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="LLM-written context sentence per chunk embedding (slow ingest; rebuild to apply)",
+        help_text="LLM context sentence per chunk embedding (slow ingest; rebuild to apply)",
     ),
     "history_rewrite": SettingDef(
         bool,

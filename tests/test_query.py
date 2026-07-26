@@ -2187,9 +2187,7 @@ class TestKnownItemTitleRoute:
         }
 
     def _index(self, mock_svc, filenames, titles=None):
-        sources = [
-            self._source(f, (titles or {}).get(f)) for f in filenames
-        ]
+        sources = [self._source(f, (titles or {}).get(f)) for f in filenames]
 
         def get_sources(search=None, limit=None, offset=0):
             if not search:
@@ -3114,7 +3112,9 @@ class TestChunkTypeScope:
 
     def test_build_rag_context_default_is_mixed_pool(self, mock_svc):
         """No ``chunk_type`` arg means no filter. Both sides survive."""
-        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", chunk="wiki text")
+        wiki_chunk = _make_result(
+            source="wiki/summaries/doc.md", chunk_type="wiki", chunk="wiki text"
+        )
         raw_chunk = _make_result(source="doc.md", chunk_type="raw", chunk="raw text")
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
         result = get_services().searcher.build_rag_context("question")
