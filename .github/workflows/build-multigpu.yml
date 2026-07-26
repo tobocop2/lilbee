@@ -76,17 +76,51 @@ jobs:
         run: echo "LLAMA_BUILD_DIR=/c/lb" >> "$GITHUB_ENV"
 
       # Every engine source is tag-pinned in engine-versions.env, so the same
-      # key means byte-identical output. Caches saved from tag runs are not
-      # restorable by later runs, so warm-engine-cache.yml builds these on main;
-      # release runs (and the executable bundle steps, which share this key
-      # scheme) restore instead of rebuilding. On a hit the toolchain installs
-      # and the build are skipped wholesale.
+      # key means byte-identical output. On a hit the toolchain installs and the
+      # build are skipped wholesale.
+      - name: Resolve the engine key
+        id: engine-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+
+      # The mirror first, same as the executable builds. This job publishes to it
+      # but used to never read it, so every warm run rebuilt engines the mirror
+      # already carried: 88 min for a CUDA cell that a fetch resolves in seconds.
+      - name: Restore the engine from the release mirror
+        id: engine-mirror
+        shell: bash
+        run: |
+          set -uo pipefail
+          if bash tools/wheel-build/engine_mirror.sh fetch \
+            "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Restore the built engine
         id: engine-cache
+        if: steps.engine-mirror.outputs.restored != 'true'
         uses: actions/cache/restore@v4
         with:
           path: packaging/engine-wheel/lilbee_engine/bin
-          key: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+          key: ${{ steps.engine-key.outputs.key }}
+
+      - name: Decide whether the engine still needs building
+        id: engine
+        shell: bash
+        env:
+          MIRRORED: ${{ steps.engine-mirror.outputs.restored }}
+          CACHED: ${{ steps.engine-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "${MIRRORED}" = "true" ] || [ "${CACHED}" = "true" ]; then
+            echo "needs-build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs-build=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -97,12 +131,12 @@ jobs:
         run: pip install build wheel
 
       - name: Install CUDA Toolkit (Linux)
-        if: steps.engine-cache.outputs.cache-hit != 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
+        if: steps.engine.outputs.needs-build == 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install CUDA Toolkit (Windows)
-        if: steps.engine-cache.outputs.cache-hit != 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
+        if: steps.engine.outputs.needs-build == 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda }}
@@ -110,12 +144,12 @@ jobs:
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Install Vulkan loader (Linux)
-        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'vulkan' && runner.os == 'Linux'
+        if: steps.engine.outputs.needs-build == 'true' && matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install Vulkan SDK (Windows)
-        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'vulkan' && runner.os == 'Windows'
+        if: steps.engine.outputs.needs-build == 'true' && matrix.backend == 'vulkan' && runner.os == 'Windows'
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           install_runtime: true
@@ -123,37 +157,30 @@ jobs:
           stripdown: true
 
       - name: Install ROCm (Linux)
-        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'rocm' && runner.os == 'Linux'
+        if: steps.engine.outputs.needs-build == 'true' && matrix.backend == 'rocm' && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Set up Go (for llama-swap + gguf-parser)
-        if: steps.engine-cache.outputs.cache-hit != 'true'
+        if: steps.engine.outputs.needs-build == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
       - name: Build the engine binaries from source
-        if: steps.engine-cache.outputs.cache-hit != 'true'
+        if: steps.engine.outputs.needs-build == 'true'
         shell: bash
         run: bash tools/wheel-build/build_llama_server.sh
 
-      # A tag ref is its own cache scope, so a save here is unreadable by every
-      # later run and evicts the main-scoped entry that would have hit.
-      - name: Save the built engine
-        if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
-        uses: actions/cache/save@v4
-        with:
-          path: packaging/engine-wheel/lilbee_engine/bin
-          key: ${{ steps.engine-cache.outputs.cache-primary-key }}
-
-      # The durable copy the executable builds read first. Same key, so a mirror
-      # asset and a cache entry for one engine can never disagree.
+      # The mirror is the only place a built engine is stored. Writing it to the
+      # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
+      # mirror already holds durably, and that cap is what the Nuitka object
+      # caches need: those cannot live on a release, engines can.
       - name: Mirror the built engine
-        if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
+        if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag'
         uses: ./.github/actions/publish-engine-asset
         with:
-          engine-key: ${{ steps.engine-cache.outputs.cache-primary-key }}
+          engine-key: ${{ steps.engine-key.outputs.key }}
           token: ${{ github.token }}
 
       - name: Set wheel version to the lilbee version

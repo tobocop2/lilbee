@@ -104,15 +104,11 @@ runs:
         # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
         LLAMA_BUILD_DIR: ${{ runner.os == 'Windows' && '/c/lsb' || '/tmp/llama-server-build' }}
       run: bash tools/wheel-build/build_llama_server.sh
-    # A tag ref is its own cache scope, so a save here is unreadable by every
-    # later run and evicts the main-scoped entry that would have hit. Warm the
-    # key on main (warm-engine-cache.yml) instead.
-    - name: Save the built engine
-      if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag'
-      uses: actions/cache/save@v4
-      with:
-        path: packaging/engine-wheel/lilbee_engine/bin
-        key: ${{ steps.engine-key.outputs.key }}
+    # The mirror is the only place a built engine is stored. Writing it to the
+    # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
+    # mirror already holds durably, and that cap is what the Nuitka object
+    # caches need: those cannot live on a release, engines can.
+    #
     # Every non-tag cell that builds an engine contributes it, so the mirror
     # fills itself in for whatever variants CI actually exercises.
     - name: Mirror the built engine
