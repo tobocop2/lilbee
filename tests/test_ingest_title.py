@@ -224,7 +224,7 @@ class TestContextualEnrichment:
         svc = self._services()
         cfg.contextual_enrichment = True
         try:
-            with patch("lilbee.app.services.get_services", return_value=svc):
+            with patch("lilbee.data.ingest.extract.get_services", return_value=svc):
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
@@ -240,7 +240,7 @@ class TestContextualEnrichment:
         svc.provider.chat.side_effect = RuntimeError("model down")
         cfg.contextual_enrichment = True
         try:
-            with patch("lilbee.app.services.get_services", return_value=svc):
+            with patch("lilbee.data.ingest.extract.get_services", return_value=svc):
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
