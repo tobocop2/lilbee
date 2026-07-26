@@ -81,3 +81,56 @@ class TestIsStructuralChunk:
         # long is content, not a cover page: the word-count gate protects it.
         body = "UNCLASSIFIED " + " ".join(f"finding{i} detail" for i in range(80))
         assert is_structural_chunk(body) is False
+
+
+class TestLeaderVariants:
+    def test_ellipsis_leaders_are_a_toc(self):
+        toc = "Introduction … 1\nMethods … 4\nFindings … 9\nAppendix … 12"
+        assert is_structural_chunk(toc) is True
+
+    def test_spaced_dot_leaders_are_a_toc(self):
+        toc = "Introduction . . . . 1\nMethods . . . . 4\nFindings . . . . 9\nAppendix . . . . 12"
+        assert is_structural_chunk(toc) is True
+
+
+class TestDataPagesAreNotTocs:
+    def test_unsorted_trailing_numbers_are_data_not_a_toc(self):
+        # Price lists / log output share the leader shape but their numbers
+        # are not the non-decreasing page order a TOC has.
+        prices = (
+            "Widget deluxe ....... 1299\nBasic gadget ....... 45\n"
+            "Repair kit ....... 310\nShipping ....... 12"
+        )
+        assert is_structural_chunk(prices) is False
+
+    def test_sorted_page_numbers_still_flag(self):
+        toc = "Overview ....... 2\nDetails ....... 7\nTables ....... 7\nIndex ....... 31"
+        assert is_structural_chunk(toc) is True
+
+
+class TestAcronymProseIsNotACover:
+    def test_acronym_dense_mixed_case_lines_survive(self):
+        # Word-level caps counting flagged this; the gate now needs whole
+        # banner lines in caps, which prose with acronyms never has.
+        text = (
+            "UNCLASSIFIED\n"
+            "The NATO and USAF systems rely on AWACS, JSTARS and GPS feeds "
+            "shared with NORAD units under the FVEY agreement"
+        )
+        assert is_structural_chunk(text) is False
+
+    def test_banner_line_cover_page_still_flags(self):
+        cover = (
+            "UNCLASSIFIED\n"
+            "ANNUAL THREAT ASSESSMENT\n"
+            "OF THE INTELLIGENCE COMMUNITY\n"
+            "February 2022\n"
+            "UNCLASSIFIED"
+        )
+        assert is_structural_chunk(cover) is True
+
+
+class TestBannerOnlyPage:
+    def test_pure_banner_page_is_a_cover(self):
+        assert is_structural_chunk("UNCLASSIFIED") is True
+        assert is_structural_chunk("UNCLASSIFIED\nUNCLASSIFIED//FOUO") is True

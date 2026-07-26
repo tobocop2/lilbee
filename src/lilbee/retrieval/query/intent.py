@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from lilbee.core.llm_json import first_json_object
 from lilbee.retrieval.language import QueryLanguage, query_language
 
 
@@ -156,6 +157,12 @@ def title_candidates(question: str, lang: QueryLanguage | None = None) -> list[s
     return candidates
 
 
+def _title_tokens(text: str, lang: QueryLanguage) -> list[str]:
+    """Lowercased comparison tokens with the leading article stripped."""
+    stripped = lang.leading_article_pattern.sub("", text.strip())
+    return [t for t in _TOKEN_SPLIT_RE.split(stripped.lower()) if t]
+
+
 def matches_title(title: str, filename: str, lang: QueryLanguage | None = None) -> bool:
     """Whether *filename*'s stem is the document *title* names, token-exactly.
 
@@ -164,13 +171,22 @@ def matches_title(title: str, filename: str, lang: QueryLanguage | None = None) 
     match, so "the report" never resolves "Annual Report 2020.txt".
     """
     lang = lang or query_language()
+    title_tokens = _title_tokens(title, lang)
+    return bool(title_tokens) and title_tokens == _title_tokens(Path(filename).stem, lang)
 
-    def tokens(text: str) -> list[str]:
-        stripped = lang.leading_article_pattern.sub("", text.strip())
-        return [t for t in _TOKEN_SPLIT_RE.split(stripped.lower()) if t]
 
-    title_tokens = tokens(title)
-    return bool(title_tokens) and title_tokens == tokens(Path(filename).stem)
+def matches_stored_title(title: str, stored: str | None, lang: QueryLanguage | None = None) -> bool:
+    """Whether the stored document title is what *title* names, token-exactly.
+
+    Covers documents whose ingested title (markdown H1, extraction metadata)
+    differs from their filename, so "summarize Frankenstein Analysis" routes
+    to notes-2024.md.
+    """
+    if not stored:
+        return False
+    lang = lang or query_language()
+    title_tokens = _title_tokens(title, lang)
+    return bool(title_tokens) and title_tokens == _title_tokens(stored, lang)
 
 
 def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> AggregateQuery | None:
@@ -233,7 +249,6 @@ When unsure, use "topical".
 Question: {question}
 """
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _LLM_KINDS = {
     "total_sources": AggregateKind.TOTAL_SOURCES,
@@ -252,15 +267,8 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
     ``UNSUPPORTED`` is never produced here; declining is reserved for the
     deterministic layer, whose patterns prove the question is count-shaped.
     """
-    import json
-
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        return None
-    try:
-        # A brace-delimited match parses to a dict or raises; no shape check needed.
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    data = first_json_object(text)
+    if data is None:
         return None
     raw_kind = data.get("kind", "")
     # A non-string kind (list, dict) is malformed, not a crash: an unhashable

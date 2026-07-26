@@ -350,21 +350,42 @@ class TestChunkScanProjection:
         # the last half of the table unreachable; an even spread reaches it.
         assert max(sampled) >= total - 10
 
-    def test_sample_chunks_stops_reading_once_the_sample_is_full(self):
+    @pytest.mark.parametrize("total", [41, 60, 81, 400], ids=str)
+    def test_sample_fills_its_budget_at_every_corpus_size(self, total):
+        """Reach is not enough: a stride wide enough to span the table also
+        thins the sample, so a 41-chunk corpus induced its schema from 21
+        chunks. The budget must be filled whenever the table can fill it."""
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        batch = mock.MagicMock()
+        batch.column.return_value.to_pylist.return_value = [f"chunk-{i}" for i in range(total)]
+        table = self._projecting_table([batch])
+        table.count_rows.return_value = total
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        sampled = [int(t.split("-")[1]) for t in _sample_chunks(store, 40)]
+        assert len(sampled) == 40
+        assert max(sampled) >= total - total // 40 - 1
+
+    def test_sample_reads_through_to_the_tail_then_stops(self):
+        """The last sample is the table's last row, so the scan spans every
+        batch; it must stop there rather than reading past a full sample."""
         from lilbee.retrieval.entities.lifecycle import _sample_chunks
 
         first = mock.MagicMock()
         first.column.return_value.to_pylist.return_value = ["a", "b", "c"]
         second = mock.MagicMock()
-        table = self._projecting_table([first, second])
+        second.column.return_value.to_pylist.return_value = ["d"]
+        third = mock.MagicMock()
+        table = self._projecting_table([first, second, third])
         table.count_rows.return_value = 4
         store = mock.MagicMock()
         store.open_table.return_value = table
 
-        # step = 4 // 2 = 2 -> indexes 0 and 2, both in the first batch.
         texts = _sample_chunks(store, 2)
-        assert texts == ["a", "c"]
-        second.column.assert_not_called()
+        assert texts == ["a", "d"]
+        third.column.assert_not_called()
 
     def test_full_pass_projects_the_needed_columns(self):
         from lilbee.retrieval.entities.lifecycle import _full_pass

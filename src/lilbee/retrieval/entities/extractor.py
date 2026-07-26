@@ -12,7 +12,6 @@ therefore dominated by how many LLM-kind types the schema keeps.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Mapping
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import regex
 
+from lilbee.core.llm_json import first_json_object, json_reply_format
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     EntityType,
@@ -88,26 +88,6 @@ LLM_EXTRACTION_PROMPT = (
 )
 
 
-def _first_json_object(text: str) -> dict | None:
-    """The first JSON object in *text*, or None.
-
-    ``raw_decode`` from each ``{`` position lets the stdlib own the parsing
-    state; a hand-rolled brace counter miscounts braces inside string
-    literals (a regex pattern or entity text containing ``}``).
-    """
-    decoder = json.JSONDecoder()
-    start = text.find("{")
-    while start >= 0:
-        try:
-            parsed, _ = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            start = text.find("{", start + 1)
-            continue
-        # A value starting at "{" can only decode to a dict.
-        return parsed if isinstance(parsed, dict) else None
-    return None
-
-
 def normalize_value(text: str) -> str:
     """Canonical form for grouping: casefold, collapse spaces, and strip
     leading zeros from purely numeric values so 00482 and 482 group together."""
@@ -153,12 +133,17 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
             # until the budget is gone and emit no JSON at all. temperature 0:
             # induction wants one deterministic, well-formed schema, not a
             # creative sample that parses only some of the time.
-            options={"num_predict": INDUCTION_MAX_TOKENS, "think": False, "temperature": 0},
+            options={
+                "num_predict": INDUCTION_MAX_TOKENS,
+                "think": False,
+                "temperature": 0,
+                "response_format": json_reply_format(),
+            },
         )
     except Exception:
         log.warning("Entity schema induction failed at the provider", exc_info=True)
         return None
-    payload = _first_json_object(strip_reasoning(response.text))
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         log.warning("Entity schema induction returned no parseable JSON")
         return None
@@ -277,7 +262,7 @@ def _extract_llm_batch(
     except Exception:
         log.warning("LLM entity extraction failed for a batch", exc_info=True)
         return None
-    payload = _first_json_object(strip_reasoning(response.text))
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         return empty
     results = empty
@@ -324,6 +309,42 @@ def _regex_findings(
     return found
 
 
+# Singles failing in a row before a batch retry concludes the provider is down.
+_SINGLE_RETRY_ABORT = 3
+
+
+def _retry_batch_singly(
+    types: list[EntityType],
+    batch: list[Mapping[str, Any]],
+    provider: LLMProvider,
+) -> tuple[list[list[tuple[EntityType, str]]], bool]:
+    """Per-chunk retry of a failed batch: (per-chunk findings, batch failed).
+
+    A chunk whose single call still fails loses its entities (logged); the
+    batch only counts as failed when nothing succeeds, i.e. the provider
+    itself is down, so the pass retries next sync.
+    """
+    found_all: list[list[tuple[EntityType, str]]] = [[] for _ in batch]
+    any_ok = False
+    consecutive = 0
+    for offset, record in enumerate(batch):
+        single = _extract_llm_batch(types, [record["chunk"]], provider)
+        if single is None:
+            consecutive += 1
+            log.warning(
+                "LLM entity extraction failed for %s#%s; its entities are skipped",
+                record["source"],
+                record["chunk_index"],
+            )
+            if not any_ok and consecutive >= _SINGLE_RETRY_ABORT:
+                break
+            continue
+        consecutive = 0
+        any_ok = True
+        found_all[offset] = single[0]
+    return found_all, not any_ok
+
+
 def extract_entities(
     chunks: list[Mapping[str, Any]],
     schema: EntitySchema,
@@ -361,12 +382,15 @@ def extract_entities(
         for start in range(0, len(chunks), LLM_EXTRACTION_BATCH):
             batch = chunks[start : start + LLM_EXTRACTION_BATCH]
             batch_found = _extract_llm_batch(llm_types, [r["chunk"] for r in batch], provider)
+            failed = False
+            if batch_found is None:
+                # Retry chunk-by-chunk: one poisoned chunk must not fail the
+                # batch (and with it the whole pass) on every sync.
+                batch_found, failed = _retry_batch_singly(llm_types, batch, provider)
             if stats is not None:
                 stats.llm_batches += 1
-                if batch_found is None:
+                if failed:
                     stats.llm_batches_failed += 1
-            if batch_found is None:
-                continue
             for offset, found in enumerate(batch_found):
                 per_chunk[start + offset].extend(found)
 

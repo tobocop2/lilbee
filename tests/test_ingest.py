@@ -1712,6 +1712,21 @@ class TestStatShortCircuit:
         assert plan_threads
         assert all(t != loop_thread for t in plan_threads)
 
+    async def test_sync_checks_the_embedding_model_up_front(self, isolated_env, mock_svc):
+        """Ingest probes the embedding model before the embed phase so a missing
+        one is surfaced once, up front, rather than as a per-file error much later."""
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "doc.txt").write_text("content")
+
+        with mock.patch(
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=_make_xberg_result(),
+        ):
+            await sync(quiet=True)
+        mock_svc.embedder.validate_model.assert_called()
+
     async def test_sync_backfills_stats_via_store(self, isolated_env, mock_svc):
         from lilbee.data.ingest import file_hash, sync
 

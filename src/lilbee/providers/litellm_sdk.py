@@ -515,6 +515,11 @@ class LitellmSdkBackend:
             kwargs["api_key"] = request.api_key
         if request.options:
             kwargs.update(request.options)
+        if "response_format" in kwargs:
+            # Best-effort: a provider without structured-output support should
+            # drop the field and answer normally, not refuse the call. Callers
+            # that send it parse the reply defensively either way.
+            kwargs["drop_params"] = True
         return kwargs
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:

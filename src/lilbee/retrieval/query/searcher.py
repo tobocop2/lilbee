@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.llm_json import json_reply_format
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
@@ -71,6 +72,7 @@ from lilbee.retrieval.query.intent import (
     AggregateQuery,
     document_references,
     matches_reference,
+    matches_stored_title,
     matches_title,
     parse_aggregate,
     parse_llm_aggregate,
@@ -573,9 +575,8 @@ class Searcher:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for downstream filtering.
 
-        When *chunk_type* is set (``"raw"`` or ``"wiki"``), only matching
-        chunks are returned (``"raw"`` also covers table chunks). An
-        explicit ``chunk_type`` always wins
+        When *chunk_type* is set (``"raw"`` or ``"wiki"``), only chunks of
+        that type are returned. An explicit ``chunk_type`` always wins
         over the ``wiki:``/``raw:`` prefix shortcut in *question* so the
         user-facing scope choice has the final say.
 
@@ -621,7 +622,6 @@ class Searcher:
             self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
             if self._config.hyde:
                 self._merge_hyde_results(question, results, seen, top_k, chunk_type)
-        results = self._apply_concept_boost(results, question)
         # Merged variant/HyDE hits arrive appended, not ranked; every consumer
         # of this method (bare search surfaces included) gets one global order
         # over the canonical score rather than insertion order.
@@ -637,7 +637,8 @@ class Searcher:
         # Drop tables-of-contents and cover pages that only the vector arm
         # surfaced: they dilute context precision without answering a question.
         # Filtered from the top_k*2 candidate buffer so enough real passages
-        # remain for the downstream trim.
+        # remain for the downstream trim. Runs before the concept boost so a
+        # boost cannot promote a structural chunk into the rank-0 exemption.
         if self._config.filter_structural_chunks:
             # A lexical (BM25 or title) hit or the top-ranked row is content the
             # answer may need, whatever its shape, so it is never dropped; only
@@ -647,6 +648,8 @@ class Searcher:
                 for i, r in enumerate(results)
                 if r.bm25_score is not None or i == 0 or not is_structural_chunk(r.chunk)
             ]
+        results = self._apply_concept_boost(results, question)
+        results = order_by_fusion(results)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
@@ -825,15 +828,20 @@ class Searcher:
         return [c.model_copy(update={"score": 1.0}) for c in chunks]
 
     def _resolve_title_filename(self, title: str) -> str | None:
-        """The one source whose stem *title* names token-exactly, or ``None``.
+        """The one source whose stem or stored title *title* names, or ``None``.
 
-        The article-stripped title pre-filters candidates by substring, then
-        the token-exact stem comparison decides; only a unique winner routes,
-        so shared titles fall back to topical retrieval.
+        The article-stripped title pre-filters candidates by substring (over
+        filename and stored title), then the token-exact comparison decides;
+        only a unique winner routes, so shared titles fall back to topical
+        retrieval.
         """
         stripped = query_language().leading_article_pattern.sub("", title.strip())
         candidates = self._store.get_sources(search=stripped, limit=_KNOWN_ITEM_CANDIDATES)
-        matches = [s for s in candidates if matches_title(title, s["filename"])]
+        matches = [
+            s
+            for s in candidates
+            if matches_title(title, s["filename"]) or matches_stored_title(title, s.get("title"))
+        ]
         if len(matches) == 1:
             return str(matches[0]["filename"])
         return None
@@ -885,9 +893,8 @@ class Searcher:
     ) -> RagContext | None:
         """Build RAG context from search results.
 
-        ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
-        chunks too) or ``"wiki"`` rows; ``None`` (default) searches the
-        mixed pool.
+        ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
+        ``None`` (default) searches the mixed pool.
         """
         retrieval_query = question
         if history and self._config.history_rewrite:
@@ -1029,7 +1036,12 @@ class Searcher:
         radius = self._config.neighbor_expansion
         if radius <= 0 or leftover <= 0:
             return results
-        return expand_neighbors(results, self._store, radius, leftover, self._budget_tokens)
+        # With the structural filter on, expansion must not re-import the TOC
+        # and cover text the filter dropped from the results.
+        exclude = is_structural_chunk if self._config.filter_structural_chunks else None
+        return expand_neighbors(
+            results, self._store, radius, leftover, self._budget_tokens, exclude=exclude
+        )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
@@ -1209,7 +1221,10 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": INTENT_CLASSIFY_MAX_TOKENS},
+                options={
+                    "num_predict": INTENT_CLASSIFY_MAX_TOKENS,
+                    "response_format": json_reply_format(),
+                },
             )
         except Exception:
             log.debug("LLM intent classification failed; using pattern result", exc_info=True)
@@ -1336,7 +1351,13 @@ class Searcher:
             )
         raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))
+        # Citations are read off the prose only: a model that echoes its own
+        # Sources list would otherwise mark every retrieved file cited.
+        return AskResult(
+            answer=clean,
+            sources=results,
+            cited_sources=cited_subset(strip_llm_citations(clean), results),
+        )
 
     def ask(
         self,

@@ -24,6 +24,11 @@ def _mock_embedder():
         "lilbee.providers.factory.create_provider",
         return_value=mock.MagicMock(
             embed=mock.MagicMock(side_effect=lambda texts: [_fake_embed(t) for t in texts]),
+            # A provider that can embed lists the model, so the ingest
+            # availability gate sees it. Without this the gate reports the model
+            # missing while embed works, which is not a state a real provider
+            # reaches.
+            list_models=mock.MagicMock(return_value=[cfg.embedding_model]),
             pull_model=mock.MagicMock(),
             shutdown=mock.MagicMock(),
         ),

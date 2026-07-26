@@ -95,6 +95,19 @@ class TestParseLlmAggregate:
         parsed = parse_llm_aggregate('{"kind": "total_sources"}')
         assert parsed == AggregateQuery(AggregateKind.TOTAL_SOURCES)
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            '{"kind": "total_sources"} (note: the } is fine)',
+            'Sure! {"kind": "total_sources"} hope that helps.',
+        ],
+        ids=["trailing-brace", "surrounding-prose"],
+    )
+    def test_route_survives_prose_around_the_object(self, reply):
+        """A greedy brace span runs to the last brace in the reply, so any
+        trailing text containing one silently dropped the route."""
+        assert parse_llm_aggregate(reply) == AggregateQuery(AggregateKind.TOTAL_SOURCES)
+
     def test_distinct_type(self):
         parsed = parse_llm_aggregate('{"kind": "distinct_type", "noun": "people"}')
         assert parsed == AggregateQuery(AggregateKind.DISTINCT_TYPE, noun="people")

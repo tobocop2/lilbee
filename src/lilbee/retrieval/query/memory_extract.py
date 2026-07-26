@@ -9,11 +9,11 @@ review and remove in ``/memories``.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from lilbee.core.llm_json import first_json_array
 from lilbee.data.store import MemoryKind
 
 log = logging.getLogger(__name__)
@@ -37,27 +37,6 @@ _EXTRACT_SYSTEM_PROMPT = (
 )
 
 _EXTRACT_USER_TEMPLATE = "User said:\n{question}\n\nAssistant replied:\n{answer}"
-
-
-def _first_json_array(text: str) -> list | None:
-    """The first JSON array in *text*, or None.
-
-    ``raw_decode`` from each ``[`` lets the stdlib find where the array
-    actually ends. A greedy ``\\[.*\\]`` span runs to the LAST bracket in the
-    reply, so a conforming array followed by prose containing any ``]`` (a
-    footnote marker, a second fence) fails to parse and drops every memory.
-    """
-    decoder = json.JSONDecoder()
-    start = text.find("[")
-    while start >= 0:
-        try:
-            parsed, _ = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            start = text.find("[", start + 1)
-            continue
-        # A value starting at "[" can only decode to a list.
-        return parsed if isinstance(parsed, list) else None
-    return None
 
 
 @dataclass(frozen=True)
@@ -96,7 +75,7 @@ def parse_extraction(raw: str) -> list[ExtractedMemory]:
     code fence), keeps only objects with a usable-length ``text``, and decodes
     the kind. Any parse failure yields an empty list.
     """
-    items = _first_json_array(raw)
+    items = first_json_array(raw)
     if items is None:
         return []
 

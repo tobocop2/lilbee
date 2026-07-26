@@ -19,6 +19,7 @@ def _reset():
         "reranker_model": cfg.reranker_model,
         "rerank_candidates": cfg.rerank_candidates,
         "rerank_blend": cfg.rerank_blend,
+        "rerank_min_score": cfg.rerank_min_score,
     }
     yield
     for key, value in snapshot.items():
@@ -416,3 +417,71 @@ class TestMixedPoolBias:
         assert len(reranked) == 4
         chunk_types = {r.chunk_type for r in reranked}
         assert chunk_types == {"wiki", "raw"}
+
+
+class TestRerankMinScore:
+    def test_floor_drops_low_raw_scores(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_min_score = 0.4
+        results = [
+            _chunk("keep.md", "relevant", distance=0.3),
+            _chunk("drop.md", "irrelevant", distance=0.4),
+        ]
+        try:
+            with _patch_provider(lambda q, docs: [0.9, 0.1]):
+                reranked = reranker.rerank("query", results)
+        finally:
+            cfg.rerank_min_score = None
+        assert [r.source for r in reranked] == ["keep.md"]
+
+    def test_all_below_floor_returns_only_the_unranked_remainder(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_min_score = 0.5
+        results = [_chunk(f"{i}.md", f"text {i}", distance=0.4) for i in range(3)]
+        try:
+            with _patch_provider(lambda q, docs: [0.1] * len(docs)):
+                reranked = reranker.rerank("query", results, candidates=2)
+        finally:
+            cfg.rerank_min_score = None
+        assert [r.source for r in reranked] == ["2.md"]
+
+    def test_unset_floor_is_off(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_min_score = None
+        results = [_chunk("a.md", "text a", distance=0.3), _chunk("b.md", "text b", distance=0.4)]
+        with _patch_provider(lambda q, docs: [-5.0, -9.0]):
+            reranked = reranker.rerank("query", results)
+        assert len(reranked) == 2
+
+    def test_negative_floor_works_for_logit_scale_rerankers(self, reranker):
+        # bge-style rerankers emit logits; a floor below zero must be honored.
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_min_score = -2.0
+        results = [
+            _chunk("keep.md", "relevant", distance=0.3),
+            _chunk("drop.md", "junk", distance=0.4),
+        ]
+        try:
+            with _patch_provider(lambda q, docs: [1.5, -6.0]):
+                reranked = reranker.rerank("query", results)
+        finally:
+            cfg.rerank_min_score = None
+        assert [r.source for r in reranked] == ["keep.md"]
+
+
+class TestRerankInputComposition:
+    def test_title_is_prepended_to_the_candidate_text(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        titled = _chunk("a.md", "body text", distance=0.3).model_copy(
+            update={"title": "Annual Report"}
+        )
+        bare = _chunk("b.md", "other text", distance=0.4)
+        seen: list[list[str]] = []
+
+        def capture(q, docs):
+            seen.append(list(docs))
+            return [0.5, 0.4]
+
+        with _patch_provider(capture):
+            reranker.rerank("query", [titled, bare])
+        assert seen[0] == ["Annual Report\nbody text", "other text"]

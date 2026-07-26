@@ -1034,17 +1034,19 @@ class TestNeighborExpansion:
 
     def test_widens_the_passage_and_the_prompt(self, mock_svc):
         cfg.neighbor_expansion = 1
-        mock_svc.store.search.return_value = [_make_result(chunk="core text", chunk_index=2)]
+        center = "core overlap padding text closing overlap padding"
+        mock_svc.store.search.return_value = [_make_result(chunk=center, chunk_index=2)]
         mock_svc.store.get_chunks_by_indices.return_value = [
-            _make_result(chunk="before core", chunk_index=1),
-            _make_result(chunk="text after", chunk_index=3),
+            _make_result(chunk="before core overlap padding", chunk_index=1),
+            _make_result(chunk="closing overlap padding after", chunk_index=3),
         ]
         mock_svc.provider.chat.return_value = _text_result("answer")
         result = get_services().searcher.ask_raw("q")
-        assert result.sources[0].chunk == "before core text after"
+        widened = "before core overlap padding text closing overlap padding after"
+        assert result.sources[0].chunk == widened
         assert result.sources[0].chunk_index == 2
         prompt = mock_svc.provider.chat.call_args[0][0][-1]["content"]
-        assert "before core text after" in prompt
+        assert widened in prompt
 
     def test_widening_keeps_citation_numbering(self, mock_svc):
         cfg.neighbor_expansion = 1
@@ -1157,6 +1159,21 @@ class TestAskRaw:
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
+
+    def test_a_source_only_named_in_the_models_own_block_is_not_cited(self, mock_svc):
+        """cited_sources is the grounding signal JSON callers read, so it must
+        reflect what the answer used, not what the model echoed back. A model
+        that ends with its own Sources list naming every retrieved file would
+        otherwise mark all of them cited."""
+        mock_svc.store.search.return_value = [
+            _make_result(source="used.pdf", chunk="oil is 5 quarts"),
+            _make_result(source="never-used.pdf", chunk="unrelated"),
+        ]
+        mock_svc.provider.chat.return_value = _text_result(
+            "The engine holds 5 quarts, see used.pdf.\n\nSources:\n- used.pdf\n- never-used.pdf"
+        )
+        result = get_services().searcher.ask_raw("oil capacity?")
+        assert [s.source for s in result.cited_sources] == ["used.pdf"]
 
     def test_no_results_returns_grounded_refusal(self, mock_svc):
         """Zero RAG hits in RAG mode return a grounded refusal instead of
@@ -2198,16 +2215,27 @@ class TestKnownItemTitleRoute:
     chunk from another book). A known-item shape plus a token-exact stem
     match routes; anything else stays topical."""
 
-    def _source(self, filename):
-        return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
+    def _source(self, filename, title=None):
+        return {
+            "filename": filename,
+            "file_hash": "h",
+            "ingested_at": "",
+            "chunk_count": 2,
+            "title": title,
+        }
 
-    def _index(self, mock_svc, filenames):
-        sources = [self._source(f) for f in filenames]
+    def _index(self, mock_svc, filenames, titles=None):
+        sources = [self._source(f, (titles or {}).get(f)) for f in filenames]
 
         def get_sources(search=None, limit=None, offset=0):
             if not search:
                 return sources[:limit]
-            return [s for s in sources if search.lower() in s["filename"].lower()][:limit]
+            return [
+                s
+                for s in sources
+                if search.lower() in s["filename"].lower()
+                or search.lower() in (s["title"] or "").lower()
+            ][:limit]
 
         mock_svc.store.get_sources.side_effect = get_sources
         mock_svc.store.get_chunks_by_source.return_value = [
@@ -2258,6 +2286,28 @@ class TestKnownItemTitleRoute:
         self._index(mock_svc, ["Notes.txt", "notes.md"])
         mock_svc.store.search.return_value = [_make_result()]
         get_services().searcher.search("summarize notes")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+    def test_stored_title_resolves_when_filename_differs(self, mock_svc):
+        """A note whose ingested H1 title differs from its filename routes by
+        that title: the flagship summarize-by-title case."""
+        self._index(
+            mock_svc,
+            ["notes-2024.md", "The Prince.txt"],
+            titles={"notes-2024.md": "Frankenstein Analysis"},
+        )
+        results = get_services().searcher.search("summarize Frankenstein Analysis")
+        assert [r.chunk for r in results] == ["opening", "ending"]
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("notes-2024.md")
+
+    def test_stored_title_shared_by_two_sources_stays_topical(self, mock_svc):
+        self._index(
+            mock_svc,
+            ["a.md", "b.md"],
+            titles={"a.md": "Weekly Sync", "b.md": "Weekly Sync"},
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("summarize Weekly Sync")
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
 
@@ -3100,8 +3150,10 @@ class TestChunkTypeScope:
 
     def test_build_rag_context_default_is_mixed_pool(self, mock_svc):
         """No ``chunk_type`` arg means no filter. Both sides survive."""
-        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
-        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
+        wiki_chunk = _make_result(
+            source="wiki/summaries/doc.md", chunk_type="wiki", chunk="wiki text"
+        )
+        raw_chunk = _make_result(source="doc.md", chunk_type="raw", chunk="raw text")
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
@@ -3610,6 +3662,30 @@ class TestStripLlmCitations:
         text = "The answer is 42.\n\nSources:\n"
         assert strip_llm_citations(text) == "The answer is 42."
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "Sources:\n- made-up.pdf\n\n- also-fake.pdf\n\nThe engine holds 5 quarts.",
+                "The engine holds 5 quarts.",
+            ),
+            (
+                "Answer.\n\nSources:\n1. a.pdf\n\n2. b.pdf\n\nMore prose.",
+                "Answer.\n\nMore prose.",
+            ),
+        ],
+        ids=["bulleted", "numbered"],
+    )
+    def test_removes_a_block_whose_items_are_blank_line_separated(self, text, expected):
+        """Markdown routinely spaces list items apart. Ending the block at the
+        first blank line leaves the remaining fabricated names in the answer,
+        with lilbee's own authoritative sources block stacked underneath."""
+        assert strip_llm_citations(text).strip() == expected
+
+    def test_removes_an_indented_block(self):
+        """The heading may be indented even when the list items are not."""
+        assert strip_llm_citations("Answer.\n   Sources:\n   - a.pdf") == "Answer."
+
 
 class TestExtractCitedIndices:
     def test_extracts_multiple(self):
@@ -3696,3 +3772,22 @@ class TestBuildRagContextFilters:
         mock_svc.store.search.return_value = [far]
         result = get_services().searcher.build_rag_context("question")
         assert result is None
+
+
+class TestNearDuplicateSuppression:
+    """prepare_results drops identical passages that the per-source cap misses."""
+
+    def test_same_text_under_two_paths_keeps_the_better_copy(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="notes/copy.md", chunk="the same boilerplate text", score=0.9)
+        b = _make_result(source="archive/copy.md", chunk="the same  boilerplate\ntext", score=0.4)
+        out = prepare_results([b, a])
+        assert [r.source for r in out] == ["notes/copy.md"]
+
+    def test_distinct_texts_are_kept(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="a.md", chunk="first passage", score=0.9)
+        b = _make_result(source="b.md", chunk="second passage", score=0.8)
+        assert len(prepare_results([a, b])) == 2

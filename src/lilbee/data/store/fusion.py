@@ -12,11 +12,12 @@ neighbors. The vector arm weighs 1; the chunk-BM25 arm weighs
 dominate); the optional title arm weighs ``title_weight``. Weights rescale
 the shares without leaving the canonical range.
 
-Scores normalize against the configured weight budget, not the per-query
-adapted ``lexical_weight`` or whether a given query's title arm returned rows
-(see ``fuse_arms``'s *weight_total*). That fixed denominator keeps scores on
-one scale across queries and across the sub-searches a caller merges, so
-``min_relevance_score`` stays a usable floor.
+Scores normalize against the weights of the arms in the call (the title
+arm counts only when it returned rows), so every call reports the fraction
+of its trusted rank support on one canonical [0, 1] scale and
+``min_relevance_score`` keeps one meaning everywhere. A fixed shared
+denominator was tried and rejected: it capped adaptively quieted calls at
+the vector share and demoted their hits in cross-variant merges.
 
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
@@ -42,6 +43,15 @@ _RRF_K = 60
 # Adaptive fusion needs a top hit plus at least one field row to measure a margin.
 _MIN_ROWS_FOR_MARGIN = 2
 
+# Runners-up window for the margin; a fixed window keeps the signal independent
+# of retrieval depth (a full-pool mean grew with candidate count).
+_MARGIN_WINDOW = 5
+
+# Adaptive scale lower bound: arms are quieted, never silenced, so BM25
+# provenance and the distance-cut exemption survive. Exact zero hard-dropped
+# lexical-only rows.
+_ADAPTIVE_SCALE_FLOOR = 0.05
+
 
 def vector_similarity(distance: float) -> float:
     """Cosine distance to canonical [0, 1] similarity (distance spans [0, 2])."""
@@ -56,11 +66,13 @@ def adaptive_weight_scale(vector_rows: list[SearchChunk], margin_scale: float) -
     means the dense embedder already located the answer and the lexical arms
     mostly add term-match noise. A *flat* ranking means dense is unsure and
     BM25's exact-term matching is worth trusting. The confidence signal is the
-    margin between the top similarity and the mean of the rest, divided by
-    *margin_scale*: at or above that margin the factor is 0 (arms silenced), at
-    zero margin it is 1 (arms kept), scaling linearly between. Returns 1.0 when
-    there is nothing to measure (fewer than two scored rows) or when
-    *margin_scale* <= 0 (adaptation off).
+    margin between the top similarity and the mean of the next
+    ``_MARGIN_WINDOW`` similarities (a fixed window, so the signal does not
+    change with retrieval depth), divided by *margin_scale*: at or above that
+    margin the factor bottoms out at ``_ADAPTIVE_SCALE_FLOOR`` (arms quieted
+    but their provenance kept), at zero margin it is 1 (arms kept), scaling
+    linearly between. Returns 1.0 when there is nothing to measure (fewer than
+    two scored rows) or when *margin_scale* <= 0 (adaptation off).
     """
     if margin_scale <= 0:
         return 1.0
@@ -70,16 +82,9 @@ def adaptive_weight_scale(vector_rows: list[SearchChunk], margin_scale: float) -
     )
     if len(sims) < _MIN_ROWS_FOR_MARGIN:
         return 1.0
-    margin = max(0.0, sims[0] - fmean(sims[1:]))
+    margin = max(0.0, sims[0] - fmean(sims[1 : 1 + _MARGIN_WINDOW]))
     confidence = min(1.0, margin / margin_scale)
-    return 1.0 - confidence
-
-
-def adaptive_lexical_weight(
-    vector_rows: list[SearchChunk], base_weight: float, margin_scale: float
-) -> float:
-    """The lexical arm's *base_weight* scaled by :func:`adaptive_weight_scale`."""
-    return base_weight * adaptive_weight_scale(vector_rows, margin_scale)
+    return max(1.0 - confidence, _ADAPTIVE_SCALE_FLOOR)
 
 
 def normalized_bm25(scores: list[float]) -> list[float]:
@@ -135,7 +140,6 @@ def fuse_arms(
     *,
     lexical_weight: float = 1.0,
     title_weight: float = 1.0,
-    weight_total: float | None = None,
 ) -> list[SearchChunk]:
     """Merge the arms into one list scored by reciprocal rank.
 
@@ -146,20 +150,16 @@ def fuse_arms(
     ``bm25_score`` from the FTS arms). The result is sorted by ``score``
     descending and deduplicated on ``(source, chunk_index)``.
 
-    *weight_total* is the constant this call normalizes scores against. Pass the
-    configured weight budget so scores from separate sub-searches -- whose
-    adaptive *lexical_weight* and per-query title-arm presence differ -- stay on
-    one comparable scale when a caller merges them. It is a uniform divisor, so
-    the ranking within this call is unchanged. When omitted it defaults to the
-    arms present in this call (the standalone behavior).
+    Scores normalize against the weights of the arms in this call (title only
+    when it returned rows); see the module docstring for why the denominator
+    is per-call rather than shared.
     """
-    if weight_total is None:
-        weight_total = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
+    weight_total = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}
     _merge_arm(merged, vector_rows, 1.0 / weight_total)
-    # A zero-weight arm contributes nothing, so skip it rather than folding in
-    # zero-score rows that would still carry lexical provenance (and its
-    # downstream distance/structural exemptions) on no real support.
+    # A zero-weight arm is configured off (adaptive scaling floors above zero),
+    # so skip it rather than folding in zero-score rows that would still carry
+    # lexical provenance (and its downstream distance/structural exemptions).
     if lexical_weight > 0:
         _merge_arm(merged, fts_rows, lexical_weight / weight_total)
     if title_rows and title_weight > 0:

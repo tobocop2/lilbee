@@ -173,11 +173,12 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
     total = table.count_rows()
     if total == 0:
         return []
-    # Ceiling division: flooring makes the stride too small, so the sample is
-    # the first `limit` contiguous rows and the table's tail -- the most
-    # recently ingested documents, exactly what re-induction exists to catch --
-    # is never reached.
-    step = max(1, -(-total // limit))
+    # Pick the target indices outright rather than striding. A stride wide
+    # enough to span the table also thins the sample (total=41 yielded 21 rows,
+    # not 40), while a narrow one never reaches the tail -- the most recently
+    # ingested documents, exactly what re-induction exists to catch. Spreading
+    # across the closed range fills the budget and hits both ends at any size.
+    wanted = {round(i * (total - 1) / max(1, limit - 1)) for i in range(limit)}
     texts: list[str] = []
     # Projection is pushed into LanceDB: a bare to_arrow() would drag every
     # column, embedding vectors included, into memory before selecting.
@@ -185,7 +186,7 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
     index = 0
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
         for text in batch.column("chunk").to_pylist():
-            if index % step == 0:
+            if index in wanted:
                 texts.append(text)
                 if len(texts) >= limit:
                     return texts

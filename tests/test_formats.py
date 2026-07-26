@@ -44,7 +44,7 @@ def mock_svc():
     embedder = mock.MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    embedder.validate_model.return_value = None
+    embedder.validate_model.return_value = True
     services = make_mock_services(embedder=embedder)
     set_services(services)
     yield services

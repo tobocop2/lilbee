@@ -10,10 +10,16 @@ content).
 
 from __future__ import annotations
 
+import itertools
 import re
 
 # A TOC line ends in dot leaders followed by a page number: "Geographic Trends ....... 9".
-_TOC_LINE = re.compile(r"\.{3,}\s*\d{1,4}\s*$")
+_TOC_LINE = re.compile(r"\.{3,}\s*(\d{1,4})\s*$")
+
+# Leader variants normalized to plain dots before matching: ellipsis and
+# spaced dots (". . . .") are common PDF extractions of the same leaders.
+_ELLIPSIS = "…"
+_SPACED_DOTS = re.compile(r"\.(?:[ \t]+\.){2,}")
 
 # Classification banners head cover/title pages and running headers alike, so the
 # banner alone is not enough -- it is combined with low prose density below.
@@ -31,21 +37,37 @@ _TOC_RATIO = 0.30
 # full sentence must take it out of scope.
 _COVER_MAX_WORDS = 60
 _COVER_MAX_SENTENCES = 1
-_COVER_CAPS_RATIO = 0.30
+# Ratio of fully upper-case LINES, not words: acronym-dense prose ("NATO",
+# "GDP") stays mixed-case at line level while cover banners are whole lines.
+# Real covers mix caps org lines with title-case title lines, hence 0.4.
+_COVER_CAPS_LINE_RATIO = 0.4
+
+
+def _normalize_leaders(line: str) -> str:
+    """Fold ellipsis and spaced-dot leaders into plain dots."""
+    line = line.replace(_ELLIPSIS, "...")
+    return _SPACED_DOTS.sub(lambda m: "." * (m.group().count(".")), line)
 
 
 def _is_toc(nonempty: list[str]) -> bool:
-    """A table of contents: several dot-leader-to-page-number lines."""
+    """A table of contents: several dot-leader lines with non-decreasing page numbers.
+
+    The monotonic check separates a TOC from dot-leader data pages (price
+    lists, log output), whose trailing numbers are not ordered.
+    """
     if len(nonempty) < _MIN_TOC_LINES:
         return False
-    hits = sum(1 for line in nonempty if _TOC_LINE.search(line))
-    return hits >= _MIN_TOC_HITS and hits / len(nonempty) >= _TOC_RATIO
+    pages = [
+        int(m.group(1)) for line in nonempty if (m := _TOC_LINE.search(_normalize_leaders(line)))
+    ]
+    if len(pages) < _MIN_TOC_HITS or len(pages) / len(nonempty) < _TOC_RATIO:
+        return False
+    return all(a <= b for a, b in itertools.pairwise(pages))
 
 
 def _is_cover_page(text: str) -> bool:
-    """A cover/title page: short, almost no sentences, shouting-case dominated,
-    and carrying a classification banner. Real prose has many sentence stops and
-    fails the sentence gate, so it is never flagged."""
+    """A cover/title page: short, almost no sentences, banner-line dominated,
+    and carrying a classification banner."""
     if not _CLASSIFICATION.search(text):
         return False
     words = text.split()
@@ -54,8 +76,14 @@ def _is_cover_page(text: str) -> bool:
     sentences = text.count(".") + text.count("!") + text.count("?")
     if sentences > _COVER_MAX_SENTENCES:
         return False
-    caps = sum(1 for w in words if len(w) > 1 and w.isupper())
-    return caps / len(words) >= _COVER_CAPS_RATIO
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # The banner satisfies its own gate; the caps ratio measures the title
+    # lines beyond it, so one banner cannot tip a page with real content.
+    content = [line for line in lines if not _CLASSIFICATION.search(line)]
+    if not content:
+        return True
+    caps_lines = sum(1 for line in content if len(line) > 1 and line.isupper())
+    return caps_lines / len(content) >= _COVER_CAPS_LINE_RATIO
 
 
 def is_structural_chunk(text: str) -> bool:

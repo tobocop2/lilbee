@@ -2020,3 +2020,16 @@ class TestCrawlExclusionsMatchWholeSegments:
     )
     def test_transactional_and_auth_urls_are_still_excluded(self, url):
         assert self._excluded(url)
+
+
+class TestFtsLanguage:
+    def test_normalizes_case(self):
+        assert Config(fts_language="german").fts_language == "German"
+
+    def test_rejects_unsupported_language(self):
+        # A bad name would otherwise fail FTS index creation quietly and
+        # hybrid search would silently degrade to vector-only.
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="fts_language must be one of"):
+            Config(fts_language="Klingon")
