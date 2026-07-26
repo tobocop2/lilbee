@@ -932,6 +932,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Drop tables-of-contents and classification-banner cover pages from results",
     ),
+    "fts_language": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Stemmer/stop-word language for the BM25 indexes (tantivy name; rebuild to apply)",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,

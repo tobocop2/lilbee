@@ -231,6 +231,11 @@ class Config(BaseSettings):
     # arm keeps its full fixed weight).
     adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
 
+    # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
+    # name ("English", "German", "French", ...). Applied when an index is
+    # (re)built, so changing it needs `lilbee rebuild` on an existing store.
+    fts_language: str = ConfigField(default="English", min_length=1, writable=True)
+
     # Drop tables-of-contents and classification-banner cover/title pages from
     # search results. OFF by default; validate per corpus, since the cover-page
     # heuristic can also fire on short banner-carrying body pages. A query-matched

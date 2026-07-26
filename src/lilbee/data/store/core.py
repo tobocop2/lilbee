@@ -572,7 +572,12 @@ class Store:
             else:
                 # Positionless: with_position=True overflows LanceDB's list
                 # encoding on optimize(), and nothing issues phrase queries.
-                table.create_fts_index(_CHUNK_COLUMN, replace=False, with_position=False)
+                table.create_fts_index(
+                    _CHUNK_COLUMN,
+                    replace=False,
+                    with_position=False,
+                    language=self._config.fts_language,
+                )
                 self._fts_ready = True
                 log.debug("FTS index created on '%s'", CHUNKS_TABLE)
             # Only the opt-in title arm needs the title index.
@@ -592,7 +597,12 @@ class Store:
             return
         try:
             # Positionless for the same reason as the chunk index.
-            table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=False)
+            table.create_fts_index(
+                _TITLE_COLUMN,
+                replace=False,
+                with_position=False,
+                language=self._config.fts_language,
+            )
             self._title_fts_ready = True
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
@@ -634,9 +644,19 @@ class Store:
         title index is rebuilt too when the title arm is enabled.
         """
         try:
-            table.create_fts_index(_CHUNK_COLUMN, replace=True, with_position=False)
+            table.create_fts_index(
+                _CHUNK_COLUMN,
+                replace=True,
+                with_position=False,
+                language=self._config.fts_language,
+            )
             if self._config.title_search and _TITLE_COLUMN in table.schema.names:
-                table.create_fts_index(_TITLE_COLUMN, replace=True, with_position=False)
+                table.create_fts_index(
+                    _TITLE_COLUMN,
+                    replace=True,
+                    with_position=False,
+                    language=self._config.fts_language,
+                )
             log.warning("Rebuilt the FTS index positionless after a positional-index overflow")
         except Exception:
             log.warning(

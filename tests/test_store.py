@@ -505,6 +505,14 @@ class TestEnsureScalarIndexes:
         assert _has_scalar_index(table, "source")
         assert _has_scalar_index(table, "chunk_type")
 
+    def test_fts_language_reaches_every_index_build(self, store, test_config):
+        test_config.fts_language = "German"
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with mock.patch.object(type(table), "create_fts_index") as create:
+            store.ensure_fts_index()
+        assert create.call_args.kwargs["language"] == "German"
+
     def test_pre_prefix_store_warns_once_for_a_doc_prefix_family(self, store, test_config, caplog):
         """A store built before its family's document prefixes existed warns
         (once) to rebuild instead of silently mixing embedding spaces."""
