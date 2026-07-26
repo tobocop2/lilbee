@@ -12,17 +12,12 @@ neighbors. The vector arm weighs 1; the chunk-BM25 arm weighs
 dominate); the optional title arm weighs ``title_weight``. Weights rescale
 the shares without leaving the canonical range.
 
-Scores normalize against the weights of the arms that actually took part
-in the call: the vector arm plus the (possibly adaptively scaled) lexical
-arm, plus the title arm only when it returned rows. Each fused score is
-therefore the fraction of the rank support this query's trusted arms could
-give, which keeps every call on the same canonical [0, 1] scale: a query
-whose lexical arms were adaptively quieted reports vector certainty at
-full scale instead of capped at the vector arm's share, so
-``min_relevance_score`` keeps one meaning across queries and across the
-sub-searches a caller merges (a fixed shared denominator was tried here
-and capped confident sub-searches at the vector share, demoting the
-original query's hits below paraphrase-variant hits in the merge).
+Scores normalize against the weights of the arms in the call (the title
+arm counts only when it returned rows), so every call reports the fraction
+of its trusted rank support on one canonical [0, 1] scale and
+``min_relevance_score`` keeps one meaning everywhere. A fixed shared
+denominator was tried and rejected: it capped adaptively quieted calls at
+the vector share and demoted their hits in cross-variant merges.
 
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
@@ -48,18 +43,13 @@ _RRF_K = 60
 # Adaptive fusion needs a top hit plus at least one field row to measure a margin.
 _MIN_ROWS_FOR_MARGIN = 2
 
-# The margin compares the top similarity against the mean of at most this many
-# runners-up. A fixed window keeps the signal a property of the query, not of
-# the retrieval depth: averaging the whole pool tail made the margin grow with
-# candidate count, so the same query silenced its lexical arms at reranker
-# depths but not at plain top_k.
+# Runners-up window for the margin; a fixed window keeps the signal independent
+# of retrieval depth (a full-pool mean grew with candidate count).
 _MARGIN_WINDOW = 5
 
-# Lower bound on the adaptive scale. The lexical arms are quieted, never fully
-# silenced: a floor keeps their rows merged with bm25_score provenance, so the
-# lexical-support exemption from the max_distance cut survives while the
-# ranking voice shrinks to almost nothing. An exact zero turned the down-weight
-# into a hard drop of BM25-only rows.
+# Adaptive scale lower bound: arms are quieted, never silenced, so BM25
+# provenance and the distance-cut exemption survive. Exact zero hard-dropped
+# lexical-only rows.
 _ADAPTIVE_SCALE_FLOOR = 0.05
 
 
@@ -160,11 +150,9 @@ def fuse_arms(
     ``bm25_score`` from the FTS arms). The result is sorted by ``score``
     descending and deduplicated on ``(source, chunk_index)``.
 
-    Scores normalize against the weights of the arms taking part in this call
-    (the title arm counts only when it returned rows), so every call reports
-    the fraction of its own trusted rank support on one canonical [0, 1]
-    scale; see the module docstring for why a fixed shared denominator was
-    rejected.
+    Scores normalize against the weights of the arms in this call (title only
+    when it returned rows); see the module docstring for why the denominator
+    is per-call rather than shared.
     """
     weight_total = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}

@@ -486,15 +486,51 @@ class TestEnsureScalarIndexes:
 
     def test_search_builds_scalar_indexes_on_a_serve_only_store(self, store, test_config):
         """A store served without a fresh ingest never ran the ingest path that
-        builds scalar indexes, so the first search must build them once."""
+        builds scalar indexes, so the first search builds them; later searches
+        only probe (no rebuild). Readiness stays unlatched while chunk_concepts
+        is missing so its index can build once the table appears."""
         store.add_chunks(_make_records())
         assert store._scalar_ready is False  # ingest path did not run here
         with mock.patch.object(
-            store, "ensure_scalar_indexes", wraps=store.ensure_scalar_indexes
+            store, "_ensure_scalar_index_on", wraps=store._ensure_scalar_index_on
         ) as spy:
             store.search([0.5] * test_config.embedding_dim, top_k=3)
+            built = spy.call_count
             store.search([0.5] * test_config.embedding_dim, top_k=3)
-        spy.assert_called_once()  # built once, then the guard skips it
+        assert built >= 1
+        assert spy.call_count == built  # second search probed, built nothing
+        from lilbee.data.store.lance_helpers import _has_scalar_index
+
+        table = store.open_table("chunks")
+        assert _has_scalar_index(table, "source")
+        assert _has_scalar_index(table, "chunk_type")
+
+    def test_search_survives_index_build_lock_contention(self, store, test_config):
+        """Read-path index builds skip when the write lock is held elsewhere;
+        the query serves (vector-only if need be) instead of raising."""
+        from lilbee.runtime.lock import LockTimeoutError
+
+        store.add_chunks(_make_records())
+        with mock.patch.object(store, "_write_lock", side_effect=LockTimeoutError("held")):
+            results = store.search(
+                [0.5] * test_config.embedding_dim, top_k=3, query_text="chunk number"
+            )
+        assert results
+        assert store._scalar_ready is False  # retried on a later search
+
+    def test_scalar_index_builds_after_concepts_table_appears(self, store, test_config):
+        """Serve ordering: chunk_concepts is created after the first search.
+        The next search must still index it instead of latching ready early."""
+        from lilbee.data.store.lance_helpers import _has_scalar_index, ensure_table
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_make_records())
+        store.search([0.5] * test_config.embedding_dim, top_k=3)
+        assert store._scalar_ready is False  # concepts table not there yet
+        table = ensure_table(store.get_db(), "chunk_concepts", _chunk_concepts_schema())
+        table.add([{"chunk_source": "doc0.md", "chunk_index": 0, "concept": "x"}])
+        store.search([0.5] * test_config.embedding_dim, top_k=3)
+        assert _has_scalar_index(store.open_table("chunk_concepts"), "chunk_source")
         assert store._scalar_ready is True
 
 
@@ -2713,16 +2749,38 @@ class TestTitleSearch:
         rows = store.get_chunks_by_source("new.pdf")
         assert [r.title for r in rows] == ["fresh document"]
 
-    def test_pre_title_migration_warns_to_rebuild(self, store, caplog):
-        """Migrating an old store logs that pre-upgrade docs stay title-blind
-        until a rebuild, so the silence doesn't hide the gap."""
+    def test_title_search_enable_at_runtime_builds_index_on_next_query(
+        self, store, test_config
+    ):
+        """Enabling title_search after _fts_ready latched builds the title
+        index on the next query instead of no-opping until restart."""
+        from lilbee.data.store.lance_helpers import _has_fts_index
+
+        test_config.title_search = False
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        assert not _has_fts_index(store.open_table("chunks"), "title")
+        test_config.title_search = True
+        store.search([0.1] * test_config.embedding_dim, top_k=3, query_text="zebra")
+        assert _has_fts_index(store.open_table("chunks"), "title")
+
+    def test_pre_title_migration_backfills_stem_titles(self, store, caplog):
+        """Migrating an old store backfills filename-stem titles (junk stems
+        stay NULL) so the title arm sees pre-upgrade documents; content-derived
+        titles still need a rebuild and the log says so."""
         import logging
 
         table = _create_pre_title_chunks_table(store)
-        table.add(_make_records())
-        with caplog.at_level(logging.WARNING):
+        records = _make_records()
+        records[0]["source"] = "project_falcon_notes.pdf"
+        table.add(records)
+        with caplog.at_level(logging.INFO):
             store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
         assert any("lilbee rebuild" in r.message for r in caplog.records)
+        rows = store.open_table("chunks").search().select(["source", "title"]).to_list()
+        titles = {r["source"]: r["title"] for r in rows}
+        assert titles["project_falcon_notes.pdf"] == "project falcon notes"
+        assert titles["doc1.md"] is None  # junk counter stem stays NULL
 
     def test_bm25_probe_stays_chunk_scoped(self, store):
         """The probe pins the chunk column: a title-only term is not a probe hit."""

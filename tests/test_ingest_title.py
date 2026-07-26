@@ -70,3 +70,27 @@ class TestSourceMetaFromExtraction:
         # A bytes/number title in malformed metadata must not raise; fall back.
         meta = source_meta_from_extraction({"title": 123}, "annual_report.pdf")
         assert meta.title == "annual report"
+
+
+class TestJunkStems:
+    """Stems with no searchable words stay untitled so the title arm indexes no noise."""
+
+    def test_counter_and_numeric_stems_yield_no_title(self):
+        for name in [
+            "IMG_1234.jpg",
+            "DSC0001.png",
+            "scan_001.pdf",
+            "Screenshot 2024-01-02.png",
+            "2024-03-15.md",
+            "doc42.pdf",
+            "a1b2c3d4e5f6a7b8.bin",
+            "x.md",
+        ]:
+            assert derive_title(name) == "", name
+
+    def test_real_stems_survive(self):
+        assert derive_title("project_falcon_notes.pdf") == "project falcon notes"
+        assert derive_title("survey_214.pdf") == "survey 214"
+
+    def test_extracted_title_bypasses_the_junk_guard(self):
+        assert derive_title("IMG_1234.jpg", "Sunset over the harbor") == "Sunset over the harbor"
