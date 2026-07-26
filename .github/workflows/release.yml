@@ -287,7 +287,7 @@ jobs:
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
-      # Pinned to the latest stable lancedb for Python (0.33), served by the fork as
+      # Pinned to the latest stable lancedb for Python (0.34), served by the fork as
       # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
@@ -295,7 +295,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.33.0+compat
+            lancedb==0.34.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
       # baked rpath) and install lilbee_engine so Nuitka bundles the whole
