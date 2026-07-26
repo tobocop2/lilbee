@@ -170,7 +170,7 @@ class TestEnsureFtsIndex:
         assert table is not None
         with mock.patch.object(
             type(table),
-            "create_fts_index",
+            "create_index",
             side_effect=RuntimeError("boom"),
         ):
             store.ensure_fts_index()
@@ -183,7 +183,7 @@ class TestEnsureFtsIndex:
         assert table is not None
         with mock.patch.object(
             type(table),
-            "create_fts_index",
+            "create_index",
             side_effect=RuntimeError("boom"),
         ):
             assert store.bm25_probe("anything") == []
@@ -199,7 +199,7 @@ class TestEnsureFtsIndex:
         table = store.open_table("chunks")
         assert table is not None
         with (
-            mock.patch.object(type(table), "create_fts_index") as create_spy,
+            mock.patch.object(type(table), "create_index") as create_spy,
             mock.patch.object(type(table), "optimize") as optimize_spy,
         ):
             store.ensure_fts_index()
@@ -208,17 +208,22 @@ class TestEnsureFtsIndex:
         optimize_spy.assert_called_once()
 
     def test_first_call_creates_without_replace(self, store):
-        """Fresh table goes through create_fts_index path with replace=False."""
+        """Fresh table goes through create_index(config=FTS()) with replace=False."""
+        from lancedb.index import FTS
+
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
 
-        with mock.patch.object(type(table), "create_fts_index") as create_spy:
+        with mock.patch.object(type(table), "create_index") as create_spy:
             store.ensure_fts_index()
 
         create_spy.assert_called_once()
-        # Verify replace was NOT True (would defeat the purpose of incremental)
-        _args, kwargs = create_spy.call_args
+        # Builds an FTS index on the chunk column, incrementally (replace was not
+        # True, which would defeat the purpose of incremental optimize()).
+        args, kwargs = create_spy.call_args
+        assert args[0] == "chunk"
+        assert isinstance(kwargs.get("config"), FTS)
         assert kwargs.get("replace") is False
 
     def test_bm25_probe_populates_bm25_score(self, store):

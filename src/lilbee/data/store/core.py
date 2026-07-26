@@ -406,18 +406,20 @@ class Store:
         runs LanceDB's default compaction + version pruning (default prune
         window: 7 days). Work scales with recent deltas rather than total
         chunk count, so large corpora no longer pay the full
-        ``create_fts_index(replace=True)`` rebuild cost on every sync.
+        ``create_index(config=FTS(), replace=True)`` rebuild cost on every sync.
         """
         with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
+            from lancedb.index import FTS
+
             try:
                 if _has_fts_index(table):
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                 else:
-                    table.create_fts_index("chunk", replace=False)
+                    table.create_index("chunk", config=FTS(), replace=False)
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._fts_ready = True
             except Exception:
