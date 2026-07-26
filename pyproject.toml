@@ -70,6 +70,12 @@ dependencies = [
 litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
+# Server-side bulk multiprocess ingest writes each worker's chunk vectors as lance
+# fragments instead of draining them through the parent process. Needs pylance (the
+# fragment API), lazily imported only in that path, so the query/interactive paths
+# and the pre-Haswell +compat standalone never pull it in. Validated against the
+# stock lancedb 0.33 pin: fragments round-trip and ANN/FTS indexes build on them.
+bulk-ingest = ["pylance>=9.0.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
