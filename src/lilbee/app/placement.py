@@ -78,6 +78,10 @@ class PlacementView:
     # Roles sharing one swap group: each is placed, but only one is resident at a
     # time, so their footprints do not sum against the card they name.
     co_tenants: tuple[WorkerRole, ...] = ()
+    # A saved spec this hardware no longer satisfies. The auto plan is what runs,
+    # but the spec stays in config.toml and reapplies once it fits again, so a
+    # surface has to say it is there rather than report placement as plain auto.
+    rejected_spec_json: str | None = None
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -85,7 +89,13 @@ def _active_spec() -> PlacementSpec | None:
     return PlacementSpec.from_json(raw) if raw else None
 
 
-def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -> PlacementView:
+def _view(
+    resolved: ResolvedPlacement,
+    *,
+    manual: bool,
+    spec_json: str | None,
+    rejected_spec_json: str | None = None,
+) -> PlacementView:
     gpus = tuple(
         GpuInfo(
             index=d.index,
@@ -122,14 +132,24 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
             for role, ref in resolved.skipped_not_installed.items()
         ),
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
+        rejected_spec_json=rejected_spec_json,
     )
 
 
 def get_placement() -> PlacementView:
-    """The current effective placement (manual if a spec is set, else auto)."""
+    """The current effective placement (manual if a spec is set, else auto).
+
+    A saved spec that no longer fits the hardware is not the effective placement:
+    the fleet runs the auto plan, and this reports that rather than a manual layout
+    nothing is using.
+    """
     spec = _active_spec()
-    resolved = resolve_placement_plan(spec)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    resolved = resolve_placement_plan(spec, fall_back_to_auto=True)
+    if spec is None:
+        return _view(resolved, manual=False, spec_json=None)
+    if not resolved.spec_applied:
+        return _view(resolved, manual=False, spec_json=None, rejected_spec_json=spec.to_json())
+    return _view(resolved, manual=True, spec_json=spec.to_json())
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
@@ -264,15 +284,21 @@ def active_chat_warm_progress() -> WarmProgress | None:
     A surface gates interactive input on this: ``None`` covers ready, no fleet, a
     missing model, and a finished or failed warm, so nothing traps the input in a
     locked state. Non-``None`` carries the phase and byte progress to render.
+
+    The in-process warm snapshot is checked before ``role_ready`` because the task
+    bar polls this on every tick: the snapshot is a free attribute read, while
+    ``role_ready`` is an HTTP probe of the engine. Ordering it this way keeps the
+    probe to the seconds a load is actually in flight instead of firing forever on
+    an idle TUI. The two orders return the same answer.
     """
     services = peek_services()
     if services is None:
         return None
     provider = services.provider
-    if provider.role_ready(WorkerRole.CHAT):
-        return None
     snapshot = provider.warm_progress()
-    return snapshot if warm_is_reporting(snapshot) else None
+    if not warm_is_reporting(snapshot):
+        return None
+    return None if provider.role_ready(WorkerRole.CHAT) else snapshot
 
 
 def chat_warm_error() -> str | None:

@@ -1471,7 +1471,14 @@ class TestSyncStreamDoneDelivery:
 
         counts_done = json.loads(done_events[0].split("data: ")[1].strip())
         lists_done = json.loads(done_events[1].split("data: ")[1].strip())
-        assert counts_done == {"added": 1, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
+        assert counts_done == {
+            "added": 1,
+            "updated": 0,
+            "removed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "relocated": 0,
+        }
         assert lists_done["added"] == ["fast.txt"]
 
     async def test_done_event_delivered_on_noop_sync(self):
@@ -1493,7 +1500,14 @@ class TestSyncStreamDoneDelivery:
         done_events = [e for e in events if e.startswith("event: done")]
         assert len(done_events) == 2
         counts = json.loads(done_events[0].split("data: ")[1].strip())
-        assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
+        assert counts == {
+            "added": 0,
+            "updated": 0,
+            "removed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "relocated": 0,
+        }
 
     async def test_put_threadsafe_defers_enqueue_to_loop(self):
         """put_threadsafe schedules the enqueue on the loop instead of mutating
@@ -3119,22 +3133,20 @@ class TestDeleteDocuments:
         assert result.removed == []
         assert result.not_found == ["missing.md"]
 
-    async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
+    async def test_removal_keeps_source_file(self, mock_svc, tmp_path):
         from lilbee.data.store import RemoveResult
 
         cfg.documents_dir = tmp_path
         f = tmp_path / "a.md"
         f.write_text("content")
 
-        def fake_remove(names, *, delete_files=False):
-            if delete_files and f.exists():
-                f.unlink()
-            return RemoveResult(removed=["a.md"], not_found=[])
-
-        mock_svc.store.remove_documents.side_effect = fake_remove
-        result = await handlers.delete_documents(["a.md"], delete_files=True)
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
+        )
+        result = await handlers.delete_documents(["a.md"])
         assert result.removed == ["a.md"]
-        assert not f.exists()
+        assert f.exists()  # index-only removal never deletes the source
 
 
 class TestUpdateConfig:
@@ -4382,11 +4394,11 @@ class TestAddHandlerCancel:
         sse = SseStream()
         sse.cancel.set()
 
-        copy_result = MagicMock()
-        copy_result.copied = ["test.txt"]
-        copy_result.skipped = []
+        reg_result = MagicMock()
+        reg_result.registered = ["test.txt"]
+        reg_result.skipped = []
 
-        with patch("lilbee.server.handlers.ingest.copy_files", return_value=copy_result):
+        with patch("lilbee.server.handlers.ingest.register_sources", return_value=reg_result):
             result = await _ingest_h._run_add(
                 paths=[],
                 force=False,

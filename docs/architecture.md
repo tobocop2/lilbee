@@ -99,7 +99,7 @@ the full pipeline over HTTP via `/api/search`.
 
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
-- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill.
+- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill. This diff is streamed shard by shard so embedding starts before the whole corpus is hashed — see [Streaming the plan](#streaming-the-plan-start-embedding-before-the-corpus-is-hashed).
 - **Markdown.** Heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., `# Setup > ## Install`) so each chunk's section context travels with it. Inspired by Anthropic's Contextual Retrieval (2024), which showed adding context to chunks reduces retrieval failures by 49%.
 - **Code.** tree-sitter AST splitting via tree-sitter-language-pack for 150+ languages, with symbol name, type, and line range in chunk headers.
 - **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model on `llama-server`). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
@@ -112,6 +112,48 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
+
+### Planning: which files to ingest
+
+Before any embedding, sync diffs the corpus against the store to decide which files to process. That diff is a **stat-gated hash**, per file.
+
+```mermaid
+flowchart TD
+    F["file on disk"] --> ST{"stored size + mtime<br/>match, and predate<br/>the recorded capture?"}
+    ST -->|yes| U["unchanged — bytes never read"]
+    ST -->|no| H["SHA-256 the bytes"]
+    H --> HC{"hash matches<br/>the stored row?"}
+    HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
+    HC -->|no| SK{"hash matches a<br/>failed-file skip marker?"}
+    SK -->|yes| SKIP["skip — failed here last sync"]
+    SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
+```
+
+The hash is doing two jobs at once, which is why it stays in this pass and cannot move to write time:
+
+- **Change key.** The stored hash is what the next sync diffs against. A stat match alone skips the read; the hash runs only when the stat pair drifts.
+- **Content identity.** The chunks written for a file are keyed by the hash of the *same bytes* they were extracted from. Deferring the hash to flush time would let a file edited mid-run store stale chunks under the new content's hash — the next sync would then see a matching stat, match the stored hash, and never re-process, serving stale chunks forever.
+
+### Streaming the plan: start embedding before the corpus is hashed
+
+Planning the whole corpus first, then embedding, means the GPU fleet sits idle for the entire diff. On a multi-million-file corpus that walk-plus-hash pass is tens of minutes of paid idle before the first passage is embedded.
+
+Instead, the plan is **sharded and overlapped** with ingest. Files are sorted, sliced into contiguous shards (ramping 256 → 8192), and each shard is handed to ingest as it lands. The next shard is planned on a dedicated thread while the current one is being extracted and embedded.
+
+```mermaid
+flowchart LR
+    W["walk + sort corpus"] --> SL["slice into shards<br/>256 → 8192 files"]
+    SL --> P1["plan shard 1"]
+    P1 -->|"fleet starts in ~1s"| I1["extract + embed shard 1"]
+    P1 -.->|"plan next while<br/>shard 1 ingests"| P2["plan shard 2"]
+    P2 --> I2["extract + embed shard 2"]
+    P2 -.-> P3["plan shard 3 …"]
+    P3 --> I3["…"]
+```
+
+Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, skip markers) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
+
+**Why the list is sorted.** `os.walk` yields files in arbitrary filesystem order, so the corpus is sorted by key first. That fixed order is what makes the plan deterministic: classification fans out across a thread pool and completes out of order, but the plan is reassembled in sorted order, so it matches what a single serial pass would produce regardless of thread scheduling (a test asserts `parallel == serial`). It also makes move detection deterministic — when several deleted sources share a content hash, a reappeared file pairs with exactly one old key — and makes the shard boundaries stable, so a killed-and-restarted run re-shards the same corpus the same way.
 
 ### Ingest concurrency: keeping the GPUs fed
 
@@ -197,6 +239,115 @@ Safety limits are identical across both adaptive profiles; only the climb speed 
 | CPU soft / critical | — | — | 90% / 97% |
 | free RAM soft / min | — | — | 20% / 10% |
 | GPU temp warn / critical | — | — | 80°C / 85°C |
+
+### Three ceilings govern ingest throughput
+
+Admission control keeps the GPUs fed, but it is only one of three limits, and tuning the
+wrong one wastes effort. Ingest throughput is the minimum of:
+
+1. **The GPU ceiling.** How fast the cards can actually run the model.
+2. **The admission ceiling.** How many documents the controller lets in flight, which is
+   what the adaptive profiles above tune.
+3. **The CPU decode ceiling.** How fast one core can turn embed responses back into
+   Python objects, because that step holds the GIL and therefore does not scale with
+   threads or with GPUs.
+
+The third is the least obvious and the easiest to misread as a GPU problem, so it is
+worth knowing how to tell them apart:
+
+| What you observe | Which ceiling is binding |
+|---|---|
+| All cards near 100% util, throughput flat | GPU. Add or upgrade cards. |
+| Cards well under 100%, CPU cores all moderate | Admission. The controller is holding back. |
+| Cards uneven and starved, **one** core pegged at 100% | CPU decode. More concurrency will not help. |
+
+The third row is a real failure lilbee hit: 8 A100s capped near 161 docs/sec at roughly
+78% util with cards ranging 10 to 98 percent, while 2 slower L40S cards sat at an even
+97/97 percent. The slower pair was GPU-bound and healthy; the faster eight were waiting
+on a single core. The rest of this section is why, and what fixed it.
+
+#### Embedding responses are binary, not JSON floats
+
+Ingest dispatches embed calls from a thread pool, so many files are in flight at once.
+The network wait overlaps well, because httpx releases the GIL while waiting. Decoding
+the response does not.
+
+That is the whole problem. A vector arriving as JSON decimal literals becomes one Python
+float per dimension, parsed individually under the GIL. A 4096-dimensional vector is
+4096 separately parsed numbers. However many threads or GPUs are running, one core
+decodes all of them, and that core's rate is the fleet's rate.
+
+So lilbee asks for `encoding_format: base64`. The response is still JSON, with the same
+envelope and the same fields. Only the vector itself is written differently:
+
+```jsonc
+// before: 4096 decimal literals to parse, one Python float each
+"embedding": [-0.0029101597, -0.0131583912, 0.0144413067, ...]
+
+// after: one string, decoded by numpy.frombuffer in a single C call
+"embedding": "Ybg+u0uWV7w7m2w8foWVvaJerzvbiCq8C1Yo..."
+```
+
+Measured through the client's own embed path, one core, 4096-dimensional vectors,
+64 per batch:
+
+| | Before (JSON floats) | After (base64) |
+|---|---|---|
+| CPU per 1k vectors | 785 ms | **110 ms** |
+| Response body per batch | 5.41 MB | **1.40 MB** |
+| One-core decode ceiling | ~1,300 vectors/sec | **~9,000 vectors/sec** |
+| Work per vector | 4096 Python float objects | 1 buffer copy |
+| 8xA100 observed | 161 docs/sec, cards 10-98% util | GPU-bound |
+
+Roughly seven times cheaper. The last row is the point: at about eight chunks per
+document, 1,300 vectors/sec works out to about 160 docs/sec, which is exactly where the
+8-card host was stuck. That arithmetic is the quickest field test for whether decode is
+your limit. Divide one core's decode rate by chunks per document and compare it to
+observed throughput.
+
+Reranking shares the `/v1/embeddings` endpoint under rank pooling, so it receives the
+same encoding. Both callers decode through one helper, which keeps the wire format out
+of the score path.
+
+**Why not a real binary protocol?** MessagePack or protobuf would drop base64's 33% size
+inflation, but most of the remaining 110 ms is building Python floats for the caller, not
+the wire format. On the decode alone a raw binary buffer costs 55 ms per 1k vectors
+against base64's 97, so the entire protocol change is worth about 40 ms. It is also not
+reachable: the endpoint is llama.cpp's OpenAI-compatible API, which speaks JSON. Base64
+takes most of the available win using a format the engine already implements.
+
+**Why no strict base64 validation?** Rejecting non-alphabet characters during decode
+measured 12% slower, to guard against corruption that loopback HTTP already excludes. A
+wrong buffer length, a wrong response shape, and a wrong vector dimension are each still
+caught, the last by the store on write.
+
+**Vectors stay numpy to the store.** Most of what was left after base64 was not the wire
+at all. `numpy.frombuffer` gives a float32 array, and the client then called `.tolist()`
+on it, building 4096 Python float objects per vector to satisfy a `list[list[float]]`
+signature. Nothing downstream wanted them: pyarrow and LanceDB take float32 arrays
+directly, and the vector column is float32 either way. So `LLMProvider.embed` returns
+`list[NDArray[float32]]` (`Vector` in `core/vectors.py`) and the conversion is gone.
+
+Measured end to end through `LlamaServerClient.embed` against a mock transport, so the
+figure includes envelope parse, base64 decode, and the client's own batching, not decode
+alone. 4096-dimensional, 64 per batch, median of 7 reps:
+
+| | base64 + `tolist` | base64, numpy |
+|---|---|---|
+| CPU per 1k vectors | 128 ms | **70 ms** |
+
+Base measured against itself across runs varies about 1.5%, so the 46% drop is signal.
+Isolating the decode alone puts the remaining cost near 40 ms per 1k and the one-core
+ceiling around 25,000 vectors/sec, up from roughly 9,000.
+
+Batching the conversion was not the alternative. One contiguous 2D `tolist` measured
+101 ms per 1k against 96 ms per vector: the cost is allocating float objects, not call
+overhead, so only not allocating them helps.
+
+The SDK backends (Ollama, OpenAI via litellm) receive JSON float lists from their SDK
+and convert once at the provider boundary. They are network-bound, so the conversion
+does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
+to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
 ---
 
@@ -1199,6 +1350,52 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 
 `build-cuda-executables.yml` is also dispatchable standalone (`gh workflow run build-cuda-executables.yml -f tag=v...`) to backfill CUDA binaries onto a historical release; in that mode each cell attaches directly to the named release tag instead of relying on `attach-prerelease`.
 
+### Where a build's inputs come from
+
+A release is dominated by two things it should almost never do: compiling `llama-server` (~50 min per leg) and compiling ~9056 C files with Nuitka (~176 min on Windows). Both are pure functions of pinned inputs, so both are fetched rather than rebuilt.
+
+```mermaid
+flowchart TB
+    subgraph WARM["on main · non-tag refs only"]
+        WEC["warm-engine-cache.yml<br/>weekly · on pin change"] --> BMG["build-multigpu.yml"]
+        WXC["warm-executables-cache.yml<br/>weekly · on demand"] --> REL["release.yml"]
+        WXC --> BCE["build-cuda-executables.yml"]
+    end
+
+    BMG ==> MIRROR[["engine-binaries release<br/>content-addressed engine assets"]]
+    BCE ==> MIRROR
+    REL ==> MIRROR
+    REL --> CACHE[("Actions cache<br/>ccache · Nuitka objects")]
+    BCE --> CACHE
+
+    subgraph TAG["on a v* tag · the release"]
+        TB["release.yml · build-cuda-executables.yml"]
+    end
+
+    MIRROR ==>|"1 · engine, ~2 min"| TB
+    CACHE -->|"2 · objects, restore only"| TB
+    SRC["build from source<br/>~50 min engine · ~176 min Nuitka"] -.->|"3 · fallback"| TB
+```
+
+Thick arrow = the fast path. Engines resolve mirror, then Actions cache, then source build, so a missing asset degrades to the old timing rather than failing.
+
+Two properties do the work:
+
+**Tag runs read, they never write.** GitHub scopes a cache save to the creating ref, and a tag is its own scope, so anything a release saved was unreadable by every later run while still evicting the main-scoped entry that would have hit. Every save is now guarded on `github.ref_type != 'tag'`; the warm workflows on main are what populate.
+
+**Engines live on a release, not in the cache.** The Actions cache has a hard 10 GiB per-repo cap with LRU eviction and drops anything unaccessed for 7 days. Engine binaries are ~3.5 GiB of that and are perfectly immutable (every source pinned in `engine-versions.env`), so they sit on the `engine-binaries` release instead, keyed by the same hash the cache key uses.
+
+A built engine is written to the mirror and nowhere else. Storing it in the Actions cache too would spend the cap duplicating what the mirror already holds durably, and that cap is exactly what the Nuitka object caches need: object caches want per-file granularity and must be a cache, engines are a single immutable blob and need not be. Restores still fall through mirror, then cache, then a source build, so engines cached before the mirror existed are still read. `asset_name()` in `tools/wheel-build/ci_mirror.sh` maps key to asset name for both the reader and the writer, because a mismatch there would not fail, it would silently never hit. Fetched with `curl`, not `gh`: the manylinux container the Linux legs build in ships no `gh`.
+
+**Nothing here can change a shipped binary.** Every mechanism either serves bytes that are already identical or misses:
+
+- ccache and clcache key each entry on the preprocessed source plus the compiler and its flags, so a hit is by definition the same object file and a mismatch misses. ccache's correctness sloppiness is left at its conservative default, so translation units using `__DATE__` / `__TIME__` are not cached at all.
+- The engine key covers every input `build_llama_server.sh` reads: backend, toolkit version, the llama.cpp pin, the three pins in `engine-versions.env`, and the build scripts themselves. The remaining variables are parallelism (`ENGINE_BUILD_JOBS`), a scratch path (`LLAMA_BUILD_DIR`), and `TARGET_ARCH`, which CI never sets.
+- `cache-env` carries the runner image or container, which is what fixes the glibc floor. A repointed runner label changes the key and forces a rebuild.
+- Mirror assets never expire, unlike cache entries. That is benign for engines: they are self-contained with a baked rpath, and an engine built on an older image of the same label carries a lower glibc floor, not a higher one.
+
+Two optimisations were tried and rejected for exactly this reason. `--nofollow-import-to=litellm.proxy` would have dropped 581 modules and ~18 min of compile, but `litellm/__init__.py` imports 9 of them on a bare import, so the binary would raise `ImportError` on first use. Gating the CUDA toolkit install on a mirror probe would have saved 4.9 min, but the probe and the fetch are separate requests, and a cell that skips the toolkit and then has to build the engine fails with no `CUDA_PATH`; since these cells are `continue-on-error`, that ships a release missing a CUDA binary rather than failing it.
+
 ### Notes
 
 - **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-cuda-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
@@ -1207,7 +1404,9 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 - **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
 - **`lilbee` and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** Both ship a `lilbee` binary; the formula and `PKGBUILD` declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-cuda`).
 - **Promotion is a same-source re-release, not a mutation.** `make promote FROM=<tag> TO=<version>` (`scripts/promote_release.sh`) puts a commit on top of the FROM tag's commit that changes only the version line in `pyproject.toml`/`uv.lock`, tags it, and pushes just the tag — `main` and the FROM release stay untouched, so releases are immutable and anyone pinned to the old one is unaffected. The rebuild is unavoidable (the version is baked into `--version`, the wheel metadata, and every manifest), but same-source is guaranteed: `release-candidate.yml` classifies a tag as a promotion when its parent commit is itself a `v*` tag and the diff is version-only — read from the git graph, not declared, so it can't be spoofed — and creates the new release with the FROM release's notes under a "Promoted from" banner. `attach-prerelease` skips note regeneration for promoted tags and `make release-promote` keeps the copied notes when marking one latest.
-- **Executable caches are warmed on main.** GitHub cache saves are scoped to the creating ref, so tag runs can never save a cache a later run restores — cold, that's ~2h Linux, ~1h15 macOS, ~4h Windows per release. `warm-executables-cache.yml` (weekly + on demand) runs `release.yml` on main so tag runs restore warm ccache (Linux/macOS) and Nuitka caches (Windows, `NUITKA_CACHE_DIR`) instead. Dispatch it before a promotion: a promoted tag compiles identical source, so the build should hit nearly everything.
+- **Executable caches are warmed on main.** GitHub cache saves are scoped to the creating ref, so tag runs can never save a cache a later run restores — cold, that's ~2h Linux, ~1h15 macOS, ~4h Windows per release. `warm-executables-cache.yml` (weekly + on demand) runs both `release.yml` and `build-cuda-executables.yml` on main so tag runs restore warm ccache (Linux/macOS) and Nuitka caches (Windows, `NUITKA_CACHE_DIR`) instead. Dispatch it before a promotion: a promoted tag compiles identical source, so the build should hit nearly everything.
+- **`CCACHE_DIR` has to be exported, not configured.** `hendrikmuhs/ccache-action` sets ccache's cache directory through its config file, but Nuitka exports its own `CCACHE_DIR` unless one is already set (`nuitka/build/SconsCaching.py`), and the env var outranks the config. Without the explicit export, Nuitka's objects land in a runner-local directory and every release compiles cold while `ccache -s` truthfully reports zero hits on zero lookups.
+- **Cache keys carry the compile flags.** The compat cells build at `-march=x86-64-v2`; sharing a ccache key with the stock cells poisoned both. Keys include `march` where it differs. The two Windows cells compile the same C and deliberately share a restore prefix.
 - **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-cuda-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
 - **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.

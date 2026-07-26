@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from lilbee.app import memory as app_memory
@@ -26,7 +27,7 @@ def svc():
     store.add_memory.return_value = "stored-id"
     store.update_memory.return_value = True
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1, 0.2]
+    embedder.embed.return_value = np.asarray([0.1, 0.2], dtype=np.float32)
     services = make_mock_services(
         store=store,
         embedder=embedder,
@@ -76,7 +77,7 @@ class TestRemember:
         assert record.kind is MemoryKind.PREFERENCE
         assert record.owner == LOCAL_OWNER
         assert record.shared is True
-        assert record.vector == [0.1, 0.2]
+        assert record.vector == pytest.approx([0.1, 0.2])
         assert len(record.id) == 32  # uuid4 hex
 
     def test_agent_owner_extracted_memory_defaults(self, svc):

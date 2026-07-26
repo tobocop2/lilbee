@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from lilbee.core.config import active_config
+from lilbee.core.vectors import Vector
 
 from .types import SearchChunk
 
 
-def cosine_sim(a: list[float], b: list[float]) -> float:
+def cosine_sim(a: Vector | Sequence[float], b: Vector | Sequence[float]) -> float:
     """Cosine similarity between two vectors."""
     arr_a = np.asarray(a, dtype=np.float64)
     arr_b = np.asarray(b, dtype=np.float64)
@@ -21,7 +24,7 @@ def cosine_sim(a: list[float], b: list[float]) -> float:
 
 
 def mmr_rerank(
-    query_vector: list[float],
+    query_vector: Vector,
     results: list[SearchChunk],
     top_k: int,
     mmr_lambda: float | None = None,

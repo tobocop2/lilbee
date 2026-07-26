@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lilbee.core.config import cfg
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk
 
 CONTEXT_TEMPLATE = """Context:
@@ -22,12 +21,13 @@ _CITE_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 # Ranges wider than this are page spans or line numbers, not citation lists.
 _MAX_CITE_RANGE = 32
 
-# Heading shapes that open a model-authored citation block. Anchored to the
-# start of the text as well as to a preceding newline, so an answer that is
-# nothing but a fabricated block (heading at position 0) is still stripped.
+# Heading shapes that open a model-authored citation block: anchored to the
+# start of the text as well as a preceding newline (an answer that is nothing
+# but a fabricated block still strips), optionally markdown-decorated (ATX
+# hashes, emphasis around the word or the colon: "**Sources:**", "*References:*").
+_HEADING_WORDS = r"(?:(?:Key\s+)?Sources|References|Bibliography|Citations)"
 _CITE_HEADING = (
-    r"(?:\n{1,3}|\A)[ \t]*(?:#+\s*)?"
-    r"(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*"
+    r"(?:\n{1,3}|\A)[ \t]*(?:#+\s*)?[*_]{0,3}" + _HEADING_WORDS + r"[*_]{0,3}\s*:?\s*[*_]{0,3}"
 )
 # One list line: a bullet, arrow, "[1]" or "1." marker and the rest of its line.
 _CITE_LIST_LINE = r"[ \t]*(?:[-*•→\[]|\d+[.)])[^\n]*"
@@ -46,7 +46,7 @@ _LLM_CITATION_BLOCK_RE = re.compile(
 # Mid-stream this is ambiguous (the next line decides list vs prose), so it is
 # held back rather than shown; at end of stream it is a dangling artifact of a
 # citation block the model never finished, and is dropped either way.
-_TRAILING_HEADING_RE = re.compile(_CITE_HEADING + r"$", re.IGNORECASE)
+_TRAILING_HEADING_RE = re.compile(_CITE_HEADING + r"\s*$", re.IGNORECASE)
 
 
 def display_source_path(source: str) -> str:
@@ -62,7 +62,9 @@ def display_source_path(source: str) -> str:
     ``resolve(strict=False)`` still returns the absolute path to where the
     file would be, so a moved documents directory renders its old location.
     """
-    candidate = cfg.documents_dir / source
+    from lilbee.data.ingest.discovery import resolve_source_path
+
+    candidate = resolve_source_path(source)
     try:
         resolved = candidate.resolve(strict=False)
     except OSError:
@@ -95,8 +97,10 @@ def _source_label(source: str) -> str:
 def _source_file_url(source: str) -> str | None:
     """A ``file://`` URL to the source on disk, so a reader can click it open, or
     None when the path can't be resolved to an absolute location."""
+    from lilbee.data.ingest.discovery import resolve_source_path
+
     try:
-        return (cfg.documents_dir / source).resolve(strict=False).as_uri()
+        return resolve_source_path(source).resolve(strict=False).as_uri()
     except (OSError, ValueError):
         return None
 

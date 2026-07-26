@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import numpy as np
+
 from lilbee.core.config import cfg
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, MemorySource
 from lilbee.retrieval.query import Searcher
@@ -113,7 +115,7 @@ class TestSearcherMemoryBlock:
         store.search_memories.return_value = [_mem("uses rust")]
         embedder = MagicMock()
         embedder.embedding_available.return_value = True
-        embedder.embed_query.return_value = [0.1, 0.2]
+        embedder.embed_query.return_value = np.asarray([0.1, 0.2], dtype=np.float32)
         block = _searcher(store, embedder)._memory_block("q")
         assert "uses rust" in block
         embedder.embed_query.assert_called_once_with("q")
@@ -130,7 +132,7 @@ class TestSearcherMemoryBlock:
         store.search_memories.return_value = []
         embedder = MagicMock()
         embedder.embedding_available.return_value = True
-        embedder.embed_query.return_value = [0.1, 0.2]
+        embedder.embed_query.return_value = np.asarray([0.1, 0.2], dtype=np.float32)
         _searcher(store, embedder)._memory_block("q")
         assert store.get_memories.call_args.kwargs["owner_predicate"] == human_recall_predicate()
         assert store.search_memories.call_args.kwargs["owner_predicate"] == human_recall_predicate()

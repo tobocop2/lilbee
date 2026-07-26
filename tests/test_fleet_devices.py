@@ -27,8 +27,8 @@ _MIB = 1024 * 1024
 
 
 def _fake_run(stdout: str):
-    def _run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    def _run(*_a: object, **_k: object) -> tuple[str, int]:
+        return stdout, 0
 
     return _run
 
@@ -66,7 +66,7 @@ class TestNvlinkTopology:
         assert pairs == {frozenset({0, 1}), frozenset({0, 2}), frozenset({1, 2})}
 
     def test_real_h100_host_has_nvlink(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_REAL_H100))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_REAL_H100))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_parse_finds_nvlink_pair(self) -> None:
@@ -80,28 +80,28 @@ class TestNvlinkTopology:
         assert pairs == set()
 
     def test_lacks_nvlink_true_for_pcie_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_PCIE))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_PCIE))
         assert dev_mod.host_lacks_nvlink() is True
 
     def test_lacks_nvlink_false_when_linked(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_NVLINK))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_NVLINK))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_unparseable_topo_makes_no_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Garbage output parses zero GPU rows: stay silent rather than mis-warn.
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("some unrelated output\n"))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run("some unrelated output\n"))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_single_gpu_host_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         single = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-31\n"
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(single))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(single))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_probe_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_a: object, **_k: object) -> object:
             raise OSError("no nvidia-smi")
 
-        monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
+        monkeypatch.setattr(dev_mod, "run_bounded", _boom)
         assert dev_mod.host_lacks_nvlink() is False
 
 
@@ -177,14 +177,17 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
 
 
 def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _HealthyProc:
-        returncode = 0
-
-        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
-            return (_CUDA_LISTING, None)
-
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: (_CUDA_LISTING, 0))
     assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
+
+
+def test_run_list_devices_timeout_raises_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _timeout(*_a: object, **_k: object) -> tuple[str, int]:
+        raise subprocess.TimeoutExpired(cmd="llama-server --list-devices", timeout=1.0)
+
+    monkeypatch.setattr(dev_mod, "run_bounded", _timeout)
+    with pytest.raises(ProviderError, match="did not respond"):
+        dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -200,32 +203,6 @@ def test_probe_timeout_raises_and_kills_the_child(tmp_path: Path) -> None:
     script.chmod(0o755)
     with pytest.raises(ProviderError, match="did not respond"):
         probe_devices(script, timeout_s=0.2)
-
-
-def test_probe_abandons_an_unreapable_child(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A child that survives SIGKILL (uninterruptible driver I/O) is abandoned
-    after a bounded reap instead of blocking the caller forever.
-
-    The POSIX group-kill path is forced (repo pattern: simulate the platform)
-    so the same lines are exercised on every CI host, Windows included.
-    """
-
-    class _WedgedProc:
-        pid = 12345
-
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            raise subprocess.TimeoutExpired(cmd="llama-server", timeout=timeout or 0)
-
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _WedgedProc())
-    monkeypatch.setattr(dev_mod.os, "name", "posix")
-    monkeypatch.setattr(dev_mod.os, "killpg", lambda *_a: None, raising=False)
-    monkeypatch.setattr(dev_mod.signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(dev_mod, "_PROBE_KILL_WAIT_S", 0.01)
-    with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="did not respond"):
-        probe_devices(Path("/bin/llama-server"), timeout_s=0.01)
-    assert "abandoned" in caplog.text
 
 
 def test_probe_env_sets_pci_bus_order() -> None:

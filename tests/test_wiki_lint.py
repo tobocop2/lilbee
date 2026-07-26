@@ -357,7 +357,7 @@ class TestPathTraversalDefense:
         store.get_citations_for_wiki.return_value = [cit]
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         error_issues = [i for i in issues if i.severity == IssueSeverity.ERROR]
-        assert any("escapes documents dir" in i.message for i in error_issues)
+        assert any("escapes its root" in i.message for i in error_issues)
 
     def test_wiki_source_traversal_does_not_read_outside_wiki_root(self, tmp_path: Path):
         """A traversal wiki_source must not read/disclose a file outside wiki_root."""

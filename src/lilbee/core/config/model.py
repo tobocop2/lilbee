@@ -84,6 +84,12 @@ class Config(BaseSettings):
     # Writable so plugin-managed servers can pivot storage to a vault path on
     # first boot; rebuild the index after migrating.
     documents_dir: Path = ConfigField(default=Path(), writable=True)
+    # External source roots ``add`` registered, mapping label -> absolute path.
+    # lilbee indexes the files where they live (no copy, no symlink); the label
+    # prefixes their source keys so a root at /data/corpus keys as ``corpus/…``.
+    # Managed by ``add`` / ``remove``, so it is writable (persisted to
+    # config.toml) but not surfaced in the settings UI.
+    linked_roots: dict[str, str] = ConfigField(default_factory=dict, writable=True, public=False)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
@@ -115,6 +121,22 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
+    # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
+    # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
+    # not the GPU-fed extract/embed batch.
+    ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    # Passages packed into one embed request. Larger batches keep a GPU's
+    # continuous-batching slots full: small per-passage requests leave the card
+    # batch-starved (~96% util, low throughput). The engine still re-splits to
+    # its physical batch, so raising this only helps up to the server's --batch.
+    embed_batch_sequences: int = ConfigField(default=64, ge=1, writable=True)
+    # Files allowed in their compute phase at once during ingest. 0 = auto: the
+    # ceiling scales with the detected embed fleet (replicas x per-replica
+    # in-flight) so a multi-GPU box is kept fed without a manual cap, falling back
+    # to the CPU quota on a single card. Set a positive value only to override the
+    # auto sizing. Sizes the extract+embed fan-out, not the plan pass.
+    ingest_max_inflight: int = ConfigField(default=0, ge=0, writable=True)
     # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)

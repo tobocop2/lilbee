@@ -6,6 +6,7 @@ import threading
 import numpy as np
 
 from lilbee.core.config import Config
+from lilbee.core.vectors import Vector
 from lilbee.data.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
@@ -13,12 +14,6 @@ from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedd
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
 log = logging.getLogger(__name__)
-
-# Sequences per embed request, matching the local engine's per-request packing
-# cap so app-level batches feed full server batches. The engine re-splits by
-# exact token counts anyway; for remote SDK providers the resulting char budget
-# (~chunk_size-dependent, ~128 KiB at defaults) stays a safe request-size cap.
-EMBED_BATCH_TARGET_SEQUENCES = 64
 
 
 def _name_base(ref: ProviderModelRef) -> str:
@@ -82,8 +77,13 @@ class Embedder:
 
     @property
     def batch_char_budget(self) -> int:
-        """Per-request char cap: a full packed batch of maximum-size chunks."""
-        return EMBED_BATCH_TARGET_SEQUENCES * self._config.chunk_size * CHARS_PER_TOKEN
+        """Per-request char cap: a full packed batch of maximum-size chunks.
+
+        The target sequences-per-request is ``embed_batch_sequences`` (tunable to
+        keep a multi-GPU fleet's batching slots full); the engine still re-splits
+        to its physical batch, so it is an upper bound, not a guarantee.
+        """
+        return self._config.embed_batch_sequences * self._config.chunk_size * CHARS_PER_TOKEN
 
     @property
     def truncated_total(self) -> int:
@@ -105,7 +105,7 @@ class Embedder:
             self._truncated_total += 1
         return text[:budget]
 
-    def validate_vector(self, vector: list[float]) -> None:
+    def validate_vector(self, vector: Vector) -> None:
         """Validate embedding vector dimension and values."""
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
@@ -149,11 +149,11 @@ class Embedder:
         """Instruction profile for the configured embedder (symmetric if unrecognized)."""
         return resolve_embedding_profile(self._config.embedding_model)
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str) -> Vector:
         """Embed a single document string, return vector."""
         return self._embed_with([text], self._profile().doc_prefix)[0]
 
-    def embed_query(self, text: str) -> list[float]:
+    def embed_query(self, text: str) -> Vector:
         """Embed a single query string, applying the model's query instruction if any."""
         return self._embed_with([text], self._profile().query_instruction)[0]
 
@@ -163,7 +163,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed document texts with adaptive batching, return list of vectors."""
         return self._embed_with(
             texts, self._profile().doc_prefix, source=source, on_progress=on_progress
@@ -175,7 +175,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed query texts (query instruction applied), adaptive batching."""
         return self._embed_with(
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
@@ -188,7 +188,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Adaptive-batched embed of *texts*, each prefixed (query/document instruction).
 
         Fires ``embed`` progress events per batch when *on_progress* is provided.
@@ -197,7 +197,7 @@ class Embedder:
             return []
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
-        vectors: list[list[float]] = []
+        vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:

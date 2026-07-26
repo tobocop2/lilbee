@@ -95,21 +95,22 @@ class LintReport:
 
 def _lint_citation(
     rec: CitationRecord,
-    documents_dir: Path,
 ) -> LintIssue | None:
     """Check a single citation record against the filesystem.
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
-    source_path = documents_dir / rec["source_filename"]
-    wiki_source = rec["wiki_source"]
+    from lilbee.data.ingest.discovery import resolve_source_path_checked
 
-    try:
-        validate_path_within(source_path, documents_dir)
-    except ValueError:
+    wiki_source = rec["wiki_source"]
+    # A registered root legitimately lives outside documents_dir, so containment
+    # is checked against every allowed root: a key that climbs out of all of them
+    # (a crafted ``../`` citation) is rejected before any file is read.
+    source_path = resolve_source_path_checked(rec["source_filename"])
+    if source_path is None:
         return LintIssue(
             wiki_source=wiki_source,
             severity=IssueSeverity.ERROR,
-            message=f"Source path escapes documents dir: {rec['source_filename']}",
+            message=f"Source path escapes its root: {rec['source_filename']}",
             issue_type=IssueType.PATH_TRAVERSAL,
         )
 
@@ -186,7 +187,7 @@ def lint_wiki_page(
 
     citations = store.get_citations_for_wiki(wiki_source)
     for rec in citations:
-        issue = _lint_citation(rec, config.documents_dir)
+        issue = _lint_citation(rec)
         if issue is not None:
             issues.append(issue)
 

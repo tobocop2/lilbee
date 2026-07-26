@@ -64,13 +64,25 @@ def _fake_response(*, status: int = 200, payload: object = None) -> object:
 
 def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-    monkeypatch.setattr(sm, "spawn_llama_swap", lambda *a, **k: proc)
+    monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: proc)
     # Isolate lifecycle tests from the real process-tree teardown.
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
 
+class _FakeProbeClient:
+    """Stands in for the shared probe client; probes call .get on it."""
+
+    def __init__(self, responder) -> None:
+        self._responder = responder
+
+    def get(self, url, timeout=None):
+        return self._responder(url)
+
+
 def _patch_http(monkeypatch: pytest.MonkeyPatch, responder) -> None:
-    monkeypatch.setattr(sm.httpx, "get", lambda url, timeout=None: responder(url))
+    # The probes share one lru_cached httpx.Client (avoids rebuilding an SSL
+    # context per poll), so patch the factory rather than httpx.get.
+    monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(responder))
 
 
 def _raise_connect_error(url):
@@ -119,7 +131,7 @@ class TestStart:
             return _FakeProc(poll_result=None)
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-        monkeypatch.setattr(sm, "spawn_llama_swap", _capturing_popen)
+        monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
@@ -148,7 +160,7 @@ class TestStart:
             return _FakeProc(poll_result=None)
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-        monkeypatch.setattr(sm, "spawn_llama_swap", _capturing_popen)
+        monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
@@ -266,6 +278,22 @@ class TestLifecycle:
         assert terminated  # the owned fleet was torn down
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
+
+    def test_shutdown_releases_the_stopped_engines_death_pipe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stopping the engine must free its death pipe, or reloads accumulate one
+        parked watcher and one fd per model switch on the pipe-bound platforms."""
+        proc = _FakeProc(poll_result=None)
+        _patch_spawn(monkeypatch, proc)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        released: list[int] = []
+        monkeypatch.setattr(sm, "release_death_pipe", released.append)
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.shutdown()
+        assert released == [proc.pid]
 
 
 class _FakeChild:
@@ -838,6 +866,28 @@ class TestStopStaleSwap:
         sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert survivor.terminated is True
 
+    def test_reaps_member_port_servers_the_descendant_snapshot_missed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A server that was reparented away from the swap, or respawned after
+        # the snapshot, is no longer a descendant; only the recorded member
+        # ports find it. Every caller unlinks the record straight after, so a
+        # miss here strands it with nothing left to match it against.
+        port_server = _FakeChild(running=True)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        swept: list[tuple[int, ...]] = []
+        monkeypatch.setattr(
+            sm,
+            "_find_orphan_servers",
+            lambda ports: swept.append(ports) or [port_server],
+        )
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None, member_ports=(9101, 9102)))
+        assert swept == [(9101, 9102)]
+        assert port_server.terminated is True
+
 
 class TestAtomicStateWrite:
     def test_config_and_state_both_land_via_replace_with_no_tmp_leftovers(
@@ -1076,8 +1126,9 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
         monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.httpx.get",
-            lambda url, timeout: _fake_response(status=200),
+            sm,
+            "_probe_client",
+            lambda: _FakeProbeClient(lambda _url: _fake_response(status=200)),
         )
         assert mgr.is_live() is True
 
@@ -1101,10 +1152,10 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
 
-        def boom(url: str, timeout: float) -> object:
+        def boom(_url: str) -> object:
             raise OSError("connection refused")
 
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.get", boom)
+        monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(boom))
         assert mgr.is_live() is False
 
     def test_false_and_no_raise_when_proc_alive_but_port_not_yet_set(self, tmp_path: Path) -> None:
@@ -1574,3 +1625,17 @@ def test_stale_config_tmp_of_a_dead_writer_is_swept(tmp_path: Path) -> None:
     sm._clean_stale_tmp_files(tmp_path)
     assert not dead.exists()
     assert live.exists()  # a live writer's file in flight is never touched
+
+
+def test_probe_client_is_shared_across_calls() -> None:
+    """The engine probes reuse one client: httpx.get would build a fresh Client --
+    and a fresh SSL context, loading the system CA bundle -- on every poll, which
+    the task bar runs at up to 10 Hz."""
+    sm._probe_client.cache_clear()
+    client = sm._probe_client()
+    try:
+        assert sm._probe_client() is client
+    finally:
+        # Close before dropping the cache entry so the pool is not leaked.
+        client.close()
+        sm._probe_client.cache_clear()

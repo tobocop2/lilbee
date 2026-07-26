@@ -9,6 +9,7 @@ from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel
 
+from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     ConceptRecords,
@@ -72,7 +73,7 @@ class ChunkRecord(TypedDict):
     line_end: int
     chunk: str
     chunk_index: int
-    vector: list[float]
+    vector: Vector
     # Stamped once per document by the pipeline (see _produce_records); None
     # when the title is empty, so chunk rows persist NULL like the _sources table.
     title: NotRequired[str | None]
@@ -85,6 +86,9 @@ class SyncResult(BaseModel):
     updated: list[str] = []
     removed: list[str] = []
     unchanged: int = 0
+    # Sources recognized as moved (same content hash, new location): re-keyed to
+    # the new name in place, so their chunks and embeddings were reused, not rebuilt.
+    relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
     # Chunks whose text exceeded the embedder's char budget and were truncated
@@ -97,6 +101,10 @@ class SyncResult(BaseModel):
             f"Updated: {len(self.updated)}",
             f"Removed: {len(self.removed)}",
             f"Unchanged: {self.unchanged}",
+        ]
+        if self.relocated:
+            lines.append(f"Relocated: {len(self.relocated)}")
+        lines += [
             f"Skipped: {len(self.skipped)}",
             f"Failed: {len(self.failed)}",
             f"Truncated: {self.truncated}",

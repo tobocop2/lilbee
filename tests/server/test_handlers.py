@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 from litestar.testing import AsyncTestClient
 
@@ -26,9 +27,11 @@ def isolated_env(tmp_path: Path):
     snapshot = cfg.model_copy()
     docs = tmp_path / "documents"
     docs.mkdir()
+    cfg.data_root = tmp_path
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.linked_roots = {}
     cfg.concept_graph = False
     yield docs
     for name in type(cfg).model_fields:
@@ -41,7 +44,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     embedder = mock.MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = True
     services = make_mock_services(embedder=embedder)
@@ -236,22 +239,26 @@ class TestAddEndpoint:
         sync_mock.assert_not_called()
 
     async def test_add_with_force_flag(self, mock_extract_file, isolated_env, tmp_path):
-        """The force flag allows overwriting existing files."""
+        """The force flag re-points a root whose label is already taken."""
+        from lilbee.core import settings
         from lilbee.server.app import create_app
 
-        src = tmp_path / "dup.txt"
-        src.write_text("Version 1")
-        (isolated_env / "dup.txt").write_text("Existing")
+        one = tmp_path / "a" / "dup"
+        one.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"dup": str(one)})
+        two = tmp_path / "b" / "dup"
+        two.mkdir(parents=True)
 
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post(
-                "/api/add", json={"paths": [str(src)], "force": True}, headers=_auth_headers()
+                "/api/add", json={"paths": [str(two)], "force": True}, headers=_auth_headers()
             )
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
-        assert "dup.txt" in summary["copied"]
+        assert "dup" in summary["copied"]
+        assert cfg.linked_roots["dup"] == str(two.resolve())
 
     async def test_done_event_has_correct_fields(self, mock_extract_file, isolated_env, tmp_path):
         """The done event includes added, updated, removed, failed counts."""
@@ -559,7 +566,7 @@ class TestAddIngestMutex:
         b.release()
 
     async def test_canonical_name_matches_basename(self, isolated_env):
-        """Canonical source names match what ``copy_files`` writes on disk."""
+        """Canonical source names match the label a registered root keys under."""
         from lilbee.runtime.ingest_lock import IngestLockRegistry
 
         assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
@@ -676,9 +683,9 @@ class TestAddIngestMutex:
         """Two uploads that land at different paths must not share one lock.
 
         The registry reduced every key to its basename. That is right for
-        /api/add, where copy_files flattens into documents_dir, but uploads
-        keep their relative layout, so src/util.py and tests/util.py are
-        different files that were being serialized against each other.
+        /api/add, where register_sources keys a root by its basename, but
+        uploads keep their relative layout, so src/util.py and tests/util.py
+        are different files that were being serialized against each other.
         """
         from lilbee.app.services import get_services
 

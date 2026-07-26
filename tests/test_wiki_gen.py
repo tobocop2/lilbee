@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
@@ -58,7 +59,7 @@ def _stub_wiki_index_services(monkeypatch):
     """
     svc = MagicMock()
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
-        [0.1] * cfg.embedding_dim for _ in texts
+        np.full(cfg.embedding_dim, 0.1, dtype=np.float32) for _ in texts
     ]
     monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
     monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
@@ -193,6 +194,15 @@ class TestEmbeddingFaithfulness:
     def test_score_zero_for_missing_inputs(self):
         assert _embedding_faithfulness_score([], [[1.0]]) == 0.0
         assert _embedding_faithfulness_score([1.0], []) == 0.0
+
+    def test_scores_the_float32_array_the_embedder_returns(self):
+        # The body vector arrives from embed_batch as an ndarray; the source
+        # vectors stay lancedb lists.
+        body = np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+        assert _embedding_faithfulness_score(body, [[1.0, 0.0, 0.0]]) == pytest.approx(1.0)
+
+    def test_score_zero_for_empty_body_array(self):
+        assert _embedding_faithfulness_score(np.zeros(0, dtype=np.float32), [[1.0]]) == 0.0
 
     def test_score_zero_on_dim_mismatch_and_warns(self, caplog: pytest.LogCaptureFixture):
         """Off-shape body vector vs source-mean vector returns 0.0 with a warning."""

@@ -47,6 +47,28 @@ Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
 command palette, and `/help` for the slash-command catalog. Every action lilbee
 can take is reachable from one of those three.
 
+### Terminal recommendations
+
+The TUI is a full-screen Textual app, so it looks its best in a terminal with
+24-bit "true color" and a monospaced font that covers box-drawing and
+block/braille glyphs. Anything current handles both: iTerm2, kitty, WezTerm,
+Alacritty, or Ghostty on macOS and Linux; Windows Terminal on Windows; the
+built-in GNOME and KDE terminals. An 8/256-color terminal still runs everything,
+just with a flatter palette.
+
+- **Give it room.** The model bar and layout want about 100 columns; narrower
+  and panels start to wrap.
+- **Over SSH is fine,** but redraws are only as fast as the link, so a laggy
+  connection makes scrolling and model switches feel heavier than they are.
+- **One multiplexer layer, not two.** tmux and screen work well. Nested tmux (a
+  local tmux, then SSH into a second tmux on the remote) is the one setup to
+  avoid: two multiplexers fight over the same escape sequences and mangle
+  box-drawing and the cursor. Attach to the remote session directly, or start
+  lilbee outside the inner tmux.
+- **Colors look washed out?** The terminal is probably in 256-color mode. Pick a
+  truecolor `TERM` such as `xterm-256color`; most terminals then export
+  `COLORTERM=truecolor` and the full palette comes back.
+
 ### First run
 
 The welcome screen walks you through:
@@ -458,12 +480,13 @@ lilbee --json self-check                       # runtime + model self-check
 **Write (LLM calls or long ops):**
 
 ```bash
-lilbee --json add ~/docs ~/notes               # copy files / dirs in, indexes in one call
+lilbee --json add ~/docs ~/notes               # register files / dirs, index them in place
 lilbee --json add https://example.com/page     # URL becomes a markdown source
 lilbee --json sync                             # re-index after edits to the documents directory
 lilbee --json rebuild                          # nuke the index and re-ingest everything
-lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
-lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
+lilbee --json remove manual.pdf                # drop chunks (source files are always kept)
+lilbee --json remove reports/2024              # a folder: remove everything indexed beneath it
+lilbee --json remove '**/*.log'                # a glob: remove every matching source
 lilbee --json ask "question"                   # full local RAG (local llama-server fleet or remote backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
@@ -619,8 +642,9 @@ lilbee ask "Explain this" --model qwen3
 
 | Command | Description |
 |---------|-------------|
-| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
-| `lilbee remove manual.pdf --delete` | Remove and delete the source file |
+| `lilbee remove manual.pdf` | Remove from the index (source files are always kept) |
+| `lilbee remove reports/2024` | Remove every document indexed under a folder |
+| `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |

@@ -212,23 +212,53 @@ jobs:
         if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          # The compat cell compiles at -march=x86-64-v2; without it in the key it
+          # shares an entry with the stock cell and each poisons the other.
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}${{ matrix.march && format('-{0}', matrix.march) || '' }}
           max-size: '2G'
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
           # warm-executables-cache.yml runs this workflow on main so these saves happen.
           save: ${{ github.ref_type != 'tag' }}
 
+      # ccache-action only writes a config file, and Nuitka overrides that with its
+      # own CCACHE_DIR unless one is already exported (nuitka/build/SconsCaching.py),
+      # so none of its C objects ever reached the cached directory. Env beats config.
+      - name: Point ccache at the cached directory
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+
       # Windows has no ccache; Nuitka's own cache (MSVC object caching plus its
       # dependency-analysis caches) is what cuts the ~4h cold compile. Restored
       # from main-saved caches (warm-executables-cache.yml) -- tag-scoped saves
       # are unrestorable, same story as ccache above.
-      - name: Restore Nuitka cache (Windows)
+      # One namespace per Windows runner image, not per backend or asset. Every
+      # Windows cell compiles the same C: MSVC takes no baseline override here, the
+      # CUDA difference is bundled DLLs, and the compat difference is a lancedb
+      # .pyd. Splitting them gave four ~1-3 GB object caches that evicted each
+      # other out of the 10 GiB cap every run, which is why clcache never once hit.
+      # Sharing is safe by construction: clcache keys each entry on the
+      # preprocessed source plus flags, so a mismatched entry misses, never lies.
+      # The asset name stays in the primary key only so concurrent cells do not
+      # save the same key; restore-keys is what shares them.
+      # The mirror is readable from a tag ref, unlike the Actions cache, so a
+      # release starts warm from whatever the last build contributed, and can
+      # contribute its own compile back.
+      - name: Restore the Nuitka cache from the mirror
+        id: nuitka-mirror
         if: runner.os == 'Windows'
+        uses: ./.github/actions/nuitka-object-cache
+        with:
+          phase: restore
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
         uses: actions/cache/restore@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
-          restore-keys: nuitka-${{ matrix.asset_name }}-
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-
 
       - name: Point Nuitka at the cache dir (Windows)
         if: runner.os == 'Windows'
@@ -257,7 +287,7 @@ jobs:
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
-      # Pinned to the latest stable lancedb for Python (0.33), served by the fork as
+      # Pinned to the latest stable lancedb for Python (0.34), served by the fork as
       # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
@@ -265,7 +295,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.33.0+compat
+            lancedb==0.34.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
       # baked rpath) and install lilbee_engine so Nuitka bundles the whole
@@ -298,7 +328,28 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+
+      # Any ref, including tags. See the action for why this cannot be an
+      # actions/cache save.
+      # success() is explicit rather than load-bearing: steps already carry an
+      # implicit success(), so a failed compile would not reach this anyway. It
+      # is spelled out because first-publish-wins makes a partial cache permanent
+      # for the key, and that guarantee should not rest on an implicit default.
+      #
+      # continue-on-error because this is a pure optimisation sitting between a
+      # finished compile and the artifact upload. ci_mirror.sh soft-fails on its
+      # own errors, but mktemp and wc run under set -euo pipefail and can still
+      # hard-exit; on a soft cell that would go green with the asset missing.
+      - name: Publish the Nuitka cache to the mirror
+        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
+        continue-on-error: true
+        uses: ./.github/actions/nuitka-object-cache
+        with:
+          phase: publish
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+          token: ${{ github.token }}
+
 
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.
@@ -459,6 +510,8 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
+          # The onefile payload is already zstd-compressed; deflating it again buys nothing.
+          compression-level: 0
 
 
       # Eager attach: release-candidate creates the pre-release shell before

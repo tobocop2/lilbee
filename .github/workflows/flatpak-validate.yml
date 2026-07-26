@@ -29,6 +29,9 @@ concurrency:
   group: flatpak-validate-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write  # bundle-llama-server publishes the manylinux engine to the mirror
+
 jobs:
   build:
     runs-on: ubuntu-latest

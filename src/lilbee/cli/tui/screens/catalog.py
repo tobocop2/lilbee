@@ -66,6 +66,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     row_delete_id,
     variant_to_row,
 )
+from lilbee.cli.tui.spinner import SPINNER_FRAMES
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
@@ -134,11 +135,10 @@ _TAB_ACTIVATION_RETRY_BUDGET = 20
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
-# Braille spinner frames for the catalog pagination/search loading
-# indicator. Cycled on a 100 ms timer while the catalog is fetching
-# more HF rows or a remote search is in flight, so the user always
-# has a moving signal during the wait instead of an empty pane.
-_SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+# Spinner cadence for the catalog pagination/search loading indicator: cycled on
+# a 100 ms timer while the catalog fetches more HF rows or a remote search is in
+# flight, so the wait always shows a moving signal instead of an empty pane. The
+# frames come from the shared, Rich-sourced ``SPINNER_FRAMES``.
 _SPINNER_INTERVAL_S = 0.1
 
 _RowCacheKey = tuple[int, int, int, int, int, int]
@@ -1355,7 +1355,7 @@ class CatalogScreen(Screen[None]):
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
         if self._loading_more:
-            return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+            return msg.CATALOG_GRID_LOADING_MORE.format(frame=SPINNER_FRAMES[self._spinner_frame])
         if self._active_task_has_more():
             return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
@@ -1658,7 +1658,7 @@ class CatalogScreen(Screen[None]):
         active = self._loading_more or self._search_in_flight
         if active:
             spinner.styles.display = "block"
-            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
+            spinner.update(f"{SPINNER_FRAMES[self._spinner_frame]} loading…")
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
@@ -1671,7 +1671,7 @@ class CatalogScreen(Screen[None]):
                     hint = self._grid_container.query_one(".scroll-hint", Static)
                     hint.update(
                         msg.CATALOG_GRID_LOADING_MORE.format(
-                            frame=_SPINNER_FRAMES[self._spinner_frame]
+                            frame=SPINNER_FRAMES[self._spinner_frame]
                         )
                     )
         else:
@@ -1694,15 +1694,15 @@ class CatalogScreen(Screen[None]):
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
-        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
         with contextlib.suppress(Exception):
             spinner = self.query_one("#catalog-loading-spinner", Static)
-            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
+            spinner.update(f"{SPINNER_FRAMES[self._spinner_frame]} loading…")
         if self._loading_more:
             with contextlib.suppress(Exception):
                 hint = self._grid_container.query_one(".scroll-hint", Static)
                 hint.update(
-                    msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+                    msg.CATALOG_GRID_LOADING_MORE.format(frame=SPINNER_FRAMES[self._spinner_frame])
                 )
 
     def _update_sort_label(self) -> None:

@@ -14,7 +14,12 @@ if TYPE_CHECKING:
 
     from lilbee.runtime.progress import DetailedProgressCallback
 
-from lilbee.app.ingest import CopyResult, copy_files
+from lilbee.app.ingest import (
+    RegisterResult,
+    expand_remove_targets,
+    register_sources,
+    remove_documents_durably,
+)
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.cli import theme
@@ -66,6 +71,12 @@ _paths_argument = typer.Argument(
 )
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
+_max_cpus_option = typer.Option(
+    None,
+    "--max-cpus",
+    min=1,
+    help="Cap the workers used to discover and hash files. Unset = auto (all available cores).",
+)
 _crawl_option = typer.Option(
     False,
     "--crawl",
@@ -341,10 +352,13 @@ def sync_cmd(
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     retry_skipped: bool = _retry_skipped_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
 
     try:
         result = _run_sync_with_signal_cancel(retry_skipped=retry_skipped)
@@ -365,10 +379,13 @@ def rebuild(
     use_global: bool = global_option,
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
     from lilbee.data.ingest import SyncResult
 
     try:
@@ -457,12 +474,12 @@ def _crawl_urls_step(
 
 
 def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: bool) -> None:
-    """Run the JSON-mode finish: copy files, sync, emit one structured result."""
+    """Run the JSON-mode finish: register roots, sync, emit one structured result."""
     from lilbee.data.ingest import sync
 
-    copy_result = CopyResult()
+    reg_result = RegisterResult()
     if file_paths:
-        copy_result = copy_files(file_paths, force=force)
+        reg_result = register_sources(file_paths, force=force)
     # Headless one-shot ingest: only the embed server is needed, so suppress eager
     # start (matching the interactive path) instead of warming every role's VRAM.
     cfg.worker_pool_eager_start = False
@@ -470,8 +487,8 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     json_output(
         {
             "command": "add",
-            "copied": copy_result.copied,
-            "skipped": copy_result.skipped,
+            "copied": reg_result.registered,
+            "skipped": reg_result.skipped,
             "crawled": len(crawled_paths),
             "sync": sync_result_to_json(result),
         }
@@ -489,10 +506,13 @@ def add(
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
     include_subdomains: bool = _include_subdomains_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
-    """Copy files or crawl URLs into the knowledge base and ingest them."""
+    """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
 
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
@@ -567,11 +587,11 @@ def chunks(
 
 
 _remove_names_argument = typer.Argument(
-    ..., help="Source name(s) to remove from the knowledge base."
+    ..., help="Source name(s), folder(s), or glob pattern(s) to remove from the knowledge base."
 )
 
-_delete_file_option = typer.Option(
-    False, "--delete", help="Also delete the file from the documents directory."
+_remove_yes_option = typer.Option(
+    False, "--yes", "-y", help="Skip the confirmation prompt when a name expands to many documents."
 )
 
 
@@ -579,14 +599,25 @@ def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    delete_file: bool = _delete_file_option,
+    yes: bool = _remove_yes_option,
 ) -> None:
-    """Remove documents from the knowledge base by source name."""
+    """Remove documents from the knowledge base by source name, folder, or glob pattern.
+
+    A folder name removes every document indexed beneath it; a glob pattern
+    (containing ``*``, ``?``, or ``[]``) removes every source it matches. Source
+    files on disk are never deleted.
+    """
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    result = get_services().store.remove_documents(
-        names, delete_files=delete_file, documents_dir=cfg.documents_dir
-    )
+    known = [s["filename"] for s in get_services().store.get_sources()]
+    targets = expand_remove_targets(names, known=known)
+    expanded = sorted(set(targets)) != sorted(set(names))
+    if expanded and not yes and not cfg.json_mode:
+        # Count only what actually exists; not-found names are kept in targets.
+        removable = sum(1 for t in targets if t in set(known))
+        typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
+
+    result = remove_documents_durably(names, targets=targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

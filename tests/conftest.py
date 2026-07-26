@@ -7,6 +7,7 @@ import warnings
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 # Opt tests out of the per-role catalog-task validator at import time so
@@ -215,16 +216,23 @@ def _reset_services_after_test():
 
 @pytest.fixture(autouse=True)
 def _join_fleet_background_threads():
-    """Join lingering fleet warm-up / reload daemon threads after each test.
+    """Retire the fleet's background threads after each test.
 
-    ``warm_up_pool`` / ``reload_role`` dispatch fire-and-forget daemon threads; on a
-    host without the engine binary they fail fast and log a warning. Joining them
-    here keeps that warning inside the test that started the thread instead of
-    leaking it into a later test's log capture.
+    Two shapes need retiring. ``warm_up_pool`` / ``reload_role`` dispatch
+    fire-and-forget daemon threads that end on their own once joined; on a host
+    without the engine binary they fail fast, and joining keeps that warning
+    inside the test that started them. The child-guard spawner is different: its
+    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    never ends (it parks waiting for the next spawn), so any test that ran a real
+    probe or launch must close it, or the leak guard flags it against whatever
+    test happens to run next.
     """
     yield
     import threading
 
+    from lilbee.providers.fleet import child_guard
+
+    child_guard._spawner.close()
     for thread in threading.enumerate():
         if thread.name.startswith("fleet-") and thread.is_alive():
             thread.join(timeout=5.0)
@@ -436,10 +444,14 @@ def _default_store_mock():
 
 def _default_embedder_mock():
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
-    embedder.embed_query.return_value = [0.1] * 768
-    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    embedder.embed_query_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
+    embedder.embed_query.return_value = np.full(768, 0.1, dtype=np.float32)
+    embedder.embed_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
+    embedder.embed_query_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
     # Production reads embedder.truncated_total to compute the per-sync delta; the
     # mock never truncates, so it must report a real 0 rather than a MagicMock.
     embedder.truncated_total = 0
@@ -654,3 +666,8 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
         ),
     )
     return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
+async def one_shard(files):
+    """Present a known file list to ``ingest_stream`` as a single-shard stream."""
+    yield list(files)

@@ -3,9 +3,10 @@
 from contextlib import contextmanager
 from unittest import mock
 
+import numpy as np
 import pytest
 
-from lilbee.core.config import META_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, META_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
@@ -53,6 +54,49 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
         }
         for i in range(n)
     ]
+
+
+def _axis_record(source, axis, dim):
+    """A chunk record whose vector is the float32 array the embedder now returns."""
+    vector = np.zeros(dim, dtype=np.float32)
+    vector[axis] = 1.0
+    return {
+        "source": source,
+        "content_type": "text",
+        "chunk_type": "raw",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": f"{source} body",
+        "chunk_index": 0,
+        "vector": vector,
+    }
+
+
+class TestNumpyVectorRoundTrip:
+    """Embedder vectors reach LanceDB as float32 arrays, never as Python float lists."""
+
+    def test_stores_array_vectors_bit_identically(self, store):
+        dim = cfg.embedding_dim
+        vector = np.linspace(-1.0, 1.0, dim, dtype=np.float32)
+        record = _axis_record("exact.md", 0, dim) | {"vector": vector}
+        store.add_chunks([record])
+        row = store.open_table(CHUNKS_TABLE).search().to_list()[0]
+        assert np.array_equal(np.asarray(row["vector"], dtype=np.float32), vector)
+
+    def test_array_query_vector_finds_its_own_row(self, store):
+        dim = cfg.embedding_dim
+        store.add_chunks([_axis_record("a.md", 0, dim), _axis_record("b.md", 1, dim)])
+        query = np.zeros(dim, dtype=np.float32)
+        query[1] = 1.0
+        hits = store.search(query, top_k=1, max_distance=0, query_text=None)
+        assert [h.source for h in hits] == ["b.md"]
+
+    def test_array_dim_mismatch_is_rejected(self, store):
+        record = _axis_record("wrong.md", 0, cfg.embedding_dim - 1)
+        with pytest.raises(ValueError, match="Vector dimension mismatch"):
+            store.add_chunks([record])
 
 
 class TestWriteLockDir:
@@ -1417,48 +1461,26 @@ class TestRemoveDocuments:
             assert result.removed == []
             assert result.not_found == ["missing.md"]
 
-    def test_deletes_physical_file(self, store, tmp_path):
+    def test_never_deletes_physical_file(self, store, tmp_path):
+        # Store removal is index-only; the source file on disk is never touched.
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
             mock.patch.object(store, "_remove_many_unlocked"),
         ):
             f = tmp_path / "a.md"
             f.write_text("content")
-            result = store.remove_documents(["a.md"], delete_files=True, documents_dir=tmp_path)
+            result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
-            assert not f.exists()
+            assert f.exists()
 
-    def test_blocks_path_traversal(self, store, tmp_path):
-        with (
-            mock.patch.object(
-                store, "get_sources", return_value=[{"filename": "../../../etc/passwd"}]
-            ),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
-            secret = tmp_path.parent / "secret.txt"
-            secret.write_text("don't delete me")
-            result = store.remove_documents(
-                ["../../../etc/passwd"], delete_files=True, documents_dir=tmp_path
-            )
-            assert result.removed == ["../../../etc/passwd"]
-            assert secret.exists()
-
-    def test_nonexistent_file_still_removes_from_store(self, store, tmp_path):
+    def test_nonexistent_file_still_removes_from_store(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
             mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
-            result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
+            result = store.remove_documents(["gone.md"])
             assert result.removed == ["gone.md"]
             mock_del.assert_called_once()
-
-    def test_uses_default_documents_dir(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
-            result = store.remove_documents(["a.md"])
-            assert result.removed == ["a.md"]
 
     def test_chunk_and_source_deleted_under_single_lock(self, store):
         """Both deletes for one document run inside one write_lock acquisition.
@@ -2972,3 +2994,76 @@ class TestSourceMetadata:
         row = store.get_sources()[0]
         assert row["title"] == "Batched Title"
         assert row["authors"] == "Ada"
+
+
+class TestRelocateSources:
+    def test_relocate_rekeys_chunks_and_source_preserving_vectors(self, store):
+        from lilbee.data.store import SourceType
+        from lilbee.data.store.types import SourceStat
+
+        records = _make_records(n=2)
+        for r in records:
+            r["source"] = "old/a.md"
+        store.add_chunks(records)
+        store.upsert_source("old/a.md", "hash123", 2, SourceType.DOCUMENT)
+        before = store.get_chunks_by_source("old/a.md")
+        assert len(before) == 2
+
+        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(10, 20, 30))])
+
+        assert store.get_chunks_by_source("old/a.md") == []
+        after = store.get_chunks_by_source("new/a.md")
+        assert len(after) == 2  # chunks (and their vectors) carried over, not rebuilt
+        names = {s["filename"] for s in store.get_sources()}
+        assert "new/a.md" in names
+        assert "old/a.md" not in names
+        moved = next(s for s in store.get_sources() if s["filename"] == "new/a.md")
+        assert moved["file_hash"] == "hash123"  # same content, hash unchanged
+
+    def test_relocate_rekeys_every_source_table(self, store):
+        # Guards _RELOCATABLE_TABLES: page_texts.source and citations.source_filename
+        # must move too, so dropping a table from the list fails here.
+        from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, PAGE_TEXTS_TABLE
+        from lilbee.data.store import SourceType
+        from lilbee.data.store.types import SourceStat
+
+        records = _make_records(n=1)
+        records[0]["source"] = "old/a.md"
+        store.add_chunks(records)
+        store.add_page_texts(
+            [{"source": "old/a.md", "page": 1, "text": "t", "content_type": "text"}]
+        )
+        store.add_citations(
+            [
+                {
+                    "wiki_source": "w.md",
+                    "wiki_chunk_index": 0,
+                    "citation_key": "k",
+                    "claim_type": "support",
+                    "source_filename": "old/a.md",
+                    "source_hash": "h",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "excerpt": "e",
+                    "created_at": "",
+                }
+            ]
+        )
+        store.upsert_source("old/a.md", "h", 1, SourceType.DOCUMENT)
+
+        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(1, 2, 3))])
+
+        chunks = store.open_table(CHUNKS_TABLE)
+        pages = store.open_table(PAGE_TEXTS_TABLE)
+        cites = store.open_table(CITATIONS_TABLE)
+        assert chunks.count_rows("source = 'new/a.md'") == 1
+        assert chunks.count_rows("source = 'old/a.md'") == 0
+        assert pages.count_rows("source = 'new/a.md'") == 1
+        assert pages.count_rows("source = 'old/a.md'") == 0
+        assert cites.count_rows("source_filename = 'new/a.md'") == 1
+        assert cites.count_rows("source_filename = 'old/a.md'") == 0
+
+    def test_relocate_empty_is_noop(self, store):
+        store.relocate_sources([])  # must not raise or acquire the lock

@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.llm_json import json_reply_format
+from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     MemoryKind,
@@ -292,9 +293,9 @@ class Searcher:
 
     def _apply_guardrails(
         self,
-        variants: list[tuple[str, list[float]]],
-        question_vec: list[float],
-    ) -> list[tuple[str, list[float]]]:
+        variants: list[tuple[str, Vector]],
+        question_vec: Vector,
+    ) -> list[tuple[str, Vector]]:
         """Drop expansion variants whose embedding drifts too far from the question."""
         if not self._config.expansion_guardrails:
             return variants
@@ -332,9 +333,7 @@ class Searcher:
         log.info("Query expansion produced %d variants", len(kept))
         return kept
 
-    def _expand_query(
-        self, question: str, question_vec: list[float]
-    ) -> list[tuple[str, list[float]]]:
+    def _expand_query(self, question: str, question_vec: Vector) -> list[tuple[str, Vector]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
         LLM variants run through ``_apply_guardrails``; concept-graph
@@ -350,7 +349,7 @@ class Searcher:
         short_threshold = self._config.expansion_short_query_tokens
         skip_llm = short_threshold > 0 and len(_tokenize(question)) <= short_threshold
         try:
-            llm_variants: list[tuple[str, list[float]]] = []
+            llm_variants: list[tuple[str, Vector]] = []
             if count > 0 and not skip_llm:
                 llm_texts = list(self._llm_expand(question, count))
                 if llm_texts:
@@ -526,7 +525,7 @@ class Searcher:
     def _merge_variant_results(
         self,
         question: str,
-        query_vec: list[float],
+        query_vec: Vector,
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,

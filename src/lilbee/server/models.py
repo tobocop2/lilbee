@@ -394,6 +394,7 @@ class SyncSummary(BaseModel):
     updated: list[str] = []
     removed: list[str] = []
     unchanged: int = 0
+    relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
     truncated: int = 0
@@ -669,6 +670,7 @@ class PlacementResponse(BaseModel):
     skipped_not_installed: list[SkippedRoleResponse] = []
     co_tenants: list[str] = []
     notice: str | None = None
+    rejected_spec_json: str | None = None
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -692,6 +694,7 @@ class PlacementResponse(BaseModel):
                 SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
             ],
             co_tenants=[r.value for r in view.co_tenants],
+            rejected_spec_json=view.rejected_spec_json,
         )
 
 

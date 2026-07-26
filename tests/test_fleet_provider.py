@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
+import struct
 import threading
 import time
 from pathlib import Path
@@ -2508,6 +2510,12 @@ class _FakeReplica:
     def mark_healthy(self) -> None:
         self.healthy = True
 
+    def reserve(self) -> None:
+        self.in_flight += 1
+
+    def release(self) -> None:
+        self.in_flight -= 1
+
     def close(self) -> None:
         """Rediscovery retires the pool; a real client's close releases httpx."""
 
@@ -2530,6 +2538,52 @@ class _FakeReplica:
         if self.fail is not None:
             raise self.fail
         return "ocr text"
+
+
+class TestReserveSpreadsLoad:
+    def test_reserve_at_selection_spreads_concurrent_picks(self) -> None:
+        # Every picker reserves before the next selects, so four idle replicas
+        # each get exactly one request instead of all landing on the first
+        # (the thundering herd that left cards idle on the 8x A100 fleet).
+        replicas = [_FakeReplica() for _ in range(4)]
+        picked = [prov_mod._reserve_least_in_flight(replicas) for _ in range(4)]
+        assert {id(c) for c in picked} == {id(c) for c in replicas}
+        assert all(r.in_flight == 1 for r in replicas)
+
+    def test_call_with_failover_releases_the_reservation(self) -> None:
+        replicas = [_FakeReplica(), _FakeReplica()]
+        prov_mod._call_with_failover(replicas, lambda c: c.embed(["x"]))
+        assert all(r.in_flight == 0 for r in replicas)  # reservation released
+
+    def test_failover_releases_both_reservations(self) -> None:
+        import httpx
+
+        bad = _FakeReplica(fail=httpx.ConnectError("refused"))
+        good = _FakeReplica()
+        prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
+        assert bad.in_flight == 0 and good.in_flight == 0  # both released
+        assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
+
+    def test_concurrent_dispatch_does_not_pile_on_one_replica(self) -> None:
+        import threading
+
+        replicas = [_FakeReplica() for _ in range(4)]
+        # Each request holds its reservation at the barrier until all 8 have been
+        # reserved, so every reservation is live while the others are selecting.
+        # With the atomic reserve the 8 requests spread evenly (2 per replica);
+        # without it the herd piled onto whichever replica read idlest first.
+        overlap = threading.Barrier(8)
+
+        def _dispatch() -> None:
+            prov_mod._call_with_failover(replicas, lambda c: (overlap.wait(), c.embed(["x"]))[1])
+
+        threads = [threading.Thread(target=_dispatch) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(r.calls == 2 for r in replicas)  # perfectly spread, no herd
+        assert all(r.in_flight == 0 for r in replicas)  # all released
 
 
 class TestReplicaHealthRouting:
@@ -2690,7 +2744,8 @@ class TestReplicaHealthRouting:
         def _handler(name: str):
             def handler(_request: _httpx.Request) -> _httpx.Response:
                 calls[name] += 1
-                return _httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+                vector = base64.b64encode(struct.pack("<f", 0.25)).decode()
+                return _httpx.Response(200, json={"data": [{"embedding": vector}]})
 
             return handler
 
@@ -3727,25 +3782,27 @@ def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
     monkeypatch, tmp_path: Path
 ) -> None:
     """The machine slot is shared; whose config decides must not be exit order."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
     swap, _machine = _bindable_machine(monkeypatch, tmp_path)
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    warm = FleetProvider()
-    assert warm._ensure_fleet() is True
+    # The warm user is a sibling installation, seeded under its own config root.
+    request_keep_warm(_machine, tmp_path / "peer-install")
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
-    assert swap.started == []  # both bound the one machine engine
+    assert swap.started == []  # bound the one machine engine
 
-    warm.shutdown()
     plain.shutdown()  # last out, and its own config says stop
     assert stopped == []
 
 
 def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
     """The opt-in belongs to the engine, so it outlives the process that made it."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
     _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
@@ -3753,12 +3810,10 @@ def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    warm = FleetProvider()
-    assert warm._ensure_fleet() is True
+    # A sibling installation opted in and has already left: only its mark
+    # remains, which is exactly what "outlive me" means.
+    request_keep_warm(_machine, tmp_path / "peer-install")
 
-    warm.shutdown()  # the opt-in user leaves first
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain.shutdown()  # last out, reading a config that says stop
     assert stopped == []
 
@@ -3818,7 +3873,7 @@ def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
     from lilbee.providers.fleet.swap_manager import stop_engine
     from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
 
-    request_keep_warm(tmp_path)
+    request_keep_warm(tmp_path, tmp_path / "cfgroot")
     assert keep_warm_requested(tmp_path) is True
     stop_engine(tmp_path)
     assert keep_warm_requested(tmp_path) is False
@@ -3835,8 +3890,58 @@ def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> N
     assert stopped == []
 
 
-def test_ttl_applies_even_with_warm_on(monkeypatch) -> None:
+def test_turning_warm_off_mid_session_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """A withdrawn opt-in must not keep the engine: the mark is this user's, not the engine's.
+
+    Without withdrawal the mark outlives the setting, and because the mark is
+    what suppresses ``stop_engine`` -- the only thing that clears it -- the
+    engine stays resident on every later run too.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p.shutdown()
+    assert stopped == [machine]
+
+
+def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A mark left by an earlier run of this install (new pid, same config root)
+
+    is reclaimed on a later warm-off run, so the engine stops rather than staying
+    warm forever. The opt-in is keyed by config root precisely so a restart can
+    reach its own prior mark.
+    """
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    # An earlier run of this same installation opted in, then exited.
+    request_keep_warm(machine, prov_mod.cfg.data_root)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    restarted_pid = os.getpid() + 4242
+    monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # this run is a new process
+    p.shutdown()
+    assert stopped == [machine]
+
+
+def test_warm_on_pins_weights_resident(monkeypatch) -> None:
+    # keep_engine_warm means the model stays loaded, so the idle unload is off.
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
+    assert prov_mod._warm_ttl_seconds() == 0
+
+
+def test_ttl_applies_with_warm_off(monkeypatch) -> None:
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
     assert prov_mod._warm_ttl_seconds() == 420
 

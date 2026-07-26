@@ -4,11 +4,12 @@ import logging
 from unittest import mock
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.chunk import CHARS_PER_TOKEN
-from lilbee.retrieval.embedder import EMBED_BATCH_TARGET_SEQUENCES, Embedder
+from lilbee.retrieval.embedder import Embedder
 
 
 @pytest.fixture()
@@ -106,13 +107,13 @@ class TestEmbedBatch:
         """The app-layer cap allows a full packed batch of max-size chunks."""
         assert (
             embedder.batch_char_budget
-            == EMBED_BATCH_TARGET_SEQUENCES * cfg.chunk_size * CHARS_PER_TOKEN
+            == cfg.embed_batch_sequences * cfg.chunk_size * CHARS_PER_TOKEN
         )
 
     def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
         """A typical bulk-ingest batch of default-size chunks lands in one embed request."""
         chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
-        texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
+        texts = ["x" * (chunk_chars // 2) for _ in range(cfg.embed_batch_sequences)]
         mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]
         embedder.embed_batch(texts)
         assert mock_provider.embed.call_count == 1
@@ -127,9 +128,31 @@ class TestEmbedBatch:
         assert len(call_input[1]) == embedder.embed_char_budget
 
 
+class TestVectorType:
+    def test_embed_returns_the_provider_array_unconverted(self, embedder, mock_provider):
+        vector = np.full(768, 0.1, dtype=np.float32)
+        mock_provider.embed.return_value = [vector]
+        assert embedder.embed("test") is vector
+
+    def test_embed_batch_elements_stay_float32_arrays(self, embedder, mock_provider):
+        mock_provider.embed.return_value = [np.zeros(768, dtype=np.float32) for _ in range(2)]
+        vectors = embedder.embed_batch(["a", "b"])
+        assert all(isinstance(v, np.ndarray) and v.dtype == np.float32 for v in vectors)
+
+
 class TestValidateVector:
     def test_valid_vector_passes(self, embedder):
-        embedder.validate_vector([0.1] * 768)
+        embedder.validate_vector(np.full(768, 0.1, dtype=np.float32))
+
+    def test_array_wrong_dim_raises(self, embedder):
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            embedder.validate_vector(np.zeros(2, dtype=np.float32))
+
+    def test_array_invalid_value_raises(self, embedder):
+        vector = np.zeros(768, dtype=np.float32)
+        vector[5] = np.nan
+        with pytest.raises(ValueError, match="invalid value at index 5"):
+            embedder.validate_vector(vector)
 
     def test_embed_wrong_dim_raises(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.1, 0.2]]

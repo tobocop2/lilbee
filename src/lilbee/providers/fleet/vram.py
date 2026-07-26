@@ -15,6 +15,7 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
+from lilbee.providers.fleet.proc import run_bounded
 
 # gguf-parser CLI flags (the batch flags are shared with the llama-server argv builder).
 _FLAG_PATH = "--path"
@@ -45,6 +46,9 @@ _KEY_NONUMA = "nonuma"
 
 _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
+# Bounded wait for a timed-out parser to die before abandoning it (matches the
+# device probe): a parser wedged in driver I/O must not hang the warm-up thread.
+_PARSE_KILL_WAIT_S = 5.0
 _CACHE_SIZE = 64
 
 # Mirrors vLLM's gpu_memory_utilization default: never charge a GPU past 90% of
@@ -257,17 +261,20 @@ def estimator_argv(
 
 def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
+    failed = ProviderError(
+        f"Could not size the model {path_str!r}: the memory estimator failed to run.",
+        provider=_PROVIDER,
+        kind=ProviderErrorKind.SERVER,
+    )
     try:
-        proc = subprocess.run(  # noqa: S603 - argv[0] is the resolved gguf-parser
-            argv, capture_output=True, text=True, timeout=_PARSE_TIMEOUT_S, check=True
+        stdout, returncode = run_bounded(
+            argv, timeout_s=_PARSE_TIMEOUT_S, kill_wait_s=_PARSE_KILL_WAIT_S, label="gguf-parser"
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ProviderError(
-            f"Could not size the model {path_str!r}: the memory estimator failed to run.",
-            provider=_PROVIDER,
-            kind=ProviderErrorKind.SERVER,
-        ) from exc
-    return proc.stdout
+        raise failed from exc
+    if returncode != 0:
+        raise failed
+    return stdout
 
 
 def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:

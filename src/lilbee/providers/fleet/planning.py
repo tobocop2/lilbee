@@ -41,7 +41,7 @@ from lilbee.providers.fleet.placement import (
     placement_from_spec,
     plan_placement,
 )
-from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
 from lilbee.providers.model_ref import parse_model_ref
@@ -116,19 +116,14 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 _SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
 
-# The chat server loads its weights into a malloc'd host copy (--no-mmap) when
-# they fit in at most this fraction of total system RAM: a buffered sequential
-# read beats mmap's page-fault-driven upload measured on a hot cache (#474:
-# 33s vs 43s for a 112GB model on 3 GPUs), but the copy is unevictable, so a
-# host where the weights crowd RAM keeps mmap. Keyed on TOTAL memory (stable),
-# not free (fluctuates), so replans do not flap the launch argv and force
-# needless chat restarts. Replicated roles keep mmap regardless: their
-# replicas share one set of page-cache pages, and per-replica host copies
-# would multiply RAM use for no load-time win.
-_NO_MMAP_MAX_RAM_FRACTION = 0.5
 # A network filesystem makes mmap dangerous (page faults served over the wire can
-# wedge the loader in uninterruptible I/O), so prefer a buffered read whenever the
-# host copy fits, at a higher RAM fraction than the local-disk hot-cache case. The
+# wedge the loader in uninterruptible I/O), so the chat server loads its weights
+# into a malloc'd host copy (--no-mmap) whenever that copy fits in this fraction
+# of total system RAM. Local disk keeps mmap: its lazy paging gives a faster first
+# token on a cold cache -- the common desktop first launch -- and --no-mmap's
+# buffered full read only wins on an already-hot cache (#474: 33s vs 43s for a
+# 112GB model on 3 GPUs) while pessimizing cold start. Keyed on TOTAL memory
+# (stable), not free (fluctuates), so replans do not flap the launch argv. The
 # exact ceiling is tuned on a network-volume host.
 _NO_MMAP_NETWORK_RAM_FRACTION = 0.85
 
@@ -1465,12 +1460,17 @@ def _plan_free_system_memory() -> int:
 def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
     """Whether the chat server should malloc its weights instead of mmapping them.
 
-    See ``_NO_MMAP_MAX_RAM_FRACTION`` for the tradeoff and why the gate reads
-    total (not free) system memory. A model on a network filesystem prefers the
-    buffered read at a higher RAM fraction, since mmap over the network can hang.
+    Local disk mmaps: lazy page-fault paging gives a faster first token on a cold
+    cache -- the common desktop first launch -- matching mmap-by-default engines.
+    ``--no-mmap``'s buffered full read only wins on an already-hot cache and it
+    pessimizes cold start, so it is not worth defaulting on for local disk. A
+    network filesystem still prefers the buffered read whenever the host copy
+    fits, because mmap page faults served over the wire can wedge the loader in
+    uninterruptible I/O (see ``_NO_MMAP_NETWORK_RAM_FRACTION``).
     """
-    fraction = _NO_MMAP_NETWORK_RAM_FRACTION if on_network_fs else _NO_MMAP_MAX_RAM_FRACTION
-    return weights_bytes <= model_cache.total_system_memory() * fraction
+    if not on_network_fs:
+        return False
+    return weights_bytes <= model_cache.total_system_memory() * _NO_MMAP_NETWORK_RAM_FRACTION
 
 
 def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
@@ -1584,6 +1584,43 @@ def _resolve_placement(
     )
 
 
+def _placement_or_auto(
+    placement: PlacementSpec | None,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    unified_budget: int | None,
+) -> tuple[Placement, bool]:
+    """Resolve a saved spec, falling back to auto when it no longer fits the hardware.
+
+    Returns the placement and whether the spec was the one applied. Hardware moves
+    under a saved placement: a card is removed, a driver stops enumerating a GPU, a
+    container starts without one. Refusing to plan there takes chat, embed and
+    ingest down over a pin set on hardware the host no longer has, so the fleet
+    degrades to automatic placement and logs why. An interactive apply still fails
+    loud (:func:`lilbee.app.placement.set_placement`), where the pin is what the
+    caller just asked for and a silent substitution would be the surprise.
+    """
+    if placement is None:
+        return _resolve_placement(
+            None, inputs, model_refs, devices, unified_budget=unified_budget
+        ), False
+    try:
+        return _resolve_placement(
+            placement, inputs, model_refs, devices, unified_budget=unified_budget
+        ), True
+    except PlacementError as exc:
+        log.warning(
+            "The saved GPU placement does not fit this hardware (%s); using automatic "
+            "placement instead. Set a new placement to replace it.",
+            exc,
+        )
+    return _resolve_placement(
+        None, inputs, model_refs, devices, unified_budget=unified_budget
+    ), False
+
+
 @dataclass(frozen=True)
 class ResolvedPlacement:
     """Devices + resolved instance plans + model refs for the placement view."""
@@ -1593,14 +1630,24 @@ class ResolvedPlacement:
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
     co_tenants: frozenset[WorkerRole] = frozenset()
+    # False when a spec was given but did not fit the hardware, so these instances
+    # are the auto planner's and a surface must not present them as the manual plan.
+    spec_applied: bool = True
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
 
 
-def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
-    """Probe devices and resolve the auto-or-manual placement, without launching."""
+def resolve_placement_plan(
+    placement: PlacementSpec | None, *, fall_back_to_auto: bool = False
+) -> ResolvedPlacement:
+    """Probe devices and resolve the auto-or-manual placement, without launching.
+
+    ``fall_back_to_auto`` reads *placement* as a saved setting rather than a
+    request: one that no longer fits the hardware resolves to the auto plan with
+    ``spec_applied`` False instead of raising.
+    """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
@@ -1612,13 +1659,16 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
     )
-    resolved = _resolve_placement(
-        placement,
-        inputs,
-        model_refs,
-        devices,
-        unified_budget=_unified_admission_budget(devices),
-    )
+    admission_budget = _unified_admission_budget(devices)
+    if fall_back_to_auto:
+        resolved, spec_applied = _placement_or_auto(
+            placement, inputs, model_refs, devices, unified_budget=admission_budget
+        )
+    else:
+        resolved = _resolve_placement(
+            placement, inputs, model_refs, devices, unified_budget=admission_budget
+        )
+        spec_applied = placement is not None
     return ResolvedPlacement(
         devices=tuple(devices),
         instances=resolved.instances,
@@ -1626,6 +1676,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         model_refs=model_refs,
         co_tenants=resolved.co_tenants,
         skipped_not_installed=skipped_not_installed,
+        spec_applied=spec_applied,
     )
 
 
@@ -1689,7 +1740,7 @@ def plan_launches(
         total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
-    placement = _resolve_placement(
+    placement, _spec_applied = _placement_or_auto(
         spec,
         inputs,
         model_refs,

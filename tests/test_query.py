@@ -3,6 +3,7 @@
 from typing import ClassVar
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from lilbee.app.services import get_services, set_services
@@ -249,17 +250,13 @@ class TestFormatSource:
 
     def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
         # A source that can't resolve to a file URL degrades to bare text. The
-        # failure is injected directly: OS-level triggers like null bytes vary
-        # by platform and Python version (Windows 3.13 percent-encodes NUL
+        # failure is injected at the resolver: OS-level triggers like null bytes
+        # vary by platform and Python version (Windows 3.13 percent-encodes NUL
         # instead of raising).
-        class _UnresolvableDir:
-            def __truediv__(self, other: str) -> "_UnresolvableDir":
-                raise OSError("cannot resolve")
+        def _raise(_source: str):
+            raise OSError("cannot resolve")
 
-        monkeypatch.setattr(
-            "lilbee.retrieval.query.formatting.cfg",
-            mock.Mock(documents_dir=_UnresolvableDir()),
-        )
+        monkeypatch.setattr("lilbee.data.ingest.discovery.resolve_source_path", _raise)
         r = _make_result(source="doc.md", content_type="text")
         assert format_source(r) == "doc.md"
 
@@ -609,7 +606,7 @@ class TestSearchContext:
         original = _make_result(source="a.md", chunk_index=0)
         expanded = _make_result(source="b.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[original], [expanded]]
-        mock_svc.embedder.embed.return_value = [0.1] * 768
+        mock_svc.embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
         mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 2
@@ -620,7 +617,7 @@ class TestSearchContext:
     def test_expansion_deduplicates(self, mock_svc):
         same = _make_result(source="a.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[same], [same]]
-        mock_svc.embedder.embed.return_value = [0.1] * 768
+        mock_svc.embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
         mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 1
@@ -856,6 +853,47 @@ class TestStreamingCitationFilter:
         assert "Sources" not in shown
         assert shown == "Grounded answer [1]."
         assert f.answer == "Grounded answer [1]."
+
+    def test_drops_a_bold_sources_block(self):
+        shown, f = self._run(["Grounded answer [1].", "\n\n**Sources:**\n- made-up.pdf"])
+        assert "made-up.pdf" not in shown
+        assert "Sources" not in shown
+        assert shown.startswith("Grounded answer [1].")
+        assert "made-up.pdf" not in f.answer
+
+    def test_drops_a_dangling_bold_heading_at_stream_end(self):
+        # The model emitted a bold citation heading and stopped; left in place it
+        # would sit directly above lilbee's authoritative block as a second header.
+        shown, f = self._run(["Grounded answer [1].", "\n\n**Sources:**\n"])
+        assert "Sources" not in shown
+        assert shown == "Grounded answer [1]."
+        assert f.answer == "Grounded answer [1]."
+
+    def test_drops_a_dangling_italic_heading_at_stream_end(self):
+        shown, _f = self._run(["Grounded answer [1].", "\n\n*References:*"])
+        assert "References" not in shown
+        assert shown == "Grounded answer [1]."
+
+    def test_drops_a_heading_with_colon_outside_the_emphasis(self):
+        shown, _ = self._run(["Grounded answer [1].", "\n\n**Sources**:\n- made-up.pdf"])
+        assert "made-up.pdf" not in shown
+        assert "Sources" not in shown
+
+    def test_bold_heading_split_across_chunks_never_leaks(self):
+        chunks = ["Body text.", "\n\n**Sou", "rces:**", "\n- x.pdf"]
+        shown, _ = self._run(chunks)
+        assert "Sources" not in shown
+        assert "x.pdf" not in shown
+        assert shown.startswith("Body text.")
+
+    def test_prose_after_a_bold_heading_line_streams_through(self):
+        # A bold heading the answer legitimately discusses is not a citation
+        # block: no list follows, so heading and prose both reach the reader.
+        chunks = ["The paper is structured simply.", "\n\n**References:**", "\nIt lists 40 works."]
+        shown, f = self._run(chunks)
+        assert "**References:**" in shown
+        assert "It lists 40 works." in shown
+        assert f.answer.endswith("It lists 40 works.")
 
     def test_heading_is_held_not_shown_while_ambiguous(self):
         # Mid-stream, a bare heading must not be emitted until the next line

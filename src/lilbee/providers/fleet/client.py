@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
@@ -14,8 +15,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import httpx
+import numpy as np
+import numpy.typing as npt
 
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     THINK_CLOSE_TAG,
     THINK_OPEN_TAG,
@@ -303,6 +307,20 @@ def _fetch_log_tail(url: str) -> str:
 # collapsed to +-1 by normalization. The server only exposes this per request
 # body, not as a startup flag.
 _EMBD_NORMALIZE_NONE = -1
+# Vectors come back as a base64 float32 buffer: parsing thousands of JSON float
+# literals per batch is CPU-bound and holds the GIL, which caps embedding
+# throughput below what the GPUs can feed regardless of how many are dispatching.
+_EMBED_ENCODING_FORMAT = "base64"
+# The engine writes the raw float buffer in host byte order; supported targets are
+# all little-endian.
+_EMBED_VECTOR_DTYPE = "<f4"
+# Rank pooling puts the pair's relevance score in the vector's first slot.
+_RANK_SCORE_INDEX = 0
+_UNREADABLE_EMBEDDING_ERROR = (
+    "The embedding server returned vectors lilbee could not read. Update the "
+    "inference engine: base64 embedding responses need llama-server b4391 or newer."
+)
+_NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candidate."
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
@@ -466,6 +484,24 @@ class LlamaServerClient:
         """Restore the replica to the routing pool after a successful call."""
         with self._in_flight_lock:
             self._healthy = True
+
+    def reserve(self) -> None:
+        """Mark a routed request assigned to this replica, at selection time.
+
+        The router balances on ``in_flight`` but the per-request tracking only
+        bumps it once the HTTP call starts. Under a bulk ingest many threads pick
+        a replica at the same instant, all see the momentarily-idlest one at the
+        same low count, and pile onto it (a thundering herd that leaves the other
+        cards idle). Reserving at selection makes the assignment visible to the
+        next picker so requests spread across replicas. Paired with :meth:`release`.
+        """
+        with self._in_flight_lock:
+            self.in_flight += 1
+
+    def release(self) -> None:
+        """Release a reservation taken by :meth:`reserve`."""
+        with self._in_flight_lock:
+            self.in_flight -= 1
 
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
@@ -815,15 +851,15 @@ class LlamaServerClient:
             return None if _is_transient_probe_failure(exc) else False
         return True
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         """Embed a batch via ``/v1/embeddings``."""
         if not texts:
             # Match the in-process embedder; the server rejects an empty input.
             return []
-        vectors: list[list[float]] = []
+        vectors: list[Vector] = []
         for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
             data = self._embed_subbatch(sub_batch)
-            vectors.extend(list(item["embedding"]) for item in data)
+            vectors.extend(_embedding_vector(item) for item in data)
         return vectors
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
@@ -911,6 +947,7 @@ class LlamaServerClient:
                         "model": self._model,
                         "input": inputs,
                         "embd_normalize": _EMBD_NORMALIZE_NONE,
+                        "encoding_format": _EMBED_ENCODING_FORMAT,
                     },
                 )
                 _raise_for_status(resp)
@@ -1060,14 +1097,24 @@ class _InFlight:
             self._client.in_flight -= 1
 
 
+def _embedding_vector(item: dict[str, Any]) -> npt.NDArray[np.float32]:
+    """Decode one ``/v1/embeddings`` item's vector from its base64 float buffer."""
+    embedding = item.get("embedding")
+    # Untyped server JSON: a non-string means the encoding format was not honored.
+    if not isinstance(embedding, str):
+        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME)
+    try:
+        return np.frombuffer(base64.b64decode(embedding), dtype=_EMBED_VECTOR_DTYPE)
+    except ValueError as exc:
+        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME) from exc
+
+
 def _rerank_score(item: dict[str, Any]) -> float:
     """Pull one relevance score from a rank-pooling ``/v1/embeddings`` item."""
-    embedding = item.get("embedding")
-    if isinstance(embedding, list) and embedding and isinstance(embedding[0], (int, float)):
-        return float(embedding[0])
-    raise ProviderError(
-        f"Reranker returned unexpected score shape: {embedding!r}", provider=_PROVIDER_NAME
-    )
+    vector = _embedding_vector(item)
+    if not vector.size:
+        raise ProviderError(_NO_RERANK_SCORE_ERROR, provider=_PROVIDER_NAME)
+    return float(vector[_RANK_SCORE_INDEX])
 
 
 def _first_token_top_logprobs(response: dict[str, Any]) -> list[dict[str, Any]]:

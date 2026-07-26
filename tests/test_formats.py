@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest import mock
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from lilbee.app.services import set_services
@@ -41,7 +42,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     embedder = mock.MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = True
     services = make_mock_services(embedder=embedder)

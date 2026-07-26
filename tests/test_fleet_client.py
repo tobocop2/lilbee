@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from itertools import pairwise
 
 import httpx
+import numpy as np
+import numpy.typing as npt
 import pytest
 
 from lilbee.providers.base import ProviderError
@@ -18,6 +21,27 @@ from lilbee.providers.fleet.client import (
     _ThinkInliner,
 )
 from lilbee.providers.roles import RerankMode
+
+
+def _embed_body(vectors: list[list[float]]) -> dict[str, object]:
+    """A ``/v1/embeddings`` response body shaped as the server encodes base64 vectors."""
+    return {
+        "data": [
+            {
+                "embedding": base64.b64encode(np.asarray(vec, dtype="<f4").tobytes()).decode(),
+                "index": index,
+                "object": "embedding",
+                "encoding_format": "base64",
+            }
+            for index, vec in enumerate(vectors)
+        ]
+    }
+
+
+def _as_lists(vectors: list[npt.NDArray[np.float32]]) -> list[list[float]]:
+    """The float32 vectors ``embed`` returns, as plain lists for value comparison."""
+    return [vec.tolist() for vec in vectors]
+
 
 _STREAM_BODY = (
     'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
@@ -36,7 +60,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, text=_STREAM_BODY)
         return httpx.Response(200, json={"choices": [{"message": {"content": "Hello"}}]})
     if path == "/v1/embeddings":
-        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}, {"embedding": [0.3]}]})
+        return httpx.Response(200, json=_embed_body([[0.25, 0.5], [0.75]]))
     return httpx.Response(404)
 
 
@@ -63,7 +87,7 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
         seen["input"] = body["input"]
         # rank pooling returns a 1-element embedding (the score) per pair, in order
         n = len(body["input"])
-        return httpx.Response(200, json={"data": [{"embedding": [float(i)]} for i in range(n)]})
+        return httpx.Response(200, json=_embed_body([[float(i)] for i in range(n)]))
 
     scores = _client(handler).rerank("q", ["a", "b", "c"])
     assert scores == [0.0, 1.0, 2.0]
@@ -118,9 +142,9 @@ def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> Non
         calls["n"] += 1
         if calls["n"] < 3:
             return httpx.Response(502, text="Bad Gateway")
-        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
+        return httpx.Response(200, json=_embed_body([[0.25, 0.5]]))
 
-    assert _client(handler).embed(["hello"]) == [[0.1, 0.2]]
+    assert _as_lists(_client(handler).embed(["hello"])) == [[0.25, 0.5]]
     assert calls["n"] == 3
 
 
@@ -153,9 +177,9 @@ def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
         calls["n"] += 1
         if calls["n"] < 3:
             return httpx.Response(429, json={"error": "Too many requests"})
-        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
+        return httpx.Response(200, json=_embed_body([[0.25, 0.5]]))
 
-    assert _client(handler).embed(["hello"]) == [[0.1, 0.2]]
+    assert _as_lists(_client(handler).embed(["hello"])) == [[0.25, 0.5]]
     assert calls["n"] == 3  # two 429s retried, third succeeds
 
 
@@ -191,9 +215,9 @@ def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None
         calls["n"] += 1
         if calls["n"] <= warmup:
             return httpx.Response(429, json={"error": "warming"})
-        return httpx.Response(200, json={"data": [{"embedding": [0.3]}]})
+        return httpx.Response(200, json=_embed_body([[0.75]]))
 
-    assert _client(handler).embed(["x"]) == [[0.3]]
+    assert _as_lists(_client(handler).embed(["x"])) == [[0.75]]
     assert calls["n"] == warmup + 1
 
 
@@ -215,12 +239,12 @@ def test_embed_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(monk
         calls["n"] += 1
         if calls["n"] <= warmup:
             return httpx.Response(429, json={"error": "warming"})
-        return httpx.Response(200, json={"data": [{"embedding": [0.3]}]})
+        return httpx.Response(200, json=_embed_body([[0.75]]))
 
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
     client._needs_alternation = False
-    assert client.embed(["x"]) == [[0.3]]
+    assert _as_lists(client.embed(["x"])) == [[0.75]]
     assert calls["n"] == warmup + 1
 
 
@@ -456,7 +480,7 @@ def test_rerank_empty_candidates_returns_empty() -> None:
 
 def test_rerank_raises_on_count_mismatch() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})  # 1 for 2 pairs
+        return httpx.Response(200, json=_embed_body([[0.5]]))  # 1 for 2 pairs
 
     with pytest.raises(ProviderError, match="vectors for"):
         _client(handler).rerank("q", ["a", "b"])
@@ -464,9 +488,9 @@ def test_rerank_raises_on_count_mismatch() -> None:
 
 def test_rerank_raises_on_bad_score_shape() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [{"embedding": "nope"}]})
+        return httpx.Response(200, json={"data": [{"embedding": {"not": "a vector"}}]})
 
-    with pytest.raises(ProviderError, match="unexpected score shape"):
+    with pytest.raises(ProviderError, match="could not read"):
         _client(handler).rerank("q", ["a"])
 
 
@@ -663,7 +687,69 @@ def test_chat_stream_items_requests_include_usage() -> None:
 
 
 def test_embed_returns_vectors() -> None:
-    assert _client().embed(["a", "b"]) == [[0.1, 0.2], [0.3]]
+    got = _client().embed(["a", "b"])
+    assert [vec.tolist() for vec in got] == [[0.25, 0.5], [0.75]]
+
+
+def test_embed_returns_float32_arrays_not_python_float_lists() -> None:
+    got = _client().embed(["a", "b"])
+    assert all(isinstance(vec, np.ndarray) and vec.dtype == np.float32 for vec in got)
+
+
+def test_embed_requests_base64_encoded_vectors() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen["encoding_format"] = body.get("encoding_format")
+        return httpx.Response(200, json=_embed_body([[0.25, -0.5]]))
+
+    got = _client(handler).embed(["a"])
+    assert [vec.tolist() for vec in got] == [[0.25, -0.5]]
+    assert seen["encoding_format"] == "base64"
+
+
+def test_embed_decodes_base64_vectors_exactly() -> None:
+    vectors = [[0.1, -2.5, 3.75], [1e-7, 6.0e3, -0.0]]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_embed_body(vectors))
+
+    decoded = _client(handler).embed(["a", "b"])
+    expected = np.asarray(vectors, dtype="<f4")
+    assert all(np.array_equal(got, want) for got, want in zip(decoded, expected, strict=True))
+
+
+@pytest.mark.parametrize(
+    "embedding",
+    [
+        pytest.param([0.1, 0.2], id="server_ignored_the_requested_encoding"),
+        pytest.param(base64.b64encode(b"abc").decode(), id="buffer_is_not_whole_float32s"),
+        pytest.param("not!base64!", id="not_base64_text"),
+    ],
+)
+def test_embed_raises_on_unreadable_embedding(embedding: object) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"embedding": embedding}]})
+
+    with pytest.raises(ProviderError, match="could not read"):
+        _client(handler).embed(["a"])
+
+
+def test_rerank_reads_score_from_base64_vector() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        count = len(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[float(i), 9.0] for i in range(count)]))
+
+    assert _client(handler).rerank("q", ["a", "b", "c"]) == [0.0, 1.0, 2.0]
+
+
+def test_rerank_raises_on_empty_score_vector() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_embed_body([[]]))
+
+    with pytest.raises(ProviderError, match="no relevance score"):
+        _client(handler).rerank("q", ["a"])
 
 
 def test_embed_empty_returns_empty_without_request() -> None:
@@ -693,10 +779,10 @@ def test_embed_truncates_oversize_input_via_server_tokenizer() -> None:
             seen["detok_tokens"] = body["tokens"]
             return httpx.Response(200, json={"content": "trunc"})
         seen["embedded"] = body["input"]
-        return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
 
     out = _capped_client(handler, cap=3).embed(["a very long input"])
-    assert out == [[0.5]]
+    assert _as_lists(out) == [[0.5]]
     assert seen["detok_tokens"] == [10, 11, 12]  # first cap tokens
     assert seen["embedded"] == ["trunc"]
 
@@ -710,9 +796,9 @@ def test_embed_keeps_input_within_cap_unchanged() -> None:
         if request.url.path.endswith("/detokenize"):
             raise AssertionError("must not detokenize an input within the cap")
         seen["embedded"] = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
 
-    assert _capped_client(handler, cap=3).embed(["short"]) == [[0.5]]
+    assert _as_lists(_capped_client(handler, cap=3).embed(["short"])) == [[0.5]]
     assert seen["embedded"] == ["short"]  # original text passed through
 
 
@@ -723,7 +809,7 @@ def test_embed_tokenize_request_matches_in_process_flags() -> None:
         if request.url.path.endswith("/tokenize"):
             seen.update(json.loads(request.content))
             return httpx.Response(200, json={"tokens": [1]})
-        return httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+        return httpx.Response(200, json=_embed_body([[0.1]]))
 
     # A long input whose char estimate exceeds the cap forces the /tokenize probe.
     _capped_client(handler, cap=2).embed(["x" * 30])
@@ -742,7 +828,7 @@ def test_embed_estimates_tokens_without_per_input_tokenize() -> None:
             raise AssertionError("normal-sized chunks must not hit the server tokenizer")
         inputs = json.loads(request.content)["input"]
         sent.append(list(inputs))
-        return httpx.Response(200, json={"data": [{"embedding": [0.5]} for _ in inputs]})
+        return httpx.Response(200, json=_embed_body([[0.5] for _ in inputs]))
 
     chunks = ["a normal chunk of text"] * 5
     out = _capped_client(handler, cap=8192).embed(chunks)
@@ -758,9 +844,9 @@ def test_rerank_truncates_oversize_pairs() -> None:
         if request.url.path.endswith("/detokenize"):
             return httpx.Response(200, json={"content": "t"})
         # one score per (truncated) pair
-        return httpx.Response(200, json={"data": [{"embedding": [0.9]} for _ in body["input"]]})
+        return httpx.Response(200, json=_embed_body([[0.875] for _ in body["input"]]))
 
-    assert _capped_client(handler, cap=4).rerank("q", ["cand"]) == [0.9]
+    assert _capped_client(handler, cap=4).rerank("q", ["cand"]) == [0.875]
 
 
 def test_embed_surfaces_server_error_body() -> None:
@@ -1120,7 +1206,7 @@ def test_embed_subbatches_when_token_budget_exceeded() -> None:
             raise AssertionError("estimation must not hit the server tokenizer here")
         inputs = json.loads(request.content)["input"]
         sent.append(list(inputs))
-        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in inputs]})
+        return httpx.Response(200, json=_embed_body([[0.0] for _ in inputs]))
 
     out = _capped_client(handler, cap=4).embed(["x" * 7, "y" * 7, "z" * 7])
     assert sent == [["x" * 7], ["y" * 7], ["z" * 7]]  # 3+3 > 4, so never two per request
@@ -1139,7 +1225,7 @@ def test_embed_subbatches_when_sequence_count_exceeded() -> None:
         if request.url.path.endswith("/tokenize"):
             return httpx.Response(200, json={"tokens": [1]})  # 1 token each
         sizes.append(len(body["input"]))
-        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]})
+        return httpx.Response(200, json=_embed_body([[0.0] for _ in body["input"]]))
 
     n = _EMBED_N_SEQ_MAX + 5
     out = _capped_client(handler, cap=100_000).embed([f"t{i}" for i in range(n)])
@@ -1154,7 +1240,7 @@ def test_embed_requests_no_normalization() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.update(json.loads(request.content))
-        return httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+        return httpx.Response(200, json=_embed_body([[0.1]]))
 
     _client(handler).embed(["a"])
     assert seen["embd_normalize"] == -1
@@ -1167,7 +1253,7 @@ def test_rerank_requests_no_normalization() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.update(json.loads(request.content))
-        return httpx.Response(200, json={"data": [{"embedding": [0.7]}]})
+        return httpx.Response(200, json=_embed_body([[0.7]]))
 
     _client(handler).rerank("q", ["a"])
     assert seen["embd_normalize"] == -1
@@ -1782,12 +1868,12 @@ def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
             calls["embed"] += 1
             if calls["embed"] == 1:
                 return httpx.Response(400, text='{"error":{"message":"exceed_context_size_error"}}')
-            return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+            return httpx.Response(200, json=_embed_body([[0.5]]))
         return httpx.Response(404)
 
     # cap=10 so "dense" (est 2) is trusted and sent untruncated on the first try.
     out = _capped_client(handler, 10).embed(["dense"])
-    assert out == [[0.5]]
+    assert _as_lists(out) == [[0.5]]
     assert calls["embed"] == 2  # first overflowed, retry succeeded
     assert calls["tokenize"] >= 1  # retry used exact tokenization
 
@@ -1811,10 +1897,10 @@ def test_embed_retries_exact_on_batch_overflow_500() -> None:
                     text='{"error":{"code":500,"message":"input (136 tokens) is too large'
                     ' to process. increase the physical batch size","type":"server_error"}}',
                 )
-            return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+            return httpx.Response(200, json=_embed_body([[0.5]]))
         return httpx.Response(404)
 
-    assert _capped_client(handler, 10).embed(["dense"]) == [[0.5]]
+    assert _as_lists(_capped_client(handler, 10).embed(["dense"])) == [[0.5]]
     assert calls["embed"] == 2
 
 

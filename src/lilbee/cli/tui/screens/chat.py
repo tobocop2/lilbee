@@ -42,15 +42,17 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
+    build_import_progress_callback,
     build_sync_progress_callback,
     close_stream,
     open_local_file,
     remember_from_input,
-    remove_copied_files,
+    unregister_added_roots,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
+    PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
     longest_common_prefix,
@@ -672,6 +674,8 @@ class ChatScreen(Screen[None]):
         self.refresh_bindings()
 
     def _cmd_add(self, args: str) -> None:
+        from lilbee.app.ingest import source_label_taken
+
         if not args:
             return
         if self._sync_active:
@@ -688,11 +692,12 @@ class ChatScreen(Screen[None]):
                 severity="error",
             )
             return
-        # Directory adds are whole-tree copies handled by copy_files'
-        # recursion; a same-named subdir in documents_dir is not a clean
-        # "duplicate file" signal, so skip the prompt there and let
-        # copy_files emit its per-file skipped notices.
-        duplicates = [p for p in paths if p.is_file() and (cfg.documents_dir / p.name).exists()]
+        # A file add registers a root labeled by its basename. Prompt before
+        # overwriting only when that label is already taken by a different source
+        # (a live root elsewhere, or an owned file of that name); re-adding the
+        # same path is idempotent, and a directory is left to register_sources'
+        # own skipped notices rather than a duplicate-file prompt.
+        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name)]
         if duplicates:
             self._prompt_overwrite(paths, duplicates)
             return
@@ -736,37 +741,42 @@ class ChatScreen(Screen[None]):
     def _do_add(
         self, paths: list[Path], reporter: ProgressReporter, *, force: bool = False
     ) -> None:
-        """Copy files and run sync. Called on worker thread with a reporter."""
-        from lilbee.app.ingest import copy_files
+        """Register source roots and run sync. Called on worker thread with a reporter."""
+        from lilbee.app.ingest import register_sources
         from lilbee.data.ingest import sync
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
-        reporter.update(0, f"Copying {label}...", indeterminate=True)
-        copy_result = copy_files(paths, force=force)
-        copied = copy_result.copied
-        for name in copy_result.skipped:
+        reporter.update(0, f"Adding {label}...", indeterminate=True)
+        reg_result = register_sources(paths, force=force)
+        registered = reg_result.registered
+        for name in reg_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
-        reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
+        reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
 
         try:
             sync_result = asyncio_loop.run(
                 sync(quiet=True, on_progress=build_add_progress_callback(reporter))
             )
         except BaseException:
-            # On cancel or any failure, remove the files we copied into
-            # documents/ so the next sync doesn't silently re-ingest the
-            # file the user just cancelled. Only files copied by
-            # this /add invocation are removed; pre-existing files the user
-            # put in documents/ themselves are never touched.
-            remove_copied_files(copied)
+            # On cancel or any failure, un-register the roots this /add created so
+            # the next sync doesn't silently re-ingest the source the user just
+            # cancelled. Only entries this invocation created are dropped;
+            # sources the user put in documents/ themselves are never touched.
+            unregister_added_roots(registered)
             raise
         if sync_result.failed:
-            remove_copied_files(copied)
+            unregister_added_roots(registered)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
-            remove_copied_files(copied)
+            unregister_added_roots(registered)
             raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
-        call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+        if sync_result.relocated:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_ADD_RELOCATED.format(count=len(sync_result.relocated)),
+            )
+        call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(registered)))
 
     def _cmd_cancel(self, _args: str) -> None:
         # _cancel_inflight_stream already cancels every screen worker, so the
@@ -1043,24 +1053,30 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:
-        """Run /export in a worker so the chat screen stays interactive."""
+        """Enqueue /export as a task so progress shows in the task bar."""
         path = args.strip()
         if not path:
             self.notify(msg.CMD_EXPORT_USAGE, severity="warning")
             return
-        self._cmd_export_worker(path)
+        from lilbee.cli.tui.task_queue import TaskType
 
-    @work(thread=True, name="chat_cmd_export", exit_on_error=False)
-    def _cmd_export_worker(self, raw_path: str) -> None:
-        """Build and write the dataset off the UI thread; notify back via dispatch."""
+        def _target(reporter: ProgressReporter) -> None:
+            self._do_export(path, reporter)
+
+        name = msg.TASK_NAME_EXPORT.format(file=Path(path).name)
+        self._task_bar.start_task(name, TaskType.EXPORT, _target, indeterminate=True)
+
+    def _do_export(self, raw_path: str, reporter: ProgressReporter) -> None:
+        """Export body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, export_to_path
 
         output = Path(raw_path).expanduser()
+        reporter.update(0, msg.EXPORT_STATUS_RUNNING, indeterminate=True)
         try:
             summary = export_to_path(output, "", None)
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
-            return
+            raise RuntimeError(str(exc)) from exc
         call_from_thread(
             self,
             self.notify,
@@ -1068,24 +1084,45 @@ class ChatScreen(Screen[None]):
         )
 
     def _cmd_import(self, args: str) -> None:
-        """Run /import in a worker so re-embedding doesn't block the UI."""
+        """Enqueue /import as a task so re-embedding progress shows in the task bar."""
         path = args.strip()
         if not path:
             self.notify(msg.CMD_IMPORT_USAGE, severity="warning")
             return
-        self._cmd_import_worker(path)
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
+        from lilbee.cli.tui.task_queue import TaskType
 
-    @work(thread=True, name="chat_cmd_import", exit_on_error=False)
-    def _cmd_import_worker(self, raw_path: str) -> None:
-        """Load and re-embed the dataset off the UI thread; notify back via dispatch."""
+        self._sync_active = True
+
+        def _target(reporter: ProgressReporter) -> None:
+            try:
+                self._do_import(path, reporter)
+            finally:
+                self._sync_active = False
+                self._task_bar.start_detect_pending()
+
+        name = msg.TASK_NAME_IMPORT.format(file=Path(path).name)
+        self._task_bar.start_task(name, TaskType.IMPORT, _target)
+
+    def _do_import(self, raw_path: str, reporter: ProgressReporter) -> None:
+        """Import body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, import_from_path
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
+        reporter.update(0, msg.IMPORT_STATUS_LOADING, indeterminate=True)
         try:
-            summary = asyncio_loop.run(import_from_path(Path(raw_path).expanduser(), ""))
+            summary = asyncio_loop.run(
+                import_from_path(
+                    Path(raw_path).expanduser(),
+                    "",
+                    on_progress=build_import_progress_callback(reporter),
+                )
+            )
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
-            return
+            raise RuntimeError(str(exc)) from exc
         invalidate_document_cache()
         call_from_thread(
             self,
@@ -1602,10 +1639,10 @@ class ChatScreen(Screen[None]):
         self._extract_memories_worker(question, answer)
 
     def _indexing_active(self) -> bool:
-        """True while a sync/add task is running (embed worker is busy)."""
+        """True while a sync/add/import task is running (embed worker is busy)."""
         from lilbee.cli.tui.task_queue import TaskType
 
-        busy = {TaskType.SYNC.value, TaskType.ADD.value}
+        busy = {TaskType.SYNC.value, TaskType.ADD.value, TaskType.IMPORT.value}
         return any(task.task_type in busy for task in self._task_bar.queue.active_tasks)
 
     @work(thread=True, name="chat_memory_extract", exit_on_error=False)
@@ -1973,18 +2010,32 @@ class ChatScreen(Screen[None]):
         self._reload_chat_model_worker()
 
     def _apply_input_busy_state(self) -> None:
-        """Disable the chat input while a swap or placement reload is loading.
+        """Disable the chat input while a swap or placement reload is loading, and
+        say why in the placeholder so a person is never left facing a dead input
+        with no explanation.
 
-        Restores focus when the fleet is idle again so the user can type without
-        re-clicking the input that was disabled out from under them. Guarded
-        because the unblock can fire (via ``call_from_thread`` or a bubbled
-        message) after the user navigated away and the input is no longer mounted.
+        Restores focus and the default placeholder when the fleet is idle again so
+        the user can type without re-clicking the input that was disabled out from
+        under them. Guarded because the unblock can fire (via ``call_from_thread``
+        or a bubbled message) after the user navigated away and the input is no
+        longer mounted.
         """
         busy = self.swapping_model or self.reloading_placement
         with contextlib.suppress(NoMatches):
-            self._chat_input.disabled = busy
+            inp = self._chat_input
+            inp.disabled = busy
+            if self.swapping_model:
+                from lilbee.catalog.formatting import display_label_for_ref
+
+                inp.placeholder = msg.CHAT_INPUT_SWITCHING.format(
+                    name=display_label_for_ref(cfg.chat_model)
+                )
+            elif self.reloading_placement:
+                inp.placeholder = msg.CHAT_INPUT_RELOADING
+            else:
+                inp.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
             if not busy and self._insert_mode:
-                self._chat_input.focus()
+                inp.focus()
 
     def watch_swapping_model(self, swapping: bool) -> None:
         self._apply_input_busy_state()
@@ -1998,26 +2049,46 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reload_chat_model_worker(self) -> None:
-        """Reload only the chat role off the event loop, then unblock the input.
+        """Reload the chat role and warm the new model before unblocking the input.
 
         ``reload_role(wait=True)`` re-plans and restarts the fleet for the new chat
-        model while keeping the store and searcher (a chat-model change doesn't
-        touch retrieval), and returns once the fleet proxy is back up; the model
-        itself loads on the next request (the same lazy load every role swap uses).
-        The provider serializes overlapping reloads, so a rapid second swap
-        coalesces onto the latest cfg.
+        model (retrieval is untouched) and returns once the proxy is back up. The
+        model is then warmed here rather than deferred to the user's next prompt:
+        ``request_engine_warm`` drives the load and populates the provider warm
+        tracker, which the task-bar footer renders (spinner, model, phase), and
+        ``wait_chat_ready`` holds the input disabled until the model actually
+        serves -- so the switch never hands back a live input in front of a model
+        that has not loaded. The provider serializes overlapping reloads, so a
+        rapid second swap coalesces onto the latest cfg.
         """
+        from lilbee.app.placement import (
+            chat_warm_error,
+            request_engine_warm,
+            wait_chat_ready,
+        )
+
+        worker = _get_worker()
         try:
             get_services().reload_role(WorkerRole.CHAT, wait=True)
+            request_engine_warm()
+            ready = wait_chat_ready(should_abort=lambda: worker.is_cancelled)
         except Exception as exc:  # any reload failure becomes a toast, never a crash
             call_from_thread(self, self._on_model_swap_failed, str(exc))
             return
-        call_from_thread(self, self._on_model_swapped)
+        if worker.is_cancelled:
+            return
+        error = None if ready else chat_warm_error()
+        if error:
+            call_from_thread(self, self._on_model_swap_failed, error)
+        else:
+            call_from_thread(self, self._on_model_swapped)
 
     def _on_model_swapped(self) -> None:
         """Main-thread completion: unblock the input and confirm the new model."""
+        from lilbee.catalog.formatting import display_label_for_ref
+
         self.swapping_model = False
-        self.app.notify(msg.MODEL_SWAP_DONE.format(name=cfg.chat_model))
+        self.app.notify(msg.MODEL_SWAP_DONE.format(name=display_label_for_ref(cfg.chat_model)))
 
     def _on_model_swap_failed(self, error: str) -> None:
         """Main-thread failure: unblock the input and surface the error."""
@@ -2238,7 +2309,7 @@ class ChatScreen(Screen[None]):
         if " " not in text:
             return display
         cmd, _, partial = text.partition(" ")
-        if cmd.lower() == "/add":
+        if cmd.lower() in PATH_ARG_COMMANDS:
             head = path_completion_prefix(partial)
             return f"{cmd} {head}{display}"
         return f"{cmd} {display}"

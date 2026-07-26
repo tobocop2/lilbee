@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.llm_json import json_reply_format
+from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     LOCAL_OWNER,
     MemoryKind,
@@ -29,7 +30,7 @@ from lilbee.data.store import (
 
 def make_memory_row(
     text: str,
-    embed: Callable[[str], list[float]],
+    embed: Callable[[str], Vector],
     *,
     owner: str = LOCAL_OWNER,
     kind: MemoryKind = MemoryKind.FACT,
@@ -48,7 +49,8 @@ def make_memory_row(
         kind=kind,
         source=source,
         text=text,
-        vector=embed(text),
+        # MemoryRow serializes to JSON on write, which has no ndarray encoding.
+        vector=embed(text).tolist(),
         created_at=now,
         updated_at=now,
     )

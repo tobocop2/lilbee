@@ -734,7 +734,7 @@ def test_spawn_server_returns_popen(monkeypatch):
     from lilbee.cli.launchers import server as launch_mod
 
     fake = MagicMock()
-    monkeypatch.setattr(launch_mod.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(launch_mod, "spawn_bound_child", lambda *a, **k: fake)
     out = launch_mod.spawn_server(8765)
     assert out is fake
 

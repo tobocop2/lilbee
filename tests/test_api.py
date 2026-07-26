@@ -3,17 +3,18 @@
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
 
 
 def _fake_embed(text):
-    return [0.1] * 768
+    return np.full(768, 0.1, dtype=np.float32)
 
 
 def _fake_embed_batch(texts, **kwargs):
-    return [[0.1] * 768 for _ in texts]
+    return [np.full(768, 0.1, dtype=np.float32) for _ in texts]
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +120,9 @@ class TestCreate:
         from lilbee import Lilbee
 
         custom_provider = mock.MagicMock(
-            embed=mock.MagicMock(side_effect=lambda texts: [[0.5] * 768 for _ in texts]),
+            embed=mock.MagicMock(
+                side_effect=lambda texts: [np.full(768, 0.5, dtype=np.float32) for _ in texts]
+            ),
             pull_model=mock.MagicMock(),
             shutdown=mock.MagicMock(),
         )
@@ -190,7 +193,7 @@ class TestSearch:
 
 
 class TestAdd:
-    def test_add_copies_and_syncs(self, tmp_path):
+    def test_add_registers_and_syncs(self, tmp_path):
         from lilbee import Lilbee
 
         bee = Lilbee(tmp_path / "proj")
@@ -198,6 +201,8 @@ class TestAdd:
         external.write_text("# External\nThis file lives outside the project.")
         result = bee.add([external])
         assert "external.md" in result.added
+        # Registered in place, never copied into the project's documents dir.
+        assert not (bee.config.documents_dir / "external.md").exists()
         found = bee.search("external")
         assert len(found) > 0
 

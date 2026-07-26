@@ -27,6 +27,7 @@ import httpx
 
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
+from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
@@ -44,6 +45,7 @@ from lilbee.providers.fleet.client import (
 )
 from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
@@ -69,6 +71,7 @@ from lilbee.runtime.engine_lock import (
     machine_engine_dir,
     private_engine_dir,
     request_keep_warm,
+    withdraw_keep_warm,
 )
 
 log = logging.getLogger(__name__)
@@ -173,6 +176,25 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     return min(healthy or clients, key=lambda c: c.in_flight)
 
 
+# Serializes pick-and-reserve so concurrent routers see each other's assignment.
+# Held only for the O(replicas) selection, never across the request itself.
+_ROUTE_LOCK = threading.Lock()
+
+
+def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
+    """Atomically pick the least-loaded healthy client and reserve a slot on it.
+
+    Selection and reservation are one critical section: without it, concurrent
+    callers all read the same idlest replica before any of them increments its
+    counter and route there together (a thundering herd that starves the rest of
+    the fleet). The caller must :meth:`~LlamaServerClient.release` the slot.
+    """
+    with _ROUTE_LOCK:
+        client = _least_in_flight(clients)
+        client.reserve()
+        return client
+
+
 def _healthy_groups_ours(
     states: dict[SwapGroup, SwapState], pin: str, wanted: set[tuple[WorkerRole, str]]
 ) -> bool:
@@ -273,10 +295,12 @@ def _call_with_failover(
 ) -> _T:
     """Run *call* on the least-busy healthy client, retrying once on another replica.
 
-    A connection-level failure marks the client unhealthy and retries once on a
-    different replica; with no other replica the failure surfaces.
+    The client is reserved at selection so concurrent ingest threads spread
+    across replicas. A connection-level failure marks the client unhealthy and
+    retries once on a different replica; with no other replica the failure
+    surfaces. The reservation is released once the call resolves.
     """
-    client = _least_in_flight(clients)
+    client = _reserve_least_in_flight(clients)
     try:
         result = call(client)
     except Exception as exc:
@@ -284,8 +308,11 @@ def _call_with_failover(
             raise
         client.mark_unhealthy()
         return _retry_on_other_replica(clients, client, call, exc)
-    client.mark_healthy()
-    return result
+    else:
+        client.mark_healthy()
+        return result
+    finally:
+        client.release()
 
 
 def _retry_on_other_replica(
@@ -298,15 +325,18 @@ def _retry_on_other_replica(
     others = [c for c in clients if c is not failed]
     if not others:
         raise _no_healthy_replica_error() from cause
-    retry = _least_in_flight(others)
+    retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
     except Exception as retry_exc:
         if is_connection_failure(retry_exc):
             retry.mark_unhealthy()
         raise
-    retry.mark_healthy()
-    return retry_result
+    else:
+        retry.mark_healthy()
+        return retry_result
+    finally:
+        retry.release()
 
 
 def _no_healthy_replica_error() -> ProviderError:
@@ -728,21 +758,33 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     return True
 
 
-def _warm_ttl_seconds() -> int:
+def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
-    Always ``engine_idle_ttl_minutes``: an idle engine releases its weights and
-    reloads transparently on the next prompt, whether or not it outlives lilbee
-    (``keep_engine_warm``). A ttl of 0 keeps weights resident until the engine
-    is stopped.
+    A ttl of 0 keeps weights resident until the engine is stopped; otherwise an
+    idle engine releases its weights after ``engine_idle_ttl_minutes`` and reloads
+    transparently on the next prompt. The timer is held off (ttl 0) whenever
+    someone is actively depending on an instant response: *hold_warm_for_session*
+    is set for a provider serving an interactive session, which owns the process
+    for its whole lifetime (close lilbee to release the engine); a bulk ingest
+    holds the fleet resident for its run so an unevenly loaded replica cannot
+    idle-unload and reload cold mid-run; and ``keep_engine_warm`` pins the weights
+    for a process meant to stay ready.
     """
+    if hold_warm_for_session or ingest_keep_warm() or cfg.keep_engine_warm:
+        return 0
     return cfg.engine_idle_ttl_minutes * 60
 
 
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, hold_warm: bool = False) -> None:
+        # An interactive session (the TUI) owns this process for its whole
+        # lifetime, so its fleet stays resident instead of idle-unloading under a
+        # user who is still in the app; closing lilbee releases it. Set by the
+        # container that built this provider, never mutated afterwards.
+        self._hold_warm_for_session = hold_warm
         # One llama-swap per placed group, so restarting one group's servers (a
         # placement or per-role model change) never unloads another group's. A
         # co-tenant group holds chat and vision, which evict each other on load.
@@ -995,7 +1037,7 @@ class FleetProvider:
         if engine_dir not in self._engine_holds:
             self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
         if cfg.keep_engine_warm:
-            request_keep_warm(engine_dir)
+            request_keep_warm(engine_dir, cfg.data_root)
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -1034,7 +1076,9 @@ class FleetProvider:
                 swap = SwapManager(data_dir, group)
                 swap.start(
                     list(group_launches),
-                    ttl_seconds=_warm_ttl_seconds(),
+                    ttl_seconds=_warm_ttl_seconds(
+                        hold_warm_for_session=self._hold_warm_for_session
+                    ),
                     bind_lifetime=not cfg.keep_engine_warm,
                 )
                 started[group] = swap
@@ -1322,13 +1366,15 @@ class FleetProvider:
         for engine_dir, hold in list(self._engine_holds.items()):
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
-                # Any user's opt-in keeps the engine: the mark left by a peer, or
-                # this process's own setting, which it may have flipped after
-                # binding (the setting doesn't affect the load, so a flip never
-                # re-acquires and never reaches the mark).
-                keep = not config_changed and (
-                    keep_warm_requested(engine_dir) or cfg.keep_engine_warm
-                )
+                # A flip after binding never re-acquires, so reconcile our own mark
+                # here. Skipped on a config change, which stops and clears regardless.
+                if not config_changed:
+                    if cfg.keep_engine_warm:
+                        request_keep_warm(engine_dir, cfg.data_root)
+                    else:
+                        withdraw_keep_warm(engine_dir, cfg.data_root)
+                # Any remaining opt-in keeps the engine, including a peer's.
+                keep = not config_changed and keep_warm_requested(engine_dir)
                 if last and not keep:
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
@@ -1551,10 +1597,10 @@ class FleetProvider:
             )
         return result.messages
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         return self._with_rediscover(lambda: self._embed_once(texts))
 
-    def _embed_once(self, texts: list[str]) -> list[list[float]]:
+    def _embed_once(self, texts: list[str]) -> list[Vector]:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
 
@@ -2282,7 +2328,9 @@ class FleetProvider:
                     swap = SwapManager(reload_dir, group)
                     swap.start(
                         group_launches,
-                        ttl_seconds=_warm_ttl_seconds(),
+                        ttl_seconds=_warm_ttl_seconds(
+                            hold_warm_for_session=self._hold_warm_for_session
+                        ),
                         bind_lifetime=not cfg.keep_engine_warm,
                     )
                     with self._lock:

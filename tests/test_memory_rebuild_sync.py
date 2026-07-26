@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import numpy as np
+
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
@@ -20,7 +22,7 @@ async def test_force_rebuild_preserves_and_reembeds_memory(tmp_path):
     cfg.lancedb_dir = tmp_path / "lancedb"
     cfg.documents_dir = tmp_path / "docs"
     store = Store(cfg)
-    new_vector = [0.5] * cfg.embedding_dim
+    new_vector = np.full(cfg.embedding_dim, 0.5, dtype=np.float32)
     embedder = MagicMock()
     embedder.embedding_available.return_value = True
     embedder.embed_batch.return_value = [new_vector]
@@ -50,7 +52,7 @@ async def test_force_rebuild_preserves_and_reembeds_memory(tmp_path):
         await sync(force_rebuild=True, quiet=True)
         memories = store.get_memories(owner_predicate=local_owner_predicate())
         assert [m.text for m in memories] == ["kept"]
-        assert memories[0].vector == new_vector
+        assert memories[0].vector == new_vector.tolist()
         embedder.embed_batch.assert_called_once_with(["kept"])
     finally:
         set_services(None)
