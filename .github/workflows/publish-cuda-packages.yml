@@ -25,7 +25,6 @@ jobs:
       tag: ${{ steps.info.outputs.tag }}
       version: ${{ steps.info.outputs.version }}
       sha_linux_cuda: ${{ steps.info.outputs.sha_linux_cuda }}
-      size_linux_cuda: ${{ steps.info.outputs.size_linux_cuda }}
     steps:
       - name: Resolve tag and CUDA asset digest
         id: info
@@ -43,11 +42,7 @@ jobs:
           get_sha() {
             awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
-          get_size() {
-            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
-          }
           sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
-          size_linux_cuda=$(get_size lilbee-linux-x86_64-cu125)
 
           [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-cuda-executables.yml first"; exit 1; }
 
@@ -55,7 +50,6 @@ jobs:
             echo "tag=$tag"
             echo "version=$version"
             echo "sha_linux_cuda=$sha_linux_cuda"
-            echo "size_linux_cuda=$size_linux_cuda"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -153,26 +147,3 @@ jobs:
           cp "${{ steps.build.outputs.snap }}" lilbee-linux-x86_64-cu125.snap
           gh release upload "$TAG" lilbee-linux-x86_64-cu125.snap --repo "$GITHUB_REPOSITORY" --clobber
 
-  flatpak:
-    needs: resolve
-    # Serialized against the regular and compat flatpak jobs; see publish-packages.yml.
-    concurrency:
-      group: flatpak-lilbee-repo
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/publish-flatpak
-        with:
-          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
-          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
-          version: ${{ needs.resolve.outputs.version }}
-          sha-linux: ${{ needs.resolve.outputs.sha_linux_cuda }}
-          size-linux: ${{ needs.resolve.outputs.size_linux_cuda }}
-          tag: ${{ needs.resolve.outputs.tag }}
-          app-id: io.github.tobocop2.lilbee.cuda
-          manifest-path: packaging/flatpak/io.github.tobocop2.lilbee.cuda.yml
-          asset-name: lilbee-linux-x86_64-cu125
-          bundle-name: lilbee-cuda.flatpak
