@@ -1,5 +1,5 @@
 name: Fan out downstream packaging
-description: "Trigger publish-docker.yml and publish-packages.yml for a tag once the Linux + macOS-arm64 executables are attached to the GH release. Waits up to 5 hours for those to land before failing loudly. Caller needs actions:write."
+description: "Trigger publish-docker.yml, publish-packages.yml and publish-flatpak.yml for a tag once the Linux + macOS-arm64 executables are attached to the GH release. Waits up to 5 hours for those to land before failing loudly. Caller needs actions:write."
 
 inputs:
   tag:
@@ -56,5 +56,17 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         gh workflow run publish-packages.yml \
+          --repo ${{ github.repository }} \
+          -f tag=${{ inputs.tag }}
+
+    # Every flatpak variant publishes from one workflow, so it is dispatched here
+    # rather than once per fan-out: the variants share the OSTree pages repo and
+    # must write one at a time. It waits for the CUDA and compat binaries itself.
+    - name: Trigger Publish Flatpak
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh workflow run publish-flatpak.yml \
           --repo ${{ github.repository }} \
           -f tag=${{ inputs.tag }}
