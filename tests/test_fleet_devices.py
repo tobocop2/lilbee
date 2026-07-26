@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -178,6 +179,15 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
 def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: (_CUDA_LISTING, 0))
     assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
+
+
+def test_run_list_devices_timeout_raises_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _timeout(*_a: object, **_k: object) -> tuple[str, int]:
+        raise subprocess.TimeoutExpired(cmd="llama-server --list-devices", timeout=1.0)
+
+    monkeypatch.setattr(dev_mod, "run_bounded", _timeout)
+    with pytest.raises(ProviderError, match="did not respond"):
+        dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
