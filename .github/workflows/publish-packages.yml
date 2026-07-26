@@ -10,7 +10,9 @@ on:
         description: "Release tag to (re)publish (e.g. v0.6.66b469)."
         required: true
       channels:
-        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,flatpak,snap."
+        # Flatpak is not here: every variant publishes from publish-flatpak.yml,
+        # which serializes them against the shared OSTree repo.
+        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,snap,scoop."
         required: false
         default: "all"
 
@@ -32,7 +34,6 @@ jobs:
       sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
       sha_windows: ${{ steps.info.outputs.sha_windows }}
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
-      size_linux: ${{ steps.info.outputs.size_linux }}
     steps:
       - name: Resolve tag and asset digests
         id: info
@@ -50,11 +51,7 @@ jobs:
           get_sha() {
             awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
-          get_size() {
-            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
-          }
           sha_linux=$(get_sha lilbee-linux-x86_64)
-          size_linux=$(get_size lilbee-linux-x86_64)
           sha_macos_arm64=$(get_sha lilbee-macos-arm64)
           sha_macos_x86_64=$(get_sha lilbee-macos-x86_64)
           sha_windows=$(get_sha lilbee-windows-x86_64.exe)
@@ -71,7 +68,6 @@ jobs:
             echo "sha_macos_x86_64=$sha_macos_x86_64"
             echo "sha_windows=$sha_windows"
             echo "sha_windows_cu125=$sha_windows_cu125"
-            echo "size_linux=$size_linux"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -113,31 +109,6 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
           sha-linux: ${{ needs.resolve.outputs.sha_linux }}
           aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-
-  flatpak:
-    needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'flatpak')
-    # One writer at a time for the shared OSTree pages repo. The regular, CUDA and
-    # compat fan-outs run concurrently and each regenerates the repo's summary and
-    # static deltas wholesale, so the rebase-retry the text-file channels use would
-    # drop whichever app a sibling had just published. Group name is shared across
-    # all three workflows on purpose.
-    concurrency:
-      group: flatpak-lilbee-repo
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/publish-flatpak
-        with:
-          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
-          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
-          version: ${{ needs.resolve.outputs.version }}
-          sha-linux: ${{ needs.resolve.outputs.sha_linux }}
-          size-linux: ${{ needs.resolve.outputs.size_linux }}
-          tag: ${{ needs.resolve.outputs.tag }}
 
   snap:
     needs: resolve
