@@ -1,4 +1,4 @@
-"""Tests for the CUDA-bundle gate that keeps a runtime-less engine wheel off a release."""
+"""Tests for the engine-bundle gate that keeps a backend-less wheel off a release."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from types import ModuleType
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_cuda_bundle.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_engine_bundle.py"
 
 
 def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("assert_cuda_bundle", _SCRIPT)
+    spec = importlib.util.spec_from_file_location("assert_engine_bundle", _SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -121,6 +121,126 @@ def test_macos_cuda_payload_asserts_nothing(tmp_path: Path) -> None:
         ("llama-server", "libggml-cuda.so"),
     )
     assert acb.check(wheel) == []
+
+
+def test_rocm_wheel_without_the_hip_backend_is_rejected(tmp_path: Path) -> None:
+    # The shape that shipped: BACKEND=rocm, and the bundle holds only the CPU
+    # backend because the cmake flag naming it was ignored.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-base.so", "libggml-cpu.so"),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "libggml-hip.so" in problems[0]
+
+
+def test_rocm_wheel_with_the_hip_backend_passes(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so"),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_a_versioned_soname_alone_satisfies_the_backend_check(tmp_path: Path) -> None:
+    # The engine links by SONAME, so the versioned file is the real library and
+    # the bare name is a symlink beside it. A bundle that carries only the former
+    # is complete, and failing it would be a false alarm.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so.0.15.1"),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_backend_argument_covers_a_wheel_built_before_its_tag_is_added(tmp_path: Path) -> None:
+    # A freshly built artifact has no -1.rocm- tag, and that is exactly where the
+    # gate has to fire: at build time, on the runner that produced it.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so"),
+    )
+    assert acb.check(wheel) == []
+    problems = acb.check(wheel, backend="rocm")
+    assert len(problems) == 1
+    assert "libggml-hip.so" in problems[0]
+
+
+def test_sycl_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.sycl-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so"),
+    )
+    assert len(acb.check(wheel)) == 1
+
+
+def test_windows_vulkan_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        ("llama-server.exe", "ggml-cpu.dll"),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "ggml-vulkan.dll" in problems[0]
+
+
+def test_macos_metal_wheel_checks_the_dylib_name(tmp_path: Path) -> None:
+    missing = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.metal-py3-none-macosx_11_0_arm64.whl",
+        ("llama-server", "libggml-cpu.dylib"),
+    )
+    problems = acb.check(missing)
+    assert len(problems) == 1
+    assert "libggml-metal.dylib" in problems[0]
+
+    present = _wheel(
+        tmp_path,
+        "ok-1.0-1.metal-py3-none-macosx_11_0_arm64.whl",
+        ("llama-server", "libggml-cpu.dylib", "libggml-metal.0.15.1.dylib"),
+    )
+    assert acb.check(present) == []
+
+
+def test_every_cuda_flavor_maps_to_the_cuda_backend_library(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.cu124-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so", *_LINUX_RUNTIME),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "libggml-cuda.so" in problems[0]
+
+
+def test_an_unrecognised_backend_asserts_nothing(tmp_path: Path) -> None:
+    # A new flavor should not fail the gate before anyone teaches it the name of
+    # the library that flavor builds.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.cann-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so"),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_main_passes_the_backend_through(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so"),
+    )
+    assert acb.main(["--backend", "rocm", str(wheel)]) == 1
+    assert "libggml-hip.so" in capsys.readouterr().err
 
 
 def test_main_returns_nonzero_and_names_the_wheel(

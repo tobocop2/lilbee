@@ -65,9 +65,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine-*.whl' --dir engine/
-      - name: Every CUDA engine wheel carries the runtime it links
+      # No --backend here: a released wheel carries the -1.<backend>- build tag, so
+      # each one declares its own flavor.
+      - name: Every engine wheel carries the backend it claims
         shell: bash
-        run: python3 tools/qa/assert_cuda_bundle.py engine/*.whl
+        run: python3 tools/qa/assert_engine_bundle.py engine/*.whl
       - name: Every CUDA asset the matrices build is on the release
         shell: bash
         env:

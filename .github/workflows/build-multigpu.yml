@@ -209,16 +209,18 @@ jobs:
           python -m build --wheel
           python -m wheel tags --remove --platform-tag "${{ matrix.wheel-plat }}" dist/*.whl
 
-      # Hard gate for the CUDA cells, which the exec smoke below cannot cover: a
-      # driverless runner has no libcuda/nvcuda, so the engine never loads its CUDA
-      # backend and the binary starts clean with or without its runtime. Read the
-      # wheel instead and fail here, where the diagnosis is cheap.
+      # Hard gate for every cell, because the exec smoke below cannot cover any of
+      # this: a driverless runner never loads a GPU backend, so the binary starts
+      # clean whether or not the build produced one. Read the wheel instead and fail
+      # here, where the diagnosis is cheap. Running it only for the CUDA cells is
+      # what let the rocm wheel ship as a CPU build for as long as its cmake flag
+      # was misspelled. The backend is passed because a wheel this fresh has no
+      # build tag to read it from yet.
       # `python`, not `python3`: setup-python does not put a python3 on PATH for the
-      # Windows cells, which are exactly the ones this gate exists for.
-      - name: The CUDA wheel carries the runtime it links
-        if: ${{ startsWith(matrix.backend, 'cu') }}
+      # Windows cells.
+      - name: The wheel carries the backend it claims
         shell: bash
-        run: python tools/qa/assert_cuda_bundle.py "${PKG_DIR}"/dist/*.whl
+        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" "${PKG_DIR}"/dist/*.whl
 
       # Hard gate: a lib-less bundle fails at exec with a loader error. This
       # step swallowing failures (continue-on-error) is how a broken metal

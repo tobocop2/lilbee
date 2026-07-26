@@ -439,8 +439,14 @@ closure. These rules exist because each one shipped a broken artifact once.
   the driver, so `build_llama_server.sh` copies them beside the binary on Linux and
   Windows and fails the build when one is missing. The exec gate above proves nothing
   here — a driverless runner never loads the CUDA backend — so read the artifact
-  instead: `tools/qa/assert_cuda_bundle.py` checks the wheel in the build cells and
+  instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
+- **A wheel carries the backend its flavor claims.** The same script asserts a rocm
+  wheel holds `libggml-hip.so`, a vulkan one `libggml-vulkan.so`, and so on, for every
+  cell rather than only the CUDA ones. cmake caches an unknown `-D` instead of failing,
+  so a misspelled backend flag builds a CPU-only engine that passes every other gate;
+  that is how the published rocm wheel ran on CPU. A new flavor needs its library name
+  added there, or the gate silently asserts nothing for it.
 - **Every release channel has a real-inference gate.** `tools/qa/artifact_smoke.sh`
   runs `self-check` (real chat + embedding), ingest, search, a RAG ask, and an
   http crawl, sourcing models from the `ci-models` mirror (no HuggingFace).
