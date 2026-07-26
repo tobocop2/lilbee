@@ -413,6 +413,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Blend reranker scores with retrieval fusion (off = pure reranker order)",
     ),
+    "rerank_min_score": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Drop candidates whose raw reranker score is below this (0 = off)",
+    ),
     "show_reasoning": SettingDef(
         bool,
         nullable=False,

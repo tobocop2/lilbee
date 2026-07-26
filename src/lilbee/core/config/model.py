@@ -358,6 +358,11 @@ class Config(BaseSettings):
     # the reranker's effect when measuring it.
     rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
 
+    # Drop candidates whose RAW reranker score falls below this. 0 = off. The
+    # scale is provider/model specific (bge logits vs 0..1 relevance), so set
+    # it against observed scores for the configured reranker.
+    rerank_min_score: float = ConfigField(default=0.0, writable=True, public=True)
+
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
 
