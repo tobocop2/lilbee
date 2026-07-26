@@ -1,0 +1,64 @@
+name: Nuitka object cache
+description: >-
+  Restore and publish the Nuitka cache directory (clcache objects on Windows,
+  plus the onefile-compression and bytecode caches) through the CI mirror.
+  Unlike the Actions cache this is readable and writable from a tag ref, so a
+  release contributes its compile instead of discarding it.
+
+inputs:
+  phase:
+    description: "restore before the build, publish after it."
+    required: true
+  key:
+    description: "Cache identity. Coarse on purpose: clcache content-addresses each entry internally, so a stale tarball can only produce misses."
+    required: true
+  cache-dir:
+    description: "Directory NUITKA_CACHE_DIR points at."
+    required: false
+    default: nuitka-cache
+  release-tag:
+    description: "Release holding the mirror."
+    required: false
+    default: engine-binaries
+  token:
+    description: "Token with contents: write. Required for publish."
+    required: false
+    default: ""
+
+outputs:
+  restored:
+    description: "true when the mirror served the cache."
+    value: ${{ steps.restore.outputs.restored }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the Nuitka cache from the mirror
+      id: restore
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        set -uo pipefail
+        if bash tools/wheel-build/ci_mirror.sh fetch "${{ inputs.key }}" "${{ inputs.cache-dir }}"; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # No ref guard, deliberately, and this is the point of routing it through the
+    # mirror: an actions/cache save on a tag writes to a scope no later run can
+    # read while evicting the entry that would have hit. A release can publish
+    # here and the next release reads it.
+    #
+    # First publish for a key wins; the step is a no-op once the mirror carries
+    # that asset. A complete build produces a complete cache, and the key rotates
+    # on uv.lock, which is the invalidation that matters.
+    - name: Publish the Nuitka cache to the mirror
+      if: inputs.phase == 'publish'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: bash tools/wheel-build/ci_mirror.sh publish "${{ inputs.key }}" "${{ inputs.cache-dir }}"
