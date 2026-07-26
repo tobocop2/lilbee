@@ -101,6 +101,8 @@ def expand_neighbors(
     radius: int,
     budget: int,
     cost: Callable[[str], int],
+    *,
+    exclude: Callable[[str], bool] | None = None,
 ) -> list[SearchChunk]:
     """Widen each result with up to *radius* adjacent same-source chunks.
 
@@ -110,7 +112,9 @@ def expand_neighbors(
     the original text, so expansion is always trimmed before any original
     chunk. An index that is itself selected, or already claimed by a
     higher-ranked expansion, is never pulled again, so no passage text is
-    duplicated (a document routed whole expands to nothing).
+    duplicated (a document routed whole expands to nothing). A neighbor whose
+    text matches *exclude* is treated as absent, ending the run at its side,
+    so expansion cannot re-import text an upstream filter dropped.
     """
     if budget <= 0:
         # Nothing can be spent, so skip the per-source store fetches entirely:
@@ -121,6 +125,12 @@ def expand_neighbors(
     for r in results:
         centers.setdefault(r.source, set()).add(r.chunk_index)
     rows = _fetch_neighbor_rows(store, centers, radius)
+    if exclude is not None:
+        rows = {
+            key: row
+            for key, row in rows.items()
+            if row.chunk_index in centers.get(row.source, ()) or not exclude(row.chunk)
+        }
     if not rows:
         return results
     claimed = {source: set(indices) for source, indices in centers.items()}

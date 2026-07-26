@@ -215,3 +215,33 @@ class TestExpandNeighbors:
         rows = [_chunk(index=2, text="bb"), _chunk(index=5, text="ee")]
         out = expand_neighbors([center], _store_with(rows), radius=2, budget=1000, cost=_cost)
         assert out[0].chunk == "dd\nee"
+
+
+class TestExcludedNeighbors:
+    def test_excluded_neighbor_text_is_never_imported(self):
+        # The structural filter dropped a TOC page; expansion must treat it as
+        # absent (ending the run) instead of splicing it back in.
+        center = _chunk(index=2, text="body overlap padding text")
+        rows = [
+            _chunk(index=1, text="Contents ....... 1\nScope ....... 4\nIndex ....... 9"),
+            _chunk(index=3, text="text following overlap padding"),
+        ]
+        out = expand_neighbors(
+            [center],
+            _store_with(rows),
+            radius=1,
+            budget=1000,
+            cost=_cost,
+            exclude=lambda t: "......." in t,
+        )
+        assert "Contents" not in out[0].chunk
+        assert "following" in out[0].chunk
+
+    def test_exclusion_never_applies_to_the_center(self):
+        center = _chunk(index=2, text="looks excluded but is the original hit")
+        rows = [_chunk(index=2, text="looks excluded but is the original hit")]
+        out = expand_neighbors(
+            [center], _store_with(rows), radius=1, budget=1000, cost=_cost,
+            exclude=lambda t: "excluded" in t,
+        )
+        assert out == [center]

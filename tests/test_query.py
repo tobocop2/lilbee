@@ -996,17 +996,19 @@ class TestNeighborExpansion:
 
     def test_widens_the_passage_and_the_prompt(self, mock_svc):
         cfg.neighbor_expansion = 1
-        mock_svc.store.search.return_value = [_make_result(chunk="core text", chunk_index=2)]
+        center = "core overlap padding text closing overlap padding"
+        mock_svc.store.search.return_value = [_make_result(chunk=center, chunk_index=2)]
         mock_svc.store.get_chunks_by_indices.return_value = [
-            _make_result(chunk="before core", chunk_index=1),
-            _make_result(chunk="text after", chunk_index=3),
+            _make_result(chunk="before core overlap padding", chunk_index=1),
+            _make_result(chunk="closing overlap padding after", chunk_index=3),
         ]
         mock_svc.provider.chat.return_value = _text_result("answer")
         result = get_services().searcher.ask_raw("q")
-        assert result.sources[0].chunk == "before core text after"
+        widened = "before core overlap padding text closing overlap padding after"
+        assert result.sources[0].chunk == widened
         assert result.sources[0].chunk_index == 2
         prompt = mock_svc.provider.chat.call_args[0][0][-1]["content"]
-        assert "before core text after" in prompt
+        assert widened in prompt
 
     def test_widening_keeps_citation_numbering(self, mock_svc):
         cfg.neighbor_expansion = 1
