@@ -212,23 +212,42 @@ jobs:
         if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          # The compat cell compiles at -march=x86-64-v2; without it in the key it
+          # shares an entry with the stock cell and each poisons the other.
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}${{ matrix.march && format('-{0}', matrix.march) || '' }}
           max-size: '2G'
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
           # warm-executables-cache.yml runs this workflow on main so these saves happen.
           save: ${{ github.ref_type != 'tag' }}
 
+      # ccache-action only writes a config file, and Nuitka overrides that with its
+      # own CCACHE_DIR unless one is already exported (nuitka/build/SconsCaching.py),
+      # so none of its C objects ever reached the cached directory. Env beats config.
+      - name: Point ccache at the cached directory
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+
       # Windows has no ccache; Nuitka's own cache (MSVC object caching plus its
       # dependency-analysis caches) is what cuts the ~4h cold compile. Restored
       # from main-saved caches (warm-executables-cache.yml) -- tag-scoped saves
       # are unrestorable, same story as ccache above.
+      # One namespace per Windows runner image, not per backend or asset. Every
+      # Windows cell compiles the same C: MSVC takes no baseline override here, the
+      # CUDA difference is bundled DLLs, and the compat difference is a lancedb
+      # .pyd. Splitting them gave four ~1-3 GB object caches that evicted each
+      # other out of the 10 GiB cap every run, which is why clcache never once hit.
+      # Sharing is safe by construction: clcache keys each entry on the
+      # preprocessed source plus flags, so a mismatched entry misses, never lies.
+      # The asset name stays in the primary key only so concurrent cells do not
+      # save the same key; restore-keys is what shares them.
       - name: Restore Nuitka cache (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache/restore@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
-          restore-keys: nuitka-${{ matrix.asset_name }}-
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-
 
       - name: Point Nuitka at the cache dir (Windows)
         if: runner.os == 'Windows'
@@ -298,7 +317,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: nuitka-cache
-          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.
@@ -459,6 +478,8 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
+          # The onefile payload is already zstd-compressed; deflating it again buys nothing.
+          compression-level: 0
 
 
       # Eager attach: release-candidate creates the pre-release shell before

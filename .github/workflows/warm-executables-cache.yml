@@ -27,3 +27,12 @@ jobs:
   warm:
     uses: ./.github/workflows/release.yml
     secrets: inherit
+
+  # The CUDA matrix lives in its own workflow and nothing ran it off a tag, so
+  # its ccache save condition (non-tag only) never fired and its keys were
+  # written never and read never. Every release compiled and bundled cold.
+  # No `with:`: the inputs are optional and an empty release_tag keeps this in
+  # artifacts-only mode, so both attach steps skip.
+  warm-cuda:
+    uses: ./.github/workflows/build-cuda-executables.yml
+    secrets: inherit

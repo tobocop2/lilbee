@@ -1303,6 +1303,50 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 
 `build-cuda-executables.yml` is also dispatchable standalone (`gh workflow run build-cuda-executables.yml -f tag=v...`) to backfill CUDA binaries onto a historical release; in that mode each cell attaches directly to the named release tag instead of relying on `attach-prerelease`.
 
+### Where a build's inputs come from
+
+A release is dominated by two things it should almost never do: compiling `llama-server` (~50 min per leg) and compiling ~9056 C files with Nuitka (~176 min on Windows). Both are pure functions of pinned inputs, so both are fetched rather than rebuilt.
+
+```mermaid
+flowchart TB
+    subgraph WARM["on main · non-tag refs only"]
+        WEC["warm-engine-cache.yml<br/>weekly · on pin change"] --> BMG["build-multigpu.yml"]
+        WXC["warm-executables-cache.yml<br/>weekly · on demand"] --> REL["release.yml"]
+        WXC --> BCE["build-cuda-executables.yml"]
+    end
+
+    BMG ==> MIRROR[["engine-binaries release<br/>content-addressed engine assets"]]
+    BCE ==> MIRROR
+    REL ==> MIRROR
+    REL --> CACHE[("Actions cache<br/>ccache · Nuitka objects")]
+    BCE --> CACHE
+
+    subgraph TAG["on a v* tag · the release"]
+        TB["release.yml · build-cuda-executables.yml"]
+    end
+
+    MIRROR ==>|"1 · engine, ~2 min"| TB
+    CACHE -->|"2 · objects, restore only"| TB
+    SRC["build from source<br/>~50 min engine · ~176 min Nuitka"] -.->|"3 · fallback"| TB
+```
+
+Thick arrow = the fast path. Engines resolve mirror, then Actions cache, then source build, so a missing asset degrades to the old timing rather than failing.
+
+Two properties do the work:
+
+**Tag runs read, they never write.** GitHub scopes a cache save to the creating ref, and a tag is its own scope, so anything a release saved was unreadable by every later run while still evicting the main-scoped entry that would have hit. Every save is now guarded on `github.ref_type != 'tag'`; the warm workflows on main are what populate.
+
+**Engines live on a release, not in the cache.** The Actions cache has a hard 10 GiB per-repo cap with LRU eviction and drops anything unaccessed for 7 days. Engine binaries are ~3.5 GiB of that and are perfectly immutable (every source pinned in `engine-versions.env`), so they sit on the `engine-binaries` release instead, keyed by the same hash the cache key uses. `tools/wheel-build/engine_asset_name.sh` maps key to asset name for both the reader and the writer, because a mismatch there would not fail, it would silently never hit. Fetched with `curl`, not `gh`: the manylinux container the Linux legs build in ships no `gh`.
+
+**Nothing here can change a shipped binary.** Every mechanism either serves bytes that are already identical or misses:
+
+- ccache and clcache key each entry on the preprocessed source plus the compiler and its flags, so a hit is by definition the same object file and a mismatch misses. ccache's correctness sloppiness is left at its conservative default, so translation units using `__DATE__` / `__TIME__` are not cached at all.
+- The engine key covers every input `build_llama_server.sh` reads: backend, toolkit version, the llama.cpp pin, the three pins in `engine-versions.env`, and the build scripts themselves. The remaining variables are parallelism (`ENGINE_BUILD_JOBS`), a scratch path (`LLAMA_BUILD_DIR`), and `TARGET_ARCH`, which CI never sets.
+- `cache-env` carries the runner image or container, which is what fixes the glibc floor. A repointed runner label changes the key and forces a rebuild.
+- Mirror assets never expire, unlike cache entries. That is benign for engines: they are self-contained with a baked rpath, and an engine built on an older image of the same label carries a lower glibc floor, not a higher one.
+
+Two optimisations were tried and rejected for exactly this reason. `--nofollow-import-to=litellm.proxy` would have dropped 581 modules and ~18 min of compile, but `litellm/__init__.py` imports 9 of them on a bare import, so the binary would raise `ImportError` on first use. Gating the CUDA toolkit install on a mirror probe would have saved 4.9 min, but the probe and the fetch are separate requests, and a cell that skips the toolkit and then has to build the engine fails with no `CUDA_PATH`; since these cells are `continue-on-error`, that ships a release missing a CUDA binary rather than failing it.
+
 ### Notes
 
 - **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-cuda-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
@@ -1311,7 +1355,9 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 - **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
 - **`lilbee` and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** Both ship a `lilbee` binary; the formula and `PKGBUILD` declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-cuda`).
 - **Promotion is a same-source re-release, not a mutation.** `make promote FROM=<tag> TO=<version>` (`scripts/promote_release.sh`) puts a commit on top of the FROM tag's commit that changes only the version line in `pyproject.toml`/`uv.lock`, tags it, and pushes just the tag — `main` and the FROM release stay untouched, so releases are immutable and anyone pinned to the old one is unaffected. The rebuild is unavoidable (the version is baked into `--version`, the wheel metadata, and every manifest), but same-source is guaranteed: `release-candidate.yml` classifies a tag as a promotion when its parent commit is itself a `v*` tag and the diff is version-only — read from the git graph, not declared, so it can't be spoofed — and creates the new release with the FROM release's notes under a "Promoted from" banner. `attach-prerelease` skips note regeneration for promoted tags and `make release-promote` keeps the copied notes when marking one latest.
-- **Executable caches are warmed on main.** GitHub cache saves are scoped to the creating ref, so tag runs can never save a cache a later run restores — cold, that's ~2h Linux, ~1h15 macOS, ~4h Windows per release. `warm-executables-cache.yml` (weekly + on demand) runs `release.yml` on main so tag runs restore warm ccache (Linux/macOS) and Nuitka caches (Windows, `NUITKA_CACHE_DIR`) instead. Dispatch it before a promotion: a promoted tag compiles identical source, so the build should hit nearly everything.
+- **Executable caches are warmed on main.** GitHub cache saves are scoped to the creating ref, so tag runs can never save a cache a later run restores — cold, that's ~2h Linux, ~1h15 macOS, ~4h Windows per release. `warm-executables-cache.yml` (weekly + on demand) runs both `release.yml` and `build-cuda-executables.yml` on main so tag runs restore warm ccache (Linux/macOS) and Nuitka caches (Windows, `NUITKA_CACHE_DIR`) instead. Dispatch it before a promotion: a promoted tag compiles identical source, so the build should hit nearly everything.
+- **`CCACHE_DIR` has to be exported, not configured.** `hendrikmuhs/ccache-action` sets ccache's cache directory through its config file, but Nuitka exports its own `CCACHE_DIR` unless one is already set (`nuitka/build/SconsCaching.py`), and the env var outranks the config. Without the explicit export, Nuitka's objects land in a runner-local directory and every release compiles cold while `ccache -s` truthfully reports zero hits on zero lookups.
+- **Cache keys carry the compile flags.** The compat cells build at `-march=x86-64-v2`; sharing a ccache key with the stock cells poisoned both. Keys include `march` where it differs. The two Windows cells compile the same C and deliberately share a restore prefix.
 - **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-cuda-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
 - **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
