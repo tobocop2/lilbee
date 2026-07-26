@@ -46,8 +46,25 @@ def _store_with(rows: list[SearchChunk]) -> MagicMock:
 
 class TestMergeAdjacentTexts:
     def test_dedups_the_shared_overlap(self):
-        merged = merge_adjacent_texts(["alpha beta gamma", "gamma delta"])
-        assert merged == "alpha beta gamma delta"
+        merged = merge_adjacent_texts(
+            ["alpha beta shared overlap region", "shared overlap region delta"]
+        )
+        assert merged == "alpha beta shared overlap region delta"
+
+    def test_short_coincidental_match_is_not_deleted(self):
+        # A seam-boundary word match is not chunker overlap; deduping it would
+        # silently delete the right side's opening text.
+        merged = merge_adjacent_texts(["report ends with the ", "the next chunk"])
+        assert "the next chunk" in merged
+
+    def test_breadcrumb_on_the_right_does_not_hide_the_overlap(self):
+        # kreuzberg heading-context chunks carry "# A > ## B\n\n" prefixes; the
+        # overlap sits after the breadcrumb and the merge must still find it.
+        overlap = "word219 word220 word221 word222"
+        left = f"# Guide > ## Install\n\nword0 word1 {overlap}"
+        right = f"# Guide > ## Install\n\n{overlap} word223 word224"
+        merged = merge_adjacent_texts([left, right])
+        assert merged == f"# Guide > ## Install\n\nword0 word1 {overlap} word223 word224"
 
     def test_no_overlap_joins_with_a_newline_seam(self):
         assert merge_adjacent_texts(["alpha", "delta"]) == "alpha\ndelta"
@@ -62,32 +79,35 @@ class TestMergeAdjacentTexts:
         assert merge_adjacent_texts(["alpha", ""]) == "alpha"
 
     def test_control_bytes_in_the_text_do_not_confuse_the_overlap(self):
-        # Extracted document text can carry stray control bytes. The shared
-        # region here is the trailing "\0a\0"; a scan that joined the two sides
-        # around a NUL sentinel would match past it and swallow right's tail.
-        assert merge_adjacent_texts(["Xa\0a\0", "\0a\0a"]) == "Xa\0a\0a"
+        # Extracted document text can carry stray control bytes. A scan that
+        # joined the two sides around a NUL sentinel would match past the
+        # shared region and swallow right's tail.
+        overlap = "\0a" * 8
+        assert merge_adjacent_texts([f"X{overlap}", f"{overlap}Z"]) == f"X{overlap}Z"
 
     def test_merging_an_already_merged_passage_is_idempotent(self):
-        texts = ["one two", "two three", "three four"]
+        a = "alpha overlap region one"
+        b = "beta overlap region two"
+        texts = [f"start {a}", f"{a} middle {b}", f"{b} end"]
         merged = merge_adjacent_texts(texts)
-        assert merged == "one two three four"
+        assert merged == f"start {a} middle {b} end"
         # Re-merging with either neighbor changes nothing: the neighbor's text
         # is fully contained, so a second expansion pass cannot duplicate it.
-        assert merge_adjacent_texts(["one two", merged]) == merged
-        assert merge_adjacent_texts([merged, "three four"]) == merged
+        assert merge_adjacent_texts([f"start {a}", merged]) == merged
+        assert merge_adjacent_texts([merged, f"{b} end"]) == merged
 
 
 class TestExpandNeighbors:
     def test_widens_both_sides_and_recomputes_the_page_span(self):
-        center = _chunk(index=2, text="gamma delta", page=3)
+        center = _chunk(index=2, text="gamma overlap padding delta overlap padding", page=3)
         rows = [
-            _chunk(index=1, text="beta gamma", page=2),
-            _chunk(index=3, text="delta epsilon", page=4),
+            _chunk(index=1, text="beta gamma overlap padding", page=2),
+            _chunk(index=3, text="delta overlap padding epsilon", page=4),
         ]
         store = _store_with(rows)
         out = expand_neighbors([center], store, radius=1, budget=1000, cost=_cost)
         assert len(out) == 1
-        assert out[0].chunk == "beta gamma delta epsilon"
+        assert out[0].chunk == "beta gamma overlap padding delta overlap padding epsilon"
         assert (out[0].page_start, out[0].page_end) == (2, 4)
         assert out[0].score == center.score
         assert out[0].chunk_index == center.chunk_index
@@ -111,16 +131,16 @@ class TestExpandNeighbors:
     def test_selected_neighbors_are_never_pulled_twice(self):
         # Chunks 2 and 3 are both selected: each widens only away from the
         # other, so no passage text is duplicated.
-        a = _chunk(index=2, text="two three")
-        b = _chunk(index=3, text="three four")
+        a = _chunk(index=2, text="two overlap padding three overlap padding")
+        b = _chunk(index=3, text="three overlap padding four overlap padding")
         rows = [
-            _chunk(index=1, text="one two"),
-            _chunk(index=4, text="four five"),
+            _chunk(index=1, text="one two overlap padding"),
+            _chunk(index=4, text="four overlap padding five"),
         ]
         store = _store_with(rows)
         out = expand_neighbors([a, b], store, radius=1, budget=1000, cost=_cost)
-        assert out[0].chunk == "one two three"
-        assert out[1].chunk == "three four five"
+        assert out[0].chunk == "one two overlap padding three overlap padding"
+        assert out[1].chunk == "three overlap padding four overlap padding five"
         store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 2, 3, 4])
 
     def test_higher_ranked_expansion_claims_the_shared_neighbor(self):

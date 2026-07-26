@@ -10,12 +10,21 @@ only its text and page/line span change.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.data.store import SearchChunk, Store
+
+# Below this a suffix-prefix match is coincidence, not chunker overlap; deduping
+# it would delete real text at an overlap-free seam.
+_MIN_OVERLAP = 16
+
+# kreuzberg markdown breadcrumb ("# Guide > ## Install\n\n"); heading-context
+# content lines never start with "#", so only the breadcrumb matches.
+_BREADCRUMB_RE = re.compile(r"\A#{1,6} [^\n]*\n\n")
 
 
 def _overlap_chars(left: str, right: str) -> int:
@@ -32,20 +41,58 @@ def _overlap_chars(left: str, right: str) -> int:
     return 0
 
 
-def merge_adjacent_texts(texts: list[str]) -> str:
-    """Concatenate adjacent chunk texts, deduplicating their shared overlap.
+def _seam(left: str, right: str) -> tuple[int, str]:
+    """(overlap length, effective right text) for one adjacent seam.
 
-    Adjacent texts with no detectable overlap (a chunk_overlap=0 build) join
-    with a newline seam rather than gluing two words together.
+    A heading breadcrumb on the right hides the chunker overlap, so the
+    stripped form is tried too and wins only when it reveals one. A match
+    shorter than ``_MIN_OVERLAP`` counts only when one side is fully
+    contained in the other.
     """
-    merged = texts[0]
-    for text in texts[1:]:
-        k = _overlap_chars(merged, text)
-        tail = text[k:]
+    k = _overlap_chars(left, right)
+    if k >= _MIN_OVERLAP or k == len(right) or (k and k == len(left)):
+        return k, right
+    stripped = _BREADCRUMB_RE.sub("", right)
+    if stripped != right:
+        ks = _overlap_chars(left, stripped)
+        if ks >= _MIN_OVERLAP or (ks and ks in (len(stripped), len(left))):
+            return ks, stripped
+    return 0, right
+
+
+def _merge_span(
+    span: list[int],
+    texts: dict[int, str],
+    seams: dict[tuple[int, int], tuple[int, str]],
+) -> str:
+    """Merge the span's texts in index order, deduplicating seam overlaps.
+
+    *seams* caches per-pair seam scans so a caller re-merging shrinking spans
+    (the budget shed loop) pays for each scan once.
+    """
+    merged = texts[span[0]]
+    prev = span[0]
+    for index in span[1:]:
+        key = (prev, index)
+        if key not in seams:
+            seams[key] = _seam(texts[prev], texts[index])
+        k, effective = seams[key]
+        tail = effective[k:]
         if not tail:
             continue
         merged = merged + tail if k else f"{merged}\n{tail}"
+        prev = index
     return merged
+
+
+def merge_adjacent_texts(texts: list[str]) -> str:
+    """Concatenate adjacent chunk texts, deduplicating their shared overlap.
+
+    Adjacent texts with no real overlap (a chunk_overlap=0 build, or only a
+    coincidental short match) join with a newline seam rather than gluing two
+    words together or deleting text.
+    """
+    return _merge_span(list(range(len(texts))), dict(enumerate(texts)), {})
 
 
 def expand_neighbors(
@@ -151,13 +198,13 @@ def _widen(
         return result, 0
     left = _neighbor_run(result, rows, claimed, -1, radius)
     right = _neighbor_run(result, rows, claimed, +1, radius)
+    texts = {center: result.chunk}
+    for index in [*left, *right]:
+        texts[index] = rows[(result.source, index)].chunk
+    seams: dict[tuple[int, int], tuple[int, str]] = {}
     while left or right:
         span = sorted([*left, center, *right])
-        texts = [
-            result.chunk if index == center else rows[(result.source, index)].chunk
-            for index in span
-        ]
-        merged = merge_adjacent_texts(texts)
+        merged = _merge_span(span, texts, seams)
         extra = cost(merged) - cost(result.chunk)
         if extra <= remaining:
             claimed.update(index for index in span if index != center)
