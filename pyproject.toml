@@ -75,7 +75,10 @@ crawler = ["crawl4ai>=0.9.0"]
 # fragment API), lazily imported only in that path, so the query/interactive paths
 # and the pre-Haswell +compat standalone never pull it in. Validated against the
 # stock lancedb 0.33 pin: fragments round-trip and ANN/FTS indexes build on them.
-bulk-ingest = ["pylance>=9.0.0"]
+# lance-namespace>=0.8.6 is pylance 9's runtime floor (it imports symbols absent
+# from the 0.5.x lancedb resolves otherwise); lancedb 0.33 only reads the stable
+# namespace API and works unchanged against the bump.
+bulk-ingest = ["pylance>=9.0.0", "lance-namespace>=0.8.6"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows

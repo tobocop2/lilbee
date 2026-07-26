@@ -1667,6 +1667,7 @@ dependencies = [
 
 [package.optional-dependencies]
 bulk-ingest = [
+    { name = "lance-namespace" },
     { name = "pylance" },
 ]
 crawler = [
@@ -1722,6 +1723,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
     { name = "kreuzberg", specifier = ">=4.9.1,<5" },
+    { name = "lance-namespace", marker = "extra == 'bulk-ingest'", specifier = ">=0.8.6" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-engine", directory = "packaging/engine-wheel" },
