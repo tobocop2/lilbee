@@ -14,7 +14,7 @@ import functools
 import logging
 import os
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import ParamSpec, TypeVar
 
 log = logging.getLogger(__name__)
@@ -105,14 +105,21 @@ def _ingest_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=_max_workers(), thread_name_prefix="lilbee-ingest")
 
 
-async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-    """``asyncio.to_thread`` on the ingest executor, contextvars preserved.
+async def to_executor(
+    executor: Executor, fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs
+) -> _R:
+    """``asyncio.to_thread`` on *executor*, contextvars preserved.
 
-    Extraction relies on contextvar propagation into its workers (cancel and
-    progress context), which ``run_in_executor`` alone would drop; copy the
+    Extraction relies on contextvar propagation into its workers (cancel, config
+    and progress context), which ``run_in_executor`` alone would drop; copy the
     context exactly like ``asyncio.to_thread`` does.
     """
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
     call = functools.partial(ctx.run, fn, *args, **kwargs)
-    return await loop.run_in_executor(_ingest_executor(), call)
+    return await loop.run_in_executor(executor, call)
+
+
+async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+    """Run *fn* on the shared ingest executor."""
+    return await to_executor(_ingest_executor(), fn, *args, **kwargs)
