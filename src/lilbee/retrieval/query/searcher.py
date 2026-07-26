@@ -71,6 +71,7 @@ from lilbee.retrieval.query.intent import (
     AggregateQuery,
     document_references,
     matches_reference,
+    matches_stored_title,
     matches_title,
     parse_aggregate,
     parse_llm_aggregate,
@@ -828,15 +829,20 @@ class Searcher:
         return [c.model_copy(update={"score": 1.0}) for c in chunks]
 
     def _resolve_title_filename(self, title: str) -> str | None:
-        """The one source whose stem *title* names token-exactly, or ``None``.
+        """The one source whose stem or stored title *title* names, or ``None``.
 
-        The article-stripped title pre-filters candidates by substring, then
-        the token-exact stem comparison decides; only a unique winner routes,
-        so shared titles fall back to topical retrieval.
+        The article-stripped title pre-filters candidates by substring (over
+        filename and stored title), then the token-exact comparison decides;
+        only a unique winner routes, so shared titles fall back to topical
+        retrieval.
         """
         stripped = query_language().leading_article_pattern.sub("", title.strip())
         candidates = self._store.get_sources(search=stripped, limit=_KNOWN_ITEM_CANDIDATES)
-        matches = [s for s in candidates if matches_title(title, s["filename"])]
+        matches = [
+            s
+            for s in candidates
+            if matches_title(title, s["filename"]) or matches_stored_title(title, s.get("title"))
+        ]
         if len(matches) == 1:
             return str(matches[0]["filename"])
         return None

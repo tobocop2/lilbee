@@ -181,12 +181,19 @@ def _escape_like_wildcards(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _sources_search_filter(search: str | None) -> str | None:
-    """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
+def _sources_search_filter(search: str | None, *, include_title: bool = False) -> str | None:
+    """Case-insensitive filename (and optionally title) WHERE clause, or ``None``.
+
+    *include_title* requires the caller to have checked the column exists
+    (pre-title stores lack it).
+    """
     if not search:
         return None
     escaped = escape_sql_string(_escape_like_wildcards(search.lower()))
-    return f"LOWER(filename) LIKE '%{escaped}%' ESCAPE '\\'"
+    clause = f"LOWER(filename) LIKE '%{escaped}%' ESCAPE '\\'"
+    if include_title:
+        clause = f"({clause} OR LOWER(title) LIKE '%{escaped}%' ESCAPE '\\')"
+    return clause
 
 
 def refs_compatible(

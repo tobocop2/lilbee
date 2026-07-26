@@ -1296,7 +1296,7 @@ class Store:
         if table is None:
             return []
         query = table.search()
-        where = _sources_search_filter(search)
+        where = _sources_search_filter(search, include_title="title" in table.schema.names)
         if where is not None:
             query = query.where(where)
         if offset:
@@ -1310,7 +1310,7 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return 0
-        where = _sources_search_filter(search)
+        where = _sources_search_filter(search, include_title="title" in table.schema.names)
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 

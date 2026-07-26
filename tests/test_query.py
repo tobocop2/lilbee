@@ -2177,16 +2177,29 @@ class TestKnownItemTitleRoute:
     chunk from another book). A known-item shape plus a token-exact stem
     match routes; anything else stays topical."""
 
-    def _source(self, filename):
-        return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
+    def _source(self, filename, title=None):
+        return {
+            "filename": filename,
+            "file_hash": "h",
+            "ingested_at": "",
+            "chunk_count": 2,
+            "title": title,
+        }
 
-    def _index(self, mock_svc, filenames):
-        sources = [self._source(f) for f in filenames]
+    def _index(self, mock_svc, filenames, titles=None):
+        sources = [
+            self._source(f, (titles or {}).get(f)) for f in filenames
+        ]
 
         def get_sources(search=None, limit=None, offset=0):
             if not search:
                 return sources[:limit]
-            return [s for s in sources if search.lower() in s["filename"].lower()][:limit]
+            return [
+                s
+                for s in sources
+                if search.lower() in s["filename"].lower()
+                or search.lower() in (s["title"] or "").lower()
+            ][:limit]
 
         mock_svc.store.get_sources.side_effect = get_sources
         mock_svc.store.get_chunks_by_source.return_value = [
@@ -2237,6 +2250,28 @@ class TestKnownItemTitleRoute:
         self._index(mock_svc, ["Notes.txt", "notes.md"])
         mock_svc.store.search.return_value = [_make_result()]
         get_services().searcher.search("summarize notes")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+    def test_stored_title_resolves_when_filename_differs(self, mock_svc):
+        """A note whose ingested H1 title differs from its filename routes by
+        that title: the flagship summarize-by-title case."""
+        self._index(
+            mock_svc,
+            ["notes-2024.md", "The Prince.txt"],
+            titles={"notes-2024.md": "Frankenstein Analysis"},
+        )
+        results = get_services().searcher.search("summarize Frankenstein Analysis")
+        assert [r.chunk for r in results] == ["opening", "ending"]
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("notes-2024.md")
+
+    def test_stored_title_shared_by_two_sources_stays_topical(self, mock_svc):
+        self._index(
+            mock_svc,
+            ["a.md", "b.md"],
+            titles={"a.md": "Weekly Sync", "b.md": "Weekly Sync"},
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("summarize Weekly Sync")
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
 
