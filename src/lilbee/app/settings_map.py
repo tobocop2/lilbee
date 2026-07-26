@@ -143,15 +143,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
     ),
-    "embed_slots": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Concurrent requests each embed server batches together"
-            " (0 = one, which suits requests that already carry many sequences)"
-        ),
-    ),
     "ingest_processes": SettingDef(
         int,
         nullable=False,
