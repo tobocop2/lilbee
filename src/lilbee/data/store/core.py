@@ -143,8 +143,8 @@ def _lexical_rows(
 
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
+# The index type is carried by the lancedb IvfPq config at build time.
 _VECTOR_METRIC = "cosine"
-_ANN_INDEX_TYPE = "IVF_PQ"
 _ANN_NPROBES_FLOOR = 20
 _ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
@@ -629,8 +629,10 @@ class Store:
                 return True
             if not force and (threshold <= 0 or table.count_rows() < threshold):
                 return False
+            from lancedb.index import IvfPq
+
             try:
-                table.create_index(metric=_VECTOR_METRIC, index_type=_ANN_INDEX_TYPE)
+                table.create_index("vector", config=IvfPq(distance_type=_VECTOR_METRIC))
                 log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
                 return True
             except Exception:
