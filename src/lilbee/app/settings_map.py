@@ -944,6 +944,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Stemmer/stop-word language for the BM25 indexes (tantivy name; rebuild to apply)",
     ),
+    "embed_titles": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Prefix document titles to chunk embeddings (rebuild to apply; stored text unchanged)",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,

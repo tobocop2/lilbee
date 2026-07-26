@@ -143,6 +143,33 @@ def ocr_override(
             var.reset(token)
 
 
+# Per-file document title for embedding input; a ContextVar (like the OCR
+# overrides) so the OCR call chains need no signature threading and concurrent
+# ingests never leak titles across files.
+_embed_title: contextvars.ContextVar[str] = contextvars.ContextVar("lilbee_embed_title", default="")
+
+
+@contextmanager
+def _title_scope(title: str) -> Generator[None, None, None]:
+    token = _embed_title.set(title or "")
+    try:
+        yield
+    finally:
+        _embed_title.reset(token)
+
+
+def _embed_inputs(texts: list[str], title: str | None = None) -> list[str]:
+    """Embedding inputs, title-prefixed when ``cfg.embed_titles`` is on.
+
+    Only the vector sees the title; the stored chunk text is unchanged.
+    ``None`` falls back to the scoped per-file title (the OCR chains).
+    """
+    effective = title if title is not None else _embed_title.get()
+    if not effective or not active_config().embed_titles:
+        return texts
+    return [f"{effective}\n{text}" for text in texts]
+
+
 def _should_run_ocr() -> bool:
     """Decide whether to attempt vision-based OCR on scanned PDFs.
 
@@ -404,7 +431,10 @@ async def chunk_and_embed_pages(
         return []
     texts = [c for _, c in all_chunks]
     vectors = await to_ingest_thread(
-        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch,
+        _embed_inputs(texts),
+        source=source_name,
+        on_progress=on_progress,
     )
     return [
         ChunkRecord(
@@ -566,17 +596,26 @@ async def _handle_image(
         return [], SourceMeta(title=derive_title(source_name))
     meta = await to_ingest_thread(_image_meta, path, source_name)
     vision_model = active_config().vision_model
-    if _should_run_ocr() and vision_model:
-        log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
-        chunks = await _vision_image_ocr(
-            path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
-        )
-        return chunks, meta
+    with _title_scope(meta.title):
+        if _should_run_ocr() and vision_model:
+            log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
+            chunks = await _vision_image_ocr(
+                path,
+                source_name,
+                content_type,
+                on_progress=on_progress,
+                page_texts_out=page_texts_out,
+            )
+            return chunks, meta
 
-    log.info("Image: falling back to Tesseract OCR for %s", source_name)
-    chunks = await _tesseract_ocr_fallback(
-        path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
-    )
+        log.info("Image: falling back to Tesseract OCR for %s", source_name)
+        chunks = await _tesseract_ocr_fallback(
+            path,
+            source_name,
+            content_type,
+            on_progress=on_progress,
+            page_texts_out=page_texts_out,
+        )
     if not chunks:
         _warn_empty_ocr(source_name, "images")
     return chunks, meta
@@ -614,15 +653,16 @@ async def ingest_document(
     meta = source_meta_from_extraction(result.metadata or {}, source_name)
 
     if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
-        records = await _handle_scanned_pdf_fallback(
-            path,
-            source_name,
-            content_type,
-            result,
-            quiet=quiet,
-            on_progress=on_progress,
-            page_texts_out=page_texts_out,
-        )
+        with _title_scope(meta.title):
+            records = await _handle_scanned_pdf_fallback(
+                path,
+                source_name,
+                content_type,
+                result,
+                quiet=quiet,
+                on_progress=on_progress,
+                page_texts_out=page_texts_out,
+            )
         return records, meta
 
     if not result.chunks:
@@ -643,7 +683,10 @@ async def ingest_document(
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await to_ingest_thread(
-        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch,
+        _embed_inputs(texts, meta.title),
+        source=source_name,
+        on_progress=on_progress,
     )
 
     records = [
@@ -746,7 +789,10 @@ async def ingest_markdown(
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
     vectors = await to_ingest_thread(
-        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch,
+        _embed_inputs(texts, meta.title),
+        source=source_name,
+        on_progress=on_progress,
     )
     records = [
         ChunkRecord(

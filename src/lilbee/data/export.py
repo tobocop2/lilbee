@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from lilbee.data.ingest.extract import chunk_and_embed_pages
+from lilbee.data.ingest.extract import _title_scope, chunk_and_embed_pages
 from lilbee.data.ingest.title import derive_title
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
@@ -285,12 +285,13 @@ async def import_dataset(
         source_rows.sort(key=lambda r: r["page"])
         content_type = source_rows[0]["content_type"] or "text"
         page_texts = [(r["page"], r["text"]) for r in source_rows]
-        chunks = await chunk_and_embed_pages(page_texts, name, content_type, on_progress)
         # Datasets exported with the metadata columns round-trip the extracted
         # title/authors/created_at; older ones carry none, so fall back to the
         # stem-derived title that keeps imported chunks visible to the title arm.
         meta = _source_meta_from_rows(source_rows, name)
         title = meta.title
+        with _title_scope(title):
+            chunks = await chunk_and_embed_pages(page_texts, name, content_type, on_progress)
         for chunk in chunks:
             chunk["title"] = title or None
         # One locked transaction (cleanup + chunks + page texts + source row) so a

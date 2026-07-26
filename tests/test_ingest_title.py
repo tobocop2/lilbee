@@ -164,3 +164,39 @@ class TestMarkdownFrontmatter:
         text = "---\n[not: valid: yaml\n---\n# Fallback\nbody\n"
         fields, body = _split_frontmatter(text)
         assert _frontmatter_meta(fields, "note.md", body).title == "Fallback"
+
+
+class TestEmbedTitles:
+    """Opt-in title prefixing of embedding inputs; stored chunk text unchanged."""
+
+    def test_off_by_default_passes_texts_through(self):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.extract import _embed_inputs
+
+        assert cfg.embed_titles is False
+        assert _embed_inputs(["chunk text"], "Annual Report") == ["chunk text"]
+
+    def test_on_prefixes_the_title(self):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.extract import _embed_inputs
+
+        cfg.embed_titles = True
+        try:
+            assert _embed_inputs(["chunk text"], "Annual Report") == [
+                "Annual Report\nchunk text"
+            ]
+            assert _embed_inputs(["chunk text"], "") == ["chunk text"]
+        finally:
+            cfg.embed_titles = False
+
+    def test_scoped_title_reaches_the_ocr_embed_path(self):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.extract import _embed_inputs, _title_scope
+
+        cfg.embed_titles = True
+        try:
+            with _title_scope("Scan Batch Q3"):
+                assert _embed_inputs(["page text"]) == ["Scan Batch Q3\npage text"]
+            assert _embed_inputs(["page text"]) == ["page text"]
+        finally:
+            cfg.embed_titles = False

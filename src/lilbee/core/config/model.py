@@ -236,6 +236,11 @@ class Config(BaseSettings):
     # (re)built, so changing it needs `lilbee rebuild` on an existing store.
     fts_language: str = ConfigField(default="English", min_length=1, writable=True)
 
+    # Prefix each chunk's document title to its embedding input (the stored
+    # chunk text is unchanged). Changes the embedding space: toggling it needs
+    # `lilbee rebuild`, so it ships off.
+    embed_titles: bool = ConfigField(default=False, writable=True)
+
     # Drop tables-of-contents and classification-banner cover/title pages from
     # search results. OFF by default; validate per corpus, since the cover-page
     # heuristic can also fire on short banner-carrying body pages. A query-matched
