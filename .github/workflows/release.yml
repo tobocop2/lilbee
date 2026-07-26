@@ -332,11 +332,18 @@ jobs:
 
       # Any ref, including tags. See the action for why this cannot be an
       # actions/cache save.
-      # success() is load-bearing: a custom if: replaces the implicit success()
-      # check, so without it a failed compile would publish its partial cache,
-      # and first-publish-wins would make that partial permanent for the key.
+      # success() is explicit rather than load-bearing: steps already carry an
+      # implicit success(), so a failed compile would not reach this anyway. It
+      # is spelled out because first-publish-wins makes a partial cache permanent
+      # for the key, and that guarantee should not rest on an implicit default.
+      #
+      # continue-on-error because this is a pure optimisation sitting between a
+      # finished compile and the artifact upload. ci_mirror.sh soft-fails on its
+      # own errors, but mktemp and wc run under set -euo pipefail and can still
+      # hard-exit; on a soft cell that would go green with the asset missing.
       - name: Publish the Nuitka cache to the mirror
         if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
+        continue-on-error: true
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: publish

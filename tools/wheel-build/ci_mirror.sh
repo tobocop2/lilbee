@@ -93,6 +93,7 @@ cmd_fetch() {
     # -s without -S: a miss is an expected outcome, not something to log as an error.
     if ! curl -fsL --retry 3 --retry-delay 2 -o "${tmp}/${asset}" "$(download_url "${key}")"; then
         echo "Mirror does not carry ${asset}." >&2
+        rm -rf "${tmp}"
         return 1
     fi
     mkdir -p "${dest}"
@@ -101,7 +102,8 @@ cmd_fetch() {
         rm -rf "${dest:?}"/*
         return 1
     fi
-    echo "Restored the engine from ${asset}"
+    rm -rf "${tmp}"
+    echo "Restored ${asset}"
 }
 
 # Every failure is soft: the mirror is an optimisation with the Actions cache and
@@ -125,6 +127,7 @@ cmd_publish() {
 
     local size
     size="$(wc -c < "${tmp}/${asset}" | tr -d ' ')"
+    echo "Packed ${asset}: $((size / 1048576)) MB"
     if [ "${size}" -gt "${MAX_ASSET_BYTES}" ]; then
         echo "Packed ${asset} is $((size / 1048576)) MB, over the $((MAX_ASSET_BYTES / 1048576)) MB release-asset limit; skipping the mirror upload." >&2
         return 0
@@ -147,8 +150,9 @@ cmd_publish() {
         --data-binary @"${tmp}/${asset}" \
         "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" >/dev/null 2>&1; then
         echo "Mirrored ${asset}."
+        rm -rf "${tmp}"
     else
-        echo "Mirror upload of ${asset} failed; the Actions cache still has it." >&2
+        echo "Mirror upload of ${asset} failed; consumers fall back to rebuilding it." >&2
     fi
 }
 
