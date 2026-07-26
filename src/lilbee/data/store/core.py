@@ -1076,6 +1076,25 @@ class Store:
         self._invalidate_source_cache()
         return len(all_records)
 
+    def ensure_chunks_dataset(self) -> str:
+        """Create the empty chunks table and meta up front; return its lance dataset URI.
+
+        The parent calls this before spawning ingest workers so a worker's first
+        ``write_fragments`` has a dataset to append to. Idempotent: an existing
+        table and meta are left as they are. The return is the on-disk lance
+        dataset path, not a lancedb handle, because workers commit fragments
+        through pylance rather than the table ``add`` API.
+        """
+        with self._write_lock():
+            db = self.get_db()
+            ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+            if self.get_meta() is None:
+                self._write_meta_unlocked(
+                    embedding_model=self._config.embedding_model,
+                    embedding_dim=self._config.embedding_dim,
+                )
+        return str(self._config.lancedb_dir / f"{CHUNKS_TABLE}.lance")
+
     def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
         """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
         cleanup_sources = [it.source for it in items if it.needs_cleanup]
