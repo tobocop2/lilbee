@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Read and write the engine mirror: a GitHub release carrying prebuilt engines
-# under content-addressed asset names.
+# Read and write the CI mirror: a GitHub release carrying prebuilt build
+# artifacts under content-addressed asset names. Used for engine binaries and
+# for the Nuitka object cache.
 #
 # The mirror exists because the Actions cache is the wrong store for these. It
 # has a hard 10 GiB per-repo cap with LRU eviction and drops anything unaccessed
@@ -14,20 +15,22 @@
 # ships no gh CLI.
 #
 # Usage:
-#   engine_mirror.sh asset-name <key>          print the asset name for a key
-#   engine_mirror.sh probe      <key>          exit 0 if the mirror carries it
-#   engine_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1
-#   engine_mirror.sh publish    <key> <dir>    upload <dir> under <key>
+#   ci_mirror.sh asset-name <key>          print the asset name for a key
+#   ci_mirror.sh probe      <key>          exit 0 if the mirror carries it
+#   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1
+#   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>
 #
 # Reads:
 #   GITHUB_REPOSITORY   owner/repo (set by Actions)
 #   GH_TOKEN            token with contents: write; publish only
-#   ENGINE_RELEASE_TAG  mirror release tag (default engine-binaries)
+#   MIRROR_RELEASE_TAG  mirror release tag (default engine-binaries)
 
 set -euo pipefail
 
 readonly DEFAULT_RELEASE_TAG="engine-binaries"
-release_tag="${ENGINE_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
+# GitHub rejects release assets over 2 GiB.
+readonly MAX_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+release_tag="${MIRROR_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 # Content-addressed like the key it comes from, minus anything a filename or a
@@ -72,17 +75,17 @@ mirror_carries() {
 }
 
 cmd_asset_name() {
-    asset_name "${1:?usage: engine_mirror.sh asset-name <key>}"
+    asset_name "${1:?usage: ci_mirror.sh asset-name <key>}"
 }
 
 cmd_probe() {
-    local key="${1:?usage: engine_mirror.sh probe <key>}"
+    local key="${1:?usage: ci_mirror.sh probe <key>}"
     curl -fsI --retry 2 "$(download_url "${key}")" >/dev/null 2>&1
 }
 
 cmd_fetch() {
-    local key="${1:?usage: engine_mirror.sh fetch <key> <dir>}"
-    local dest="${2:?usage: engine_mirror.sh fetch <key> <dir>}"
+    local key="${1:?usage: ci_mirror.sh fetch <key> <dir>}"
+    local dest="${2:?usage: ci_mirror.sh fetch <key> <dir>}"
     local asset tmp
     asset="$(asset_name "${key}")"
     tmp="$(mktemp -d)"
@@ -90,6 +93,7 @@ cmd_fetch() {
     # -s without -S: a miss is an expected outcome, not something to log as an error.
     if ! curl -fsL --retry 3 --retry-delay 2 -o "${tmp}/${asset}" "$(download_url "${key}")"; then
         echo "Mirror does not carry ${asset}." >&2
+        rm -rf "${tmp}"
         return 1
     fi
     mkdir -p "${dest}"
@@ -98,14 +102,15 @@ cmd_fetch() {
         rm -rf "${dest:?}"/*
         return 1
     fi
-    echo "Restored the engine from ${asset}"
+    rm -rf "${tmp}"
+    echo "Restored ${asset}"
 }
 
 # Every failure is soft: the mirror is an optimisation with the Actions cache and
 # a source build behind it, so a publish problem must not fail a release build.
 cmd_publish() {
-    local key="${1:?usage: engine_mirror.sh publish <key> <dir>}"
-    local src="${2:?usage: engine_mirror.sh publish <key> <dir>}"
+    local key="${1:?usage: ci_mirror.sh publish <key> <dir>}"
+    local src="${2:?usage: ci_mirror.sh publish <key> <dir>}"
     local asset release_id tmp
     asset="$(asset_name "${key}")"
 
@@ -117,6 +122,14 @@ cmd_publish() {
     tmp="$(mktemp -d)"
     if ! tar -czf "${tmp}/${asset}" -C "${src}" .; then
         echo "Could not pack ${src}; skipping the mirror upload." >&2
+        return 0
+    fi
+
+    local size
+    size="$(wc -c < "${tmp}/${asset}" | tr -d ' ')"
+    echo "Packed ${asset}: $((size / 1048576)) MB"
+    if [ "${size}" -gt "${MAX_ASSET_BYTES}" ]; then
+        echo "Packed ${asset} is $((size / 1048576)) MB, over the $((MAX_ASSET_BYTES / 1048576)) MB release-asset limit; skipping the mirror upload." >&2
         return 0
     fi
 
@@ -137,13 +150,14 @@ cmd_publish() {
         --data-binary @"${tmp}/${asset}" \
         "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" >/dev/null 2>&1; then
         echo "Mirrored ${asset}."
+        rm -rf "${tmp}"
     else
-        echo "Mirror upload of ${asset} failed; the Actions cache still has it." >&2
+        echo "Mirror upload of ${asset} failed; consumers fall back to rebuilding it." >&2
     fi
 }
 
 main() {
-    local command="${1:?usage: engine_mirror.sh <asset-name|probe|fetch|publish> ...}"
+    local command="${1:?usage: ci_mirror.sh <asset-name|probe|fetch|publish> ...}"
     shift
     case "${command}" in
         asset-name) cmd_asset_name "$@" ;;
