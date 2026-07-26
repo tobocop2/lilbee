@@ -43,6 +43,31 @@ log = logging.getLogger(__name__)
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
 
+# Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping);
+# hardcoded so config validation does not import lancedb.
+FTS_LANGUAGES = frozenset(
+    {
+        "Arabic",
+        "Danish",
+        "Dutch",
+        "English",
+        "Finnish",
+        "French",
+        "German",
+        "Greek",
+        "Hungarian",
+        "Italian",
+        "Norwegian",
+        "Portuguese",
+        "Romanian",
+        "Russian",
+        "Spanish",
+        "Swedish",
+        "Tamil",
+        "Turkish",
+    }
+)
+
 
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
@@ -234,18 +259,30 @@ class Config(BaseSettings):
     # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
     # name ("English", "German", "French", ...). Applied when an index is
     # (re)built, so changing it needs `lilbee rebuild` on an existing store.
-    fts_language: str = ConfigField(default="English", min_length=1, writable=True)
+    # Validated against FTS_LANGUAGES: a bad name would otherwise fail index
+    # creation quietly and hybrid search would degrade to vector-only.
+    fts_language: str = ConfigField(default="English", min_length=1, writable=True, reindex=True)
+
+    @field_validator("fts_language", mode="after")
+    @classmethod
+    def _validate_fts_language(cls, value: str) -> str:
+        normalized = value.strip().title()
+        if normalized not in FTS_LANGUAGES:
+            raise ValueError(
+                f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}"
+            )
+        return normalized
 
     # Prefix each chunk's document title to its embedding input (the stored
     # chunk text is unchanged). Changes the embedding space: toggling it needs
     # `lilbee rebuild`, so it ships off.
-    embed_titles: bool = ConfigField(default=False, writable=True)
+    embed_titles: bool = ConfigField(default=False, writable=True, reindex=True)
 
     # Contextual retrieval: prepend one LLM-written sentence situating each
     # chunk in its document to the embedding input. One generation per chunk,
     # so ingest slows substantially; stored text and citations stay verbatim.
     # Toggling needs `lilbee rebuild`.
-    contextual_enrichment: bool = ConfigField(default=False, writable=True)
+    contextual_enrichment: bool = ConfigField(default=False, writable=True, reindex=True)
 
     # Drop tables-of-contents and classification-banner cover/title pages from
     # search results. OFF by default; validate per corpus, since the cover-page
@@ -369,10 +406,10 @@ class Config(BaseSettings):
     # the reranker's effect when measuring it.
     rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
 
-    # Drop candidates whose RAW reranker score falls below this. 0 = off. The
-    # scale is provider/model specific (bge logits vs 0..1 relevance), so set
-    # it against observed scores for the configured reranker.
-    rerank_min_score: float = ConfigField(default=0.0, writable=True, public=True)
+    # Drop candidates whose RAW reranker score falls below this; unset = off.
+    # The scale is provider/model specific (bge logits can be negative, hosted
+    # rerankers use 0..1), so set it against observed scores.
+    rerank_min_score: float | None = ConfigField(default=None, writable=True, public=True)
 
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)

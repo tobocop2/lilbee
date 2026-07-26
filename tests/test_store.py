@@ -530,11 +530,50 @@ class TestEnsureScalarIndexes:
         warned = [r for r in caplog.records if "document prefixes" in r.message]
         assert len(warned) == 1
 
-    def test_search_survives_index_build_lock_contention(self, store, test_config):
-        """Read-path index builds skip when the write lock is held elsewhere;
-        the query serves (vector-only if need be) instead of raising."""
+    def test_blocking_index_builds_propagate_lock_timeouts(self, store, test_config):
+        """Ingest-path callers keep the old contract: a lock timeout raises."""
         from lilbee.runtime.lock import LockTimeoutError
 
+        test_config.title_search = True
+        store.add_chunks(_make_records())
+        with mock.patch.object(store, "_write_lock", side_effect=LockTimeoutError("held")):
+            with pytest.raises(LockTimeoutError):
+                store.ensure_fts_index()
+            with pytest.raises(LockTimeoutError):
+                store.ensure_scalar_indexes()
+            with pytest.raises(LockTimeoutError):
+                store.ensure_title_fts_index()
+
+    def test_title_index_ensure_early_paths(self, store, test_config):
+        """No chunks table is a no-op; an existing index latches without a build."""
+        store.ensure_title_fts_index()
+        assert store._title_fts_ready is False
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 1, title="zebra manifesto"))
+        store.ensure_fts_index()
+        store._title_fts_ready = False
+        store.ensure_title_fts_index()
+        assert store._title_fts_ready is True
+
+    def test_close_resets_index_latches(self, store):
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        store.close()
+        assert store._fts_ready is False
+        assert store._title_fts_ready is False
+        assert store._scalar_ready is False
+
+    def test_doc_prefix_warning_skips_a_store_without_meta(self, store):
+        store._warn_stale_doc_prefix()
+        assert store._doc_prefix_warned is True
+
+    def test_search_survives_index_build_lock_contention(self, store, test_config):
+        """Read-path index builds (scalar, FTS, title) skip when the write lock
+        is held elsewhere; the query serves (vector-only if need be) instead of
+        raising."""
+        from lilbee.runtime.lock import LockTimeoutError
+
+        test_config.title_search = True
         store.add_chunks(_make_records())
         with mock.patch.object(store, "_write_lock", side_effect=LockTimeoutError("held")):
             results = store.search(
@@ -542,6 +581,11 @@ class TestEnsureScalarIndexes:
             )
         assert results
         assert store._scalar_ready is False  # retried on a later search
+        assert store._title_fts_ready is False
+
+    def test_fts_ensure_body_is_a_noop_without_a_chunks_table(self, store):
+        store._ensure_fts_index_unlocked()
+        assert store._fts_ready is False
 
     def test_scalar_index_builds_after_concepts_table_appears(self, store, test_config):
         """Serve ordering: chunk_concepts is created after the first search.
@@ -2674,8 +2718,10 @@ class TestTitleSearch:
         monkeypatch.setattr(store_core, "_TITLE_FETCH_FACTOR", 1)
         monkeypatch.setattr(store_core, "_TITLE_MIN_FETCH", 4)
         test_config.title_search = True
-        store.add_chunks(_titled_records("tome.pdf", 6, title="zebra atlas"))
-        store.add_chunks(_titled_records("note.pdf", 1, title="zebra"))
+        # The exact-title tome outscores the diluted note title, so its six
+        # tied rows fill the first window and force the fetch to widen.
+        store.add_chunks(_titled_records("tome.pdf", 6, title="zebra"))
+        store.add_chunks(_titled_records("note.pdf", 1, title="zebra safari park visit"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
         rows = store._title_arm(table, "zebra", 2, None)
@@ -2788,6 +2834,21 @@ class TestTitleSearch:
         test_config.title_search = True
         store.search([0.1] * test_config.embedding_dim, top_k=3, query_text="zebra")
         assert _has_fts_index(store.open_table("chunks"), "title")
+
+    def test_backfill_failure_keeps_nulls_and_warns(self, store, caplog):
+        """A failing backfill degrades to the old NULL-title behavior."""
+        import logging
+
+        table = _create_pre_title_chunks_table(store)
+        records = _make_records()
+        records[0]["source"] = "project_falcon_notes.pdf"
+        table.add(records)
+        with (
+            mock.patch.object(type(table), "update", side_effect=RuntimeError("boom")),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
+        assert any("Title backfill failed" in r.message for r in caplog.records)
 
     def test_pre_title_migration_backfills_stem_titles(self, store, caplog):
         """Migrating an old store backfills filename-stem titles (junk stems

@@ -18,6 +18,7 @@ from lilbee.core.config.enums import (
     RerankerType,
     WikiEntityMode,
 )
+from lilbee.core.config.model import FTS_LANGUAGES
 
 
 class RenderStyle(StrEnum):
@@ -415,9 +416,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     ),
     "rerank_min_score": SettingDef(
         float,
-        nullable=False,
+        nullable=True,
         group=SettingGroup.RETRIEVAL,
-        help_text="Drop candidates whose raw reranker score is below this (0 = off)",
+        help_text="Drop candidates whose raw reranker score is below this (unset = off)",
     ),
     "show_reasoning": SettingDef(
         bool,
@@ -942,7 +943,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Stemmer/stop-word language for BM25 indexes (tantivy name; rebuild to apply)",
+        choices=tuple(sorted(FTS_LANGUAGES)),
+        help_text="Stemmer/stop-word language for BM25 indexes (rebuild to apply)",
     ),
     "embed_titles": SettingDef(
         bool,

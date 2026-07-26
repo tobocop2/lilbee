@@ -10,6 +10,7 @@ content).
 
 from __future__ import annotations
 
+import itertools
 import re
 
 # A TOC line ends in dot leaders followed by a page number: "Geographic Trends ....... 9".
@@ -61,7 +62,7 @@ def _is_toc(nonempty: list[str]) -> bool:
     ]
     if len(pages) < _MIN_TOC_HITS or len(pages) / len(nonempty) < _TOC_RATIO:
         return False
-    return all(a <= b for a, b in zip(pages, pages[1:]))
+    return all(a <= b for a, b in itertools.pairwise(pages))
 
 
 def _is_cover_page(text: str) -> bool:

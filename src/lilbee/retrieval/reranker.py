@@ -104,7 +104,7 @@ class Reranker:
             return results
 
         floor = self._config.rerank_min_score
-        if floor > 0:
+        if floor is not None:
             # Absolute floor on the raw provider score: min-max normalization
             # erases calibration, so without this a uniformly irrelevant pool
             # still yields a 1.0-scored "best" candidate.

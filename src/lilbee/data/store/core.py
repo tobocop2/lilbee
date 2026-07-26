@@ -241,6 +241,10 @@ class Store:
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
 
+    def _index_build_lock(self, blocking: bool) -> AbstractContextManager[None]:
+        """Write lock for index builds: full budget from ingest, short from the read path."""
+        return self._write_lock() if blocking else self._write_lock(_READ_LOCK_TIMEOUT)
+
     def _write_lock(self, timeout: float = LOCK_TIMEOUT) -> AbstractContextManager[None]:
         """Acquire the write lock keyed on *this* store's data directory.
 
@@ -538,8 +542,7 @@ class Store:
         if _has_fts_index(probe):
             self._fts_ready = True
         try:
-            lock = self._write_lock() if blocking else self._write_lock(_READ_LOCK_TIMEOUT)
-            with lock:
+            with self._index_build_lock(blocking):
                 self._ensure_fts_index_unlocked()
         except LockTimeoutError:
             if blocking:
@@ -628,8 +631,7 @@ class Store:
             self._title_fts_ready = True
             return
         try:
-            lock = self._write_lock() if blocking else self._write_lock(_READ_LOCK_TIMEOUT)
-            with lock:
+            with self._index_build_lock(blocking):
                 self._ensure_title_fts_unlocked(table)
         except LockTimeoutError:
             if blocking:
@@ -697,8 +699,7 @@ class Store:
             self._scalar_ready = complete
             return
         try:
-            lock = self._write_lock() if blocking else self._write_lock(_READ_LOCK_TIMEOUT)
-            with lock:
+            with self._index_build_lock(blocking):
                 for name, columns in pending:
                     self._ensure_scalar_index_on(name, columns)
             self._scalar_ready = complete

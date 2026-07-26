@@ -1133,7 +1133,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_RERANKER_MODEL` | `""` | Cross-encoder model for reranking (empty = disabled) | Native GGUF (e.g. `bge-reranker-v2-m3`) or a remote name via the SDK backend. Only loaded when configured. |
 | `LILBEE_RERANK_CANDIDATES` | `60` | Number of candidates to rerank | More = deeper pool but slower. |
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion, position-aware | Off = pure cross-encoder ordering, useful when measuring the reranker in isolation. |
-| `LILBEE_RERANK_MIN_SCORE` | `0` | Absolute floor on raw reranker scores | Candidates below it are dropped, so a uniformly irrelevant pool can trigger grounded refusal. 0 = off; scale is model specific. |
+| `LILBEE_RERANK_MIN_SCORE` | unset | Absolute floor on raw reranker scores | Candidates below it are dropped, so a uniformly irrelevant pool can trigger grounded refusal. Unset = off; scale is model specific (bge logits can be negative). |
 | `LILBEE_FTS_LANGUAGE` | `English` | Stemmer/stop-word language for BM25 indexes | tantivy language name; applied on index build, so change it before a rebuild. |
 | `LILBEE_EMBED_TITLES` | `false` | Title-prefixed chunk embeddings | Vector-only change; stored text unchanged. Toggling needs a rebuild (embedding space shifts). |
 | `LILBEE_CONTEXTUAL_ENRICHMENT` | `false` | LLM-written situating sentence embedded with each chunk | Contextual retrieval; one generation per chunk, so ingest slows. Toggling needs a rebuild. |

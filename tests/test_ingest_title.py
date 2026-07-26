@@ -245,3 +245,17 @@ class TestContextualEnrichment:
         finally:
             cfg.contextual_enrichment = False
         assert out == ["chunk text"]
+
+
+class TestXpTitleFallback:
+    def test_xp_title_is_decoded_when_description_is_absent(self, tmp_path):
+        from PIL import Image
+
+        from lilbee.data.ingest.extract import _image_meta
+
+        f = tmp_path / "IMG_9.jpg"
+        im = Image.new("RGB", (4, 4))
+        exif = im.getexif()
+        exif[0x9C9B] = "Harbor Sunset".encode("utf-16-le") + b"\x00\x00"
+        im.save(f, exif=exif)
+        assert _image_meta(f, "IMG_9.jpg").title == "Harbor Sunset"

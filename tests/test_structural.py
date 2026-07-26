@@ -128,3 +128,9 @@ class TestAcronymProseIsNotACover:
             "UNCLASSIFIED"
         )
         assert is_structural_chunk(cover) is True
+
+
+class TestBannerOnlyPage:
+    def test_pure_banner_page_is_a_cover(self):
+        assert is_structural_chunk("UNCLASSIFIED") is True
+        assert is_structural_chunk("UNCLASSIFIED\nUNCLASSIFIED//FOUO") is True
