@@ -37,11 +37,17 @@ jobs:
       matrix:
         include:
           # Linux: cross-vendor Vulkan, CUDA (multi-GPU via tensor-split), ROCm, cpu fallback.
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64}
+          #
+          # Every Linux row pins its runner rather than tracking ubuntu-latest.
+          # The wheels link against the runner's glibc, so the label moving from
+          # 22.04 to 24.04 silently raised what they need from 2.35 to 2.38
+          # while they went on declaring manylinux_2_17. pip installed them and
+          # the engine died in the loader on every current-stable distro.
+          - {os: ubuntu-22.04,  backend: vulkan, wheel-plat: manylinux_2_17_x86_64}
           - {os: ubuntu-22.04,  backend: cu124,  wheel-plat: manylinux_2_17_x86_64, cuda: "12.4.0"}
           - {os: ubuntu-22.04,  backend: cu125,  wheel-plat: manylinux_2_17_x86_64, cuda: "12.5.0"}
           - {os: ubuntu-22.04,  backend: rocm,   wheel-plat: manylinux_2_17_x86_64}
-          - {os: ubuntu-latest, backend: cpu,    wheel-plat: manylinux_2_17_x86_64}
+          - {os: ubuntu-22.04,  backend: cpu,    wheel-plat: manylinux_2_17_x86_64}
           # Windows: Vulkan, CUDA, cpu fallback.
           - {os: windows-2022,   backend: cu124,  wheel-plat: win_amd64, cuda: "12.4.0"}
           - {os: windows-2022,   backend: cu125,  wheel-plat: win_amd64, cuda: "12.5.0"}
