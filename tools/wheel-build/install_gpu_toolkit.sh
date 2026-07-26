@@ -76,18 +76,33 @@ linux_install_cuda() {
 }
 
 linux_install_rocm() {
-  # ROCm 6.x repo. AMD's apt repo + key. Versions advance fast; pinning to
-  # 6.1 as a current-stable target.
-  if ! dpkg -s rocm-dev >/dev/null 2>&1; then
-    wget -q https://repo.radeon.com/amdgpu-install/6.1.2/ubuntu/jammy/amdgpu-install_6.1.60102-1_all.deb \
-      -O /tmp/amdgpu-install.deb
-    sudo dpkg -i /tmp/amdgpu-install.deb
+  # ROCm 7.2, and the version is not incidental. The engine's vendored llama.cpp
+  # refuses anything below 6.1 outright, and 6.1 itself fails to compile it:
+  # ggml-cuda/mma.cuh, which the HIP backend reuses, hits -Wc++11-narrowing on
+  # that release's clang 17. Both were reproduced on an MI300X; 7.2 builds clean.
+  #
+  # The versioned package names are also not incidental. An unversioned
+  # rocm-hip-sdk resolves its compiler dependency against any other ROCm already
+  # on the image, which on a box that ships one installs every library and no
+  # clang at all, and the build then fails looking for a compiler that was never
+  # unpacked.
+  if [ ! -d /opt/rocm-7.2.0 ]; then
+    sudo mkdir -p --mode=0755 /etc/apt/keyrings
+    wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key \
+      | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+    echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2 jammy main' \
+      | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
     sudo apt-get update
-    sudo apt-get install -y rocm-dev hip-dev rocblas-dev
+    sudo apt-get install -y rocm-hip-sdk7.2.0 rocm-llvm7.2.0 hipcc7.2.0
   fi
-  echo "/opt/rocm/bin" >> "$GITHUB_PATH"
-  echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
-  echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
+  # ROCm 7 moved the toolchain to lib/llvm; $ROCM_PATH/llvm/bin no longer exists.
+  echo "/opt/rocm-7.2.0/bin" >> "$GITHUB_PATH"
+  echo "/opt/rocm-7.2.0/lib/llvm/bin" >> "$GITHUB_PATH"
+  {
+    echo "ROCM_PATH=/opt/rocm-7.2.0"
+    echo "HIP_PATH=/opt/rocm-7.2.0"
+    echo "CMAKE_PREFIX_PATH=/opt/rocm-7.2.0"
+  } >> "$GITHUB_ENV"
 }
 
 linux_install_sycl() {
