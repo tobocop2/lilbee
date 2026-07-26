@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          if bash tools/wheel-build/engine_mirror.sh fetch \
+          if bash tools/wheel-build/ci_mirror.sh fetch \
             "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
             echo "restored=true" >> "$GITHUB_OUTPUT"
           else

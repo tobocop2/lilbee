@@ -49,17 +49,17 @@ runs:
         set -euo pipefail
         echo "key=engine-${CACHE_ENV}-${BACKEND}-tk${TOOLKIT}-llcp${LLCP}-${SOURCES_HASH}" >> "$GITHUB_OUTPUT"
 
-    # The durable copy, read before the Actions cache. See engine_mirror.sh for
+    # The durable copy, read before the Actions cache. See ci_mirror.sh for
     # why these do not belong in the cache at all.
     - name: Restore the engine from the release mirror
       id: engine-mirror
       if: inputs.asset-release-tag != ''
       shell: bash
       env:
-        ENGINE_RELEASE_TAG: ${{ inputs.asset-release-tag }}
+        MIRROR_RELEASE_TAG: ${{ inputs.asset-release-tag }}
       run: |
         set -uo pipefail
-        if bash tools/wheel-build/engine_mirror.sh fetch \
+        if bash tools/wheel-build/ci_mirror.sh fetch \
           "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
           echo "restored=true" >> "$GITHUB_OUTPUT"
         else

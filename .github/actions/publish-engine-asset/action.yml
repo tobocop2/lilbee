@@ -7,7 +7,7 @@ description: >-
 
 inputs:
   engine-key:
-    description: "The engine cache key. Mapped to an asset name by tools/wheel-build/engine_mirror.sh."
+    description: "The engine cache key. Mapped to an asset name by tools/wheel-build/ci_mirror.sh."
     required: true
   engine-dir:
     description: "Directory holding the built engine binaries."
@@ -28,5 +28,5 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
-        ENGINE_RELEASE_TAG: ${{ inputs.release-tag }}
-      run: bash tools/wheel-build/engine_mirror.sh publish "${{ inputs.engine-key }}" "${{ inputs.engine-dir }}"
+        MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: bash tools/wheel-build/ci_mirror.sh publish "${{ inputs.engine-key }}" "${{ inputs.engine-dir }}"
