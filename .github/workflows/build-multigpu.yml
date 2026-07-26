@@ -27,7 +27,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write  # publish freshly built engines to the engine-binaries mirror release
 
 jobs:
   build-multigpu:
@@ -83,7 +83,7 @@ jobs:
       # and the build are skipped wholesale.
       - name: Restore the built engine
         id: engine-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: packaging/engine-wheel/lilbee_engine/bin
           key: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
@@ -137,6 +137,24 @@ jobs:
         if: steps.engine-cache.outputs.cache-hit != 'true'
         shell: bash
         run: bash tools/wheel-build/build_llama_server.sh
+
+      # A tag ref is its own cache scope, so a save here is unreadable by every
+      # later run and evicts the main-scoped entry that would have hit.
+      - name: Save the built engine
+        if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
+        uses: actions/cache/save@v4
+        with:
+          path: packaging/engine-wheel/lilbee_engine/bin
+          key: ${{ steps.engine-cache.outputs.cache-primary-key }}
+
+      # The durable copy the executable builds read first. Same key, so a mirror
+      # asset and a cache entry for one engine can never disagree.
+      - name: Mirror the built engine
+        if: steps.engine-cache.outputs.cache-hit != 'true' && github.ref_type != 'tag'
+        uses: ./.github/actions/publish-engine-asset
+        with:
+          engine-key: ${{ steps.engine-cache.outputs.cache-primary-key }}
+          token: ${{ github.token }}
 
       - name: Set wheel version to the lilbee version
         shell: bash
