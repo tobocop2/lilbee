@@ -359,6 +359,19 @@ class TestRunBatch:
 class TestWorkerBootstrap:
     """What has to survive the process boundary before a worker can do anything."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_cpu_quota(self):
+        """init_worker sets LILBEE_CPU_QUOTA process-wide, which is correct in a real
+        worker and poison in a test process: cpu_quota() honours it, so a leak makes
+        unrelated tests read this worker's share. monkeypatch.delenv does not cover it,
+        because the value is created by the code under test after the fixture runs."""
+        before = os.environ.get("LILBEE_CPU_QUOTA")
+        yield
+        if before is None:
+            os.environ.pop("LILBEE_CPU_QUOTA", None)
+        else:
+            os.environ["LILBEE_CPU_QUOTA"] = before
+
     def test_config_survives_pickling_to_a_worker(self):
         """initargs are pickled; a Config that cannot round-trip breaks every worker."""
         import pickle
