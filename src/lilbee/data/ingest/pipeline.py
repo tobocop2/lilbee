@@ -834,6 +834,21 @@ def _reconcile_missing(
     return sorted(name for name in disk_files if name not in accounted)
 
 
+def _require_embedding_model() -> None:
+    """Refuse ingest without an embedding model.
+
+    Ingest has no degraded mode: without one, every chunk fails to embed after
+    the run has already paid the parse and OCR cost. Search and chat fall back
+    to keyword via embedding_available() and carry on.
+    """
+    if not get_services().embedder.validate_model():
+        raise RuntimeError(
+            f"Ingest needs an embedding model. "
+            f"{active_config().embedding_model!r} is not available: "
+            "pull it, or set a different embedding_model."
+        )
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -901,16 +916,7 @@ async def sync(
             from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
             with keep_fleet_warm():
-                # Ingest has no degraded mode: without an embedding model every
-                # chunk fails to embed, after the run has already paid the parse
-                # and OCR cost. Refuse up front; search and chat fall back to
-                # keyword via embedding_available() and carry on.
-                if not get_services().embedder.validate_model():
-                    raise RuntimeError(
-                        f"Ingest needs an embedding model. "
-                        f"{active_config().embedding_model!r} is not available: "
-                        "pull it, or set a different embedding_model."
-                    )
+                _require_embedding_model()
                 await ingest_stream(
                     _chain_shards(first, shards),
                     added,

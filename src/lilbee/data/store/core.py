@@ -23,11 +23,9 @@ from lilbee.core.config import (
     SOURCES_TABLE,
     Config,
 )
-from lilbee.core.security import validate_path_within
 from lilbee.core.vectors import Vector
-from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
-
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
+from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (

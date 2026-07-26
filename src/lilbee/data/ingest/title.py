@@ -22,11 +22,14 @@ _COUNTER_STEM_RE = re.compile(
 _NUMERIC_STEM_RE = re.compile(r"[\d\s.]+")
 _HEX_ID_RE = re.compile(r"[0-9a-f]{8,}", re.IGNORECASE)
 
+# Below this many characters a stem cannot form a searchable word.
+_MIN_TITLE_CHARS = 3
+
 
 def is_junk_stem(stem: str) -> bool:
     """True when a filename stem carries no searchable title words."""
     flat = _STEM_SEPARATOR_RE.sub(" ", stem).strip()
-    if len(flat) < 3:
+    if len(flat) < _MIN_TITLE_CHARS:
         return True
     if _NUMERIC_STEM_RE.fullmatch(flat) or _COUNTER_STEM_RE.fullmatch(flat):
         return True
