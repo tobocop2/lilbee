@@ -21,6 +21,8 @@ TAG=${TAG:-$(uname -s | tr '[:upper:]' '[:lower:]')-$(date +%s)}
 ENGINE_INDEX=${ENGINE_INDEX:?set ENGINE_INDEX to the wheel index for this backend}
 LILBEE_REF=${LILBEE_REF:-fix/ctx-slots-from-placed-device}
 VENV=${VENV:-/tmp/lilbee-capture-venv}
+# How long the engine gets to answer --version and to reach its slot setup.
+ENGINE_PROBE_TIMEOUT_S=${ENGINE_PROBE_TIMEOUT_S:-30}
 mkdir -p "$OUT"
 
 # Both of these are missing from a minimal cloud image and both fail late and
@@ -42,18 +44,22 @@ B=$("$VENV/bin/python" -c "import lilbee_engine;print(lilbee_engine.get_llama_se
 # The wheel declares manylinux_2_17 and actually needs a much newer glibc, so a
 # current-stable distro installs it and then cannot exec it. Say which it is
 # rather than leaving a linker error to be decoded.
-if ! "$B" --version >/dev/null 2>&1; then
-    echo "ENGINE WILL NOT RUN HERE"
-    "$B" --version 2>&1 | head -3
+# Every engine call is bounded. A --version that hangs in a graphics driver
+# leaves an unkillable process in uninterruptible sleep, which wedges the host
+# until it is rebooted; that has happened, on a hybrid laptop, three times in a
+# row while the empty output was being diagnosed. A hang is a failed check.
+if ! timeout "$ENGINE_PROBE_TIMEOUT_S" "$B" --version >/dev/null 2>&1; then
+    echo "ENGINE WILL NOT RUN HERE (or did not answer in ${ENGINE_PROBE_TIMEOUT_S}s)"
+    timeout "$ENGINE_PROBE_TIMEOUT_S" "$B" --version 2>&1 | head -3
     echo "host glibc: $(ldd --version 2>/dev/null | head -1)"
     exit 1
 fi
 
 echo "=== engine ==="
-"$B" --version 2>&1 | head -2
+timeout "$ENGINE_PROBE_TIMEOUT_S" "$B" --version 2>&1 | head -2
 echo
 echo "=== devices this build sees ==="
-"$B" --list-devices 2>&1 | head -10
+timeout "$ENGINE_PROBE_TIMEOUT_S" "$B" --list-devices 2>&1 | head -10
 
 # A vision model, because the projector is the one thing the report omits and
 # the estimate has to be corrected for. Text-only loads miss that entirely.
@@ -67,7 +73,7 @@ PYEOF
 
 LOG="$OUT/engine-load-$TAG.log"
 rm -f "$LOG"
-"$B" --model "$MODEL" --mmproj "$MMPROJ" --host 127.0.0.1 --port 39377 \
+timeout 300 "$B" --model "$MODEL" --mmproj "$MMPROJ" --host 127.0.0.1 --port 39377 \
      --ctx-size 2048 --n-gpu-layers 999 --log-file "$LOG" --log-verbosity 4 >/dev/null 2>&1 &
 PID=$!
 for _ in $(seq 1 120); do
