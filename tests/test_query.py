@@ -3114,8 +3114,8 @@ class TestChunkTypeScope:
 
     def test_build_rag_context_default_is_mixed_pool(self, mock_svc):
         """No ``chunk_type`` arg means no filter. Both sides survive."""
-        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
-        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
+        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", chunk="wiki text")
+        raw_chunk = _make_result(source="doc.md", chunk_type="raw", chunk="raw text")
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
@@ -3734,3 +3734,22 @@ class TestBuildRagContextFilters:
         mock_svc.store.search.return_value = [far]
         result = get_services().searcher.build_rag_context("question")
         assert result is None
+
+
+class TestNearDuplicateSuppression:
+    """prepare_results drops identical passages that the per-source cap misses."""
+
+    def test_same_text_under_two_paths_keeps_the_better_copy(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="notes/copy.md", chunk="the same boilerplate text", score=0.9)
+        b = _make_result(source="archive/copy.md", chunk="the same  boilerplate\ntext", score=0.4)
+        out = prepare_results([b, a])
+        assert [r.source for r in out] == ["notes/copy.md"]
+
+    def test_distinct_texts_are_kept(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="a.md", chunk="first passage", score=0.9)
+        b = _make_result(source="b.md", chunk="second passage", score=0.8)
+        assert len(prepare_results([a, b])) == 2

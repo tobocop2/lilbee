@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from lilbee.core.config import active_config
 from lilbee.data.store import SearchChunk
 
 _DEFAULT_RELEVANCE_WEIGHT = 0.5
+
+_WHITESPACE_RE = re.compile(r"\s+")
 
 # Neutral point of the [0, 1] fusion scale: used for a candidate with no usable
 # score and for a cohort whose scores are all equal (no spread to rank on).
@@ -106,8 +110,8 @@ def filter_results(
     """Drop results below min_relevance_score or above max_distance.
 
     ``min_relevance_score`` gates on the [0, 1] fused score, which normalizes
-    against the configured weight budget (a constant), so the threshold means the
-    same thing across queries. ``max_distance`` additionally drops rows whose only
+    against the arms in play, so the threshold means the same thing across
+    queries. ``max_distance`` additionally drops rows whose only
     signal is a far vector match (a row with lexical support keeps its standing
     regardless of distance). Pass max_distance=0 to disable distance filtering.
     """
@@ -164,8 +168,26 @@ def diversify_sources(
     return diverse
 
 
+def dedup_near_identical(results: list[SearchChunk]) -> list[SearchChunk]:
+    """Keep the first (best-ranked) copy of passages with identical normalized text.
+
+    The per-source cap cannot catch the same file ingested under two paths or
+    boilerplate repeated across documents; those copies add no information and
+    crowd real passages out of the context.
+    """
+    seen: set[str] = set()
+    kept: list[SearchChunk] = []
+    for r in results:
+        key = _WHITESPACE_RE.sub(" ", r.chunk).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(r)
+    return kept
+
+
 def prepare_results(
     results: list[SearchChunk], max_per_source: int | None = None
 ) -> list[SearchChunk]:
-    """Sort by relevance and apply source diversity cap."""
-    return diversify_sources(sort_by_relevance(results), max_per_source)
+    """Sort by relevance, drop near-identical copies, apply the source diversity cap."""
+    return diversify_sources(dedup_near_identical(sort_by_relevance(results)), max_per_source)
