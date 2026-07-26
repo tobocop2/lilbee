@@ -110,6 +110,9 @@ fi
 # following misses it; include it explicitly or the splash subprocess dies.
 SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
 
+# litellm.proxy is not trimmable, despite nothing in lilbee importing it:
+# litellm/__init__.py pulls in 9 of its modules on a bare import, so
+# --nofollow-import-to=litellm.proxy is an ImportError at startup.
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \

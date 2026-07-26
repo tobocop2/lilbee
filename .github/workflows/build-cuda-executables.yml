@@ -48,7 +48,7 @@ jobs:
       matrix:
         include:
           # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
-          # cu121 pins llama-cpp-python to 0.3.20: CUDA 12.1's nvcc can't compile
+          # cu121 pins llama-cpp-version explicitly: CUDA 12.1's nvcc can't compile
           # the newer llama.cpp CUDA kernels (half-conversion in allreduce.cu).
           - os: ubuntu-22.04
             backend: cu121
@@ -109,6 +109,12 @@ jobs:
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
+      # Installed unconditionally on purpose. Gating it on an engine-available
+      # probe would save 4.9 min here, but the probe and the fetch are separate
+      # requests: an asset present at probe time and unfetchable a minute later
+      # leaves the cell building the engine with no CUDA_PATH. This job is
+      # continue-on-error, so that failure would not stop the release, it would
+      # ship without this CUDA binary.
       - name: Install CUDA Toolkit (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -130,8 +136,38 @@ jobs:
         with:
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
           save: ${{ github.ref_type != 'tag' }}
-          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          # The compat cell compiles at -march=x86-64-v2; without it in the key it
+          # shares an entry with the stock cell and each poisons the other.
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}${{ matrix.march && format('-{0}', matrix.march) || '' }}
           max-size: '2G'
+
+      # ccache-action only writes a config file, and Nuitka overrides that with its
+      # own CCACHE_DIR unless one is already exported (nuitka/build/SconsCaching.py),
+      # so none of its C objects ever reached the cached directory. Env beats config.
+      - name: Point ccache at the cached directory
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+
+      # Windows only, and it is the whole point: these cells are the release
+      # terminus, MSVC has no ccache, and this workflow had no object cache of
+      # any kind, so every CUDA Windows build compiled ~9056 files from cold.
+      # release.yml has carried the same mechanism for its Windows cells.
+      # Not added on Linux: ccache above already caches those objects, and a
+      # second copy would only consume a cap these legs do not need (they finish
+      # hours before the Windows terminus).
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.os }}-
+
+      - name: Point Nuitka at the cache dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "NUITKA_CACHE_DIR=${GITHUB_WORKSPACE}/nuitka-cache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
@@ -188,6 +224,15 @@ jobs:
           CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      # Save even when the smoke test later fails: the objects are still valid
+      # and make the retry fast. Non-tag only, like ccache.
+      - name: Save Nuitka cache (Windows)
+        if: runner.os == 'Windows' && github.ref_type != 'tag'
+        uses: actions/cache/save@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The wheel gate can't cover the executable: Nuitka rebundles the engine, and on
       # Linux it takes the .so files through --include-package-data rather than the
@@ -254,6 +299,8 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
+          # The onefile payload is already zstd-compressed; deflating it again buys nothing.
+          compression-level: 0
 
       # workflow_call eager attach: the caller created the pre-release shell,
       # so each cell's exe appears on the release as soon as it builds.
