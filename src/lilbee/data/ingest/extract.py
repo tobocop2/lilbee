@@ -192,7 +192,6 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
     """
     if not active_config().contextual_enrichment or not texts:
         return texts
-    from lilbee.app.services import get_services
     from lilbee.retrieval.reasoning import strip_reasoning
 
     provider = get_services().provider
@@ -789,9 +788,7 @@ def _frontmatter_meta(fields: dict, source_name: str, body: str) -> SourceMeta:
         authors = str(raw_authors).strip() if raw_authors else ""
     created = fields.get("created") or fields.get("created_at") or fields.get("date")
     return SourceMeta(
-        title=derive_title(
-            source_name, title if isinstance(title, str) else _markdown_h1(body)
-        ),
+        title=derive_title(source_name, title if isinstance(title, str) else _markdown_h1(body)),
         authors=authors,
         created_at=str(created).strip() if created else "",
     )

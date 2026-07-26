@@ -268,9 +268,7 @@ class Config(BaseSettings):
     def _validate_fts_language(cls, value: str) -> str:
         normalized = value.strip().title()
         if normalized not in FTS_LANGUAGES:
-            raise ValueError(
-                f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}"
-            )
+            raise ValueError(f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}")
         return normalized
 
     # Prefix each chunk's document title to its embedding input (the stored

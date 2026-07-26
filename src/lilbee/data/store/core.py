@@ -325,8 +325,7 @@ class Store:
             )
         except Exception:
             log.warning(
-                "Title backfill failed; pre-upgrade rows keep NULL titles until "
-                "`lilbee rebuild`",
+                "Title backfill failed; pre-upgrade rows keep NULL titles until `lilbee rebuild`",
                 exc_info=True,
             )
 
@@ -568,8 +567,7 @@ class Store:
                         self._rebuild_fts_positionless(table)
                     else:
                         log.warning(
-                            "FTS optimize() failed; the existing index still "
-                            "serves hybrid search",
+                            "FTS optimize() failed; the existing index still serves hybrid search",
                             exc_info=True,
                         )
             else:
