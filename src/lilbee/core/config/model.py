@@ -241,6 +241,12 @@ class Config(BaseSettings):
     # `lilbee rebuild`, so it ships off.
     embed_titles: bool = ConfigField(default=False, writable=True)
 
+    # Contextual retrieval: prepend one LLM-written sentence situating each
+    # chunk in its document to the embedding input. One generation per chunk,
+    # so ingest slows substantially; stored text and citations stay verbatim.
+    # Toggling needs `lilbee rebuild`.
+    contextual_enrichment: bool = ConfigField(default=False, writable=True)
+
     # Drop tables-of-contents and classification-banner cover/title pages from
     # search results. OFF by default; validate per corpus, since the cover-page
     # heuristic can also fire on short banner-carrying body pages. A query-matched

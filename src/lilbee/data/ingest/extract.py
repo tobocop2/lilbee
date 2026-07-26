@@ -170,6 +170,59 @@ def _embed_inputs(texts: list[str], title: str | None = None) -> list[str]:
     return [f"{effective}\n{text}" for text in texts]
 
 
+# Contextual enrichment: characters of document head shown to the model, and
+# the reply budget for the one situating sentence.
+_ENRICH_HEAD_CHARS = 2000
+_ENRICH_CHUNK_CHARS = 2000
+_ENRICH_MAX_TOKENS = 60
+_ENRICH_PROMPT = (
+    "Document beginning:\n{head}\n\nChunk from the same document:\n{chunk}\n\n"
+    "Write one short sentence situating this chunk within the document, to "
+    "improve search retrieval of the chunk. Answer with only the sentence."
+)
+
+
+def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str]:
+    """Embedding inputs with one LLM-written situating sentence per chunk.
+
+    Anthropic-style contextual retrieval, opt-in (``cfg.contextual_enrichment``):
+    one generation per chunk, so ingest slows accordingly. Only the vector sees
+    the sentence; stored chunk text and citations stay verbatim. Any failure
+    keeps that chunk's bare text.
+    """
+    if not active_config().contextual_enrichment or not texts:
+        return texts
+    from lilbee.app.services import get_services
+    from lilbee.retrieval.reasoning import strip_reasoning
+
+    provider = get_services().provider
+    head = doc_head[:_ENRICH_HEAD_CHARS]
+    enriched: list[str] = []
+    failed = 0
+    for text in texts:
+        prompt = _ENRICH_PROMPT.format(head=head, chunk=text[:_ENRICH_CHUNK_CHARS])
+        try:
+            response = provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={"num_predict": _ENRICH_MAX_TOKENS},
+            )
+            lines = strip_reasoning(response.text).strip().splitlines()
+            sentence = lines[0].strip() if lines else ""
+        except Exception:
+            failed += 1
+            sentence = ""
+        enriched.append(f"{sentence}\n{text}" if sentence else text)
+    if failed:
+        log.warning(
+            "Contextual enrichment failed for %d of %d chunks in %s; those embed bare",
+            failed,
+            len(texts),
+            source_name,
+        )
+    return enriched
+
+
 def _should_run_ocr() -> bool:
     """Decide whether to attempt vision-based OCR on scanned PDFs.
 
@@ -430,9 +483,10 @@ async def chunk_and_embed_pages(
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
+    embed_texts = await to_ingest_thread(_enrich_texts, texts, page_texts[0][1], source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(texts),
+        _embed_inputs(embed_texts),
         source=source_name,
         on_progress=on_progress,
     )
@@ -682,9 +736,10 @@ async def ingest_document(
     )
 
     texts = [chunk.content for chunk in result.chunks]
+    embed_texts = await to_ingest_thread(_enrich_texts, texts, texts[0], source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(texts, meta.title),
+        _embed_inputs(embed_texts, meta.title),
         source=source_name,
         on_progress=on_progress,
     )
@@ -788,9 +843,10 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
+    embed_texts = await to_ingest_thread(_enrich_texts, texts, body, source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(texts, meta.title),
+        _embed_inputs(embed_texts, meta.title),
         source=source_name,
         on_progress=on_progress,
     )

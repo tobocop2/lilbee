@@ -200,3 +200,52 @@ class TestEmbedTitles:
             assert _embed_inputs(["page text"]) == ["page text"]
         finally:
             cfg.embed_titles = False
+
+
+class TestContextualEnrichment:
+    """Opt-in per-chunk situating sentence, embedding input only."""
+
+    def _services(self, reply="This chunk covers the budget section of the annual report."):
+        from unittest.mock import MagicMock
+
+        svc = MagicMock()
+        svc.provider.chat.return_value = MagicMock(text=reply)
+        return svc
+
+    def test_off_by_default_is_passthrough(self):
+        from lilbee.data.ingest.extract import _enrich_texts
+
+        assert _enrich_texts(["chunk"], "doc head", "a.pdf") == ["chunk"]
+
+    def test_on_prepends_the_sentence_to_the_embed_input(self):
+        from unittest.mock import patch
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.extract import _enrich_texts
+
+        svc = self._services()
+        cfg.contextual_enrichment = True
+        try:
+            with patch("lilbee.app.services.get_services", return_value=svc):
+                out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
+        finally:
+            cfg.contextual_enrichment = False
+        assert out == [
+            "This chunk covers the budget section of the annual report.\nchunk text"
+        ]
+
+    def test_failure_keeps_the_bare_chunk(self):
+        from unittest.mock import patch
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.extract import _enrich_texts
+
+        svc = self._services()
+        svc.provider.chat.side_effect = RuntimeError("model down")
+        cfg.contextual_enrichment = True
+        try:
+            with patch("lilbee.app.services.get_services", return_value=svc):
+                out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
+        finally:
+            cfg.contextual_enrichment = False
+        assert out == ["chunk text"]

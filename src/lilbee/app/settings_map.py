@@ -950,6 +950,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Prefix document titles to chunk embeddings (rebuild to apply; stored text unchanged)",
     ),
+    "contextual_enrichment": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="LLM-written context sentence per chunk embedding (slow ingest; rebuild to apply)",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,
