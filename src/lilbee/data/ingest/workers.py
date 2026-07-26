@@ -30,15 +30,19 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
 from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
     from lilbee.core.config.model import Config
-    from lilbee.data.ingest.types import ChunkRecord, ConceptRecords, PageTextRecord
+    from lilbee.data.ingest.types import (
+        ChunkRecord,
+        ConceptRecords,
+        FileToProcess,
+        PageTextRecord,
+    )
 
 log = logging.getLogger(__name__)
 
@@ -114,15 +118,6 @@ def resolve_process_count(file_count: int) -> int:
     return min(usable, _MAX_AUTO_PROCESSES)
 
 
-@dataclass(frozen=True)
-class WorkerFile:
-    """One file for a worker to produce records for."""
-
-    path: Path
-    name: str
-    content_type: str
-
-
 @dataclass
 class WorkerOutcome:
     """What a worker produced for one file; ``error`` set means it failed."""
@@ -168,10 +163,6 @@ class _WorkerBindings:
             self._stack.close()
             self._stack = None
 
-    @property
-    def bound(self) -> bool:
-        return self._stack is not None
-
 
 _bindings = _WorkerBindings()
 
@@ -187,7 +178,7 @@ def init_worker(config: Config, cpu_share: int, inflight: int) -> None:
     _bindings.enter(config, cpu_share, inflight)
 
 
-def run_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
+def run_batch(files: list[FileToProcess]) -> list[WorkerOutcome]:
     """Produce records for *files* on this worker's own event loop.
 
     One loop per batch rather than per file: the loop setup and its self-pipe
@@ -196,18 +187,18 @@ def run_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
     return asyncio.run(_produce_batch(files))
 
 
-async def _produce_batch(files: list[WorkerFile]) -> list[WorkerOutcome]:
+async def _produce_batch(files: list[FileToProcess]) -> list[WorkerOutcome]:
     """Run the batch concurrently so embed waits overlap within the worker."""
     limit = asyncio.Semaphore(_bindings.inflight)
 
-    async def one(entry: WorkerFile) -> WorkerOutcome:
+    async def one(entry: FileToProcess) -> WorkerOutcome:
         async with limit:
             return await _produce_one(entry)
 
     return await asyncio.gather(*(one(entry) for entry in files))
 
 
-async def _produce_one(entry: WorkerFile) -> WorkerOutcome:
+async def _produce_one(entry: FileToProcess) -> WorkerOutcome:
     """Extract, chunk, embed and build side-table rows for a single file."""
     from lilbee.data.ingest.pipeline import (
         build_concept_records,
@@ -277,14 +268,6 @@ def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExec
     )
 
 
-def batched(files: list[Any], size: int = BATCH_FILES) -> list[list[Any]]:
-    """Split *files* into contiguous batches of at most *size*.
-
-    Hand-rolled because ``itertools.batched`` is 3.12+ and lilbee supports 3.11.
-    """
-    return [files[i : i + size] for i in range(0, len(files), size)]
-
-
 class BatchDispatcher:
     """Maps a file's position in the plan to the worker batch that produces it.
 
@@ -293,15 +276,16 @@ class BatchDispatcher:
     whole plan into the pool up front.
     """
 
-    def __init__(self, pool: ProcessPoolExecutor, files: list[WorkerFile]) -> None:
+    def __init__(self, pool: ProcessPoolExecutor, files: list[FileToProcess]) -> None:
         self._pool = pool
-        self._batches = batched(files)
+        self._files = files
         self._pending: dict[int, asyncio.Future[list[WorkerOutcome]]] = {}
 
     async def outcome_for(self, index: int) -> WorkerOutcome:
         """The outcome for the file at *index* (0-based) in the plan."""
         batch_index, offset = divmod(index, BATCH_FILES)
-        batch = self._batches[batch_index]
+        start = batch_index * BATCH_FILES
+        batch = self._files[start : start + BATCH_FILES]
         future = self._pending.get(batch_index)
         if future is None:
             loop = asyncio.get_running_loop()

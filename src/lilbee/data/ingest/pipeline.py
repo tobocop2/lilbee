@@ -53,7 +53,6 @@ from lilbee.data.ingest.types import (
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
-    WorkerFile,
     build_pool,
     error_reason,
     resolve_process_count,
@@ -940,9 +939,7 @@ def _dispatch_plan(
         return None, (in_process(entry, idx) for idx, entry in enumerate(files_to_process, 1))
     pool = build_pool(processes, active_config(), _max_concurrent())
     log.warning("Ingesting %d files across %d worker processes", total_files, processes)
-    dispatcher = BatchDispatcher(
-        pool, [WorkerFile(e.path, e.name, e.content_type) for e in files_to_process]
-    )
+    dispatcher = BatchDispatcher(pool, files_to_process)
     return pool, (
         _collect_from_worker(
             entry,

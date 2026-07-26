@@ -17,9 +17,7 @@ from lilbee.data.ingest.types import FileToProcess
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
-    WorkerFile,
     WorkerOutcome,
-    batched,
     error_reason,
     resolve_process_count,
 )
@@ -90,18 +88,6 @@ class TestResolveProcessCount:
         assert resolve_process_count(10) == 4
 
 
-class TestBatching:
-    def test_splits_into_contiguous_batches_covering_every_file(self):
-        files = list(range(BATCH_FILES * 2 + 5))
-        result = batched(files)
-        assert len(result) == 3
-        assert [len(b) for b in result] == [BATCH_FILES, BATCH_FILES, 5]
-        assert [f for batch in result for f in batch] == files
-
-    def test_empty_plan_yields_no_batches(self):
-        assert batched([]) == []
-
-
 class TestErrorReason:
     def test_worker_error_reports_its_origin_not_the_carrier(self):
         """The type name is formatted in the worker; pickling loses the class."""
@@ -118,7 +104,7 @@ class TestBatchDispatcher:
 
     @staticmethod
     def _dispatcher(count, pool, monkeypatch, seen=None):
-        files = [WorkerFile(Path(f"/c/{i}.txt"), f"{i}.txt", "text") for i in range(count)]
+        files = [_entry(f"{i}.txt") for i in range(count)]
 
         def fake_run_batch(batch):
             if seen is not None:
@@ -345,7 +331,7 @@ class TestRunBatch:
     def test_produces_one_outcome_per_file_in_plan_order(self, monkeypatch):
         """Order is the contract: the parent indexes into this list by plan position."""
         self._patch_producers(monkeypatch)
-        files = [WorkerFile(Path(f"/c/{i}.txt"), f"{i}.txt", "text") for i in range(5)]
+        files = [_entry(f"{i}.txt") for i in range(5)]
 
         outcomes = workers.run_batch(files)
 
@@ -357,7 +343,7 @@ class TestRunBatch:
 
     def test_one_bad_file_does_not_fail_its_batch_mates(self, monkeypatch):
         self._patch_producers(monkeypatch, failing={"1.txt"})
-        files = [WorkerFile(Path(f"/c/{i}.txt"), f"{i}.txt", "text") for i in range(3)]
+        files = [_entry(f"{i}.txt") for i in range(3)]
 
         outcomes = workers.run_batch(files)
 
@@ -407,7 +393,6 @@ class TestWorkerBootstrap:
             assert active_config().chunk_size == 4242
             assert os.environ["LILBEE_CPU_QUOTA"] == "3"
             assert entered == [True]  # the fleet is held resident for the worker's life
-            assert workers._bindings.bound
             assert workers._bindings.inflight == 12
         finally:
             workers._bindings.close()
@@ -505,7 +490,7 @@ class TestInflightIsNotTheCpuBudget:
         monkeypatch.setattr(workers._bindings, "inflight", 7, raising=False)
         monkeypatch.setattr(workers, "_produce_one", mock.AsyncMock(return_value=None))
 
-        await workers._produce_batch([WorkerFile(Path("/c/a.txt"), "a.txt", "text")])
+        await workers._produce_batch([_entry("a.txt")])
 
         assert seen == [7]
 
