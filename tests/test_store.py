@@ -3112,3 +3112,18 @@ class TestRelocateTitles:
         store.relocate_sources([("real_notes.md", "IMG_1234.md", None)])
         row = next(s for s in store.get_sources() if s["filename"] == "IMG_1234.md")
         assert row["title"] is None
+
+    def test_relocated_title_guard_branches(self, store):
+        """No sources table, a failing read, and a missing row all keep the title."""
+        from lilbee.data.ingest.title import derive_title
+        from lilbee.data.store.core import _KEEP_TITLE
+
+        assert store._relocated_title(None, "a.md", "b.md", derive_title) is _KEEP_TITLE
+        broken = mock.MagicMock()
+        broken.search.side_effect = RuntimeError("boom")
+        assert store._relocated_title(broken, "a.md", "b.md", derive_title) is _KEEP_TITLE
+        from lilbee.data.store import SourceType
+
+        store.upsert_source("real.md", "h1", 1, SourceType.DOCUMENT)
+        table = store.open_table("_sources")
+        assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
