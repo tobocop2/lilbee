@@ -447,6 +447,46 @@ class TestExtractEntities:
         assert stats.llm_batches == 1
         assert stats.llm_batches_failed == 0
 
+    def test_poisoned_chunk_is_isolated_by_single_retry(self):
+        """One chunk that deterministically fails the batch call must not fail
+        the batch: the single-chunk retry keeps the other chunks' entities and
+        the pass completes (no eternal full redo)."""
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        def chat(messages, **kwargs):
+            if "POISON" in messages[0]["content"]:
+                raise RuntimeError("provider chokes on this content")
+            return _text_result(json.dumps({"0": [{"type": "vessel", "text": "the Meridian"}]}))
+
+        provider = MagicMock()
+        provider.chat.side_effect = chat
+        stats = ExtractionStats()
+        rows = extract_entities(
+            [_chunk("the Meridian docked"), _chunk("POISON payload", idx=1)],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert [r["entity"] for r in rows] == ["the Meridian"]
+        assert stats.llm_batches_failed == 0  # the pass may mark applied
+
+    def test_provider_down_still_counts_the_batch_failed(self):
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("down")
+        stats = ExtractionStats()
+        extract_entities(
+            [_chunk(f"text {i}", idx=i) for i in range(5)],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert stats.llm_batches_failed == 1
+        # Single retries abort after a few consecutive failures: batch call
+        # plus at most the abort window, not one call per chunk.
+        assert provider.chat.call_count <= 4
+
     def test_llm_response_edge_shapes_are_ignored(self):
         provider = MagicMock()
         provider.chat.return_value = _text_result(

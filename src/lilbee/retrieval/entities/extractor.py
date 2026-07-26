@@ -309,6 +309,42 @@ def _regex_findings(
     return found
 
 
+# Singles failing in a row before a batch retry concludes the provider is down.
+_SINGLE_RETRY_ABORT = 3
+
+
+def _retry_batch_singly(
+    types: list[EntityType],
+    batch: list[Mapping[str, Any]],
+    provider: LLMProvider,
+) -> tuple[list[list[tuple[EntityType, str]]], bool]:
+    """Per-chunk retry of a failed batch: (per-chunk findings, batch failed).
+
+    A chunk whose single call still fails loses its entities (logged); the
+    batch only counts as failed when nothing succeeds, i.e. the provider
+    itself is down, so the pass retries next sync.
+    """
+    found_all: list[list[tuple[EntityType, str]]] = [[] for _ in batch]
+    any_ok = False
+    consecutive = 0
+    for offset, record in enumerate(batch):
+        single = _extract_llm_batch(types, [record["chunk"]], provider)
+        if single is None:
+            consecutive += 1
+            log.warning(
+                "LLM entity extraction failed for %s#%s; its entities are skipped",
+                record["source"],
+                record["chunk_index"],
+            )
+            if not any_ok and consecutive >= _SINGLE_RETRY_ABORT:
+                break
+            continue
+        consecutive = 0
+        any_ok = True
+        found_all[offset] = single[0]
+    return found_all, not any_ok
+
+
 def extract_entities(
     chunks: list[Mapping[str, Any]],
     schema: EntitySchema,
@@ -346,12 +382,15 @@ def extract_entities(
         for start in range(0, len(chunks), LLM_EXTRACTION_BATCH):
             batch = chunks[start : start + LLM_EXTRACTION_BATCH]
             batch_found = _extract_llm_batch(llm_types, [r["chunk"] for r in batch], provider)
+            failed = False
+            if batch_found is None:
+                # Retry chunk-by-chunk: one poisoned chunk must not fail the
+                # batch (and with it the whole pass) on every sync.
+                batch_found, failed = _retry_batch_singly(llm_types, batch, provider)
             if stats is not None:
                 stats.llm_batches += 1
-                if batch_found is None:
+                if failed:
                     stats.llm_batches_failed += 1
-            if batch_found is None:
-                continue
             for offset, found in enumerate(batch_found):
                 per_chunk[start + offset].extend(found)
 

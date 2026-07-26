@@ -935,9 +935,10 @@ class TestRebuildClusters:
         mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_skips_when_all_pairs_at_or_below_chance(self, mock_leiden, cg, mock_svc):
-        """When PPMI drops every pair (all co-occur at or below chance), there
-        is no edge set to cluster and Leiden must not run on an empty graph."""
+    def test_all_pairs_at_or_below_chance_clears_the_stale_graph(self, mock_leiden, cg, mock_svc):
+        """When PPMI drops every pair (all co-occur at or below chance), Leiden
+        must not run on an empty graph AND any previous graph is cleared: it no
+        longer describes the corpus."""
         # python co-occurs with ml in both chunks; with only 2 chunks each pair
         # sits exactly at chance (PMI 0) and is dropped.
         _cc, side = self._chunk_concepts(
@@ -950,19 +951,21 @@ class TestRebuildClusters:
         mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
         mock_leiden.assert_not_called()
-        mock_svc.store.clear_and_add.assert_not_called()
+        cleared = [c.args[2] for c in mock_svc.store.clear_and_add.call_args_list]
+        assert cleared == [[], []]  # nodes and edges emptied, tables kept
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_skips_when_no_cooccurrence(self, mock_leiden, cg, mock_svc):
-        """Chunks that each carry a single concept produce no pairs, so there is
-        nothing to cluster."""
+    def test_no_cooccurrence_clears_the_stale_graph(self, mock_leiden, cg, mock_svc):
+        """Chunks that each carry a single concept produce no pairs: nothing to
+        cluster, and the previous graph is cleared rather than left stale."""
         _cc, side = self._chunk_concepts(
             {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 1], "concept": ["a", "b"]}
         )
         mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
         mock_leiden.assert_not_called()
-        mock_svc.store.clear_and_add.assert_not_called()
+        cleared = [c.args[2] for c in mock_svc.store.clear_and_add.call_args_list]
+        assert cleared == [[], []]
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_compacts_concept_tables(self, mock_leiden, cg, mock_svc):

@@ -393,10 +393,15 @@ class ConceptGraph:
                 self._clear_graph()
             return
         if not cooccurrences:
+            # Chunks remain but no concept pair co-occurs: the previous graph
+            # is stale, not still valid.
+            self._clear_graph()
             return
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, total_chunks)
         if not pmi_weights:
-            # Every pair co-occurred at or below chance: no edge set to cluster.
+            # Every pair co-occurred at or below chance: no edge set to
+            # cluster, and the previous graph no longer describes the corpus.
+            self._clear_graph()
             return
         edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
 
