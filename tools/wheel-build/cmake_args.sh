@@ -16,6 +16,9 @@ set -euo pipefail
 
 backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${script_dir}/../../engine-versions.env"
 
 # TARGET_ARCH: cross-compile target. Defaults to host arch.
 target_arch="${TARGET_ARCH:-$(uname -m)}"
@@ -58,6 +61,37 @@ esac
 # LLAMA_BUILD_UI=OFF: skip the npm/vite server-UI build (flaky on Windows
 # runners); assets fall back to the prebuilt HF bucket download.
 common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
+
+# The AMD cards worth shipping for: gfx906 (MI50), gfx908 (MI100), gfx90a (MI200),
+# gfx942 (MI300), gfx1030 (RDNA2), gfx1100 (RDNA3), gfx1101/1102 (Navi 32/33).
+rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx1030 gfx1100 gfx1101 gfx1102"
+
+# The subset of those the ROCm at $1 can build, as a cmake list.
+#
+# One unsupported target fails the whole configure rather than being skipped, and
+# AMD drops targets between releases (7.0 removed gfx940). The device bitcode is the
+# toolchain's own list of ISAs it knows, and reading it needs no GPU.
+rocm_buildable_targets() {
+  local root="$1" arch targets="" dropped=""
+  for arch in ${rocm_wanted_targets}; do
+    if [ -e "${root}/amdgcn/bitcode/oclc_isa_version_${arch#gfx}.bc" ]; then
+      targets="${targets}${targets:+;}${arch}"
+    else
+      dropped="${dropped} ${arch}"
+    fi
+  done
+
+  # An install this script does not understand. Build everything rather than
+  # silently emitting a wheel for no card at all.
+  if [ -z "${targets}" ]; then
+    echo "cmake_args.sh: no device bitcode under ${root}/amdgcn/bitcode," \
+      "building every wanted target unfiltered" >&2
+    echo "${rocm_wanted_targets}" | tr ' ' ';'
+    return
+  fi
+  [ -z "${dropped}" ] || echo "cmake_args.sh: ROCm at ${root} cannot build:${dropped}" >&2
+  printf '%s' "${targets}"
+}
 common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
@@ -93,46 +127,13 @@ case "${backend}_${runner_os}" in
     args="${common_x86} -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
   rocm_Linux)
-    # AMD ROCm/HIP. Only Linux is realistic — ROCm on Windows is preview-quality.
-    # GGML_HIP, not GGML_HIPBLAS: upstream renamed it, and cmake caches an unknown
-    # -D without failing, so the old spelling built a CPU-only engine that shipped
-    # under the rocm index. AMDGPU_TARGETS is still forwarded to GPU_TARGETS.
-    #
-    # The compiler is pinned for the same reason sycl pins icx: HIP device code
-    # needs AMD's clang, and ROCm 7 keeps it under lib/llvm rather than the
-    # llvm/bin that earlier releases used.
-    rocm_root="${ROCM_PATH:-/opt/rocm-7.2.0}"
+    # ROCm on Windows is preview-quality, so Linux only.
+    # GGML_HIP, not GGML_HIPBLAS: cmake caches an unknown -D instead of failing, so
+    # the renamed-away spelling built a CPU-only engine.
+    # HIP device code needs AMD's clang, which ROCm 7 keeps under lib/llvm.
+    rocm_root="${ROCM_PATH:-/opt/rocm-${ENGINE_ROCM_VERSION}}"
     rocm_clang="${rocm_root}/lib/llvm/bin/clang"
-
-    # The cards worth shipping for: gfx906 (MI50), gfx908 (MI100), gfx90a (MI200),
-    # gfx942 (MI300), gfx1030 (RDNA2), gfx1100 (RDNA3), gfx1101/1102 (Navi 32/33).
-    #
-    # Filtered against what the installed ROCm can still build, because AMD drops
-    # targets between releases and ONE unsupported entry fails the whole configure
-    # rather than being skipped: ROCm 7 removed gfx940/gfx941, which is what turned
-    # the rocm cell red the first time the flag fix let it get as far as compiling.
-    # The device bitcode is the toolchain's own answer to which ISAs it knows, and
-    # reading it needs no GPU. A hardcoded list would just fail again on the next bump.
-    rocm_wanted="gfx906 gfx908 gfx90a gfx942 gfx1030 gfx1100 gfx1101 gfx1102"
-    rocm_targets=""
-    rocm_dropped=""
-    for arch in ${rocm_wanted}; do
-      if [ -e "${rocm_root}/amdgcn/bitcode/oclc_isa_version_${arch#gfx}.bc" ]; then
-        rocm_targets="${rocm_targets}${rocm_targets:+;}${arch}"
-      else
-        rocm_dropped="${rocm_dropped} ${arch}"
-      fi
-    done
-    # No bitcode directory means an install this script does not understand. Say so
-    # and build the full list rather than silently shipping a wheel for no card.
-    if [ -z "${rocm_targets}" ]; then
-      echo "cmake_args.sh: no device bitcode under ${rocm_root}/amdgcn/bitcode;" >&2
-      echo "building every wanted target unfiltered" >&2
-      rocm_targets="$(echo "${rocm_wanted}" | tr ' ' ';')"
-    elif [ -n "${rocm_dropped}" ]; then
-      echo "cmake_args.sh: ROCm at ${rocm_root} cannot build:${rocm_dropped}" >&2
-    fi
-
+    rocm_targets="$(rocm_buildable_targets "${rocm_root}")"
     args="${common_x86} -DGGML_HIP=ON -DAMDGPU_TARGETS=${rocm_targets} -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=${rocm_clang} -DCMAKE_CXX_COMPILER=${rocm_clang}++"
     ;;
   sycl_Linux|sycl_Windows)

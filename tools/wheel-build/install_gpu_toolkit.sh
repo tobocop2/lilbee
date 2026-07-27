@@ -11,6 +11,9 @@ set -euxo pipefail
 
 backend="${BACKEND:?BACKEND is required}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${script_dir}/../../engine-versions.env"
 
 linux_install_vulkan() {
   # spirv-headers provides <spirv/unified1/spirv.hpp> (the `spv` namespace);
@@ -75,33 +78,39 @@ linux_install_cuda() {
   fi
 }
 
+linux_add_rocm_repo() {
+  local series="$1" codename="$2"
+  sudo mkdir -p --mode=0755 /etc/apt/keyrings
+  wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${series} ${codename} main" \
+    | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
+  sudo apt-get update
+}
+
 linux_install_rocm() {
-  # ROCm 7.2, and the version is not incidental. The engine's vendored llama.cpp
-  # refuses anything below 6.1 outright, and 6.1 itself fails to compile it:
-  # ggml-cuda/mma.cuh, which the HIP backend reuses, hits -Wc++11-narrowing on
-  # that release's clang 17. Both were reproduced on an MI300X; 7.2 builds clean.
-  #
-  # The versioned package names are also not incidental. An unversioned
-  # rocm-hip-sdk resolves its compiler dependency against any other ROCm already
-  # on the image, which on a box that ships one installs every library and no
-  # clang at all, and the build then fails looking for a compiler that was never
-  # unpacked.
-  if [ ! -d /opt/rocm-7.2.0 ]; then
-    sudo mkdir -p --mode=0755 /etc/apt/keyrings
-    wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key \
-      | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-    echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2 jammy main' \
-      | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
-    sudo apt-get update
-    sudo apt-get install -y rocm-hip-sdk7.2.0 rocm-llvm7.2.0 hipcc7.2.0
+  # Version comes from engine-versions.env; see its note on why it is pinned.
+  local version="${ENGINE_ROCM_VERSION:?ENGINE_ROCM_VERSION is required}"
+  local series="${version%.*}"
+  local root="/opt/rocm-${version}"
+  local codename
+  codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+
+  if [ ! -d "${root}" ]; then
+    linux_add_rocm_repo "${series}" "${codename}"
+    # Versioned names: an unversioned rocm-hip-sdk resolves its compiler
+    # dependency against any other ROCm on the image and installs no clang.
+    sudo apt-get install -y \
+      "rocm-hip-sdk${version}" "rocm-llvm${version}" "hipcc${version}"
   fi
+
   # ROCm 7 moved the toolchain to lib/llvm; $ROCM_PATH/llvm/bin no longer exists.
-  echo "/opt/rocm-7.2.0/bin" >> "$GITHUB_PATH"
-  echo "/opt/rocm-7.2.0/lib/llvm/bin" >> "$GITHUB_PATH"
+  echo "${root}/bin" >> "$GITHUB_PATH"
+  echo "${root}/lib/llvm/bin" >> "$GITHUB_PATH"
   {
-    echo "ROCM_PATH=/opt/rocm-7.2.0"
-    echo "HIP_PATH=/opt/rocm-7.2.0"
-    echo "CMAKE_PREFIX_PATH=/opt/rocm-7.2.0"
+    echo "ROCM_PATH=${root}"
+    echo "HIP_PATH=${root}"
+    echo "CMAKE_PREFIX_PATH=${root}"
   } >> "$GITHUB_ENV"
 }
 

@@ -5,8 +5,8 @@ These tests cover the walk that packs it: every dependency edge is declared by t
 fixture, so a library the bundler fails to follow is a test failure rather than a
 user's crash, and none of it needs a GPU or a six-hour build.
 
-Whether the result actually loads on a machine without ROCm is settled elsewhere,
-by build-multigpu.yml running the bundle through a real ld.so in a container.
+Whether the result actually loads on a machine without ROCm is settled elsewhere, by
+``tools/qa/assert_rocm_bundle_loads.sh`` running it through a real ld.so in a container.
 """
 
 from __future__ import annotations

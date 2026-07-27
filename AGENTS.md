@@ -454,11 +454,10 @@ closure. These rules exist because each one shipped a broken artifact once.
   against a synthetic ROCm tree.
 - **The ROCm bundle is proved complete in a container, not beside the build.** Every
   machine that can build ROCm has ROCm installed, so a loader check on the runner
-  resolves against `/opt/rocm` and passes a bundle that would fail on a user's
-  machine. The rocm cell runs it through a real `ld.so` inside `ubuntu:22.04` with no
-  ROCm, before the mirror step so a bad bundle is never published for later runs to
-  restore. The apt line in that step is the wheel's host contract: change it only for
-  something that must match the running kernel driver.
+  resolves against `/opt/rocm` and passes a bundle that would fail for a user.
+  `tools/qa/assert_rocm_bundle_loads.sh` runs it through a real `ld.so` inside
+  `ubuntu:22.04` with no ROCm, before the mirror step. Its `host_packages` list is the
+  wheel's host contract: add to it only what must match the running kernel driver.
 - **A wheel carries the backend its flavor claims.** The same script asserts a rocm
   wheel holds `libggml-hip.so`, a vulkan one `libggml-vulkan.so`, and so on, for every
   cell rather than only the CUDA ones. cmake caches an unknown `-D` instead of failing,
