@@ -70,6 +70,13 @@ _SPLIT_CHAT_SLOTS = 1
 # such sequences, so the served total can exceed the single-window reserve; the
 # per-device headroom test in fit_split_ctx is what bounds it.
 _MIN_USABLE_CHAT_CTX = 8192
+# Embed and cross-encoder rerank serve one request at a time. Raising it was
+# tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
+# passage per request, --parallel 1 gave 133 docs/sec at 81% SM while
+# --parallel 8 gave 100 at 63%. At one slot the card is already busy, so there is
+# no stall for slot-batching to reclaim and the extra slots only add
+# continuous-batching and KV-fragmentation overhead. Batch on the request side
+# (embed_batch_sequences) instead.
 _AUX_SLOTS = 1
 # A tensor-split needs at least this many GPUs; below it the chat context objective
 # (a gguf read) is pointless because the model can only single-card or stay unplaced.
