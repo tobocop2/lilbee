@@ -111,6 +111,12 @@ lilbee-engine = { path = "packaging/engine-wheel" }
 
 [dependency-groups]
 dev = [
+    # The bundled engine is an optional extra for users, because the wheel is
+    # published on lilbee.sh rather than PyPI and a hard reference to a name
+    # PyPI answers 404 for breaks the documented install. Development and CI
+    # still need it: the pin test reads its metadata, and the local source
+    # below makes it a workspace path rather than an index lookup.
+    "lilbee-engine",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",

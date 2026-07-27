@@ -1759,6 +1759,7 @@ release = [
 dev = [
     { name = "httpx" },
     { name = "hypothesis" },
+    { name = "lilbee-engine" },
     { name = "mypy" },
     { name = "packaging" },
     { name = "pre-commit" },
@@ -1815,6 +1816,7 @@ provides-extras = ["engine", "litellm", "graph", "crawler", "cuda12", "release"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "hypothesis", specifier = ">=6.100" },
+    { name = "lilbee-engine", directory = "packaging/engine-wheel" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", specifier = ">=4.0" },
