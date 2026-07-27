@@ -1,39 +1,25 @@
 """What the engine actually allocated, read back from its own startup report.
 
-The plan is otherwise open-loop: every budget in :mod:`lilbee.providers.fleet.planning`
-is a pure function of a snapshot taken before launch, and nothing ever checks
-whether it was right. A wrong estimate surfaces as a failed request much later,
-with no way to tell an under-estimate from a genuinely full card.
+Compares the planner's estimate against reality per device, and warns naming the
+role, the estimate and the reality when they diverge.
 
-llama.cpp prints its per-device buffer sizes on every load, so the truth is
-already in the log. Reading it back turns silent estimator drift into one warning
-naming the role, the estimate and the reality, and it costs a regex over a log
-tail that is already on disk.
+The log is the only source. There is no API: ``llama_model_size`` is the whole
+model's weights and nothing per device, ``llama_state_get_size`` is session
+state, the per-device figures come from ``ggml_backend_buffer_get_size`` on
+handles the server never exposes, and llama-server's HTTP surface carries none of
+it (``/props`` is metadata, ``/metrics`` is token counters; both checked against
+a running server).
 
-WHY A LOG AND NOT AN API. There is no API. ``llama_model_size`` gives the whole
-model's weights and nothing per device; ``llama_state_get_size`` is session
-state. The per-device figures come from ``ggml_backend_buffer_get_size`` on
-buffer handles the server holds and never exposes, and llama-server's HTTP
-surface carries none of it either: ``/props`` is model and template metadata,
-``/metrics`` is token counters, and both were checked against a running server.
-The log is the only place these numbers leave the process.
-
-THE FORMAT THIS PARSES, and where it comes from upstream:
+The format, from upstream source:
 
     src/llama-model.cpp     "%s: %12s model buffer size = %8.2f MiB"
     src/llama-kv-cache.cpp  "%s: %10s KV buffer size = %8.2f MiB"
     src/llama-context.cpp   "%s: %10s compute buffer size = %8.2f MiB"
 
-Verified against llama.cpp build 9310 (e2ef8fe42), the build the checked-in
-fixture was captured from, and again on build 9665 (e3a74b299) running on two
-A40s, where both a single-card and a tensor-split load produced every line with
-the CUDA0/CUDA1 device labels this module joins on. These are plain format
-strings in upstream source, not an interface anyone has promised to keep, so
-treat a version bump of the bundled engine as a change that can break this:
-re-capture the fixture and confirm :func:`parse_device_buffers` still finds every
-line. A build that stops matching is reported rather than swallowed (see
-:func:`check_launch`), so the failure announces itself instead of turning the
-check into decoration.
+These are format strings, not a promised interface. A bundled-engine version bump
+can break this: re-capture the fixture and confirm :func:`parse_device_buffers`
+still finds every line. A build that stops matching is reported, not swallowed
+(see :func:`check_launch`).
 """
 
 from __future__ import annotations
@@ -50,31 +36,20 @@ log = logging.getLogger(__name__)
 MIB = 1024 * 1024
 
 # The build the checked-in fixture was captured from, named in the drift warning
-# so a report says what to compare with. Tracks the fixture rather than the
-# shipped engine, because reproducing a drift report means re-running the parser
-# against that exact capture.
-#
-# A landmark, not a gate. Refusing on a version mismatch would be the wrong
-# check: the format held unchanged from this build through 9665, confirmed on
-# two A40s, so a gate would have fired on every bump while the parser was
-# working. What detects drift is the parse coming back empty on a load that
-# finished, which cannot happen while the format is intact and cannot be missed
-# once it is not.
+# so a report says what to compare with. Tracks the fixture, not the shipped
+# engine. A landmark, not a gate: drift is detected by the parse coming back
+# empty on a load that finished, not by a version comparison.
 VERIFIED_ENGINE_BUILD = "9310 (e2ef8fe42)"
 
 # "load_tensors:  MTL0_Mapped model buffer size =    82.41 MiB", and its siblings.
 #
-# Deliberately does NOT enumerate the buffer kinds. Listing them by hand meant
-# reading two logs and hardcoding the four that happened to appear, which
-# silently dropped LoRA (every adapter), RS (every Mamba and RWKV model) and the
-# DeepSeek V4 state buffer. Upstream is free to add another tomorrow. The shape
-# is what is stable: a prefix, the device, some words, "buffer size = N MiB".
+# Matches the shape rather than a list of buffer kinds, so LoRA, RS and the
+# DeepSeek V4 state buffer parse without being enumerated here.
 #
-# What the "= N MiB" requirement keeps out is the point of writing it that way.
-# llama.cpp has three other lines carrying these words that are not allocations:
-# the self-check pair reading "compute buffer size is N MiB, matches expectation"
-# and "... of N MiB, does not match expectation", plus ggml-opencl's "buffer size
-# reduced from A to B". None uses "=", so none is counted.
+# The "= N MiB" is load-bearing: it excludes the three lines carrying these words
+# that are not allocations -- the self-check pair ("compute buffer size is N MiB,
+# matches expectation" / "... does not match expectation") and ggml-opencl's
+# "buffer size reduced from A to B". None uses "=".
 #
 # The device label is whatever the backend calls itself: CUDA0, MTL0, Vulkan1,
 # CPU. A timestamp and level prefix the line under --log-file, so the match is
@@ -87,15 +62,12 @@ _MAPPED_SUFFIX = "_Mapped"
 # ggml names a row-split buffer "<backend>_Split", one allocation shared by every
 # card in the split rather than a device of its own.
 _SPLIT_SUFFIX = "_Split"
-# Devices that are host memory rather than a GPU. Two shapes, both from ggml:
-# the CPU backend's own buffers (CPU, CPU_Mapped), and every GPU backend's
-# pinned-host allocator, which it names "<backend>_Host" (ggml-cuda.cu returns
-# GGML_CUDA_NAME "_Host", and ggml-sycl, ggml-vulkan and ggml-cann do the same).
-# None of it occupies VRAM, so charging it to a card reports a phantom overrun on
-# every partially offloaded model. Found on real CUDA hardware, where CUDA_Host
-# was being counted as a third GPU.
-# AMX is a CPU extension with its own buffer type name, so it reports beside the
-# CPU's and is host memory just the same.
+# Host memory rather than a GPU, in two shapes from ggml: the CPU backend's own
+# buffers (CPU, CPU_Mapped, and AMX, which is a CPU extension), and every GPU
+# backend's pinned-host allocator, named "<backend>_Host" by ggml-cuda, -sycl,
+# -vulkan, -cann and -hip alike. Observed as CUDA_Host, Vulkan_Host, ROCm_Host.
+# None of it occupies VRAM; charging it to a card reports a phantom overrun on
+# every partially offloaded model.
 _HOST_PREFIXES = ("CPU", "AMX")
 _HOST_SUFFIX = "_Host"
 
@@ -126,17 +98,13 @@ def parse_device_buffers(text: str) -> dict[str, int]:
     return totals
 
 
-# The engine says this once the weights are in and it is wiring up slots. Its
-# presence means the load finished, which is what separates "the report has not
-# been written yet" from "this engine does not write one where we look".
+# Printed once the weights are in and slots are being wired up, so its presence
+# separates "the report is not written yet" from "this engine writes none here".
 #
-# Deliberately matches only the word the engine has kept. It said "initializing
-# slots" through b9665 and "initializing, n_slots = N" from b9829, and this gate
-# is what arms the format-drift warning: pinning the older phrase meant a newer
-# engine finished loading, parsed to nothing, and reported nothing, leaving every
-# placement estimate silently unverified. The buffer lines this module actually
-# reads have held identical across all three builds; it is the prose around them
-# that moves, so the prose is matched as loosely as it can still be meaningful.
+# Matches only the word the engine has kept: "initializing slots" through b9665,
+# "initializing, n_slots = N" from b9829. This gate arms the format-drift
+# warning, so pinning either exact phrase would silence the warning on the other.
+# The buffer lines held identical across all three builds; only the prose moved.
 _LOAD_FINISHED_RE = re.compile(r"load_model:\s+initializing\b")
 # "common_params_print_info: build 9310 (e2ef8fe42) with AppleClang ...", the
 # engine's own first line. Carried into the format-drift warning so the report
@@ -213,15 +181,13 @@ def report_divergence(
 # by model id so a role's replicas do not overwrite each other.
 _ENGINE_LOG_TEMPLATE = "engine-{model_id}.log"
 # Env the engine reads for its log destination and threshold. Set through the
-# environment rather than argv because the launch is planned before the data
-# directory that holds these logs is chosen, and because neither affects sizing,
-# which is what the estimate-versus-launch argv parity test covers.
-# Both spellings, because the engine renamed them and lilbee has to work with
-# whichever build is installed. common/arg.cpp registers LLAMA_ARG_LOG_FILE and
-# LLAMA_ARG_LOG_VERBOSITY on current master; builds around 9310 read the same
-# settings as LLAMA_LOG_FILE and LLAMA_LOG_VERBOSITY, verified by running both
-# pairs against one. An unread variable costs nothing, and picking one meant the
-# readback silently produced no log at all on half the builds in the wild.
+# environment rather than argv: the launch is planned before the data directory
+# holding these logs is chosen, and neither affects sizing.
+#
+# Both spellings, because the engine renamed them. common/arg.cpp registers
+# LLAMA_ARG_LOG_FILE / LLAMA_ARG_LOG_VERBOSITY on master; builds around 9310 read
+# LLAMA_LOG_FILE / LLAMA_LOG_VERBOSITY. Verified against both. An unread variable
+# costs nothing; picking one produced no log at all on half the builds in use.
 ENV_LOG_FILE = "LLAMA_LOG_FILE"
 ENV_LOG_VERBOSITY = "LLAMA_LOG_VERBOSITY"
 ENV_ARG_LOG_FILE = "LLAMA_ARG_LOG_FILE"

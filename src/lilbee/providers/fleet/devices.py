@@ -561,23 +561,17 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
 def amd_visible_var() -> str:
     """The one AMD visibility var an index list may be written to.
 
-    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
-    by the runtime: ROCr filters first, then HIP re-indexes within the survivors.
-    Writing the same indices to both therefore double-filters and selects the
-    wrong cards, or none at all: ``1`` on a two-GPU box exposes physical GPU 1 as
-    index 0 through ROCr, and HIP then asks for index 1 of a one-device list.
-
-    ``GPU_DEVICE_ORDINAL`` is the third, and it filters the same way. Writing HIP
-    on top of an ordinal mask both overrode it and re-exposed cards it had
-    hidden, since the indices were enumerated against the list the ordinal had
-    already filtered.
+    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially:
+    ROCr filters first, then HIP re-indexes within the survivors. Writing the same
+    indices to both double-filters and selects the wrong cards, or none at all.
+    ``GPU_DEVICE_ORDINAL`` is the third and filters the same way, so writing HIP
+    over an ordinal mask both overrides it and re-exposes cards it had hidden.
 
     So exactly one is ever written: whichever the environment already restricts,
-    in the runtime's own precedence (HIP, then the ordinal, then ROCr), or HIP
-    when nothing restricts. An empty value says "no devices" rather than "this is
-    the variable in use", so it does not claim precedence. Every caller writing an
-    AMD pin asks here, since two callers each picking their own would put the
-    pair back.
+    in the runtime's precedence (HIP, then the ordinal, then ROCr), or HIP when
+    nothing restricts. An empty value means "no devices" rather than "this is the
+    variable in use", so it does not claim precedence. Every caller writing an AMD
+    pin asks here; two callers each picking their own would put the pair back.
     """
     for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
         if os.environ.get(name, "").strip():
