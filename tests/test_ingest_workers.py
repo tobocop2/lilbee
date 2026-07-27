@@ -13,7 +13,7 @@ from unittest import mock
 import pytest
 
 from lilbee.data.ingest import pipeline, workers
-from lilbee.data.ingest.types import FileToProcess
+from lilbee.data.ingest.types import FileToProcess, SourceMeta
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
@@ -321,7 +321,7 @@ class TestRunBatch:
                 raise OSError("disk gone")
             if page_texts_out is not None:
                 page_texts_out.append({"source": name})
-            return [{"chunk": name}]
+            return [{"chunk": name}], SourceMeta(title=name)
 
         async def build_concept_records(records, name):
             return None
