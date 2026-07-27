@@ -227,6 +227,10 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
+### Tested GPUs and backends
+
+Placement reads what the engine reports about your hardware, and every backend words that differently, so each is verified on real silicon rather than inferred from the last one. Verified: CUDA on a 2x A40 pair, Vulkan on a GTX 1070 Ti, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) records what each run settled, and is equally explicit about what is untested: ROCm, Vulkan on AMD or Intel silicon, SYCL, and mixed-vendor machines have not been run. Captures from hardware not listed are welcome.
+
 ### Tested model families
 
 One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.

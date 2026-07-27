@@ -95,3 +95,36 @@ class TestBuffersThatBelongToNoOneCard:
             "load_tensors:          AMX model buffer size =   500.00 MiB\n"
         )
         assert device_footprint(text) == 100 * 1024 * 1024
+
+
+class TestARealVulkanLoad:
+    """Captured from a GTX 1070 Ti on Linux, engine build 9665 (e3a74b299).
+
+    Vulkan is where every AMD and Intel GPU lands, and until this capture the
+    module's treatment of it was read from ggml's source rather than observed:
+    in particular the claim that every backend names its pinned-host allocator
+    "<backend>_Host", which had only ever been seen on CUDA.
+    """
+
+    @staticmethod
+    def _log() -> str:
+        from pathlib import Path
+
+        return (Path(__file__).parent / "fixtures" / "engine-load-vulkan.log").read_text()
+
+    def test_the_device_and_its_host_allocator_both_parse(self) -> None:
+        from lilbee.providers.fleet.readback import parse_device_buffers
+
+        assert set(parse_device_buffers(self._log())) == {"CPU", "Vulkan0", "Vulkan_Host"}
+
+    def test_only_the_card_counts_toward_the_gpu_footprint(self) -> None:
+        from lilbee.providers.fleet.readback import device_footprint
+
+        # 98.87 model + 45.00 KV + 13.26 compute; CPU_Mapped and Vulkan_Host out.
+        assert round(device_footprint(self._log()) / 1024**2, 2) == 157.13
+
+    def test_the_load_finished_marker_matches_this_build(self) -> None:
+        from lilbee.providers.fleet.readback import engine_build, load_finished
+
+        assert load_finished(self._log())
+        assert engine_build(self._log()) == "9665 (e3a74b299)"

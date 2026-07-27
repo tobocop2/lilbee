@@ -464,6 +464,13 @@ def discrete_gpu_from_vendor(vendor_id: int) -> bool | None:
     )
 
 
+# Vendors whose PCI display controllers are always dedicated cards. AMD and
+# Intel both ship integrated parts under their own IDs, so their presence says
+# nothing about whether a discrete card exists; NVIDIA's desktop and laptop
+# parts are discrete without exception here.
+_DISCRETE_ONLY_VENDORS: frozenset[int] = frozenset({PCIVendorID.NVIDIA})
+
+
 def host_has_no_discrete_gpu() -> bool:
     """Whether the Vulkan loader can see adapters and none of them is discrete.
 
@@ -486,9 +493,21 @@ def host_has_no_discrete_gpu() -> bool:
     and an APU also answers False, which leaves the APU sized as dedicated;
     correlating individual devices across two backends' naming needs more than
     the type.
+
+    The loader is not the only witness, and on a hybrid laptop it is the wrong
+    one. Optimus and its equivalents leave the discrete card powered down until
+    something asks for it through prime-run, so the loader enumerates the
+    integrated adapter alone while a dedicated card sits on the PCI bus. Taking
+    that list at its word marked a real 4 GB card as sharing system memory,
+    which is the exact outcome the paragraph above promises never to reach. PCI
+    settles it: a vendor that only ever ships discrete parts, present in the
+    device tree but absent from the loader's list, means the loader is telling
+    an incomplete story rather than a complete one.
     """
     types = set(vulkan_device_types_by_name().values())
     if VkDeviceType.DISCRETE_GPU in types:
+        return False
+    if _DISCRETE_ONLY_VENDORS & installed_gpu_vendor_ids():
         return False
     return VkDeviceType.INTEGRATED_GPU in types
 
