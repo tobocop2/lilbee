@@ -142,11 +142,20 @@ linux_install_sycl() {
   fi
   # shellcheck disable=SC1091
   source /opt/intel/oneapi/setvars.sh
-  {
-    echo "PATH=$PATH"
-    echo "CMPLR_ROOT=${CMPLR_ROOT:-}"
-    echo "ONEAPI_ROOT=${ONEAPI_ROOT:-}"
-  } >> "$GITHUB_ENV"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "PATH=$PATH"
+      echo "CMPLR_ROOT=${CMPLR_ROOT:-}"
+      echo "ONEAPI_ROOT=${ONEAPI_ROOT:-}"
+    } >> "$GITHUB_ENV"
+  fi
+  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
+    {
+      echo "export PATH=\"$PATH\""
+      echo "export CMPLR_ROOT=\"${CMPLR_ROOT:-}\""
+      echo "export ONEAPI_ROOT=\"${ONEAPI_ROOT:-}\""
+    } >> "$TOOLKIT_ENV_FILE"
+  fi
 }
 
 case "${backend}_${runner_os}" in

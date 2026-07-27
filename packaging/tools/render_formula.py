@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -22,6 +23,9 @@ def _replace_sha_for_asset(content: str, asset_name: str, new_sha: str, *, requi
     if count > 1:
         raise SystemExit(f"expected 1 sha256 match for {asset_name}, found {count}")
     return new_content
+
+
+Renderer = Callable[[str, argparse.Namespace], str]
 
 
 def _replace_version(content: str, version: str) -> str:
@@ -53,6 +57,13 @@ def _render_cuda(content: str, args: argparse.Namespace) -> str:
     )
 
 
+def _render_rocm(content: str, args: argparse.Namespace) -> str:
+    content = _replace_version(content, args.version)
+    return _replace_sha_for_asset(
+        content, "lilbee-linux-x86_64-rocm", args.sha_linux_rocm, required=True
+    )
+
+
 def _render_compat(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
     return _replace_sha_for_asset(
@@ -60,35 +71,41 @@ def _render_compat(content: str, args: argparse.Namespace) -> str:
     )
 
 
+# Each GPU/CPU flavor of the formula: the flag that selects it, the renderer, and
+# the one digest that flavor needs. A new flavor is an entry here, not another
+# branch in main.
+_FLAVORS = (
+    ("cuda", _render_cuda, "sha_linux_cu125"),
+    ("rocm", _render_rocm, "sha_linux_rocm"),
+    ("compat", _render_compat, "sha_linux_compat"),
+)
+
+
+def _selected_flavor(args: argparse.Namespace) -> tuple[str, Renderer, str] | None:
+    """The flavor *args* asks for, or None for the default formula."""
+    return next((f for f in _FLAVORS if getattr(args, f[0])), None)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("formula", type=Path)
     parser.add_argument("--version", required=True)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--cuda",
-        action="store_true",
-        help="Render the lilbee-cuda formula instead of the default lilbee formula.",
-    )
-    mode.add_argument(
-        "--compat",
-        action="store_true",
-        help="Render the lilbee-compat (pre-Haswell CPU) formula.",
-    )
+    for name, _, _ in _FLAVORS:
+        mode.add_argument(
+            f"--{name}",
+            action="store_true",
+            help=f"Render the lilbee-{name} formula instead of the default lilbee formula.",
+        )
     parser.add_argument("--sha-macos-arm64")
     parser.add_argument("--sha-linux-x86_64")
     parser.add_argument("--sha-macos-x86_64", default=None)
-    parser.add_argument("--sha-linux-cu125")
-    parser.add_argument("--sha-linux-compat")
+    for _, _, digest in _FLAVORS:
+        parser.add_argument(f"--{digest.replace('_', '-')}")
     args = parser.parse_args()
 
-    if args.cuda:
-        if not args.sha_linux_cu125:
-            parser.error("--cuda requires --sha-linux-cu125")
-    elif args.compat:
-        if not args.sha_linux_compat:
-            parser.error("--compat requires --sha-linux-compat")
-    else:
+    flavor = _selected_flavor(args)
+    if flavor is None:
         missing = [
             flag
             for flag, value in (
@@ -99,15 +116,13 @@ def main() -> None:
         ]
         if missing:
             parser.error(f"missing required arguments: {', '.join(missing)}")
-
-    content = args.formula.read_text()
-    if args.cuda:
-        content = _render_cuda(content, args)
-    elif args.compat:
-        content = _render_compat(content, args)
+        render = _render_default
     else:
-        content = _render_default(content, args)
-    args.formula.write_text(content)
+        name, render, digest = flavor
+        if not getattr(args, digest):
+            parser.error(f"--{name} requires --{digest.replace('_', '-')}")
+
+    args.formula.write_text(render(args.formula.read_text(), args))
 
 
 if __name__ == "__main__":

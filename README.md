@@ -396,6 +396,25 @@ Same `lilbee` command after install. The CUDA runtime is bundled; you only need 
 
 </details>
 
+On an AMD card there's a ROCm build. It carries the ROCm userspace, so the amdgpu kernel driver is all you need on the host.
+
+<details>
+<summary>ROCm install commands</summary>
+
+|              | Command                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/`                                                 |
+| **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/`                                |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-rocm`                                                                           |
+| **AUR**      | `paru -S lilbee-rocm`                                                                                                |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-rocm`                                                                         |
+| **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
+| **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
+
+Same `lilbee` command after install. Cards covered: gfx906 (MI50), gfx908 (MI100), gfx90a (MI200), gfx942 (MI300), gfx1030 (RDNA2), and gfx1100/1101/1102 (RDNA3). It is the largest build of the three, because the ROCm userspace and rocBLAS kernels for every one of those targets ship inside it. Linux only, since ROCm on Windows is preview-quality.
+
+</details>
+
 Then check it runs and pick a model:
 
 ```bash

@@ -1,0 +1,23 @@
+# Maintainer: tobocop <tobias.perelstein@gmail.com>
+pkgname=lilbee-rocm
+pkgver=0.6.66b481
+pkgrel=1
+pkgdesc="The whole local AI stack in one executable: run and manage local AI models, and search your files, code, and crawled web pages, with cited answers (ROCm build)"
+arch=('x86_64')
+url="https://github.com/tobocop2/lilbee"
+license=('MIT')
+conflicts=('lilbee')
+provides=('lilbee')
+# The ROCm userspace ships inside the binary; only the kernel driver is a
+# dependency, and on Arch that is in the kernel rather than a package.
+optdepends=('linux-firmware: amdgpu firmware for the GPU to come up')
+options=('!strip' '!debug')
+source_x86_64=("lilbee-${pkgver}-rocm::${url}/releases/download/v${pkgver}/lilbee-linux-${CARCH}-rocm")
+sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
+source=("lilbee.service::${url}/raw/v${pkgver}/packaging/systemd/lilbee.service")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+package() {
+    install -Dm755 "${srcdir}/lilbee-${pkgver}-rocm" "${pkgdir}/usr/bin/lilbee"
+    install -Dm644 "${srcdir}/lilbee.service" "${pkgdir}/usr/lib/systemd/user/lilbee.service"
+}

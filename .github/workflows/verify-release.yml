@@ -70,7 +70,7 @@ jobs:
       - name: Every engine wheel carries the backend it claims
         shell: bash
         run: python3 tools/qa/assert_engine_bundle.py engine/*.whl
-      - name: Every CUDA asset the matrices build is on the release
+      - name: Every GPU asset the matrices build is on the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,8 +92,9 @@ jobs:
           lilbee-compat-linux-x86_64-cu124
           lilbee-windows-x86_64-cu124.exe
           lilbee-windows-x86_64-cu125.exe
+          lilbee-linux-x86_64-rocm
           EOF
-          [ "${missing}" -eq 0 ] || { echo "a continue-on-error CUDA build cell dropped its artifact"; exit 1; }
+          [ "${missing}" -eq 0 ] || { echo "a continue-on-error GPU build cell dropped its artifact"; exit 1; }
           echo "every expected CUDA asset is present"
 
   # The packaging fan-outs are dispatched fire-and-forget and finish after the RC
