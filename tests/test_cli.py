@@ -3941,6 +3941,13 @@ class TestSelfCheck:
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        # Applying the GPU env disables conflicting Vulkan ICDs, which enumerates
+        # adapters in a child process. That child gets 10 seconds and does not
+        # always start inside it on a Windows runner, so the test times out on
+        # work it is not about.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda *a, **k: None
+        )
         fake_swap = mock.MagicMock()
         fake_swap.start.side_effect = RuntimeError("engine died")
         monkeypatch.setattr(
