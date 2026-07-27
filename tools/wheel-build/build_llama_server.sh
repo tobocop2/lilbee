@@ -223,11 +223,9 @@ if [ -n "${cuda_platform}" ]; then
   done
 fi
 
-# A ROCm build links hip, hipblas and rocblas, which live in the ROCm install and
-# never in the build output copied above. Only the kernel driver comes from the
-# host, so the userspace ships beside the binary and the baked $ORIGIN runpath
-# resolves it, exactly as the CUDA runtime does. Its own script because unlike the
-# CUDA copy above it can be exercised without a GPU or a ROCm install, and is.
+# Same for ROCm: hip, hipblas and rocblas live in the ROCm install, not the build
+# output, and only the kernel driver comes from the host. Its own script because,
+# unlike the CUDA copy above, it can be exercised without a GPU.
 if [ "${backend}" = "rocm" ]; then
   # The targets cmake was actually given, so the bundler can drop rocBLAS kernels for
   # architectures this engine cannot run on.

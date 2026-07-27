@@ -8,11 +8,9 @@ finish-args:
   - --share=network
   # Vaults live anywhere on disk, same reach as the other channels.
   - --filesystem=host
-  # llama-server runs HIP inference. --device=all rather than --device=dri: ROCm
-  # needs /dev/kfd, the compute node, and dri only covers the DRM render nodes.
-  # Unlike the CUDA variant nothing comes from a driver extension, because the
-  # ROCm userspace ships inside the binary; only the amdgpu kernel driver is the
-  # host's.
+  # --device=all, not --device=dri: ROCm needs /dev/kfd, and dri covers only the
+  # DRM render nodes. No driver extension, unlike CUDA: the ROCm userspace is in
+  # the binary and only the amdgpu kernel driver is the host's.
   - --device=all
 modules:
   - name: lilbee
@@ -22,11 +20,9 @@ modules:
       - install -Dm755 apply_extra.sh /app/bin/apply_extra
       - install -Dm644 io.github.tobocop2.lilbee.rocm.metainfo.xml -t /app/share/metainfo
     sources:
-      # url/sha256/size are rendered per release by render_flatpak_manifest.sh;
-      # extra-data keeps the binary out of the OSTree repo (fetched at install
-      # time from the GitHub release instead). This variant points at the ROCm
-      # binary, which is the largest of them: it carries the ROCm userspace and
-      # rocBLAS kernels for every gfx target.
+      # url/sha256/size rendered per release by render_flatpak_manifest.sh;
+      # extra-data keeps the binary out of the OSTree repo. The ROCm binary is the
+      # largest: it carries the ROCm userspace and per-gfx rocBLAS kernels.
       - type: extra-data
         filename: lilbee-bin
         url: https://github.com/tobocop2/lilbee/releases/download/v0.0.0/lilbee-linux-x86_64-rocm

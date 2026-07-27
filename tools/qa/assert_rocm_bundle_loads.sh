@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Assert the bundled ROCm engine resolves every library on a machine with no ROCm.
-#
-# The build host is never that machine: anything that can compile ROCm has ROCm
-# installed, so a loader check run beside the build resolves against /opt/rocm and
-# passes a bundle that would fail for a user. A container is the machine.
-#
-# No LD_LIBRARY_PATH: the baked $ORIGIN runpath is what a user gets.
+# The build host is never that machine, so a container is. No LD_LIBRARY_PATH: the
+# baked $ORIGIN runpath is what a user gets.
 #
 # Argument:
 #   the wheel's bin/ directory, holding the bundled engine

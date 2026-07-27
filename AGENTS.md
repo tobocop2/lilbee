@@ -441,29 +441,20 @@ closure. These rules exist because each one shipped a broken artifact once.
   here — a driverless runner never loads the CUDA backend — so read the artifact
   instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
-- **A ROCm build bundles its ROCm runtime too, and discovers it rather than listing
-  it.** Same reason as CUDA: only the kernel driver comes from the host, so hip,
-  rocblas, hipblas and the clang OpenMP runtime ship beside the binary.
-  `tools/wheel-build/bundle_rocm_runtime.sh` walks `DT_NEEDED` from everything the
-  build produced and keeps what resolves inside the ROCm tree, because SONAMEs move
-  between releases and a hardcoded list bakes in a version. It also carries
-  `rocblas/library`, which rocBLAS loads as data rather than linking, so omitting it
-  yields a wheel that resolves every library and dies on the first matrix multiply.
-  Its own script, not a block in `build_llama_server.sh`, because it is the one part
-  of that build provable without a GPU: `tests/test_bundle_rocm_runtime.py` runs it
-  against a synthetic ROCm tree.
-- **The ROCm bundle is proved complete in a container, not beside the build.** Every
-  machine that can build ROCm has ROCm installed, so a loader check on the runner
-  resolves against `/opt/rocm` and passes a bundle that would fail for a user.
-  `tools/qa/assert_rocm_bundle_loads.sh` runs it through a real `ld.so` inside
-  `ubuntu:22.04` with no ROCm, before the mirror step. Its `host_packages` list is the
-  wheel's host contract: add to it only what must match the running kernel driver.
-- **A wheel carries the backend its flavor claims.** The same script asserts a rocm
-  wheel holds `libggml-hip.so`, a vulkan one `libggml-vulkan.so`, and so on, for every
-  cell rather than only the CUDA ones. cmake caches an unknown `-D` instead of failing,
-  so a misspelled backend flag builds a CPU-only engine that passes every other gate;
-  that is how the published rocm wheel ran on CPU. A new flavor needs its library name
-  added there, or the gate silently asserts nothing for it.
+- **A ROCm build bundles its ROCm runtime too, discovered not listed.**
+  `bundle_rocm_runtime.sh` walks `DT_NEEDED` and keeps what resolves inside the ROCm
+  tree, because SONAMEs move between releases. It also carries `rocblas/library`,
+  which rocBLAS loads as data: omit it and the engine dies on the first matmul.
+  Separate script because it is the one part of the build testable without a GPU
+  (`tests/test_bundle_rocm_runtime.py`).
+- **The ROCm bundle is proved in a container, not beside the build.** Any machine
+  that can build ROCm has ROCm, so a loader check on the runner passes a bundle that
+  would fail for a user. `assert_rocm_bundle_loads.sh` runs it through a real `ld.so`
+  in `ubuntu:22.04` with no ROCm. Its `host_packages` is the wheel's host contract.
+- **A wheel carries the backend its flavor claims.** `assert_engine_bundle.py` checks
+  every cell, not just CUDA: cmake caches an unknown `-D` instead of failing, which is
+  how the published rocm wheel shipped as a CPU build. A new flavor needs its library
+  name added there or the gate asserts nothing for it.
 - **Every release channel has a real-inference gate.** `tools/qa/artifact_smoke.sh`
   runs `self-check` (real chat + embedding), ingest, search, a RAG ask, and an
   http crawl, sourcing models from the `ci-models` mirror (no HuggingFace).

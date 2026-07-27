@@ -1,12 +1,10 @@
 name: Build GPU executables
 
 # GPU-flavored standalone executables (CUDA and ROCm). Called from
-# release-candidate.yml in
-# parallel with the Vulkan/Metal build, or dispatched standalone for an
-# already-released tag. Each cell builds independently; failures do not block
-# the rest. In workflow_call mode, run artifacts are picked up by the caller's
-# attach-prerelease step. In workflow_dispatch mode, the cell attaches directly
-# to the named release.
+# release-candidate.yml alongside the Vulkan/Metal build, or dispatched for an
+# already-released tag. Cells are independent; a failure blocks nothing. Under
+# workflow_call the caller's attach-prerelease step collects the artifacts;
+# under workflow_dispatch each cell attaches to the named release itself.
 
 on:
   workflow_dispatch:
@@ -76,10 +74,8 @@ jobs:
             asset_name: lilbee-compat-linux-x86_64-cu124
             compat: true
             march: "x86-64-v2"
-          # ROCm rides here rather than in release.yml's Vulkan/Metal matrix for the
-          # same reason the CUDA cells do: install_gpu_toolkit.sh is apt-based and the
-          # manylinux container is not. Linux only, and no Windows cell, because ROCm
-          # on Windows is preview-quality.
+          # Here, not release.yml's matrix, for the same reason as the CUDA cells:
+          # install_gpu_toolkit.sh is apt-based and manylinux is not. Linux only.
           - os: ubuntu-22.04
             backend: rocm
             asset_name: lilbee-linux-x86_64-rocm

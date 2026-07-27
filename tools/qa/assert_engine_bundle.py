@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
 """Assert a lilbee-engine wheel carries the backend it claims, and the runtime it links.
 
-Two checks, both on the wheel's payload, because neither failure is visible in a
-build log or on a driverless CI runner.
+Both checks read the payload, because neither failure shows in a build log or on a
+driverless runner. A flavor missing its ggml backend library is a build whose flag
+never took effect: cmake caches an unknown ``-D`` instead of failing, which is how
+the published rocm wheel shipped as a CPU build. A CUDA wheel missing cudart/cublas
+dies at process start on Windows and drops to CPU on Linux; non-CUDA wheels are
+checked the other way, that no copy step quietly bloated them.
 
-THE BACKEND IT CLAIMS. Every flavor is built to produce one ggml backend library:
-rocm builds ``libggml-hip.so``, vulkan ``libggml-vulkan.so``, and so on. A wheel
-without its own is a build whose backend flag never took effect, and cmake makes
-that silent: an unknown ``-D`` is cached unused rather than failing, so the build
-succeeds and emits a CPU-only engine. That is not hypothetical. The published rocm
-wheel carried nothing but ``libggml-cpu.so`` for as long as the flag was spelled
-``GGML_HIPBLAS``, which upstream had renamed to ``GGML_HIP``, and no gate looked.
-
-THE RUNTIME IT LINKS. A CUDA build of llama-server links cudart, cublas and
-cublasLt dynamically. Only libcuda / nvcuda comes from the NVIDIA driver, so the
-rest have to ship inside the wheel beside the binary. When they are missing,
-Windows dies at process start on a user's machine and Linux silently falls back to
-CPU. Non-CUDA wheels are checked the other way, that they carry no CUDA runtime at
-all, so a copy step can't quietly bloat every backend.
-
-Pass ``--backend`` at build time, where the flavor is known but the wheel has no
-build tag yet. Without it the flavor is read from the ``-1.<backend>-`` tag, which
-is what a released wheel carries.
+``--backend`` at build time, where the wheel has no ``-1.<backend>-`` tag yet.
 
 Usage:
     assert_engine_bundle.py [--backend <flavor>] <wheel> [<wheel> ...]
@@ -55,14 +42,9 @@ REQUIRED = {
         ("libcublasLt.so.<major>", r"libcublasLt\.so\.\d+"),
     ),
 }
-# What a ROCm wheel must carry beside its backend, since libggml-hip links all of
-# it and only the kernel driver comes from the host. Matched on the library rather
-# than its SONAME version: those move every ROCm release, and pinning them would
-# fail the gate on an upgrade that is in fact correct.
-#
-# The kernels are the entry that is easy to miss. rocBLAS loads them as data at
-# runtime instead of linking them, so omitting them yields a wheel that resolves
-# every library and then dies on the first matrix multiply.
+# What a ROCm wheel carries beside its backend. Matched on the library, not its
+# SONAME version, which moves every release. The kernels are the easy one to miss:
+# rocBLAS loads them as data, so without them the engine dies on the first matmul.
 ROCM_RUNTIME = (
     ("libamdhip64.so.<major>", r"libamdhip64\.so(\.[\d.]+)?"),
     ("librocblas.so.<major>", r"librocblas\.so(\.[\d.]+)?"),

@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Pack the ROCm userspace the engine links into the wheel's bin/, so an AMD user
-# needs a kernel driver and nothing else, as an NVIDIA one does.
-#
-# Its own script because it is the one part of the engine build that runs without a
-# GPU or a ROCm install; tests/test_bundle_rocm_runtime.py exercises it directly.
-# Whether the result actually loads is not asserted here: every host that can build
-# ROCm has ROCm on it. tools/qa/assert_rocm_bundle_loads.sh settles that.
+# needs only a kernel driver. Separate script because it is the one part of the
+# engine build testable without a GPU (tests/test_bundle_rocm_runtime.py). Whether
+# the result loads is settled by tools/qa/assert_rocm_bundle_loads.sh.
 #
 # Reads:
 #   ROCM_PATH     the ROCm install to pack from (default from engine-versions.env)
@@ -74,15 +71,10 @@ copy_rocm_closure() {
 }
 
 # The build dereferences SONAME symlinks into real files, so each library ships up to
-# three times: libggml-hip.so, .so.0 and .so.0.15.1 at 437 MB each. Wheels cannot carry
-# symlinks (zipfile writes the link target as file content), so the duplicates have to
-# be deleted rather than relinked.
-#
-# Which name is load-bearing depends on how ggml was built, so it is derived rather than
-# assumed. With GGML_BACKEND_DL off, as here, backends are linked and something
-# DT_NEEDEDs the SONAME: keep only the names in that set. With it on, nothing references
-# the group at all and ggml dlopens the plain name: keep that instead. Only ever drops a
-# byte-identical duplicate of a name that survives.
+# three times (437 MB each for the HIP backend), and a wheel cannot carry symlinks.
+# Which name is load-bearing is derived, not assumed: if anything DT_NEEDEDs a member
+# of the group the backend is linked, so keep only those names; if nothing does, ggml
+# dlopens the plain name, so keep that. Only drops a duplicate of a surviving name.
 drop_redundant_copies() {
   local needed="" obj name stem keep
   for obj in "${pkg_bin_dir}"/*; do
