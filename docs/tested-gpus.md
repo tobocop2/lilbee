@@ -101,7 +101,7 @@ It carried no HIP backend, so installing it on an AMD card yielded a CPU load. T
 
 | Backend | Why not |
 |---------|---------|
-| Vulkan on AMD silicon | Needs an AMD GPU with a Vulkan ICD. MI300X can host it; RunPod had no MI300X capacity at last attempt |
+| Vulkan on AMD silicon | Needs an AMD GPU with a Vulkan ICD. The only AMD hardware any cloud rents is MI300X, and it is a headless datacenter card that ships no Vulkan driver. Waiting on an AMD desktop rather than on rental |
 | ROCm on a consumer Radeon | CDNA verified; the RDNA targets the wheel builds for are not. No cloud provider rents consumer Radeon |
 | Two same-rank backends on one host | CUDA, ROCm and HIP tie on rank; the tie breaks on dedicated memory. Needs NVIDIA and AMD in one machine |
 | Mixed-vendor host, two discrete cards | Partly covered by the hybrid laptop. Two discrete cards from different vendors is not sold by any cloud |
