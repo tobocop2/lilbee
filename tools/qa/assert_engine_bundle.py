@@ -159,13 +159,13 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
     """
     name = wheel.name
     oversized = _oversized(wheel)
+    problems = [oversized] if oversized else []
     entries = _bin_entries(wheel)
     if not entries:
-        return [f"{name}: no {BIN_DIR} payload at all"]
+        return [*problems, f"{name}: no {BIN_DIR} payload at all"]
 
     platform = _platform_of(name)
     backend = backend or _backend_of(name)
-    problems = [oversized] if oversized else []
     missing = _missing_backend_library(name, backend, platform, entries) if backend else None
     if missing:
         problems.append(missing)

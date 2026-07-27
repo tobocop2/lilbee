@@ -106,13 +106,27 @@ linux_install_rocm() {
   fi
 
   # ROCm 7 moved the toolchain to lib/llvm; $ROCM_PATH/llvm/bin no longer exists.
-  echo "${root}/bin" >> "$GITHUB_PATH"
-  echo "${root}/lib/llvm/bin" >> "$GITHUB_PATH"
-  {
-    echo "ROCM_PATH=${root}"
-    echo "HIP_PATH=${root}"
-    echo "CMAKE_PREFIX_PATH=${root}"
-  } >> "$GITHUB_ENV"
+  if [ -n "${GITHUB_PATH:-}" ]; then
+    echo "${root}/bin" >> "$GITHUB_PATH"
+    echo "${root}/lib/llvm/bin" >> "$GITHUB_PATH"
+  fi
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "ROCM_PATH=${root}"
+      echo "HIP_PATH=${root}"
+      echo "CMAKE_PREFIX_PATH=${root}"
+    } >> "$GITHUB_ENV"
+  fi
+  # Same as CUDA above: outside GitHub Actions there is no $GITHUB_ENV to carry the
+  # toolkit location, and a QA pod is where an AMD card actually is.
+  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
+    {
+      echo "export PATH=\"${root}/bin:${root}/lib/llvm/bin:\$PATH\""
+      echo "export ROCM_PATH=\"${root}\""
+      echo "export HIP_PATH=\"${root}\""
+      echo "export CMAKE_PREFIX_PATH=\"${root}\""
+    } >> "$TOOLKIT_ENV_FILE"
+  fi
 }
 
 linux_install_sycl() {
