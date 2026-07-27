@@ -11,6 +11,7 @@ on:
     paths:
       - 'engine-versions.env'
       - 'tools/wheel-build/build_llama_server.sh'
+      - 'tools/wheel-build/bundle_rocm_runtime.sh'
       - 'tools/wheel-build/cmake_args.sh'
       - 'tools/wheel-build/install_gpu_toolkit.sh'
       - '.github/workflows/build-multigpu.yml'

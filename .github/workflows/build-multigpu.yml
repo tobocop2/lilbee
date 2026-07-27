@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
 
       # The mirror first, same as the executable builds. This job publishes to it
       # but used to never read it, so every warm run rebuilt engines the mirror
@@ -177,6 +177,44 @@ jobs:
         if: steps.engine.outputs.needs-build == 'true'
         shell: bash
         run: bash tools/wheel-build/build_llama_server.sh
+
+      # The one gate that can prove the ROCm bundle is complete, and it has to run
+      # somewhere without ROCm. Every machine able to build ROCm has it installed, so
+      # any loader check run on this runner resolves against /opt/rocm and passes a
+      # bundle that would fail on the machine this wheel exists for. A container with
+      # no ROCm in it is that machine. No LD_LIBRARY_PATH: the baked $ORIGIN runpath
+      # is what a user gets, so it is what gets tested.
+      #
+      # The apt line is the wheel's host contract, and the reason it is a short line.
+      # These are the pieces that must match the running kernel driver rather than
+      # travel with the userspace; everything else ROCm needs is in the bundle. It
+      # runs before the mirror step so a bad bundle is never published for later runs
+      # to restore, and on restored engines too, which is when a stale one surfaces.
+      - name: The ROCm bundle resolves on a machine with no ROCm
+        if: matrix.backend == 'rocm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/${PKG_DIR}/lilbee_engine/bin:/bundle:ro" ubuntu:22.04 bash -c '
+            set -euo pipefail
+            apt-get update -qq
+            apt-get install -y -qq libnuma1 libdrm2 libdrm-amdgpu1 libelf1 >/dev/null
+            status=0
+            for lib in /bundle/libggml-hip.so* /bundle/llama-server; do
+              missing=$(ldd "${lib}" 2>/dev/null | grep "not found" || true)
+              if [ -n "${missing}" ]; then
+                echo "UNRESOLVED in $(basename "${lib}"):" >&2
+                echo "${missing}" >&2
+                status=1
+              fi
+            done
+            if [ "${status}" != 0 ]; then
+              echo "the ROCm bundle does not close: the libraries above are neither" >&2
+              echo "beside the binary nor installed by the apt line in this step" >&2
+              exit 1
+            fi
+            echo "every ROCm dependency resolves with no ROCm installed"
+          '
 
       # The mirror is the only place a built engine is stored. Writing it to the
       # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the

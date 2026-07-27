@@ -225,64 +225,10 @@ fi
 # A ROCm build links hip, hipblas and rocblas, which live in the ROCm install and
 # never in the build output copied above. Only the kernel driver comes from the
 # host, so the userspace ships beside the binary and the baked $ORIGIN runpath
-# resolves it, exactly as the CUDA runtime does.
-#
-# Two things differ from the CUDA case. The closure is DISCOVERED, not listed: the
-# SONAMEs move between ROCm releases (libamdhip64.so.7 on 7.2), and the libraries
-# pull in each other, so hardcoding a list bakes in a version and misses a level.
-# Read DT_NEEDED from what was actually built and follow it transitively, keeping
-# only what resolves inside the ROCm tree. Anything else -- libc, libstdc++,
-# libnuma, libdrm -- belongs to the host and must NOT be captured.
-#
-# And rocBLAS loads Tensile kernels as data files at runtime rather than linking
-# them. It looks beside its own .so for rocblas/library, so that directory travels
-# too and no environment variable is needed to find it. Forgetting it yields a
-# library that loads and then fails on the first matrix multiply, which is a worse
-# failure than not loading at all.
+# resolves it, exactly as the CUDA runtime does. Its own script because unlike the
+# CUDA copy above it can be exercised without a GPU or a ROCm install, and is.
 if [ "${backend}" = "rocm" ]; then
-  rocm_lib_dir="${ROCM_PATH:-/opt/rocm-7.2.0}/lib"
-  [ -d "${rocm_lib_dir}" ] || { echo "ROCm library dir ${rocm_lib_dir} does not exist" >&2; exit 1; }
-
-  # Breadth-first over DT_NEEDED, seeded with the backend the build just produced.
-  rocm_pending=$(find "${pkg_bin_dir}" -maxdepth 1 -name 'libggml-hip.so*' -type f | head -1)
-  [ -n "${rocm_pending}" ] || { echo "no libggml-hip.so was built: the rocm cell produced no backend" >&2; exit 1; }
-  rocm_done=""
-  while [ -n "${rocm_pending}" ]; do
-    rocm_next=""
-    for lib in ${rocm_pending}; do
-      for need in $(readelf -d "${lib}" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
-        case " ${rocm_done} " in *" ${need} "*) continue ;; esac
-        # Resolve against the ROCm tree only. A miss means the host owns it.
-        [ -e "${rocm_lib_dir}/${need}" ] || continue
-        cp -L "${rocm_lib_dir}/${need}" "${pkg_bin_dir}/"
-        rocm_done="${rocm_done} ${need}"
-        rocm_next="${rocm_next} ${pkg_bin_dir}/${need}"
-      done
-    done
-    rocm_pending="${rocm_next}"
-  done
-  echo "bundled ROCm runtime:${rocm_done:- NONE}"
-
-  # rocBLAS's kernels. Sized by the gfx targets built above, so this tracks
-  # AMDGPU_TARGETS rather than being a fixed cost.
-  if [ -d "${rocm_lib_dir}/rocblas/library" ]; then
-    mkdir -p "${pkg_bin_dir}/rocblas"
-    cp -RL "${rocm_lib_dir}/rocblas/library" "${pkg_bin_dir}/rocblas/"
-  fi
-
-  # Same reasoning as the CUDA gate: a driverless runner cannot exec this to find
-  # out, so gate on the copy and fail the build rather than a user's machine.
-  for required in libamdhip64 librocblas libhipblas; do
-    compgen -G "${pkg_bin_dir}/${required}.so*" >/dev/null || {
-      echo "no ${required} under ${rocm_lib_dir}: the ROCm bundle is incomplete" >&2
-      exit 1
-    }
-  done
-  [ -d "${pkg_bin_dir}/rocblas/library" ] || {
-    echo "rocBLAS kernels missing: librocblas loads them at runtime and would fail on first use" >&2
-    exit 1
-  }
-  echo "rocm bundle size: $(du -sh "${pkg_bin_dir}" | cut -f1)"
+  "${script_dir}/bundle_rocm_runtime.sh" "${pkg_bin_dir}"
 fi
 
 # The copied closure must actually resolve: exec the bundled binary from the

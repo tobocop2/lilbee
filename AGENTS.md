@@ -441,6 +441,17 @@ closure. These rules exist because each one shipped a broken artifact once.
   here — a driverless runner never loads the CUDA backend — so read the artifact
   instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
+- **A ROCm build bundles its ROCm runtime too, and discovers it rather than listing
+  it.** Same reason as CUDA: only the kernel driver comes from the host, so hip,
+  rocblas, hipblas and the clang OpenMP runtime ship beside the binary.
+  `tools/wheel-build/bundle_rocm_runtime.sh` walks `DT_NEEDED` from everything the
+  build produced and keeps what resolves inside the ROCm tree, because SONAMEs move
+  between releases and a hardcoded list bakes in a version. It also carries
+  `rocblas/library`, which rocBLAS loads as data rather than linking, so omitting it
+  yields a wheel that resolves every library and dies on the first matrix multiply.
+  Its own script, not a block in `build_llama_server.sh`, because it is the one part
+  of that build provable without a GPU: `tests/test_bundle_rocm_runtime.py` runs it
+  against a synthetic ROCm tree.
 - **A wheel carries the backend its flavor claims.** The same script asserts a rocm
   wheel holds `libggml-hip.so`, a vulkan one `libggml-vulkan.so`, and so on, for every
   cell rather than only the CUDA ones. cmake caches an unknown `-D` instead of failing,
