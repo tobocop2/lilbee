@@ -3935,6 +3935,10 @@ class TestSelfCheck:
         monkeypatch.setattr(
             "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
         )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.planning.resolve_llama_server",
+            lambda: Path("/fake/llama-server"),
+        )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
         fake_swap = mock.MagicMock()
@@ -4370,6 +4374,10 @@ class TestSelfCheckHelpers:
             "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
         )
         monkeypatch.setattr(
+            "lilbee.providers.fleet.planning.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
             "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
         )
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
@@ -4611,6 +4619,10 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
     )
     monkeypatch.setattr(
         "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.planning.resolve_llama_server",
+        lambda: Path("/fake/llama-server"),
     )
     # The launch now comes from the planner, which probes for devices first; the
     # suppress below would otherwise swallow that and the spy would never fire.

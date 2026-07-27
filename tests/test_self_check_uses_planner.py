@@ -28,8 +28,14 @@ class TestTheSelfCheckAsksThePlanner:
         model.write_bytes(b"x" * 1024)
         monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(tmp_path / "wd"))
         (tmp_path / "wd").mkdir(exist_ok=True)
+        # Patched where it is used, not where it is defined: planning imports
+        # the name at module level, so rebinding the source module leaves its
+        # reference untouched and the real resolver runs. On a developer machine
+        # that finds a llama-server on PATH and the test passes by accident; CI
+        # has none, which is where it showed up.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
+            "lilbee.providers.fleet.planning.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(

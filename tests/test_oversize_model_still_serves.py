@@ -16,7 +16,11 @@ from lilbee.providers.roles import WorkerRole
 _GB = 1024**3
 
 
-def test_a_dense_model_larger_than_every_card_is_still_planned(caplog) -> None:
+def test_a_dense_model_larger_than_every_card_is_still_planned(monkeypatch, caplog) -> None:
+    # Both pools are stated rather than read from the machine: the bound is
+    # VRAM plus system memory, so a runner with less RAM than the developer's
+    # laptop reaches the opposite verdict on an unpatched host.
+    monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 64 * _GB)
     with caplog.at_level(logging.WARNING):
         refused = planning._weights_exceed_hardware(40 * _GB, 24 * _GB, is_moe=False)
     assert not refused

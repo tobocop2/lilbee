@@ -104,14 +104,20 @@ class TestACrashingChildIsContained:
         from lilbee.providers.fleet.proc import run_bounded
 
         # What a faulting ICD does inside vkCreateInstance. In-process this ends
-        # the daemon; through run_bounded it is a negative return code.
+        # the daemon; through run_bounded it is a non-zero return code and a
+        # parent that is still here to read it, which is the whole contract.
         _stdout, returncode = run_bounded(
             [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGSEGV)"],
             timeout_s=10.0,
             kill_wait_s=5.0,
             label="crash-probe",
         )
-        assert returncode == -signal.SIGSEGV
+        assert returncode != 0
+        if sys.platform != "win32":
+            # POSIX reports the signal as a negative code. Windows turns the same
+            # call into TerminateProcess and reports the number positively, so the
+            # exact value is not the portable part of this.
+            assert returncode == -signal.SIGSEGV
 
 
 class TestTheChildSpawnItself:

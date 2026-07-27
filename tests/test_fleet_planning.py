@@ -2122,9 +2122,13 @@ class TestSlotsAreChargedOnce:
     per-slot figure, which under-reserves KV by the whole slot count.
     """
 
-    def test_estimator_argv_carries_the_total_context(self) -> None:
+    def test_estimator_argv_carries_the_total_context(self, monkeypatch) -> None:
         from lilbee.providers.fleet import vram as vram_mod
 
+        # The argv names the parser's path, so a host with no gguf-parser on
+        # PATH cannot build one. Stated here rather than inherited from whatever
+        # the developer happens to have installed.
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
         argv = vram_mod.estimator_argv(
             "/m/m.gguf",
             ctx=4096,

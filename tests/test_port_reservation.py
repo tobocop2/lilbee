@@ -22,13 +22,16 @@ class TestConsecutivePicksDoNotOverlap:
             sm.release_reserved_ports(first + second)
 
     def test_a_released_port_becomes_available_again(self) -> None:
+        # The contract is that releasing drops the reservation, not that the same
+        # numbers come back. Where the kernel's ephemeral range cannot be read,
+        # which is every Windows host, the picker lets the OS choose and the next
+        # pick is legitimately different.
         first = sm._pick_free_ports(2)
+        assert all(p in sm._reserved_ports for p in first)
         sm.release_reserved_ports(first)
+        assert not any(p in sm._reserved_ports for p in first)
         second = sm._pick_free_ports(2)
-        try:
-            assert set(first) == set(second)  # nothing else took them meanwhile
-        finally:
-            sm.release_reserved_ports(second)
+        sm.release_reserved_ports(second)
 
     def test_every_pick_is_internally_distinct(self) -> None:
         ports = sm._pick_free_ports(6)
