@@ -25,7 +25,21 @@ _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/cmake
 
 # The ISAs a current ROCm ships bitcode for. gfx940 is deliberately absent: it is the
 # target AMD removed, and it must never come back into the emitted list.
-_CURRENT_ISAS = ("906", "908", "90a", "942", "1030", "1100", "1101", "1102")
+_CURRENT_ISAS = (
+    "906",
+    "908",
+    "90a",
+    "942",
+    "950",
+    "1030",
+    "1100",
+    "1101",
+    "1102",
+    "1150",
+    "1151",
+    "1200",
+    "1201",
+)
 
 
 def _rocm_tree(root: pathlib.Path, isas: tuple[str, ...]) -> pathlib.Path:
@@ -59,16 +73,7 @@ def _targets(rocm_root: pathlib.Path) -> tuple[str, str]:
 def test_builds_every_target_a_current_rocm_supports(tmp_path):
     """Nothing is dropped when the toolchain knows every card we ship for."""
     targets, stderr = _targets(_rocm_tree(tmp_path / "rocm", _CURRENT_ISAS))
-    assert targets.split(";") == [
-        "gfx906",
-        "gfx908",
-        "gfx90a",
-        "gfx942",
-        "gfx1030",
-        "gfx1100",
-        "gfx1101",
-        "gfx1102",
-    ]
+    assert targets.split(";") == [f"gfx{isa}" for isa in _CURRENT_ISAS]
     assert "cannot build" not in stderr
 
 

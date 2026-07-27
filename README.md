@@ -416,7 +416,7 @@ The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn'
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
 | **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
 
-Same `lilbee` command after install. Linux only. Cards: MI50, MI100, MI200, MI300, RDNA2 (gfx1030) and RDNA3 (gfx1100/1101/1102). Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
+Same `lilbee` command after install. Linux only. Cards: MI50, MI100, MI200, MI300, MI350, RDNA2, RDNA3, RDNA3.5 APUs and RDNA4. Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
 
 </details>
 

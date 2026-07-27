@@ -61,10 +61,13 @@ esac
 # LLAMA_BUILD_UI=OFF: skip the npm/vite server-UI build (flaky on Windows
 # runners); assets fall back to the prebuilt HF bucket download.
 common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
+common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
-# The AMD cards worth shipping for: gfx906 (MI50), gfx908 (MI100), gfx90a (MI200),
-# gfx942 (MI300), gfx1030 (RDNA2), gfx1100 (RDNA3), gfx1101/1102 (Navi 32/33).
-rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx1030 gfx1100 gfx1101 gfx1102"
+# Every AMD target ROCm supports that lilbee ships for: gfx906 (MI50), gfx908 (MI100),
+# gfx90a (MI200), gfx942 (MI300), gfx950 (MI350), gfx1030 (RDNA2), gfx1100/1101/1102
+# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). Anything the installed
+# ROCm cannot build is filtered below rather than dropped from this list.
+rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 
 # The subset of those the ROCm at $1 can build, as a cmake list.
 #
@@ -92,7 +95,6 @@ rocm_buildable_targets() {
   [ -z "${dropped}" ] || echo "cmake_args.sh: ROCm at ${root} cannot build:${dropped}" >&2
   printf '%s' "${targets}"
 }
-common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
   cpu_Linux)
