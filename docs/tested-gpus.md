@@ -14,6 +14,7 @@ This page records what has been run and what has not. A backend listed as untest
 | Intel UHD (CometLake) | Vulkan | 9665 `e3a74b299` | `Vulkan0` and `Vulkan_Host` on non-NVIDIA silicon, chat and vision loads, reported figures identical to the same loads on a discrete card |
 | Intel UHD (CometLake) + GTX 1650 Ti | Vulkan, hybrid | 9665 `e3a74b299` | Two adapters of different types on one host: the integrated one classified as shared memory and excluded from packing, the discrete one kept, despite the integrated one advertising 2.7x more |
 | Intel Xeon Platinum 8481C | CPU | 9665 `e3a74b299` | Host-only load with no GPU present, `CPU`/`CPU_Mapped` attribution |
+| AMD Instinct MI300X (192 GB) | ROCm | 9665 `e3a74b299` | `ROCm0` labels, `ROCm_Host` excluded from device memory, a datacenter card sized as dedicated VRAM despite reporting an APU's name, `HIP_VISIBLE_DEVICES` filtering, vision projector accounting |
 
 The captured logs behind these rows live on the `tools/gpu-verification-harness` branch, alongside the script that produced them.
 
@@ -34,6 +35,18 @@ A vision model on the same card settled a second question: a projector's weights
 Vulkan's wording had only ever been seen on an NVIDIA ICD, so `Vulkan0` and `Vulkan_Host` were verified for one vendor and assumed for the rest. An Intel CometLake iGPU produces the same labels, and the same two loads produce the same figures to the last two decimals: a chat model reports 157.13 MiB on the card, a vision model 215.73 MiB, with host allocators excluded from both.
 
 That the numbers match a discrete NVIDIA card exactly is the useful part. The buffer report describes what the model asked for, not what the silicon is, so the readback does not need a per-vendor table.
+
+### What the MI300X settled
+
+ROCm was the last backend whose wording lilbee only knew from reading ggml's source, and it is the one where being wrong costs the most: an unrecognised host allocator gets charged to the card, so every partially offloaded model reports an overrun that is not there. The engine names its devices `ROCm0` and its pinned-host allocator `ROCm_Host`, so the existing `<backend>_Host` rule holds and ROCm needs no special case. The parser read the card's 216.94 MiB and left `ROCm_Host` and the CPU buffers out, matching the log's own arithmetic.
+
+The card calls itself "AMD Radeon Graphics", which is the same string an AMD APU reports. So the name cannot decide whether memory is dedicated or a shared carveout of host RAM, and on a 192 GB card getting that backwards would be the difference between planning onto VRAM and double-booking the host. What decides it is the absence of an integrated adapter, and a headless datacenter card has no Vulkan driver to ask.
+
+A vision model on the same card confirmed the projector behaves as it does on Vulkan: `CLIP using ROCm0 backend`, its memory reported only as prose, and no buffer line anywhere. The estimate has to be corrected for it before it is compared.
+
+One thing did not hold. Of the three AMD visibility variables, `HIP_VISIBLE_DEVICES` and `ROCR_VISIBLE_DEVICES` both filter as documented, and an empty value means no devices rather than no restriction. `GPU_DEVICE_ORDINAL` did nothing at all on ROCm 7.2: set to an index the host does not have, the card was still enumerated. lilbee treats it as the second of three in precedence order, so a host that sets only that variable would have a pin written somewhere the runtime ignores. That is tracked as a defect rather than papered over here.
+
+**The published ROCm wheel could not produce this capture.** It carries no HIP backend at all, so installing it on an AMD card yields a CPU load. The engine was built from source at the pinned version for this run, and the wheel is fixed separately.
 
 ### What the hybrid laptop settled
 
@@ -56,7 +69,8 @@ The same machine with no NVIDIA driver installed enumerates the iGPU alone while
 
 | Backend | Status |
 |---------|--------|
-| ROCm (AMD Instinct, Radeon) | No hardware run. Device naming, `ROCm_Host`, and the same-rank backend tie-break are all unverified |
+| Two backends of the same rank on one host | No hardware run. CUDA, ROCm and HIP tie at the same rank and the tie is broken on dedicated memory. Needs an NVIDIA and an AMD card in one machine, which is the mixed-vendor row below |
+| ROCm on a consumer Radeon | No hardware run. CDNA is verified above; the RDNA targets the wheel builds for are not, and only cloud CDNA is rentable |
 | Vulkan on AMD silicon | No hardware run. Vulkan is verified on NVIDIA and on an Intel iGPU; AMD is the one vendor untested |
 | SYCL (Intel Arc, Max) | No engine wheel is published for SYCL, so this cannot be tested on any hardware today |
 | CANN (Huawei Ascend) | No hardware run |

@@ -423,6 +423,30 @@ def test_an_amd_apu_on_the_rocm_path_is_not_sized_as_dedicated_vram(
     assert [d.unified for d in parsed] == [True]
 
 
+def test_a_real_mi300x_is_sized_as_dedicated_vram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The line an AMD Instinct MI300X actually printed, engine build 9665.
+
+    It names itself "AMD Radeon Graphics", the same string an APU reports, so the
+    name cannot decide this and the absence of an integrated adapter has to. A
+    headless datacenter card has no Vulkan ICD to ask, which is the case here:
+    192 GiB must be charged as VRAM, not as a shared carveout of host RAM.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices, _select_backend, visible_env
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    (device,) = _parse_devices(
+        "Available devices:\n  ROCm0: AMD Radeon Graphics (196592 MiB, 196054 MiB free)"
+    )
+
+    assert (device.backend, device.index, device.unified) == ("ROCm", 0, False)
+    assert round(device.total_bytes / 1024**3) == 192
+    # HIP_VISIBLE_DEVICES is the var the runtime honours; confirmed on the card,
+    # where setting it to an index the host does not have hides every device.
+    assert visible_env(tuple(_select_backend([device]))) == {"HIP_VISIBLE_DEVICES": "0"}
+
+
 def test_a_discrete_nvidia_host_is_untouched_by_the_apu_rule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
