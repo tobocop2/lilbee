@@ -85,3 +85,14 @@ def test_a_ready_engine_clears_that_role(monkeypatch, tmp_path) -> None:
     mgr._check_estimates({"chat-0"})
 
     assert planning.apply_ctx_downshift(WorkerRole.CHAT, 32768) == 32768
+
+
+def test_a_role_that_was_never_sized_gets_one_step_and_no_more() -> None:
+    # record_ctx_downshift decides against the context it last served. With
+    # nothing ever applied there is no such number, so one step is allowed on
+    # the chance a plan follows, and further ones are refused rather than
+    # granted forever to a caller that never sizes anything.
+    planning.clear_ctx_downshift()
+    assert planning.record_ctx_downshift(WorkerRole.VISION) is True
+    assert planning.record_ctx_downshift(WorkerRole.VISION) is False
+    planning.clear_ctx_downshift()
