@@ -10,8 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach GPU executables to (e.g. v0.6.66b476)."
-        required: true
+        # Empty builds artifacts only: both attach steps are gated on a tag, so
+        # this is how you validate a cell without touching a release.
+        description: "Release tag to attach GPU executables to (empty = artifacts only)."
+        required: false
+        default: ""
       skip_tests:
         description: "Build even if the smoke step fails (re-run past a known-flaky cell)."
         type: boolean
