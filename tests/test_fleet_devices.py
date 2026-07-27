@@ -872,3 +872,21 @@ class TestSyclPinsByNameNotBySelector:
 
         assert _device_names(devices) == ()
         assert visible_env(devices)["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_device_reporting_no_memory_is_dropped() -> None:
+    """A zero-memory device is not a GPU the fleet can plan onto.
+
+    Some drivers list an adapter before its memory is queryable, and a device
+    with no memory at all cannot hold a model. Kept, it is the smallest card in
+    the fleet, so every budget sized against the smallest collapses to nothing,
+    and a non-empty device list also switches off the shared-memory budget that
+    a host with no usable GPU depends on.
+    """
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    parsed = _parse_devices(
+        "  CUDA0: NVIDIA GeForce RTX 4090 (24564 MiB, 24000 MiB free)\n"
+        "  CUDA1: NVIDIA Graphics Device (0 MiB, 0 MiB free)"
+    )
+    assert [d.index for d in parsed] == [0]

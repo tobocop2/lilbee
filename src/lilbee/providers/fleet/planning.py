@@ -163,6 +163,7 @@ def _slots_for(
     unified_budget: int | None = None,
     chat_reservation: int = 0,
     rerank_mode: RerankMode | None = None,
+    device: FleetDevice | None = None,
 ) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
@@ -172,7 +173,8 @@ def _slots_for(
     request-side). The memory-aware roles drop toward 1 on a small or shared host
     instead of overcommitting. ``unified_budget`` caps sizing against free system RAM
     with no discrete GPU; ``chat_reservation`` is the search-role footprint held back
-    from chat.
+    from chat; ``device`` is the card the role was placed on, whose memory the
+    budget comes from once placement has chosen one.
     """
     if role is WorkerRole.CHAT:
         return _resolve_chat_slots(
@@ -181,13 +183,16 @@ def _slots_for(
             mmproj_path=mmproj_path,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
+            device=device,
         )
     if role is WorkerRole.VISION:
         return _resolve_vision_slots(
-            model_path, ctx, mmproj_path=mmproj_path, unified_budget=unified_budget
+            model_path, ctx, mmproj_path=mmproj_path, unified_budget=unified_budget, device=device
         )
     if role is WorkerRole.RERANK and rerank_mode is RerankMode.LLM:
-        return _resolve_llm_rerank_slots(model_path, ctx, unified_budget=unified_budget)
+        return _resolve_llm_rerank_slots(
+            model_path, ctx, unified_budget=unified_budget, device=device
+        )
     return _AUX_SLOTS
 
 
@@ -231,10 +236,11 @@ def _resolve_chat_slots(
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    device: FleetDevice | None = None,
 ) -> int:
     """Largest chat slot count (<= ``_CHAT_SLOTS``) whose footprint fits the budget
     after reserving the search roles; steps to 1 when none fit."""
-    budget = _slot_budget(_CHAT_VRAM_FRACTION, unified_budget) - chat_reservation
+    budget = _slot_budget(_CHAT_VRAM_FRACTION, unified_budget, device) - chat_reservation
     return _fit_slots(
         _CHAT_SLOTS,
         WorkerRole.CHAT,
@@ -252,6 +258,7 @@ def _resolve_vision_slots(
     *,
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
+    device: FleetDevice | None = None,
 ) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
     the memory budget; 1 when the ceiling is 1 or nothing larger fits."""
@@ -267,7 +274,7 @@ def _resolve_vision_slots(
         ctx,
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
-        budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget),
+        budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget, device),
     )
 
 
@@ -276,6 +283,7 @@ def _resolve_llm_rerank_slots(
     ctx: int,
     *,
     unified_budget: int | None = None,
+    device: FleetDevice | None = None,
 ) -> int:
     """Largest LLM-reranker slot count (<= ``LLM_RERANK_CONCURRENCY``) that fits the
     memory budget; 1 when nothing larger fits. Matches the client's request fan-out."""
@@ -286,15 +294,18 @@ def _resolve_llm_rerank_slots(
         ctx,
         mmproj_path=None,
         unified=unified_budget is not None,
-        budget=_slot_budget(_LLM_RERANK_VRAM_FRACTION, unified_budget),
+        budget=_slot_budget(_LLM_RERANK_VRAM_FRACTION, unified_budget, device),
     )
 
 
-def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
-    """Memory budget for slot sizing: *vram_fraction* of usable VRAM, capped by
+def _slot_budget(
+    vram_fraction: float, unified_budget: int | None, device: FleetDevice | None = None
+) -> int:
+    """Memory budget for slot sizing: *vram_fraction* of the usable memory on *device*
+    (the fleet's smallest when placement has not chosen one yet), capped by
     ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
     steps down to fit free memory instead of overcommitting."""
-    budget = int(_plan_available_memory() * vram_fraction)
+    budget = int(plan_sizing_budget(device) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
     return budget
@@ -335,13 +346,19 @@ def _fit_slots(
     return 1
 
 
-def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
+def _role_ctx(
+    role: WorkerRole,
+    model_path: Path,
+    meta: dict[str, str] | None,
+    device: FleetDevice | None = None,
+) -> int:
     """Per-slot context for a role, derived as the in-process loader does.
 
     Embed/rerank use the embedding model's training context; vision uses the
     vision loader's training-context picker; chat honors ``cfg.num_ctx`` then
-    falls back to the single-GPU dynamic chat-ctx picker. A tensor-split chat is
-    sized against its per-device headroom instead (see :func:`fit_split_ctx`).
+    falls back to the single-GPU dynamic chat-ctx picker, sized against *device*
+    once placement has chosen one. A tensor-split chat is sized against its
+    per-device headroom instead (see :func:`fit_split_ctx`).
     """
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import (
@@ -361,7 +378,7 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
         return resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
-    return resolve_chat_ctx(model_path, meta, available_bytes=_plan_available_memory())
+    return resolve_chat_ctx(model_path, meta, available_bytes=plan_sizing_budget(device))
 
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
@@ -634,7 +651,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
         ctx = _placement_estimate_ctx(role, path, meta)
         est = estimate_instance_footprint(
             path,
-            ctx=ctx * slots,
+            ctx=ctx,
             slots=slots,
             gpu_layers=_role_gpu_layers(role),
             flash_attn=_role_flash(role),
@@ -1061,6 +1078,11 @@ def _launch_for(
     from lilbee.core.config import cfg
 
     chosen = tuple(by_index[i] for i in plan.devices)
+    # ctx and slots are sized against the card this role landed on, not the fleet's
+    # smallest, which is all the pre-placement estimate had to go on. A role spread
+    # over several cards has no one budget; the split chat, the only such role today,
+    # sizes against per-device headroom below.
+    placed_device = chosen[0] if len(chosen) == 1 else None
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
     mmproj = _vision_mmproj(model_ref) if is_vision else None
@@ -1110,7 +1132,7 @@ def _launch_for(
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
     else:
-        ctx = _role_ctx(plan.role, model_path, meta)
+        ctx = _role_ctx(plan.role, model_path, meta, placed_device)
     rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
     # A multi-card chat runs as many full-context slots as its cards' KV headroom
@@ -1127,6 +1149,7 @@ def _launch_for(
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
+            device=placed_device,
         )
     )
     spec = _server_spec(plan.role, rerank_mode, meta)
@@ -1335,7 +1358,9 @@ class _PlanProbe:
     """
 
     devices: tuple[FleetDevice, ...]
-    available_vram: int
+    # What one role may size its ctx and slots against, already scaled by
+    # cfg.gpu_memory_fraction. System memory only on a host with no GPU.
+    sizing_budget: int
     free_system: int
     # The engine listed GPUs and lilbee rejected all of them, so the plan is
     # CPU-shaped while the engine would still choose one of those devices.
@@ -1396,13 +1421,11 @@ def assert_engine_probeable() -> None:
 
 def capture_plan_probe() -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
-    from lilbee.core.config import cfg
-
     devices, refused_all = _probe_engine_devices()
     _plan_probe_store.set(
         _PlanProbe(
             devices=tuple(devices),
-            available_vram=int(model_cache.get_available_memory(cfg.gpu_memory_fraction)),
+            sizing_budget=_device_sizing_budget(devices),
             free_system=model_cache.free_system_memory(),
             engine_devices_all_refused=refused_all,
         )
@@ -1441,14 +1464,46 @@ def _plan_devices(binary: Path) -> list[FleetDevice]:
     return list(probe.devices) if probe is not None else resolve_devices(binary)
 
 
-def _plan_available_memory() -> int:
-    """Usable VRAM for ctx/slot sizing: the snapshot, else the live read."""
+def plan_sizing_budget(device: FleetDevice | None = None) -> int:
+    """Usable memory for ctx/slot sizing: *device*'s own, else the snapshot, else live."""
     from lilbee.core.config import cfg
 
+    if device is not None:
+        return int(device.total_bytes * cfg.gpu_memory_fraction)
     probe = _plan_probe_store.get()
     if probe is not None:
-        return probe.available_vram
-    return int(model_cache.get_available_memory(cfg.gpu_memory_fraction))
+        return probe.sizing_budget
+    return _device_sizing_budget(_live_sizing_devices())
+
+
+def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:
+    """Memory one role may size its ctx and slots against, in bytes.
+
+    Read from the engine's own device report, which ran under the environment the
+    servers will run under and states each device's memory whatever the backend.
+    A host-memory read answers with system RAM on every host without an NVIDIA
+    card, which gave a 24 GiB AMD card a budget the size of the machine, and on
+    Apple Silicon it ignores that Metal will not allocate past
+    ``recommendedMaxWorkingSetSize``, which is the figure the probe carries.
+
+    The smallest device, since this is asked before placement has picked one;
+    :func:`_launch_for` re-sizes against the card the role actually landed on.
+    System memory only when the engine reports no device at all, where the fleet
+    runs on the CPU and system memory is the budget.
+    """
+    from lilbee.core.config import cfg
+
+    if devices:
+        return int(min(d.total_bytes for d in devices) * cfg.gpu_memory_fraction)
+    return int(model_cache.total_system_memory() * cfg.gpu_memory_fraction)
+
+
+def _live_sizing_devices() -> list[FleetDevice]:
+    """Devices to size against with no plan snapshot; empty when none can be read."""
+    try:
+        return _read_device_cache.get(resolve_llama_server())
+    except (ProviderError, OSError):
+        return []
 
 
 def _plan_free_system_memory() -> int:
@@ -1520,7 +1575,7 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
         model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
-    return max(0, _plan_free_system_memory() - floor)
+    return _capped_by_device_memory(max(0, _plan_free_system_memory() - floor), devices)
 
 
 def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
@@ -1540,7 +1595,46 @@ def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
         model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
-    return max(0, model_cache.total_system_memory() - floor)
+    return _capped_by_device_memory(max(0, model_cache.total_system_memory() - floor), devices)
+
+
+def _capped_by_device_memory(budget: int, devices: Sequence[FleetDevice]) -> int:
+    """*budget*, never above what the devices can address between them.
+
+    A shared-memory device still has a ceiling of its own: an integrated GPU
+    addresses a fixed aperture of system RAM, and Metal will not allocate past
+    ``recommendedMaxWorkingSetSize``. Both report that ceiling as their total, so
+    a host budget derived from installed RAM promises memory the devices cannot
+    reach. Unchanged where the engine reports no device, since the fleet is then
+    running on the CPU and the host figure is the true one.
+    """
+    if not devices:
+        return budget
+    return min(budget, sum(d.total_bytes for d in devices))
+
+
+def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> dict[int, int]:
+    """Per-device memory placement may charge against, keyed by device index.
+
+    A card's total is what it holds, not what is going spare. A compositor, a
+    browser, or a training job sitting on VRAM is invisible in the total, and the
+    usable fraction placement applies covers fragmentation and driver overhead
+    rather than other tenants, so a plan fits on paper and OOMs at load.
+
+    Free bytes answer that, but only where they mean "everyone else's residency":
+    that is the clean-box snapshot, taken after stale servers are reaped and
+    before anything is built. Read live on a warm box they also exclude the
+    fleet's own models, and since a plan always describes the complete intended
+    residency, charging them there would count the fleet against itself and
+    report a running plan as unplaceable. Those callers keep the total.
+
+    Placement applies its usable fraction to whatever this returns, so a card
+    with a tenant keeps a proportional margin rather than being packed to its
+    last free byte, where fragmentation is worst.
+    """
+    if not charge_against_free:
+        return {d.index: d.total_bytes for d in devices}
+    return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
 
 
 def _resolve_placement(
@@ -1550,15 +1644,11 @@ def _resolve_placement(
     devices: list[FleetDevice],
     *,
     unified_budget: int | None,
+    charge_against_free: bool = False,
 ) -> Placement:
     """Resolve a Placement from the manual spec when set, else the auto planner."""
     estimate_peak = _peak_estimator(model_refs)
-    # Size placement against each card's TOTAL capacity, not its instantaneous
-    # free VRAM. plan_launches always plans the complete fleet, so the plan
-    # defines the full intended residency; charging it against live free_bytes
-    # double-counts models the fleet has already loaded (a warm get_placement or
-    # reload would then falsely report the plan as unplaceable). bb-a8f.
-    capacity = {d.index: d.total_bytes for d in devices}
+    capacity = _device_capacity(devices, charge_against_free)
     if placement is not None:
         return placement_from_spec(
             placement,
@@ -1566,16 +1656,15 @@ def _resolve_placement(
             capacity,
             estimate_peak=estimate_peak,
         )
-    # The chat split's card count is decided against the snapshot's free VRAM (what the launch
-    # sizes its context against) so placement and launch agree; charging still uses
-    # total capacity above, preserving the bb-a8f no-double-count invariant. A split
-    # needs >=2 GPUs, so skip the chat model's gguf read entirely below that.
+    # The chat split's card count is decided against the snapshot's free VRAM (what the
+    # launch sizes its context against) so placement and launch agree. A split needs
+    # >=2 GPUs, so skip the chat model's gguf read entirely below that.
     chat_ctx_fit, chat_ctx_target = (
         _chat_split_ctx_objective(model_refs) if len(capacity) >= _MIN_SPLIT_GPUS else (None, 0)
     )
     return plan_placement(
         inputs,
-        [(idx, total) for idx, total in capacity.items()],
+        [(idx, budget) for idx, budget in capacity.items()],
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
         chat_ctx_fit=chat_ctx_fit,
@@ -1591,6 +1680,7 @@ def _placement_or_auto(
     devices: list[FleetDevice],
     *,
     unified_budget: int | None,
+    charge_against_free: bool = False,
 ) -> tuple[Placement, bool]:
     """Resolve a saved spec, falling back to auto when it no longer fits the hardware.
 
@@ -1604,11 +1694,21 @@ def _placement_or_auto(
     """
     if placement is None:
         return _resolve_placement(
-            None, inputs, model_refs, devices, unified_budget=unified_budget
+            None,
+            inputs,
+            model_refs,
+            devices,
+            unified_budget=unified_budget,
+            charge_against_free=charge_against_free,
         ), False
     try:
         return _resolve_placement(
-            placement, inputs, model_refs, devices, unified_budget=unified_budget
+            placement,
+            inputs,
+            model_refs,
+            devices,
+            unified_budget=unified_budget,
+            charge_against_free=charge_against_free,
         ), True
     except PlacementError as exc:
         log.warning(
@@ -1617,7 +1717,12 @@ def _placement_or_auto(
             exc,
         )
     return _resolve_placement(
-        None, inputs, model_refs, devices, unified_budget=unified_budget
+        None,
+        inputs,
+        model_refs,
+        devices,
+        unified_budget=unified_budget,
+        charge_against_free=charge_against_free,
     ), False
 
 
@@ -1746,6 +1851,9 @@ def plan_launches(
         model_refs,
         devices,
         unified_budget=_unified_admission_budget(devices),
+        # Only the clean-box snapshot's free bytes mean "what other tenants hold";
+        # a live probe here would also be missing the fleet's own residency.
+        charge_against_free=_plan_probe_store.get() is not None,
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)

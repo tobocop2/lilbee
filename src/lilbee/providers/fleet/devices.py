@@ -246,6 +246,20 @@ def _parse_devices(text: str) -> list[FleetDevice]:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
         total = int(total_mib) * MIB
+        if total == 0:
+            # No memory is not a small GPU, it is one that cannot hold a model:
+            # a driver listing an adapter before its memory is queryable. Kept, it
+            # is the smallest card in the fleet and collapses every budget sized
+            # against the smallest, while the non-empty list switches off the
+            # shared-memory budget a host with no usable GPU depends on.
+            log.warning(
+                "Ignoring GPU %s%s (%s): it reports no memory, so nothing can be "
+                "placed on it. Check the GPU driver if this device should be usable.",
+                backend,
+                index,
+                name.strip(),
+            )
+            continue
         if free_mib:
             free = int(free_mib) * MIB
         else:

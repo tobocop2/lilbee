@@ -145,9 +145,12 @@ def resolve_chat_ctx(
     ceiling, so a long-context model can grow past the target if the host has
     the RAM to back it. A multi-GPU tensor-split chat is sized separately by the
     fleet against its per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
-    ``available_bytes`` overrides the live memory read: the fleet planner passes
-    its clean-box snapshot so a reload sizes ctx like the boot did, not against
-    VRAM its own loaded fleet is holding.
+    ``available_bytes`` overrides the live host-memory read, and every caller
+    that is sizing a real launch passes it: the fleet and the surfaces that
+    mirror it hand over
+    :func:`lilbee.providers.fleet.planning.plan_sizing_budget`, which reports the
+    memory of the GPU that will run the model and holds a clean-box snapshot so
+    a reload sizes ctx like the boot did.
     """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx

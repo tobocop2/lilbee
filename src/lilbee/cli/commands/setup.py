@@ -150,6 +150,7 @@ def _self_check_server(
         expert_offload_all,
         expert_offload_layers,
         flash_attn_flag,
+        plan_sizing_budget,
     )
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -159,7 +160,9 @@ def _self_check_server(
     if is_embed:
         ctx = resolve_embed_ctx(meta, model_path)
     else:
-        ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
+        ctx = cfg.num_ctx or resolve_chat_ctx(
+            model_path, meta, available_bytes=plan_sizing_budget()
+        )
     spec = embed_spec(meta) if is_embed else ROLE_SPECS[role]
     cache_type_k, cache_type_v = chat_cache_type_flags()
     argv = build_server_argv(

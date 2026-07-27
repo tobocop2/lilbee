@@ -216,13 +216,20 @@ def estimator_argv(
     batch_size: int | None,
     expert_offload: tuple[str, ...] = (),
 ) -> list[str]:
-    """The gguf-parser command line for one instance's sizing parameters."""
+    """The gguf-parser command line for one instance's sizing parameters.
+
+    ``ctx`` is the per-slot context, as it is for the launch argv, and
+    ``--ctx-size`` carries the total across slots. The parser's ``--parallel``
+    does not divide the context the way llama-server's does: the KV estimate is
+    identical for every value of it, so the multiply has to reach the parser
+    through ``--ctx-size`` or the cache is under-reserved by the slot count.
+    """
     argv = [
         str(resolve_gguf_parser()),
         _FLAG_PATH,
         path_str,
         _FLAG_CTX,
-        str(ctx),
+        str(ctx * slots),
         _FLAG_PARALLEL,
         str(slots),
         _FLAG_GPU_LAYERS,

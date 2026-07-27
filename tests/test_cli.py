@@ -3986,6 +3986,58 @@ class TestSelfCheck:
         assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
         assert "--cache-type-v" not in argv
 
+    def test_self_check_chat_sizes_ctx_against_the_planners_budget(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The check has to load the window the fleet would serve.
+
+        Sized against host memory instead, it passes on a box whose GPU cannot
+        back the context the fleet will ask for, which is the failure the check
+        exists to catch.
+        """
+        from lilbee.cli.commands import setup
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.fleet.devices import FleetDevice
+        from lilbee.providers.roles import WorkerRole
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(tmp_path / "wd"))
+        (tmp_path / "wd").mkdir()
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+        monkeypatch.setattr(
+            planning_mod, "resolve_llama_server", lambda: Path("/fake/llama-server")
+        )
+        monkeypatch.setattr(
+            planning_mod._read_device_cache,
+            "get",
+            lambda _b: [FleetDevice("CUDA", 0, "gpu", 8 * 1024**3, 8 * 1024**3)],
+        )
+        seen: list[int | None] = []
+
+        def _record_ctx(_path, _meta, *, available_bytes=None):
+            seen.append(available_bytes)
+            return 4096
+
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", _record_ctx)
+
+        class _Swap:
+            def start(self, launches):
+                raise RuntimeError("stop here")
+
+            def shutdown(self, *_a, **_k):
+                pass
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: _Swap()
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+
+        assert seen == [int(8 * 1024**3 * 0.75)]
+
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
@@ -4297,7 +4349,9 @@ class TestSelfCheckHelpers:
         monkeypatch.setattr("lilbee.providers.fleet.binary.llama_server_runtime_env", lambda: {})
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a, **_k: 4096
+        )
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
         monkeypatch.setattr(
             "lilbee.providers.fleet.adapters.build_server_argv",
