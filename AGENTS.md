@@ -145,7 +145,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Use literal unicode chars (`★`) not escapes (`\u2605`); extract to named constants
 - **No filterwarnings** without explicit user approval; fix warnings at the source
 - **Docstrings describe what the code IS, not how it got there.** Drop iteration-tracking phrasing like "Accepts X so callers don't have to import Y", "Used by Z as the on_complete callback", "Moved here because…", "Replaces the previous getattr fallback". That information is the *change description*, not the function's contract. Default to one-line docstrings; add detail only for non-obvious invariants (Big-O bounds, ordering guarantees, error semantics). The `grep -rnE "so callers don'?t|used by .* as the|replaces the|moved here because|previously" src/` sweep should return zero new hits in a diff.
-- **Inline comments state what, not a story.** A comment names a non-obvious invariant or constraint in one line. Cut the narration and justification: not "Best-effort convenience: a rejected swap must never be fatal, log it and keep the ref so the app boots", just "A rejected swap must not be fatal at startup". Not "the task is reclassified so the pick agrees with the validator that runs on the subsequent swap; a wrong-task model would be rejected downstream"; just "tasks are reclassified so the pick matches the role validator". Multi-sentence comment blocks that walk through the reasoning behind the code are the smell. Default to no comment; let names carry the meaning.
+- **Inline comments state what, not a story. This applies to every language here, including YAML, shell, and Dockerfiles, not just Python.** A comment names a non-obvious invariant or constraint in one line. Cut the narration and justification: not "Best-effort convenience: a rejected swap must never be fatal, log it and keep the ref so the app boots", just "A rejected swap must not be fatal at startup". Not "the task is reclassified so the pick agrees with the validator that runs on the subsequent swap; a wrong-task model would be rejected downstream"; just "tasks are reclassified so the pick matches the role validator". Multi-sentence comment blocks that walk through the reasoning behind the code are the smell. Default to no comment; let names carry the meaning.
 
 ### Type-System Hygiene
 - **Don't fight the type system with `# type: ignore` for owned attributes.** A `# type: ignore[attr-defined]` on `self.app.task_bar` means mypy can't see `task_bar`. Fix the source: declare `app: LilbeeApp` on the host class, declare `task_bar: TaskBarController` on LilbeeApp's `__init__`, and the ignore goes away. The ignore was the symptom; the missing declaration was the bug.
@@ -455,6 +455,20 @@ closure. These rules exist because each one shipped a broken artifact once.
   every cell, not just CUDA: cmake caches an unknown `-D` instead of failing, which is
   how the published rocm wheel shipped as a CPU build. A new flavor needs its library
   name added there or the gate asserts nothing for it.
+- **A new publish workflow needs both ends wired.** A `publish-*.yml` is invoked by a
+  dispatch job in `release-candidate.yml`, and its assets belong in
+  `verify-release.yml`. Adding the gate without the dispatcher makes every release
+  unpromotable: the wait loop burns its full timeout, then promotion refuses.
+- **A new gate must be proven to fail.** Run it against the input it is supposed to
+  reject before trusting it. A loader check that counted glob matches passed a bundle
+  with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
+  dynamic executable" as success.
+- **`echo x=y >> $GITHUB_OUTPUT` does not create a shell variable.** Reading `$x` back
+  in the same step gets nothing, or fails under `set -u`. Assign the shell variable
+  first, then emit it.
+- **Renaming a workflow file breaks `workflow_dispatch` until the rename is on the
+  default branch.** GitHub resolves the workflow by its default-branch path. Reach a
+  renamed workflow through a caller that still exists there.
 - **Every release channel has a real-inference gate.** `tools/qa/artifact_smoke.sh`
   runs `self-check` (real chat + embedding), ingest, search, a RAG ask, and an
   http crawl, sourcing models from the `ci-models` mirror (no HuggingFace).
