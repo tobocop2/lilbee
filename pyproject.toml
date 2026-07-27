@@ -111,6 +111,7 @@ lilbee-engine = { path = "packaging/engine-wheel" }
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",
     "pytest",
