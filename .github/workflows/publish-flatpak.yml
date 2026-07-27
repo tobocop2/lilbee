@@ -55,7 +55,7 @@ jobs:
             names=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
               --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
             missing=""
-            for a in lilbee-linux-x86_64 lilbee-linux-x86_64-cu125 lilbee-compat-linux-x86_64; do
+            for a in lilbee-linux-x86_64 lilbee-linux-x86_64-cu125 lilbee-linux-x86_64-rocm lilbee-compat-linux-x86_64; do
               case " ${names} " in *" ${a} "*) ;; *) missing="${missing} ${a}" ;; esac
             done
             [ -n "${missing}" ] || break
@@ -86,6 +86,13 @@ jobs:
             echo "sha_compat=$(field lilbee-compat-linux-x86_64 2)"
             echo "size_compat=$(field lilbee-compat-linux-x86_64 3)"
           } >> "$GITHUB_OUTPUT"
+
+          # An absent asset yields an empty digest, and the manifest renderer writes
+          # sha256: '' rather than failing, so flatpak-builder dies 90 minutes later.
+          for v in stock cuda rocm compat; do
+            eval "s=\$sha_${v}"
+            [ -n "${s}" ] || { echo "::error::no ${v} binary on release ${tag}"; exit 1; }
+          done
 
   publish:
     needs: resolve

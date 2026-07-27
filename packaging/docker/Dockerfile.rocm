@@ -21,9 +21,10 @@ RUN test -n "${LILBEE_VERSION}" || (echo "LILBEE_VERSION build arg required" && 
     /usr/local/bin/lilbee --version
 
 RUN useradd -m -u 1000 lilbee
-# The GPU is reached through /dev/kfd and /dev/dri, which the container needs
-# passed in (--device) and the user needs group access to.
-RUN usermod -aG video,render lilbee
+# No usermod here: ubuntu:22.04 has no `render` group (systemd-sysusers creates it and
+# this image has no systemd), so adding it would fail the build, and a group created
+# here would not carry the host's GID anyway. Access comes from the run command:
+#   docker run --device /dev/kfd --device /dev/dri --group-add video --group-add render
 USER lilbee
 WORKDIR /home/lilbee/data
 ENV LILBEE_DATA_DIR=/home/lilbee/data

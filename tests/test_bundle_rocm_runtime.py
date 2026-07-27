@@ -15,8 +15,15 @@ import pathlib
 import shutil
 import stat
 import subprocess
+import sys
 
 import pytest
+
+# These drive POSIX shell through bash and build a colon-separated PATH. The scripts
+# they cover only ever run on the Linux wheel and executable builders.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the scripts under test are POSIX shell, Linux-only in CI"
+)
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/bundle_rocm_runtime.sh"
 

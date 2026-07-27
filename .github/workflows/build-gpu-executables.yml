@@ -128,7 +128,13 @@ jobs:
         shell: bash
         env:
           BACKEND: ${{ matrix.backend }}
-        run: bash tools/wheel-build/install_gpu_toolkit.sh
+        run: |
+          set -euo pipefail
+          # ROCm 7.2 unpacks ~20 GB and this cell then stacks Nuitka's standalone tree
+          # on top, so report headroom rather than failing opaquely on the first run.
+          df -h /
+          bash tools/wheel-build/install_gpu_toolkit.sh
+          df -h /
 
       - name: Install CUDA Toolkit (Windows)
         if: runner.os == 'Windows'
@@ -306,6 +312,13 @@ jobs:
             }
           done
           echo "the bundled engine carries its ${BACKEND} runtime"
+
+          # Presence is not resolution. The wheel path caught libamd_comgr => not found
+          # on a bundle that passed exactly the checks above, and this tree is what
+          # every ROCm channel ships, so run the same loader gate against it.
+          if [ "${BACKEND}" = "rocm" ]; then
+            bash tools/qa/assert_rocm_bundle_loads.sh "${bin_dir}"
+          fi
 
       - name: Smoke test
         # GPU cells run on GPU-less runners: the bundled server links the vendor

@@ -241,8 +241,10 @@ jobs:
           [ -n "${exe}" ] || { echo "no bundled binary found"; exit 1; }
           "${exe}" --help
 
+      # success(), not always(): the backend and 2 GiB gates above run before this, and
+      # release-candidate attaches every wheel-multigpu-* artifact it finds.
       - name: Upload the multi-gpu wheel
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v7
         with:
           name: wheel-multigpu-${{ matrix.os }}-${{ matrix.backend }}
