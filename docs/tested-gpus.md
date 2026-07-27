@@ -11,11 +11,11 @@ lilbee places models by reading what the engine reports: which devices exist, ho
 | 8x NVIDIA A100 | CUDA | Ingest throughput at scale, 161 docs/sec |
 | 3x NVIDIA A100 | CUDA | Auto-placement of a 235B chat model across three cards |
 | 2x NVIDIA L40S | CUDA | Ingest with an even split across slower cards |
-| NVIDIA H100 | CUDA | Chat and ingest in normal use |
-| NVIDIA H200 | CUDA | Chat and ingest in normal use |
-| NVIDIA RTX 5090 | CUDA | Chat and ingest in normal use |
-| NVIDIA RTX 4090 | CUDA | Chat and ingest in normal use |
-| NVIDIA RTX 3090 | CUDA | Chat and ingest in normal use |
+| NVIDIA H100 | CUDA | Validated |
+| NVIDIA H200 | CUDA | Validated |
+| NVIDIA RTX 5090 | CUDA | Validated |
+| NVIDIA RTX 4090 | CUDA | Validated |
+| NVIDIA RTX 3090 | CUDA | Validated |
 | NVIDIA GTX 1070 Ti (8 GB) | Vulkan | Readback, vision projector accounting, probe crash isolation |
 | Intel UHD (CometLake) | Vulkan | Readback on non-NVIDIA silicon, chat and vision loads |
 | Intel UHD + GTX 1650 Ti | Vulkan, hybrid | Integrated excluded from packing, discrete kept |
@@ -23,7 +23,7 @@ lilbee places models by reading what the engine reports: which devices exist, ho
 | Intel Xeon Platinum 8481C | CPU | Host-only load with no GPU present |
 | AMD Instinct MI300X (192 GB) | ROCm | Readback, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering |
 
-The rows carrying a specific finding below have a captured engine log behind them, on the `tools/gpu-verification-harness` branch alongside the script that produced them. Those captures are engine build 9665 `e3a74b299`, except Apple Silicon at 9310 `e2ef8fe42`.
+The work is usually ingest and chat. Rows naming a specific finding have a captured engine log behind them, on the `tools/gpu-verification-harness` branch alongside the script that produced them; those captures are engine build 9665 `e3a74b299`, except Apple Silicon at 9310 `e2ef8fe42`.
 
 ## Backend naming
 
