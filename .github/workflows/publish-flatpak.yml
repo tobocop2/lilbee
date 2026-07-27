@@ -75,24 +75,26 @@ jobs:
           gh api "/repos/${REPO}/releases/tags/${TAG}" \
             --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
           field() { awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }' /tmp/assets.tsv; }
+          # Read into shell variables first: an absent asset yields an empty digest, and
+          # render_flatpak_manifest.sh writes sha256: '' rather than failing, so
+          # flatpak-builder dies on it 90 minutes later.
+          emit() {
+            local variant="$1" asset="$2" sha size
+            sha="$(field "${asset}" 2)"
+            size="$(field "${asset}" 3)"
+            # >&2: this whole block is redirected into $GITHUB_OUTPUT, so an error on
+            # stdout would land in the output file instead of the log.
+            [ -n "${sha}" ] || { echo "::error::${asset} is not on release ${TAG}" >&2; exit 1; }
+            echo "sha_${variant}=${sha}"
+            echo "size_${variant}=${size}"
+          }
           {
             echo "version=${TAG#v}"
-            echo "sha_stock=$(field lilbee-linux-x86_64 2)"
-            echo "size_stock=$(field lilbee-linux-x86_64 3)"
-            echo "sha_cuda=$(field lilbee-linux-x86_64-cu125 2)"
-            echo "size_cuda=$(field lilbee-linux-x86_64-cu125 3)"
-            echo "sha_rocm=$(field lilbee-linux-x86_64-rocm 2)"
-            echo "size_rocm=$(field lilbee-linux-x86_64-rocm 3)"
-            echo "sha_compat=$(field lilbee-compat-linux-x86_64 2)"
-            echo "size_compat=$(field lilbee-compat-linux-x86_64 3)"
+            emit stock lilbee-linux-x86_64
+            emit cuda lilbee-linux-x86_64-cu125
+            emit rocm lilbee-linux-x86_64-rocm
+            emit compat lilbee-compat-linux-x86_64
           } >> "$GITHUB_OUTPUT"
-
-          # An absent asset yields an empty digest, and the manifest renderer writes
-          # sha256: '' rather than failing, so flatpak-builder dies 90 minutes later.
-          for v in stock cuda rocm compat; do
-            eval "s=\$sha_${v}"
-            [ -n "${s}" ] || { echo "::error::no ${v} binary on release ${tag}"; exit 1; }
-          done
 
   publish:
     needs: resolve

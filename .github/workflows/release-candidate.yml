@@ -240,6 +240,9 @@ jobs:
         with:
           name: wheel-default
           path: wheels/
+      # Absent when that cell failed its own backend/size gate, which uploads on
+      # success only. "artifact not found" here means read the build-multigpu cpu
+      # cell, not this job.
       - name: Download the cpu engine wheel
         uses: actions/download-artifact@v8
         with:
