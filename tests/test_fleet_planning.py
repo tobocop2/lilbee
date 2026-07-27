@@ -2308,10 +2308,12 @@ class TestPlacementFindingsLog:
         assert "0.1 GiB" in caplog.text
 
 
-class TestSizingFailureFallsBackToFileSize:
-    """A model the estimator cannot size is enrolled at its weight bytes, so the
-    load, not the estimator, decides. Weight bytes are also a physics bound:
-    weights alone exceeding total VRAM refuses with a clear message."""
+class TestSizingFailureFallsBackToAnAnalyticFloor:
+    """A model the estimator cannot size is enrolled at weights plus the cache and
+    buffers it will allocate, not at weight bytes alone: the engine allocates all
+    three, and charging only the first fits models that cannot fit. Weight bytes
+    remain a physics bound: weights alone exceeding total VRAM refuses with a
+    clear message."""
 
     @pytest.fixture
     def _sizing_boom(self, tmp_path, monkeypatch):
@@ -2337,24 +2339,28 @@ class TestSizingFailureFallsBackToFileSize:
         monkeypatch.setattr(cfg, "vision_model", "")
         return model
 
-    def test_unsizable_model_enrolls_at_its_file_size(self, _sizing_boom, caplog) -> None:
+    def test_unsizable_model_enrolls_above_its_file_size(self, _sizing_boom, caplog) -> None:
         import logging
 
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
         by_role = {i.role: i for i in inputs}
-        assert by_role[WorkerRole.CHAT].est_vram_bytes == 4096
-        assert "Using its file size" in caplog.text
+        # The file is 4096 bytes; the KV cache it will allocate dwarfs that.
+        assert by_role[WorkerRole.CHAT].est_vram_bytes > 4096
+        assert "floor rather than an estimate" in caplog.text
 
-    def test_weights_beyond_total_vram_refuse_with_a_clear_message(
-        self, _sizing_boom, caplog
+    def test_weights_beyond_every_pool_refuse_with_a_clear_message(
+        self, _sizing_boom, monkeypatch, caplog
     ) -> None:
         import logging
 
+        # Past VRAM and system memory together there is nowhere for a layer to
+        # go; short of that the engine spills and the role is still served.
+        monkeypatch.setattr(planning_mod.model_cache, "total_system_memory", lambda: 1024)
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=1024)
         assert WorkerRole.CHAT not in {i.role for i in inputs}
-        assert "weights alone" in caplog.text
+        assert "nowhere for its layers to go" in caplog.text
 
     def test_weights_bound_stands_down_under_partial_offload(
         self, _sizing_boom, monkeypatch, caplog
@@ -2424,7 +2430,8 @@ class TestSizingFailureFallsBackToFileSize:
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
         by_role = {i.role: i for i in inputs}
-        assert by_role[WorkerRole.VISION].est_vram_bytes == 4096 + 1024
+        # The projector still counts toward the weights the floor is built on.
+        assert by_role[WorkerRole.VISION].est_vram_bytes > 4096 + 1024
 
     def test_fit_slots_returns_single_slot_when_estimator_fails(
         self, tmp_path, monkeypatch
@@ -2503,20 +2510,22 @@ def test_zero_n_cpu_moe_is_not_effective_offload(monkeypatch) -> None:
     assert planning_mod.expert_offload_layers({"expert_count": "128"}) is None
 
 
-def test_oversize_sparse_model_is_told_to_offload_its_experts(monkeypatch, caplog) -> None:
-    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: True)
+def test_a_model_past_every_pool_names_both_pools(caplog) -> None:
+    # No setting rearranges layers into memory that does not exist, so the
+    # message names the sizes rather than a knob to turn.
     with caplog.at_level("WARNING"):
-        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/moe", 80 * 1024**3, 24 * 1024**3)
-    assert "cpu_moe" in caplog.text
+        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/huge", 800 * 1024**3, 24 * 1024**3)
+    assert "GPU memory" in caplog.text
+    assert "system memory" in caplog.text
+    assert "cpu_moe" not in caplog.text
     assert "n_gpu_layers" not in caplog.text
 
 
-def test_oversize_dense_model_is_still_told_to_cut_gpu_layers(monkeypatch, caplog) -> None:
-    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+def test_a_model_past_only_vram_is_told_it_will_spill(caplog) -> None:
     with caplog.at_level("WARNING"):
-        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/dense", 80 * 1024**3, 24 * 1024**3)
-    assert "n_gpu_layers" in caplog.text
-    assert "cpu_moe" not in caplog.text
+        planning_mod._warn_weights_spill(WorkerRole.CHAT, "m/dense", 80 * 1024**3, 24 * 1024**3)
+    assert "system memory" in caplog.text
+    assert "slower" in caplog.text
 
 
 def test_ref_is_moe_reads_the_model_metadata(monkeypatch) -> None:

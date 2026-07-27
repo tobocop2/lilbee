@@ -50,7 +50,12 @@ _PARSE_TIMEOUT_S = 60
 # Bounded wait for a timed-out parser to die before abandoning it (matches the
 # device probe): a parser wedged in driver I/O must not hang the warm-up thread.
 _PARSE_KILL_WAIT_S = 5.0
-_CACHE_SIZE = 64
+# Sized for a whole plan on a wide box, not for one sweep. The ratio ladder and
+# the context bisection key separately (the key carries ctx), and slot fitting
+# adds more, so an eight-GPU chat split touches on the order of a hundred keys.
+# Too small and the winning candidate's keys are evicted before the launch reads
+# them back, which spawns gguf-parser again to recompute what was just measured.
+_CACHE_SIZE = 256
 
 # Mirrors vLLM's gpu_memory_utilization default: never charge a GPU past 90% of
 # its free VRAM, leaving headroom for allocator fragmentation and driver overhead.
@@ -135,6 +140,7 @@ def estimate_instance_footprint(
 
     def run(mmproj: Path | None) -> GgufVramEstimate:
         return _cached_footprint(
+            engine_build_identity(),
             str(model_path),
             model_path.stat().st_mtime_ns,
             ctx,
@@ -178,8 +184,22 @@ def _corrected_projector_estimate(
     )
 
 
+def engine_build_identity() -> str:
+    """Which engine build these numbers describe.
+
+    Part of the memo key. The estimate prices what one particular llama-server
+    will allocate, and the key held the model, the sizing and the parser's own
+    arguments without a trace of that, so swapping the engine kept the previous
+    engine's answers.
+    """
+    from lilbee.providers.fleet.binary import _engine_build_id
+
+    return _engine_build_id()
+
+
 @lru_cache(maxsize=_CACHE_SIZE)
 def _cached_footprint(
+    _engine_id: str,
     path_str: str,
     _mtime_ns: int,
     ctx: int,
@@ -194,10 +214,11 @@ def _cached_footprint(
     batch_size: int | None,
     expert_offload: tuple[str, ...],
 ) -> GgufVramEstimate:
-    """Memoised gguf-parser run keyed on path + mtime + sizing.
+    """Memoised gguf-parser run keyed on engine + path + mtime + sizing.
 
-    The mtime args participate in the cache key only; a re-pulled file at the same
-    path invalidates automatically because its mtime changes.
+    The mtime and engine args participate in the cache key only; a re-pulled file
+    at the same path invalidates automatically because its mtime changes, and a
+    swapped engine invalidates because its build identity does.
     """
     argv = estimator_argv(
         path_str,

@@ -24,13 +24,16 @@ THE FORMAT THIS PARSES, and where it comes from upstream:
     src/llama-kv-cache.cpp  "%s: %10s KV buffer size = %8.2f MiB"
     src/llama-context.cpp   "%s: %10s compute buffer size = %8.2f MiB"
 
-Verified against llama.cpp build 9310 (e2ef8fe42), which is the build the
-checked-in fixture was captured from. These are plain format strings in upstream
-source, not an interface anyone has promised to keep, so treat a version bump of
-the bundled engine as a change that can break this: re-capture the fixture and
-confirm :func:`parse_device_buffers` still finds every line. A build that stops
-matching is reported rather than swallowed (see :func:`check_launch`), so the
-failure announces itself instead of turning the check into decoration.
+Verified against llama.cpp build 9310 (e2ef8fe42), the build the checked-in
+fixture was captured from, and again on build 9665 (e3a74b299) running on two
+A40s, where both a single-card and a tensor-split load produced every line with
+the CUDA0/CUDA1 device labels this module joins on. These are plain format
+strings in upstream source, not an interface anyone has promised to keep, so
+treat a version bump of the bundled engine as a change that can break this:
+re-capture the fixture and confirm :func:`parse_device_buffers` still finds every
+line. A build that stops matching is reported rather than swallowed (see
+:func:`check_launch`), so the failure announces itself instead of turning the
+check into decoration.
 """
 
 from __future__ import annotations
@@ -46,9 +49,17 @@ log = logging.getLogger(__name__)
 
 MIB = 1024 * 1024
 
-# The llama.cpp build the buffer-report format above was verified against, and
-# the one the checked-in fixture came from. Named in the drift warning so a
-# report says what to compare with.
+# The build the checked-in fixture was captured from, named in the drift warning
+# so a report says what to compare with. Tracks the fixture rather than the
+# shipped engine, because reproducing a drift report means re-running the parser
+# against that exact capture.
+#
+# A landmark, not a gate. Refusing on a version mismatch would be the wrong
+# check: the format held unchanged from this build through 9665, confirmed on
+# two A40s, so a gate would have fired on every bump while the parser was
+# working. What detects drift is the parse coming back empty on a load that
+# finished, which cannot happen while the format is intact and cannot be missed
+# once it is not.
 VERIFIED_ENGINE_BUILD = "9310 (e2ef8fe42)"
 
 # "load_tensors:  MTL0_Mapped model buffer size =    82.41 MiB", and its siblings.
@@ -73,6 +84,9 @@ _BUFFER_RE = re.compile(r"\S+:\s+(?P<device>\S+)\s+.*?buffer size\s*=\s*(?P<mib>
 # device's other buffers. Same memory, so the suffix is folded away rather than
 # splitting one card's total across two keys.
 _MAPPED_SUFFIX = "_Mapped"
+# ggml names a row-split buffer "<backend>_Split", one allocation shared by every
+# card in the split rather than a device of its own.
+_SPLIT_SUFFIX = "_Split"
 # Devices that are host memory rather than a GPU. Two shapes, both from ggml:
 # the CPU backend's own buffers (CPU, CPU_Mapped), and every GPU backend's
 # pinned-host allocator, which it names "<backend>_Host" (ggml-cuda.cu returns
@@ -80,7 +94,9 @@ _MAPPED_SUFFIX = "_Mapped"
 # None of it occupies VRAM, so charging it to a card reports a phantom overrun on
 # every partially offloaded model. Found on real CUDA hardware, where CUDA_Host
 # was being counted as a third GPU.
-_HOST_PREFIXES = ("CPU",)
+# AMX is a CPU extension with its own buffer type name, so it reports beside the
+# CPU's and is host memory just the same.
+_HOST_PREFIXES = ("CPU", "AMX")
 _HOST_SUFFIX = "_Host"
 
 
@@ -99,7 +115,13 @@ def parse_device_buffers(text: str) -> dict[str, int]:
     """
     totals: dict[str, int] = {}
     for match in _BUFFER_RE.finditer(text):
-        device = match.group("device").removesuffix(_MAPPED_SUFFIX)
+        device = match.group("device")
+        if device.endswith(_SPLIT_SUFFIX):
+            # A row-split buffer is spread across every card in the split, so it
+            # belongs to no single one. Keeping it would invent a device that the
+            # per-device comparison then reports as an unplanned allocation.
+            continue
+        device = device.removesuffix(_MAPPED_SUFFIX)
         totals[device] = totals.get(device, 0) + int(float(match.group("mib")) * MIB)
     return totals
 
@@ -107,7 +129,15 @@ def parse_device_buffers(text: str) -> dict[str, int]:
 # The engine says this once the weights are in and it is wiring up slots. Its
 # presence means the load finished, which is what separates "the report has not
 # been written yet" from "this engine does not write one where we look".
-_LOAD_FINISHED_RE = re.compile(r"load_model:\s+initializing slots")
+#
+# Deliberately matches only the word the engine has kept. It said "initializing
+# slots" through b9665 and "initializing, n_slots = N" from b9829, and this gate
+# is what arms the format-drift warning: pinning the older phrase meant a newer
+# engine finished loading, parsed to nothing, and reported nothing, leaving every
+# placement estimate silently unverified. The buffer lines this module actually
+# reads have held identical across all three builds; it is the prose around them
+# that moves, so the prose is matched as loosely as it can still be meaningful.
+_LOAD_FINISHED_RE = re.compile(r"load_model:\s+initializing\b")
 # "common_params_print_info: build 9310 (e2ef8fe42) with AppleClang ...", the
 # engine's own first line. Carried into the format-drift warning so the report
 # names the exact build to re-verify against.
@@ -225,6 +255,7 @@ def check_launch(
     model: str,
     estimated_bytes: int,
     est_by_device: dict[str, int] | None = None,
+    unreported_bytes: int = 0,
 ) -> bool:
     """Compare the engine's own report for *model_id* against the estimate.
 
@@ -263,7 +294,9 @@ def check_launch(
     }
     actual = sum(per_device.values())
     if actual > 0 and est_by_device:
-        return _report_per_device(role, model, est_by_device, per_device)
+        return _report_per_device(
+            role, model, _without_unreported(est_by_device, unreported_bytes), per_device
+        )
     if actual <= 0:
         if load_finished(text):
             log.warning(
@@ -277,7 +310,25 @@ def check_launch(
                 VERIFIED_ENGINE_BUILD,
             )
         return False
-    return report_divergence(role, model, estimated_bytes, actual, tolerance=_TOLERANCE)
+    return report_divergence(
+        role, model, estimated_bytes - unreported_bytes, actual, tolerance=_TOLERANCE
+    )
+
+
+def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[str, int]:
+    """*est_by_device* less the bytes the engine allocates without reporting them.
+
+    Charged to the busiest device, which is where the planner put them: a vision
+    projector loads on the main GPU rather than across a split. Comparing the
+    full estimate against a report that structurally cannot contain these bytes
+    warns on every correctly sized vision load.
+    """
+    if unreported <= 0 or not est_by_device:
+        return est_by_device
+    main = max(est_by_device, key=lambda label: est_by_device[label])
+    adjusted = dict(est_by_device)
+    adjusted[main] = max(0, adjusted[main] - unreported)
+    return adjusted
 
 
 # How far the engine may land from the estimate before it is worth saying. Wide

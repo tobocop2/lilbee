@@ -1649,7 +1649,6 @@ dependencies = [
     { name = "jinja2" },
     { name = "kreuzberg" },
     { name = "lancedb" },
-    { name = "lilbee-engine" },
     { name = "litestar" },
     { name = "mcp" },
     { name = "numpy" },
@@ -1673,6 +1672,9 @@ cuda12 = [
     { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+engine = [
+    { name = "lilbee-engine" },
 ]
 graph = [
     { name = "graspologic-native" },
@@ -1721,7 +1723,7 @@ requires-dist = [
     { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
-    { name = "lilbee-engine", directory = "packaging/engine-wheel" },
+    { name = "lilbee-engine", marker = "extra == 'engine'", directory = "packaging/engine-wheel" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0,<1.92" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "mcp", specifier = ">=1.26.0,<2" },
@@ -1741,7 +1743,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
+provides-extras = ["engine", "litellm", "graph", "crawler", "cuda12", "release"]
 
 [package.metadata.requires-dev]
 dev = [

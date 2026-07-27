@@ -32,6 +32,13 @@ _BUILD_LOCK_NAME = "engine.lock"
 # So a wait longer than this is a wedged holder, not honest contention -- bound
 # it rather than block forever, which would deadlock every startup and exit.
 _BUILD_LOCK_TIMEOUT_S = 90.0
+# What a caller that will proceed without the lock waits for it. Teardown and
+# config-change are best-effort by definition, so spending the build timeout
+# before giving up buys nothing and costs everything: an init system's TERM
+# window is typically 90 seconds, and a shutdown that waits that long to then
+# proceed anyway gets SIGKILLed mid-teardown, leaving the engines it was about
+# to stop alive and holding VRAM.
+_BEST_EFFORT_LOCK_TIMEOUT_S = 5.0
 _USERS_DIRNAME = "engine-users"
 _USER_LOCK_SUFFIX = ".lock"
 # One opt-in file per installation, keyed by config root (not pid, which changes
@@ -77,23 +84,24 @@ def build_lock(engine_dir: Path, *, best_effort: bool = False) -> Iterator[None]
     """
     engine_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(engine_dir / _BUILD_LOCK_NAME)
+    wait_s = _BEST_EFFORT_LOCK_TIMEOUT_S if best_effort else _BUILD_LOCK_TIMEOUT_S
     try:
         lock.acquire(timeout=_PROBE_TIMEOUT_S)
     except FileLockTimeout:
         log.info(
             "Waiting up to %.0fs for another process to build the engine at %s",
-            _BUILD_LOCK_TIMEOUT_S,
+            wait_s,
             engine_dir,
         )
         try:
-            lock.acquire(timeout=_BUILD_LOCK_TIMEOUT_S)
+            lock.acquire(timeout=wait_s)
         except FileLockTimeout:
             if not best_effort:
                 raise
             log.warning(
                 "Engine build lock at %s held past %.0fs; proceeding without it.",
                 engine_dir,
-                _BUILD_LOCK_TIMEOUT_S,
+                wait_s,
             )
             yield
             return

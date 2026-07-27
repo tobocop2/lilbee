@@ -38,6 +38,13 @@ class InstanceLaunch:
     # landed 50/50 from one that landed 80/20, and the second is the one that
     # overruns a card.
     est_vram_by_device: dict[str, int] = field(default_factory=dict)
+    est_unreported_bytes: int = 0
+    """Estimated bytes the engine allocates but never reports in its buffer lines.
+
+    A vision projector's weights are the case: llama.cpp allocates them without
+    emitting a "buffer size" line, so the readback total is short by exactly this
+    much and the self-check would warn on a load that was sized correctly.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -55,6 +62,7 @@ class InstanceLaunch:
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
             "est_vram_bytes": self.est_vram_bytes,
             "est_vram_by_device": dict(self.est_vram_by_device),
+            "est_unreported_bytes": self.est_unreported_bytes,
         }
 
     @classmethod
@@ -70,6 +78,7 @@ class InstanceLaunch:
             weights_bytes=int(payload.get("weights_bytes") or 0),
             slots=int(payload.get("slots") or 1),
             est_vram_bytes=int(payload.get("est_vram_bytes") or 0),
+            est_unreported_bytes=int(payload.get("est_unreported_bytes") or 0),
             est_vram_by_device={
                 str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
             },

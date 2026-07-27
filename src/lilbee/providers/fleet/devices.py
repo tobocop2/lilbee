@@ -480,9 +480,18 @@ def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     return chosen
 
 
-def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, str]:
+def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, int, str]:
+    """Sort key for choosing one backend's devices: rank, dedicated bytes, size.
+
+    Dedicated bytes come before raw size because the discrete backends all tie at
+    the same rank, and a shared-heap carveout reports a total that is host RAM
+    the host budget already counts. Left on raw size, an APU advertising a large
+    carveout beat a discrete card, which was then discarded and left idle while
+    the plan double-promised memory it did not have.
+    """
     backend, group = item
-    return _BACKEND_RANK[backend], sum(d.total_bytes for d in group), backend
+    dedicated = sum(d.total_bytes for d in group if not d.unified)
+    return _BACKEND_RANK[backend], dedicated, sum(d.total_bytes for d in group), backend
 
 
 def _compose_visible(indices: list[int], parent_value: str | None) -> str:

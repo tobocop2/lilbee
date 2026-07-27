@@ -10,8 +10,10 @@ from pathlib import Path
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 _INSTALL_HINT = (
-    "Reinstall lilbee to get the bundled engine, or set LILBEE_LLAMA_SERVER_PATH "
-    "to a llama-server binary (a llama.cpp release download or `brew install llama.cpp`) "
+    "Install the bundled engine with "
+    "'pip install --pre lilbee[engine] --extra-index-url https://lilbee.sh/cu124/' "
+    "(use /cpu for a CPU-only build), or set LILBEE_LLAMA_SERVER_PATH to a "
+    "llama-server binary (a llama.cpp release download or `brew install llama.cpp`) "
     "and put llama-swap / gguf-parser on PATH."
 )
 

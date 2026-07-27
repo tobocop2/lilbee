@@ -45,7 +45,7 @@ _CUDA_WHEEL_IMPORTS: tuple[str, ...] = (
 # libcudart.so.13 is as much a CUDA build as one linking .so.12, and pinning the
 # major meant the whole guard returned early on the newer one: a cu13 engine that
 # could not initialize a device fell to CPU in exactly the silence this exists to
-# break. Mirrors ollama's cudaRuntimeSORegex (discover/llama_server.go).
+# break.
 _CUDA_SONAME_RE = re.compile(r"\blib(?:cudart|cublas|nvrtc)\.so\.(\d+)")
 # The HIP equivalents. A ROCm build links these and none of the CUDA sonames, so
 # the CUDA guard above never fired for it.

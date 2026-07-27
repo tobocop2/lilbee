@@ -55,3 +55,43 @@ class TestTheTimestampPrefixDoesNotHideThem:
     def test_a_prefixed_line_still_parses(self) -> None:
         line = "0.00.220.431 I load_tensors:         MTL0 model buffer size =    82.41 MiB"
         assert parse_device_buffers(line) == {"MTL0": int(82.41 * MIB)}
+
+
+class TestTheDriftAlarmSurvivesUpstreamRewording:
+    """The alarm is armed by a phrase the engine keeps rewriting. Pinning the old
+    wording meant a newer engine loaded, parsed to nothing, and said nothing."""
+
+    def test_the_wording_through_b9665_still_counts(self) -> None:
+        from lilbee.providers.fleet.readback import load_finished
+
+        assert load_finished("0.00 I load_model:   initializing slots, n_slots = 4\n")
+
+    def test_the_wording_from_b9829_counts_too(self) -> None:
+        from lilbee.providers.fleet.readback import load_finished
+
+        assert load_finished("0.00 I load_model:   initializing, n_slots = 4, n_ctx_slot = 4096\n")
+
+    def test_an_unrelated_line_does_not(self) -> None:
+        from lilbee.providers.fleet.readback import load_finished
+
+        assert not load_finished("srv    load_model: loading model\n")
+
+
+class TestBuffersThatBelongToNoOneCard:
+    def test_a_row_split_buffer_makes_no_phantom_device(self) -> None:
+        from lilbee.providers.fleet.readback import parse_device_buffers
+
+        text = (
+            "load_tensors:        SYCL0 model buffer size =   100.00 MiB\n"
+            "load_tensors:   SYCL_Split model buffer size =   200.00 MiB\n"
+        )
+        assert set(parse_device_buffers(text)) == {"SYCL0"}
+
+    def test_an_amx_repack_buffer_is_host_memory(self) -> None:
+        from lilbee.providers.fleet.readback import device_footprint
+
+        text = (
+            "load_tensors:        CUDA0 model buffer size =   100.00 MiB\n"
+            "load_tensors:          AMX model buffer size =   500.00 MiB\n"
+        )
+        assert device_footprint(text) == 100 * 1024 * 1024

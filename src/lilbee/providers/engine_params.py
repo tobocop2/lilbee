@@ -73,9 +73,15 @@ _VISION_PAGE_CTX_CAP = 32768
 image tokens plus prompt, while keeping a long-context VLM placeable beside a chat giant."""
 
 _N_GPU_LAYERS_AUTO = -1
+"""llama.cpp's "fit as many layers as the device holds" value for n_gpu_layers.
+
+The engine measures free VRAM at load and picks the count itself, spilling the
+rest to system memory. That is a better answer than any number lilbee can
+compute ahead of time, because it is taken on the real device after every other
+tenant, so the planner passes this rather than a layer count of its own.
+"""
 # llama.cpp's "offload nothing"; the user's CPU-only opt-out rather than a budget.
 _N_GPU_LAYERS_NONE = 0
-"""llama.cpp's "offload every layer" sentinel for n_gpu_layers."""
 
 
 def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
