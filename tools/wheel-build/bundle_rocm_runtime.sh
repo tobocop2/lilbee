@@ -20,6 +20,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/../../engine-versions.env"
 
 rocm_root="${ROCM_PATH:-/opt/rocm-${ENGINE_ROCM_VERSION}}"
+# SONAMEs copied out of the ROCm tree, set by copy_rocm_closure.
+bundled=""
 # ROCm 7 splits what the engine links: hip, rocblas and hipblas under lib, clang's
 # OpenMP runtime under lib/llvm/lib. The rocm cell compiles with AMD's clang, so
 # ggml's OpenMP is libomp from the second rather than the host's libgomp.
@@ -47,7 +49,8 @@ resolve_in_rocm() {
 # where the backend does not. SONAMEs move between ROCm releases, so the closure is
 # discovered rather than listed.
 copy_rocm_closure() {
-  local pending bundled="" next lib soname src
+  local pending next lib soname src
+  bundled=""
   pending=$(find "${pkg_bin_dir}" -maxdepth 1 -type f)
   while [ -n "${pending}" ]; do
     next=""
@@ -66,6 +69,41 @@ copy_rocm_closure() {
     pending="${next}"
   done
   echo "bundled ROCm runtime:${bundled:- NONE}"
+}
+
+# The build dereferences SONAME symlinks into real files, so libggml-hip.so ships
+# three times at 437 MB each. Keep the names something actually loads by, a DT_NEEDED
+# entry or the plain name ggml dlopens, and drop byte-identical leftovers. Wheels
+# cannot carry symlinks: zipfile writes the target path as file content.
+drop_redundant_copies() {
+  local needed="" obj name plain
+  for obj in "${pkg_bin_dir}"/*; do
+    [ -f "${obj}" ] || continue
+    needed="${needed} $(needed_by "${obj}" | tr '\n' ' ')"
+  done
+  for obj in "${pkg_bin_dir}"/*.so.*; do
+    [ -f "${obj}" ] || continue
+    name="$(basename "${obj}")"
+    case " ${needed} " in *" ${name} "*) continue ;; esac
+    plain="${pkg_bin_dir}/${name%%.so.*}.so"
+    [ -f "${plain}" ] && cmp -s "${obj}" "${plain}" || continue
+    rm -f "${obj}"
+    echo "dropped redundant copy: ${name}"
+  done
+}
+
+# A copied library keeps the runpath it was built with, which points into the ROCm
+# install that will not exist on a user's machine. Repoint each at its own directory
+# so the bundle resolves against itself. patchelf is what auditwheel uses for this.
+repoint_runpaths() {
+  local soname
+  command -v patchelf >/dev/null || {
+    echo "patchelf is required to relocate the bundled ROCm libraries" >&2
+    exit 1
+  }
+  for soname in $1; do
+    patchelf --set-rpath '$ORIGIN' "${pkg_bin_dir}/${soname}"
+  done
 }
 
 # rocBLAS loads its Tensile kernels as data rather than linking them, and looks beside
@@ -110,6 +148,8 @@ assert_bundle_is_complete() {
 assert_rocm_dirs_exist
 assert_backend_was_built
 copy_rocm_closure
+drop_redundant_copies
+repoint_runpaths "${bundled}"
 copy_rocblas_kernels
 assert_bundle_is_complete
 echo "rocm bundle size: $(du -sh "${pkg_bin_dir}" | cut -f1)"

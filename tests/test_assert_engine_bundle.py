@@ -344,3 +344,26 @@ def test_main_with_no_arguments_is_a_usage_error() -> None:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))
+
+
+_ROCM_PAYLOAD = (
+    "libggml-hip.so",
+    "libamdhip64.so.7",
+    "librocblas.so.5",
+    "libhipblas.so.3",
+    "rocblas/library/kernels.dat",
+)
+_ROCM_WHEEL = "lilbee_engine-0.1-1.rocm-py3-none-manylinux_2_17_x86_64.whl"
+
+
+def test_a_wheel_too_big_to_upload_is_a_problem(tmp_path, monkeypatch):
+    """GitHub caps one artifact at 2 GiB, and a bundled ROCm engine is the one near it."""
+    wheel = _wheel(tmp_path, _ROCM_WHEEL, _ROCM_PAYLOAD)
+    monkeypatch.setattr(acb, "WHEEL_SIZE_LIMIT", 1)
+    assert any("exceeds the" in p for p in acb.check(wheel))
+
+
+def test_a_wheel_within_the_limit_passes(tmp_path):
+    """The common case must not pay for the check with a false failure."""
+    wheel = _wheel(tmp_path, _ROCM_WHEEL, _ROCM_PAYLOAD)
+    assert acb.check(wheel) == []

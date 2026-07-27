@@ -36,6 +36,11 @@ from pathlib import Path
 
 BIN_DIR = "lilbee_engine/bin/"
 
+# GitHub caps a single artifact at 2 GiB, and every wheel travels as one. A bundled
+# ROCm engine is the only flavor near it: its runtime and per-gfx kernels are most of
+# the payload, so a target added here can push the wheel past what CI can upload.
+WHEEL_SIZE_LIMIT = 2 * 1024**3
+
 # The SONAME / import names the engine loads by, per wheel platform tag. Named so a
 # failure names the file a user would look for, not the pattern that matched it.
 REQUIRED = {
@@ -129,6 +134,17 @@ def _missing_backend_library(
     )
 
 
+def _oversized(wheel: Path) -> str | None:
+    """The problem with *wheel* being too big to upload, if it is."""
+    size = wheel.stat().st_size
+    if size <= WHEEL_SIZE_LIMIT:
+        return None
+    return (
+        f"{wheel.name}: {size / 1024**3:.2f} GiB exceeds the "
+        f"{WHEEL_SIZE_LIMIT / 1024**3:.0f} GiB artifact limit"
+    )
+
+
 def _bin_entries(wheel: Path) -> list[str]:
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
@@ -142,13 +158,14 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
     the wheel has no build tag to read it from yet.
     """
     name = wheel.name
+    oversized = _oversized(wheel)
     entries = _bin_entries(wheel)
     if not entries:
         return [f"{name}: no {BIN_DIR} payload at all"]
 
     platform = _platform_of(name)
     backend = backend or _backend_of(name)
-    problems = []
+    problems = [oversized] if oversized else []
     missing = _missing_backend_library(name, backend, platform, entries) if backend else None
     if missing:
         problems.append(missing)

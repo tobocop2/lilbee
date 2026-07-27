@@ -97,6 +97,13 @@ def bin_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     return path
 
 
+def _write_stub_patchelf(bin_dir: pathlib.Path, log: pathlib.Path) -> None:
+    """A patchelf that records its arguments instead of rewriting an ELF."""
+    stub = bin_dir / "patchelf"
+    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+
 def _run(
     bin_dir: pathlib.Path,
     rocm_tree: pathlib.Path,
@@ -105,6 +112,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     stub_dir = tmp_path / "stub"
     _write_stub_readelf(stub_dir, _NEEDED if needed is None else needed)
+    _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
     env = {
         "ROCM_PATH": str(rocm_tree),
         "PATH": f"{stub_dir}:/usr/bin:/bin",
@@ -161,6 +169,71 @@ def test_leaves_host_libraries_alone(bundled):
 def test_bundles_the_rocblas_kernels(bundled):
     """rocBLAS loads these as data at runtime; without them the first matmul fails."""
     assert (bundled / "rocblas/library/TensileLibrary.dat").is_file()
+
+
+def test_drops_a_soname_alias_nothing_loads_by(bin_dir, rocm_tree, tmp_path):
+    """Three real copies of a 437MB library is most of the wheel, for nothing."""
+    (bin_dir / "libggml-hip.so.0.15.1").write_text("elf: libggml-hip.so")
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not (bin_dir / "libggml-hip.so.0.15.1").exists()
+    assert (bin_dir / "libggml-hip.so").is_file()
+
+
+def test_keeps_an_alias_something_links_against(bin_dir, rocm_tree, tmp_path):
+    """A name in someone's DT_NEEDED is load-bearing however identical the bytes."""
+    (bin_dir / "libggml-base.so.0").write_text("elf: libggml-base.so")
+    needed = {**_NEEDED, "llama-server": ["libggml-base.so.0", "libomp.so"]}
+    result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libggml-base.so.0").is_file()
+
+
+def test_keeps_an_alias_whose_bytes_differ(bin_dir, rocm_tree, tmp_path):
+    """Only an exact duplicate is redundant; a different build is a different library."""
+    (bin_dir / "libggml-hip.so.0.15.1").write_text("elf: a genuinely different build")
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libggml-hip.so.0.15.1").is_file()
+
+
+def test_repoints_copied_libraries_at_the_bundle(bundled, tmp_path):
+    """A copied library keeps a runpath into the ROCm install, which a user has not.
+
+    Without the rewrite the bundle only resolves on a machine that already has ROCm,
+    which is every machine that can build it and no machine that needs it.
+    """
+    calls = (tmp_path / "patchelf.log").read_text().splitlines()
+    rewritten = {line.split()[-1].rsplit("/", 1)[-1] for line in calls}
+    assert rewritten == {
+        "libamdhip64.so.7",
+        "librocblas.so.5",
+        "libhipblas.so.3",
+        "libomp.so",
+    }
+    assert all("--set-rpath $ORIGIN" in line for line in calls)
+
+
+def test_leaves_the_engines_own_libraries_alone(bundled, tmp_path):
+    """The build already baked $ORIGIN into those; rewriting them is not this job."""
+    calls = (tmp_path / "patchelf.log").read_text()
+    assert "libggml-hip.so" not in calls
+    assert "llama-server" not in calls
+
+
+def test_fails_when_patchelf_is_absent(bin_dir, rocm_tree, tmp_path):
+    """Silently skipping the rewrite ships a bundle that resolves only where built."""
+    stub_dir = tmp_path / "stub"
+    _write_stub_readelf(stub_dir, _NEEDED)
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), str(bin_dir)],
+        capture_output=True,
+        text=True,
+        env={"ROCM_PATH": str(rocm_tree), "PATH": f"{stub_dir}:/usr/bin:/bin"},
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "patchelf is required" in result.stderr
 
 
 def test_reports_what_it_packed_and_how_big(bin_dir, rocm_tree, tmp_path):

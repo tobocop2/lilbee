@@ -100,8 +100,9 @@ linux_install_rocm() {
     linux_add_rocm_repo "${series}" "${codename}"
     # Versioned names: an unversioned rocm-hip-sdk resolves its compiler
     # dependency against any other ROCm on the image and installs no clang.
+    # patchelf repoints the bundled libraries' runpaths at the wheel.
     sudo apt-get install -y \
-      "rocm-hip-sdk${version}" "rocm-llvm${version}" "hipcc${version}"
+      "rocm-hip-sdk${version}" "rocm-llvm${version}" "hipcc${version}" patchelf
   fi
 
   # ROCm 7 moved the toolchain to lib/llvm; $ROCM_PATH/llvm/bin no longer exists.
