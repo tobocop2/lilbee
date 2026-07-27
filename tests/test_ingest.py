@@ -2879,6 +2879,31 @@ class TestBatchExtractionRouting:
                 reset_active_batcher(token)
         assert len(records) >= 1
 
+    async def test_batch_extraction_detects_pdf_by_filename(self, isolated_env):
+        """Regression: the batch path must let xberg detect the PDF from its filename,
+        not pass lilbee's bare content_type ('pdf') as a MIME (xberg rejects it)."""
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.ingest.batch_extract import (
+            ExtractBatcher,
+            reset_active_batcher,
+            set_active_batcher,
+        )
+        from lilbee.data.ingest.extract import _ocr_config, extraction_config
+        from lilbee.data.xberg_extract import aextract_batch
+
+        batcher = ExtractBatcher(
+            size=1, config_fn=extraction_config, ocr_fn=_ocr_config, batch_fn=aextract_batch
+        )
+        f = isolated_env / "doc.pdf"
+        f.write_bytes(make_pdf(pages=1))
+        token = set_active_batcher(batcher)
+        try:
+            records, _ = await ingest_document(f, "doc.pdf", "pdf")
+        finally:
+            await batcher.close()
+            reset_active_batcher(token)
+        assert records, "batch extraction produced no records for a PDF"
+
 
 class TestTableChunks:
     """Table indexing in ingest_document, driven by cfg.table_extraction."""

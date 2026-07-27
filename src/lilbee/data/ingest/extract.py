@@ -386,7 +386,7 @@ async def ingest_document(
         mode = content_type_to_mode(content_type)
         batcher = active_extract_batcher()
         if batcher is not None:
-            doc = await batcher.submit(mode, path.read_bytes(), content_type, path.name, token)
+            doc = await batcher.submit(mode, path.read_bytes(), path.name, token)
         else:
             config = extraction_config(mode, ocr_token=token)
             # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.

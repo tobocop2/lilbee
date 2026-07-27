@@ -37,7 +37,6 @@ _FLUSH_WINDOW_S = 0.05
 @dataclass
 class _Pending:
     data: bytes
-    mime: str
     filename: str
     ocr_token: str
     future: asyncio.Future[ExtractedDocument]
@@ -67,13 +66,13 @@ class ExtractBatcher:
         self._running: set[asyncio.Task[None]] = set()
 
     async def submit(
-        self, mode: ExtractMode, data: bytes, mime: str, filename: str, ocr_token: str
+        self, mode: ExtractMode, data: bytes, filename: str, ocr_token: str
     ) -> ExtractedDocument:
         """Enqueue one extraction; resolves when its batch completes."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ExtractedDocument] = loop.create_future()
         group = self._groups.setdefault(mode, [])
-        group.append(_Pending(data, mime, filename, ocr_token, future))
+        group.append(_Pending(data, filename, ocr_token, future))
         if len(group) >= self._size:
             self._flush(mode)
         elif mode not in self._timers:
@@ -88,7 +87,9 @@ class ExtractBatcher:
         if not pending:
             return
         config = self._config_fn(mode)
-        items = [BatchItem(p.data, p.mime, p.filename, self._ocr_fn(p.ocr_token)) for p in pending]
+        # mime=None: xberg detects the format from the filename, matching the
+        # single-file path. Passing lilbee's bare content_type here is rejected.
+        items = [BatchItem(p.data, None, p.filename, self._ocr_fn(p.ocr_token)) for p in pending]
         task = asyncio.ensure_future(self._run(items, config, pending))
         self._running.add(task)
         task.add_done_callback(self._running.discard)

@@ -29,7 +29,7 @@ def _batcher(size, batch_fn, window=0.01):
 
 
 async def _submit(b, mode=MODE, tag="a", token="t0"):  # noqa: S107  # OCR token, not a secret
-    return await b.submit(mode, tag.encode(), "text/plain", tag, token)
+    return await b.submit(mode, tag.encode(), tag, token)
 
 
 @pytest.mark.asyncio
@@ -118,8 +118,8 @@ async def test_different_modes_flush_as_separate_batches():
 
     b = _batcher(1, batch_fn)
     await asyncio.gather(
-        b.submit(ExtractMode.MARKDOWN, b"a", "text/plain", "a", "t0"),
-        b.submit(ExtractMode.PAGINATED, b"b", "application/pdf", "b", "t1"),
+        b.submit(ExtractMode.MARKDOWN, b"a", "a", "t0"),
+        b.submit(ExtractMode.PAGINATED, b"b", "b", "t1"),
     )
     assert set(configs) == {
         f"cfg-{ExtractMode.MARKDOWN.value}",
