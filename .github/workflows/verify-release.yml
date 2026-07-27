@@ -120,8 +120,10 @@ jobs:
           WAIT_MINUTES: "180"
         run: |
           set -uo pipefail
-          expected="lilbee.flatpak lilbee-cuda.flatpak lilbee-compat.flatpak
+          expected="lilbee.flatpak lilbee-cuda.flatpak lilbee-rocm.flatpak
+                    lilbee-compat.flatpak
                     lilbee-linux-x86_64.snap lilbee-linux-x86_64-cu125.snap
+                    lilbee-linux-x86_64-rocm.snap
                     lilbee-compat-linux-x86_64.snap"
           deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
           while true; do

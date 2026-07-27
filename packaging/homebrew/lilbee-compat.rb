@@ -6,6 +6,7 @@ class LilbeeCompat < Formula
 
   conflicts_with "tobocop2/lilbee/lilbee", because: "both install the lilbee binary"
   conflicts_with "tobocop2/lilbee/lilbee-cuda", because: "both install the lilbee binary"
+  conflicts_with "tobocop2/lilbee/lilbee-rocm", because: "both install the lilbee binary"
 
   on_linux do
     on_intel do

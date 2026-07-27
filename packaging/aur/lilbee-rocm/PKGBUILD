@@ -8,9 +8,6 @@ url="https://github.com/tobocop2/lilbee"
 license=('MIT')
 conflicts=('lilbee')
 provides=('lilbee')
-# The ROCm userspace ships inside the binary; only the kernel driver is a
-# dependency, and on Arch that is in the kernel rather than a package.
-optdepends=('linux-firmware: amdgpu firmware for the GPU to come up')
 options=('!strip' '!debug')
 source_x86_64=("lilbee-${pkgver}-rocm::${url}/releases/download/v${pkgver}/lilbee-linux-${CARCH}-rocm")
 sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')

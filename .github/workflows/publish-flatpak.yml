@@ -35,6 +35,8 @@ jobs:
       size_stock: ${{ steps.info.outputs.size_stock }}
       sha_cuda: ${{ steps.info.outputs.sha_cuda }}
       size_cuda: ${{ steps.info.outputs.size_cuda }}
+      sha_rocm: ${{ steps.info.outputs.sha_rocm }}
+      size_rocm: ${{ steps.info.outputs.size_rocm }}
       sha_compat: ${{ steps.info.outputs.sha_compat }}
       size_compat: ${{ steps.info.outputs.size_compat }}
     steps:
@@ -79,6 +81,8 @@ jobs:
             echo "size_stock=$(field lilbee-linux-x86_64 3)"
             echo "sha_cuda=$(field lilbee-linux-x86_64-cu125 2)"
             echo "size_cuda=$(field lilbee-linux-x86_64-cu125 3)"
+            echo "sha_rocm=$(field lilbee-linux-x86_64-rocm 2)"
+            echo "size_rocm=$(field lilbee-linux-x86_64-rocm 3)"
             echo "sha_compat=$(field lilbee-compat-linux-x86_64 2)"
             echo "size_compat=$(field lilbee-compat-linux-x86_64 3)"
           } >> "$GITHUB_OUTPUT"
@@ -106,6 +110,11 @@ jobs:
             bundle: lilbee-cuda.flatpak
             sha: ${{ needs.resolve.outputs.sha_cuda }}
             size: ${{ needs.resolve.outputs.size_cuda }}
+          - app-id: io.github.tobocop2.lilbee.rocm
+            asset: lilbee-linux-x86_64-rocm
+            bundle: lilbee-rocm.flatpak
+            sha: ${{ needs.resolve.outputs.sha_rocm }}
+            size: ${{ needs.resolve.outputs.size_rocm }}
           - app-id: io.github.tobocop2.lilbee.compat
             asset: lilbee-compat-linux-x86_64
             bundle: lilbee-compat.flatpak
