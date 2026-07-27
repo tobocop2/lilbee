@@ -36,7 +36,11 @@ _BUILT = ("llama-server", "libggml-hip.so", "libggml-base.so")
 _ROCM_GRAPH = {
     "libamdhip64.so.7": ["librocblas.so.5", "libnuma.so.1"],
     "librocblas.so.5": ["libamdhip64.so.7", "libstdc++.so.6"],
-    "libhipblas.so.3": ["librocblas.so.5"],
+    # hipBLAS drags in rocSOLVER for LAPACK entry points ggml never calls, and
+    # rocSOLVER alone keeps rocroller alive. 888 MB and 80 MB in the real bundle.
+    "libhipblas.so.3": ["librocblas.so.5", "librocsolver.so.0"],
+    "librocsolver.so.0": ["librocroller.so.1"],
+    "librocroller.so.1": [],
     "libomp.so": [],
 }
 _LLVM_LIBS = ("libomp.so",)
@@ -69,13 +73,21 @@ def _write_stub_readelf(bin_dir: pathlib.Path, needed: dict[str, list[str]]) -> 
         for name, deps in needed.items()
     )
     stub = bin_dir / "readelf"
+    removed = bin_dir / "removed"
     stub.write_text(
         "#!/usr/bin/env bash\n"
         'target="${!#}"\n'
-        'case "$(basename "${target}")" in\n'
+        'base="$(basename "${target}")"\n'
+        '{ case "${base}" in\n'
         f"{cases}\n"
         "    *) ;;\n"
         "esac\n"
+        "} | while IFS= read -r line; do\n"
+        '  dep="${line##*[}"; dep="${dep%]}"\n'
+        f'  if [ -f "{removed}" ] && grep -qxF "${{base}} ${{dep}}" "{removed}"\n'
+        "  then continue; fi\n"
+        '  printf "%s\\n" "${line}"\n'
+        "done\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
@@ -109,7 +121,15 @@ def bin_dir(tmp_path: pathlib.Path) -> pathlib.Path:
 def _write_stub_patchelf(bin_dir: pathlib.Path, log: pathlib.Path) -> None:
     """A patchelf that records its arguments instead of rewriting an ELF."""
     stub = bin_dir / "patchelf"
-    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
+    # --remove-needed must actually take effect, or the orphan collection below is
+    # tested against a graph that never changed.
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{log}"\n'
+        'if [ "$1" = "--remove-needed" ]; then\n'
+        f'  echo "$(basename "$3") $2" >> "{bin_dir / "removed"}"\n'
+        "fi\n"
+    )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
 
@@ -259,14 +279,16 @@ def test_repoints_copied_libraries_at_the_bundle(bundled, tmp_path):
     which is every machine that can build it and no machine that needs it.
     """
     calls = (tmp_path / "patchelf.log").read_text().splitlines()
-    rewritten = {line.split()[-1].rsplit("/", 1)[-1] for line in calls}
+    rewrites = [line for line in calls if "--set-rpath" in line]
+    rewritten = {line.split()[-1].rsplit("/", 1)[-1] for line in rewrites}
+    # Not rocsolver or rocroller: those are pruned before this runs.
     assert rewritten == {
         "libamdhip64.so.7",
         "librocblas.so.5",
         "libhipblas.so.3",
         "libomp.so",
     }
-    assert all("--set-rpath $ORIGIN" in line for line in calls)
+    assert all("--set-rpath $ORIGIN" in line for line in rewrites)
 
 
 def test_leaves_the_engines_own_libraries_alone(bundled, tmp_path):
@@ -357,3 +379,22 @@ def test_keeps_every_kernel_when_the_targets_are_unknown(bin_dir, rocm_tree, tmp
     kernels = bin_dir / "rocblas/library"
     assert (kernels / "TensileLibrary_gfx906.dat").is_file()
     assert (kernels / "TensileLibrary_gfx942.dat").is_file()
+
+
+def test_drops_the_lapack_dependency_ggml_never_calls(bundled, tmp_path):
+    """rocSOLVER is 888MB of the bundle and ggml calls only the hipBLAS GEMM family."""
+    assert not (bundled / "librocsolver.so.0").exists()
+    calls = (tmp_path / "patchelf.log").read_text()
+    assert "--remove-needed librocsolver.so.0" in calls
+
+
+def test_collects_what_the_dropped_dependency_alone_kept(bundled):
+    """rocroller is reachable only through rocSOLVER, so it goes with it."""
+    assert not (bundled / "librocroller.so.1").exists()
+
+
+def test_keeps_libraries_still_reachable_by_another_path(bundled):
+    """rocBLAS hangs off hip as well as rocSOLVER; pruning one edge must not take it."""
+    assert (bundled / "librocblas.so.5").is_file()
+    assert (bundled / "libhipblas.so.3").is_file()
+    assert (bundled / "libamdhip64.so.7").is_file()

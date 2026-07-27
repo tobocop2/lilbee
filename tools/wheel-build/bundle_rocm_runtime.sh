@@ -129,15 +129,76 @@ identical_to_a_kept_name() {
 # A copied library keeps the runpath it was built with, which points into the ROCm
 # install that will not exist on a user's machine. Repoint each at its own directory
 # so the bundle resolves against itself. patchelf is what auditwheel uses for this.
-repoint_runpaths() {
-  local soname
+assert_patchelf_available() {
   command -v patchelf >/dev/null || {
     echo "patchelf is required to relocate the bundled ROCm libraries" >&2
     exit 1
   }
+}
+
+repoint_runpaths() {
+  local soname
   for soname in $1; do
     patchelf --set-rpath '$ORIGIN' "${pkg_bin_dir}/${soname}"
   done
+}
+
+# hipBLAS declares rocSOLVER because it exposes LAPACK entry points. ggml calls only
+# the GEMM family (cublasGemmEx, cublasGemmStridedBatchedEx, cublasSgemm and friends,
+# hipified), so nothing here can reach it: 888 MB of a 2.2 GB bundle, and the
+# difference between the onefile executable fitting its 2 GB limit and not linking at
+# all. Drop the edge, then collect whatever it alone was keeping alive.
+prune_unreachable_deps() {
+  local target dep
+  for target in "${pkg_bin_dir}"/libhipblas.so*; do
+    [ -f "${target}" ] || continue
+    for dep in $(needed_by "${target}"); do
+      case "${dep}" in
+        librocsolver.so*)
+          patchelf --remove-needed "${dep}" "${target}"
+          echo "dropped unused dependency: ${dep} from $(basename "${target}")"
+          ;;
+      esac
+    done
+  done
+  drop_orphans
+}
+
+# Delete bundled libraries the engine can no longer reach. Recomputed from DT_NEEDED
+# rather than listed, so removing one edge collects its private dependencies too.
+drop_orphans() {
+  local seeds="" reachable="" pending next lib soname obj name
+  for obj in "${pkg_bin_dir}"/*; do
+    [ -f "${obj}" ] || continue
+    name="$(basename "${obj}")"
+    # Seeds are what the build produced; everything else was copied from ROCm.
+    case " ${bundled} " in *" ${name} "*) continue ;; esac
+    seeds="${seeds} ${obj}"
+  done
+
+  pending="${seeds}"
+  while [ -n "${pending}" ]; do
+    next=""
+    for lib in ${pending}; do
+      for soname in $(needed_by "${lib}"); do
+        case " ${reachable} " in *" ${soname} "*) continue ;; esac
+        [ -e "${pkg_bin_dir}/${soname}" ] || continue
+        reachable="${reachable} ${soname}"
+        next="${next} ${pkg_bin_dir}/${soname}"
+      done
+    done
+    pending="${next}"
+  done
+
+  local kept=""
+  for soname in ${bundled}; do
+    case " ${reachable} " in
+      *" ${soname} "*) kept="${kept} ${soname}" ;;
+      *) rm -f "${pkg_bin_dir}/${soname}"; echo "dropped orphaned library: ${soname}" ;;
+    esac
+  done
+  # The repoint pass walks this list, so a deleted library must leave it.
+  bundled="${kept}"
 }
 
 # rocBLAS loads its Tensile kernels as data rather than linking them, and looks beside
@@ -204,9 +265,11 @@ assert_bundle_is_complete() {
   }
 }
 
+assert_patchelf_available
 assert_rocm_dirs_exist
 assert_backend_was_built
 copy_rocm_closure
+prune_unreachable_deps
 drop_redundant_copies
 repoint_runpaths "${bundled}"
 copy_rocblas_kernels
