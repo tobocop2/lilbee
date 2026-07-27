@@ -862,6 +862,9 @@ async def sync(
     disk_files = discover_files()
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
+    # What the worker-pool decision is sized on. A rebuild drops the store above,
+    # so its sources are already empty here and the whole corpus counts as new.
+    unindexed = sum(1 for name in disk_files if name not in existing_sources)
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
@@ -911,7 +914,7 @@ async def sync(
                     cancel=cancel,
                     flush_failed=flush_failed,
                     reasons=reasons,
-                    corpus_size=len(disk_files),
+                    unindexed_files=unindexed,
                 )
             if cancel is not None and cancel.is_set():
                 # The stream stops feeding on cancel, so ingest can drain its
@@ -1141,6 +1144,37 @@ async def _warm_engine_for_workers(processes: int) -> None:
         await to_ingest_thread(warm_parent_engine)
 
 
+async def _stream_tasks(
+    shards: AsyncGenerator[list[FileToProcess]],
+    dispatcher: BatchDispatcher | None,
+    make_task: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+) -> AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]:
+    """Each shard's per-file coroutines, slotted into worker batches as the shard lands.
+
+    Slotting happens before the shard's coroutines are handed out, so no file can
+    be demanded from a batch that was cut before it was planned.
+    """
+    index = count(1)
+    start = 0
+    async for shard in shards:
+        if dispatcher is not None:
+            dispatcher.add_shard(shard, start)
+        yield [make_task(entry, next(index)) for entry in shard]
+        start += len(shard)
+
+
+async def _open_worker_pool(
+    processes: int,
+) -> tuple[ProcessPoolExecutor | None, BatchDispatcher | None]:
+    """The worker pool and its dispatcher, or (None, None) when ingest stays in-process."""
+    await _warm_engine_for_workers(processes)
+    if processes <= 1:
+        return None, None
+    pool = build_pool(processes, active_config(), _max_concurrent())
+    log.warning("Ingesting across %d worker processes", processes)
+    return pool, BatchDispatcher(pool)
+
+
 async def _chain_shards(
     first: list[FileToProcess], rest: AsyncGenerator[list[FileToProcess]]
 ) -> AsyncGenerator[list[FileToProcess]]:
@@ -1162,7 +1196,7 @@ async def ingest_stream(
     cancel: threading.Event | None = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
-    corpus_size: int = 0,
+    unindexed_files: int = 0,
 ) -> None:
     """Ingest a stream of planned file shards, optionally showing a Rich progress bar.
 
@@ -1175,10 +1209,14 @@ async def ingest_stream(
     # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
     # unit of GPU-feeding work for the adaptive controller to hill-climb on.
     pages_done = [0]
-    # Sized off the corpus on disk, not the planned count: the plan streams in
-    # shards and its total is unknown until the stream drains, but the pool has
-    # to be decided before the first shard is dispatched.
-    processes = resolve_process_count(corpus_size)
+    # Sized off the files with no source row yet, not the planned count: the plan
+    # streams in shards and its total is unknown until the stream drains, but the
+    # pool has to be decided before the first shard is dispatched. Unindexed files
+    # are the one part of the plan that is known without diffing, exact for a first
+    # ingest or a rebuild and near zero for an incremental sync, so a small sync
+    # over a large corpus stays in-process. Undercounting only keeps a run
+    # in-process, which is the safe direction.
+    processes = resolve_process_count(unindexed_files)
     admission, window, controller_task = _admission_for(processes, pages_done)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
@@ -1255,38 +1293,23 @@ async def ingest_stream(
                 pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
                 return _IngestResult(name, entry.path, 0, error=exc)
 
-    await _warm_engine_for_workers(processes)
-    pool = build_pool(processes, active_config(), _max_concurrent()) if processes > 1 else None
-    dispatcher = BatchDispatcher(pool) if pool is not None else None
-    if dispatcher is not None:
-        log.warning("Ingesting across %d worker processes", processes)
+    pool, dispatcher = await _open_worker_pool(processes)
 
-    async def _tasks() -> AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]:
-        index = count(1)
-        start = 0
-        async for shard in shards:
-            if dispatcher is None:
-                yield [_process_one(entry, next(index)) for entry in shard]
-                continue
-            # Slot the shard's files into worker batches as it lands, before any
-            # of them can be demanded.
-            dispatcher.add_shard(shard, start)
-            yield [
-                _collect_from_worker(
-                    entry,
-                    next(index),
-                    dispatcher,
-                    planned=lambda: feed.planned,
-                    pages_done=pages_done,
-                    on_progress=on_progress,
-                    cancel=cancel,
-                    fallback=_process_one,
-                )
-                for entry in shard
-            ]
-            start += len(shard)
+    def _make_task(entry: FileToProcess, file_index: int) -> Coroutine[Any, Any, _IngestResult]:
+        if dispatcher is None:
+            return _process_one(entry, file_index)
+        return _collect_from_worker(
+            entry,
+            file_index,
+            dispatcher,
+            planned=lambda: feed.planned,
+            pages_done=pages_done,
+            on_progress=on_progress,
+            cancel=cancel,
+            fallback=_process_one,
+        )
 
-    feed = _ResultFeed(_tasks())
+    feed = _ResultFeed(_stream_tasks(shards, dispatcher, _make_task))
     collect = _collect_results if quiet else _collect_under_bar
     try:
         await collect(

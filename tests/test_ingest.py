@@ -226,6 +226,34 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
+    async def test_pool_is_sized_on_unindexed_files_not_the_whole_corpus(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """An incremental sync over an indexed corpus must not reach for a pool.
+
+        The streamed plan has no total up front, so the pool decision is sized on
+        a pre-diff proxy. Sizing it on every file on disk would spawn workers for
+        a two-file sync of a large indexed corpus.
+        """
+        from lilbee.data.ingest import pipeline as pipeline_mod
+        from lilbee.data.ingest import sync
+
+        for i in range(3):
+            (isolated_env / f"c{i}.txt").write_text(f"body {i}")
+        await sync()  # index them, so the next pass sees them as unchanged
+
+        sized_on: list[int] = []
+        monkeypatch.setattr(
+            pipeline_mod,
+            "resolve_process_count",
+            lambda count: sized_on.append(count) or 1,
+        )
+        (isolated_env / "new.txt").write_text("only this one is new")
+        await sync()
+
+        # One new file, three already indexed: the corpus is 4.
+        assert sized_on == [1]
+
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
 
@@ -893,7 +921,7 @@ class TestSyncCancellation:
         skipped: dict[str, None] = {}
 
         await ingest_stream(
-            one_shard(files), added, {}, {}, skipped, quiet=True, corpus_size=len(files)
+            one_shard(files), added, {}, {}, skipped, quiet=True, unindexed_files=len(files)
         )
 
         # Ordering is the fix for the A/B that embedded 0 of 50k: a pool built
