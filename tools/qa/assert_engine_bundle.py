@@ -50,6 +50,20 @@ REQUIRED = {
         ("libcublasLt.so.<major>", r"libcublasLt\.so\.\d+"),
     ),
 }
+# What a ROCm wheel must carry beside its backend, since libggml-hip links all of
+# it and only the kernel driver comes from the host. Matched on the library rather
+# than its SONAME version: those move every ROCm release, and pinning them would
+# fail the gate on an upgrade that is in fact correct.
+#
+# The kernels are the entry that is easy to miss. rocBLAS loads them as data at
+# runtime instead of linking them, so omitting them yields a wheel that resolves
+# every library and then dies on the first matrix multiply.
+ROCM_RUNTIME = (
+    ("libamdhip64.so.<major>", r"libamdhip64\.so(\.[\d.]+)?"),
+    ("librocblas.so.<major>", r"librocblas\.so(\.[\d.]+)?"),
+    ("libhipblas.so.<major>", r"libhipblas\.so(\.[\d.]+)?"),
+    ("rocblas/library/ (rocBLAS Tensile kernels)", r"rocblas/library/.+"),
+)
 # Any CUDA runtime library, used to assert non-CUDA wheels stay clean.
 ANY_CUDA_RUNTIME = re.compile(r"(cudart|cublas|cublasLt|nvrtc)", re.IGNORECASE)
 # The ggml CUDA backend. Its presence is what makes a wheel a CUDA build. Read the
@@ -135,10 +149,19 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
     platform = _platform_of(name)
     backend = backend or _backend_of(name)
     problems = []
-    if backend:
-        missing = _missing_backend_library(name, backend, platform, entries)
-        if missing:
-            problems.append(missing)
+    missing = _missing_backend_library(name, backend, platform, entries) if backend else None
+    if missing:
+        problems.append(missing)
+
+    if backend == "rocm" and platform == "linux" and not missing:
+        # Only worth asking once the backend is actually there: a wheel with no
+        # libggml-hip.so has a bigger problem than a missing runtime beside it.
+        problems.extend(
+            f"{name}: rocm wheel is missing {display} from {BIN_DIR} "
+            f"(libggml-hip links it, and only the kernel driver comes from the host)"
+            for display, pattern in ROCM_RUNTIME
+            if not any(re.fullmatch(pattern, entry) for entry in entries)
+        )
 
     # A declared flavor is the better answer, since the whole point of the check
     # above is that the payload can disagree with what the build asked for.

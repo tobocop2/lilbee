@@ -25,6 +25,13 @@ acb = _load()
 
 _LINUX_RUNTIME = ("libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12")
 _WINDOWS_RUNTIME = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+# What a rocm wheel must carry beside libggml-hip.so.
+_ROCM_RUNTIME = (
+    "libamdhip64.so.7",
+    "librocblas.so.4",
+    "libhipblas.so.3",
+    "rocblas/library/TensileLibrary.dat",
+)
 
 
 def _wheel(tmp_path: Path, name: str, bin_files: tuple[str, ...]) -> Path:
@@ -140,7 +147,7 @@ def test_rocm_wheel_with_the_hip_backend_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
-        ("llama-server", "libggml-cpu.so", "libggml-hip.so"),
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so", *_ROCM_RUNTIME),
     )
     assert acb.check(wheel) == []
 
@@ -152,7 +159,7 @@ def test_a_versioned_soname_alone_satisfies_the_backend_check(tmp_path: Path) ->
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
-        ("llama-server", "libggml-cpu.so", "libggml-hip.so.0.15.1"),
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so.0.15.1", *_ROCM_RUNTIME),
     )
     assert acb.check(wheel) == []
 
@@ -227,6 +234,69 @@ def test_an_unrecognised_backend_asserts_nothing(tmp_path: Path) -> None:
         tmp_path,
         "lilbee_engine-1.0-1.cann-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_rocm_wheel_without_the_runtime_is_rejected(tmp_path: Path) -> None:
+    # The backend is present but the libraries it links are not, so it loads on a
+    # machine with ROCm installed and silently falls back to CPU everywhere else.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so"),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == len(_ROCM_RUNTIME)
+    assert any("libamdhip64" in p for p in problems)
+    assert any("rocblas/library" in p for p in problems)
+
+
+def test_rocm_wheel_with_the_runtime_passes(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so", "libggml-hip.so", *_ROCM_RUNTIME),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_rocm_wheel_without_the_tensile_kernels_is_rejected(tmp_path: Path) -> None:
+    # rocBLAS loads these as data at runtime rather than linking them, so the
+    # library resolves and then fails on the first matrix multiply.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-hip.so", *_ROCM_RUNTIME[:3]),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "rocblas/library" in problems[0]
+
+
+def test_a_rocm_soname_bump_does_not_fail_the_gate(tmp_path: Path) -> None:
+    # The gate must key on the library, not the ROCm release that produced it, or
+    # every upgrade is a red build for a wheel that is in fact correct.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        (
+            "llama-server",
+            "libggml-hip.so",
+            "libamdhip64.so.9",
+            "librocblas.so.10",
+            "libhipblas.so.42",
+            "rocblas/library/TensileLibrary.dat",
+        ),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_a_non_rocm_wheel_is_not_asked_for_the_rocm_runtime(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-vulkan.so"),
     )
     assert acb.check(wheel) == []
 
