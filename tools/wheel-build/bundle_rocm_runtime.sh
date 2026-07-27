@@ -8,7 +8,9 @@
 # ROCm has ROCm on it. tools/qa/assert_rocm_bundle_loads.sh settles that.
 #
 # Reads:
-#   ROCM_PATH  the ROCm install to pack from (default from engine-versions.env)
+#   ROCM_PATH     the ROCm install to pack from (default from engine-versions.env)
+#   ROCM_TARGETS  the gfx targets the engine was compiled for; rocBLAS kernels for any
+#                 other architecture are dropped. Unset keeps them all.
 # Argument:
 #   the wheel's bin/ directory, holding the freshly built engine
 
@@ -71,25 +73,65 @@ copy_rocm_closure() {
   echo "bundled ROCm runtime:${bundled:- NONE}"
 }
 
-# The build dereferences SONAME symlinks into real files, so libggml-hip.so ships
-# three times at 437 MB each. Keep the names something actually loads by, a DT_NEEDED
-# entry or the plain name ggml dlopens, and drop byte-identical leftovers. Wheels
-# cannot carry symlinks: zipfile writes the target path as file content.
+# The build dereferences SONAME symlinks into real files, so each library ships up to
+# three times: libggml-hip.so, .so.0 and .so.0.15.1 at 437 MB each. Wheels cannot carry
+# symlinks (zipfile writes the link target as file content), so the duplicates have to
+# be deleted rather than relinked.
+#
+# Which name is load-bearing depends on how ggml was built, so it is derived rather than
+# assumed. With GGML_BACKEND_DL off, as here, backends are linked and something
+# DT_NEEDEDs the SONAME: keep only the names in that set. With it on, nothing references
+# the group at all and ggml dlopens the plain name: keep that instead. Only ever drops a
+# byte-identical duplicate of a name that survives.
 drop_redundant_copies() {
-  local needed="" obj name plain
+  local needed="" obj name stem keep
   for obj in "${pkg_bin_dir}"/*; do
     [ -f "${obj}" ] || continue
     needed="${needed} $(needed_by "${obj}" | tr '\n' ' ')"
   done
-  for obj in "${pkg_bin_dir}"/*.so.*; do
+
+  for obj in "${pkg_bin_dir}"/*.so*; do
     [ -f "${obj}" ] || continue
     name="$(basename "${obj}")"
+    stem="${name%%.so*}"
+    # A name something links against is load-bearing whatever else is true.
     case " ${needed} " in *" ${name} "*) continue ;; esac
-    plain="${pkg_bin_dir}/${name%%.so.*}.so"
-    [ -f "${plain}" ] && cmp -s "${obj}" "${plain}" || continue
+    if group_is_linked "${stem}" "${needed}"; then
+      # Linked group: the SONAME carries it, so this alias is dead.
+      keep=""
+    else
+      # dlopen group: the plain name is the only one ggml can ask for.
+      [ "${name}" = "${stem}.so" ] && keep="1" || keep=""
+    fi
+    [ -z "${keep}" ] || continue
+    identical_to_a_kept_name "${obj}" "${stem}" "${needed}" || continue
     rm -f "${obj}"
     echo "dropped redundant copy: ${name}"
   done
+}
+
+# Does anything link against some member of this library's name group?
+group_is_linked() {
+  local stem="$1" needed="$2" n
+  for n in ${needed}; do
+    case "${n}" in "${stem}.so"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Only delete a file whose bytes survive under another name, so a mistake in the rules
+# above cannot remove the last copy of a library.
+identical_to_a_kept_name() {
+  local obj="$1" stem="$2" needed="$3" other name
+  for other in "${pkg_bin_dir}/${stem}".so*; do
+    [ -f "${other}" ] || continue
+    [ "${other}" != "${obj}" ] || continue
+    name="$(basename "${other}")"
+    case " ${needed} " in *" ${name} "*) cmp -s "${obj}" "${other}" && return 0 ;; esac
+    [ "${name}" = "${stem}.so" ] || continue
+    group_is_linked "${stem}" "${needed}" || { cmp -s "${obj}" "${other}" && return 0; }
+  done
+  return 1
 }
 
 # A copied library keeps the runpath it was built with, which points into the ROCm
@@ -114,6 +156,31 @@ copy_rocblas_kernels() {
   [ -d "${rocm_root}/lib/rocblas/library" ] || return 0
   mkdir -p "${pkg_bin_dir}/rocblas"
   cp -RL "${rocm_root}/lib/rocblas/library" "${pkg_bin_dir}/rocblas/"
+  drop_kernels_for_unbuilt_targets
+}
+
+# rocBLAS ships kernels for every architecture its build covered, which is more than the
+# engine was compiled for. A kernel file names its target, so the ones for architectures
+# this wheel cannot run on are dead weight. ROCM_TARGETS is what cmake was given; without
+# it nothing is dropped, since guessing wrong here costs a GPU that silently falls back.
+drop_kernels_for_unbuilt_targets() {
+  local dir="${pkg_bin_dir}/rocblas/library" file name target keep
+  [ -n "${ROCM_TARGETS:-}" ] || { echo "ROCM_TARGETS unset: keeping every rocBLAS kernel"; return 0; }
+  local wanted=" $(echo "${ROCM_TARGETS}" | tr ';' ' ') "
+
+  for file in "${dir}"/*; do
+    [ -f "${file}" ] || continue
+    name="$(basename "${file}")"
+    # The architecture this file is for, if it names one. Files that name none are
+    # shared metadata and always stay.
+    # || true: grep exits 1 on the metadata files that name no architecture, which
+    # set -e would otherwise treat as a build failure.
+    target="$(echo "${name}" | grep -o 'gfx[0-9a-f]*' | head -1 || true)"
+    [ -n "${target}" ] || continue
+    case "${wanted}" in *" ${target} "*) keep="1" ;; *) keep="" ;; esac
+    [ -n "${keep}" ] || rm -f "${file}"
+  done
+  echo "rocBLAS kernels kept for:${ROCM_TARGETS}"
 }
 
 assert_rocm_dirs_exist() {

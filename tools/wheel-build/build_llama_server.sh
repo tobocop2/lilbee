@@ -228,7 +228,10 @@ fi
 # resolves it, exactly as the CUDA runtime does. Its own script because unlike the
 # CUDA copy above it can be exercised without a GPU or a ROCm install, and is.
 if [ "${backend}" = "rocm" ]; then
-  "${script_dir}/bundle_rocm_runtime.sh" "${pkg_bin_dir}"
+  # The targets cmake was actually given, so the bundler can drop rocBLAS kernels for
+  # architectures this engine cannot run on.
+  rocm_targets="$(printf '%s\n' ${CMAKE_ARGS} | sed -n 's/^-DAMDGPU_TARGETS=//p')"
+  ROCM_TARGETS="${rocm_targets}" "${script_dir}/bundle_rocm_runtime.sh" "${pkg_bin_dir}"
 fi
 
 # The copied closure must actually resolve: exec the bundled binary from the

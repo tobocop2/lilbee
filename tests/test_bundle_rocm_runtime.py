@@ -80,7 +80,9 @@ def rocm_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     llvm = lib / "llvm/lib"
     (lib / "rocblas/library").mkdir(parents=True)
     llvm.mkdir(parents=True)
-    (lib / "rocblas/library/TensileLibrary.dat").write_text("kernels")
+    (lib / "rocblas/library/TensileManifest.txt").write_text("shared metadata")
+    for arch in ("gfx906", "gfx90a", "gfx942", "gfx1100"):
+        (lib / f"rocblas/library/TensileLibrary_{arch}.dat").write_text(f"kernels for {arch}")
     for name in _ROCM_GRAPH:
         target = llvm if name in _LLVM_LIBS else lib
         (target / name).write_text(f"elf: {name}")
@@ -109,6 +111,7 @@ def _run(
     rocm_tree: pathlib.Path,
     tmp_path: pathlib.Path,
     needed: dict[str, list[str]] | None = None,
+    targets: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     stub_dir = tmp_path / "stub"
     _write_stub_readelf(stub_dir, _NEEDED if needed is None else needed)
@@ -117,6 +120,8 @@ def _run(
         "ROCM_PATH": str(rocm_tree),
         "PATH": f"{stub_dir}:/usr/bin:/bin",
     }
+    if targets is not None:
+        env["ROCM_TARGETS"] = targets
     return subprocess.run(
         ["bash", str(_SCRIPT), str(bin_dir)],
         capture_output=True,
@@ -168,7 +173,7 @@ def test_leaves_host_libraries_alone(bundled):
 
 def test_bundles_the_rocblas_kernels(bundled):
     """rocBLAS loads these as data at runtime; without them the first matmul fails."""
-    assert (bundled / "rocblas/library/TensileLibrary.dat").is_file()
+    assert (bundled / "rocblas/library/TensileLibrary_gfx942.dat").is_file()
 
 
 def test_drops_a_soname_alias_nothing_loads_by(bin_dir, rocm_tree, tmp_path):
@@ -187,6 +192,49 @@ def test_keeps_an_alias_something_links_against(bin_dir, rocm_tree, tmp_path):
     result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
     assert result.returncode == 0, result.stderr
     assert (bin_dir / "libggml-base.so.0").is_file()
+
+
+def _alias_group(bin_dir: pathlib.Path, stem: str, body: str) -> None:
+    """The three real files the build leaves where a SONAME symlink chain would be."""
+    for name in (f"{stem}.so", f"{stem}.so.0", f"{stem}.so.0.15.1"):
+        (bin_dir / name).write_text(body)
+
+
+def test_keeps_only_the_soname_when_the_backend_is_linked(bin_dir, rocm_tree, tmp_path):
+    """GGML_BACKEND_DL is off here, so libggml.so.0 links the backend by SONAME.
+
+    The plain name and the fully-versioned file are then dead weight, and at 437MB each
+    they are most of the wheel.
+    """
+    _alias_group(bin_dir, "libggml-hip", "elf: libggml-hip.so")
+    needed = {**_NEEDED, "libggml-base.so": ["libggml-hip.so.0", "libomp.so"]}
+    result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libggml-hip.so.0").is_file()
+    assert not (bin_dir / "libggml-hip.so.0.15.1").exists()
+    assert not (bin_dir / "libggml-hip.so").exists()
+
+
+def test_keeps_the_plain_name_when_nothing_links_the_group(bin_dir, rocm_tree, tmp_path):
+    """The other build shape: with backends dlopened, the plain name is the only one asked for.
+
+    Deleting it would leave a bundle that loads and then finds no GPU backend, which no
+    linker-level check could catch.
+    """
+    _alias_group(bin_dir, "libggml-extra", "elf: libggml-extra.so")
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libggml-extra.so").is_file()
+    assert not (bin_dir / "libggml-extra.so.0").exists()
+    assert not (bin_dir / "libggml-extra.so.0.15.1").exists()
+
+
+def test_never_drops_the_only_copy_of_a_library(bin_dir, rocm_tree, tmp_path):
+    """A lone versioned file has no surviving twin, so it must be left alone."""
+    (bin_dir / "libsolo.so.4").write_text("elf: the only copy")
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libsolo.so.4").is_file()
 
 
 def test_keeps_an_alias_whose_bytes_differ(bin_dir, rocm_tree, tmp_path):
@@ -272,3 +320,33 @@ def test_fails_when_the_kernels_are_missing(bin_dir, rocm_tree, tmp_path):
     result = _run(bin_dir, rocm_tree, tmp_path)
     assert result.returncode == 1
     assert "rocBLAS kernels missing" in result.stderr
+
+
+def test_drops_kernels_for_architectures_the_engine_cannot_run(bin_dir, rocm_tree, tmp_path):
+    """rocBLAS ships kernels for every arch its own build covered, not the ones we compiled.
+
+    They are the single largest thing in the bundle after the backend itself.
+    """
+    result = _run(bin_dir, rocm_tree, tmp_path, targets="gfx942;gfx1100")
+    assert result.returncode == 0, result.stderr
+    kernels = bin_dir / "rocblas/library"
+    assert (kernels / "TensileLibrary_gfx942.dat").is_file()
+    assert (kernels / "TensileLibrary_gfx1100.dat").is_file()
+    assert not (kernels / "TensileLibrary_gfx906.dat").exists()
+    assert not (kernels / "TensileLibrary_gfx90a.dat").exists()
+
+
+def test_keeps_kernel_files_that_name_no_architecture(bin_dir, rocm_tree, tmp_path):
+    """Shared metadata has no gfx token and dropping it would break every target."""
+    result = _run(bin_dir, rocm_tree, tmp_path, targets="gfx942")
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "rocblas/library/TensileManifest.txt").is_file()
+
+
+def test_keeps_every_kernel_when_the_targets_are_unknown(bin_dir, rocm_tree, tmp_path):
+    """Guessing wrong costs a card that silently falls back to CPU, so unset means keep all."""
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 0, result.stderr
+    kernels = bin_dir / "rocblas/library"
+    assert (kernels / "TensileLibrary_gfx906.dat").is_file()
+    assert (kernels / "TensileLibrary_gfx942.dat").is_file()
