@@ -181,6 +181,34 @@ def _assume_litellm_available(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sealed_engine_resolution(request, monkeypatch):
+    """Seal engine-binary resolution so every machine behaves like CI.
+
+    resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
+    empty (always, outside a release build), so a developer with llama-server
+    installed resolves a real binary where CI raises ProviderError. Blocking
+    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
+    override forces a test that needs a binary to plant its own (a tmp-file
+    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
+    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    """
+    import shutil
+
+    from lilbee.providers.fleet.binary import EngineTool
+
+    if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
+        return
+    monkeypatch.setattr(cfg, "llama_server_path", "")
+    sealed = {tool.value for tool in EngineTool}
+    real_which = shutil.which
+
+    def _engineless_which(cmd, *args, **kwargs):
+        return None if cmd in sealed else real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _engineless_which)
+
+
+@pytest.fixture(autouse=True)
 def _reset_services_after_test():
     """Drop any Services container ``set_services()`` left around.
 
