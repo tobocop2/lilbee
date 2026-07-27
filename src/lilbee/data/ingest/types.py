@@ -93,7 +93,7 @@ class ChunkRecord(TypedDict):
     chunk: str
     chunk_index: int
     vector: Vector
-    # Stamped once per document by the pipeline (see _produce_records); None
+    # Stamped once per document by the pipeline (see produce_records); None
     # when the title is empty, so chunk rows persist NULL like the _sources table.
     title: NotRequired[str | None]
 
