@@ -12,7 +12,7 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
-from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
+from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
 
 # Extra VRAM held back on the busiest card on top of the gguf-parser estimate.
@@ -53,7 +53,7 @@ def fit_split_ctx(
     reserve. Falls to the floor when even the floor overflows.
     """
     headrooms = [
-        int(free * USABLE_VRAM_FRACTION) - _MAIN_GPU_SKEW_RESERVE_BYTES
+        int(free * usable_vram_fraction()) - _MAIN_GPU_SKEW_RESERVE_BYTES
         for free in per_device_free_bytes
     ]
     if min(headrooms) <= 0:

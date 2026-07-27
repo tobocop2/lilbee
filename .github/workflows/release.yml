@@ -397,6 +397,22 @@ jobs:
             cat "$MP"
             exit 1
           fi
+
+          #   2. the GPU probe subprocess: [exe, -m, lilbee.providers.fleet.vulkan_probe]
+          # Exit 2 means "loader has no opinion", which is a correct answer on a
+          # runner with no Vulkan ICD. A missing module is not.
+          VP=$(mktemp)
+          "$EXE" -m lilbee.providers.fleet.vulkan_probe > "$VP" 2>&1 || true
+          if grep -qE "No such command|No such option" "$VP"; then
+            echo "FAIL: vulkan probe -m reinvocation leaked into typer"
+            cat "$VP"
+            exit 1
+          fi
+          if grep -qE "No module named|ModuleNotFoundError" "$VP"; then
+            echo "FAIL: vulkan probe module is not bundled in the frozen binary"
+            cat "$VP"
+            exit 1
+          fi
           # Any traceback means the dispatch crashed running the module. runpy.run_module
           # raised AttributeError ("nuitka_module_loader has no attribute 'get_code'") in
           # the onefile binary; fd 999 is dead, so the runner must exit silently.

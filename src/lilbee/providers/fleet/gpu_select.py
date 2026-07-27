@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import fnmatch
+import json
 import logging
 import ntpath
 import os
@@ -34,6 +35,13 @@ from lilbee.providers.fleet.vulkan_icd_discovery import (
 )
 
 log = logging.getLogger(__name__)
+
+# The child that runs the loader, and how long it may take. The bound matters:
+# a wedged ICD can hang inside vkCreateInstance rather than fault, and the
+# placement read that asked must not hang with it.
+_PROBE_MODULE = "lilbee.providers.fleet.vulkan_probe"
+_PROBE_TIMEOUT_S = 10.0
+_PROBE_KILL_WAIT_S = 5.0
 
 # vk.h constants. Mirrored here so we don't drag a vulkan-headers
 # dependency in for four magic numbers. See the upstream definitions in
@@ -493,16 +501,17 @@ def _known_device_type(value: int) -> VkDeviceType | None:
         return None
 
 
-def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
+def enumerate_in_process() -> list[VulkanDevice] | None:
     """Open libvulkan, create a throwaway instance, enumerate adapters.
 
     Returns ``None`` if the loader can't be found or any Vulkan call
     fails; empty list ("loader present, no adapters") is a distinct
     outcome and propagates back.
 
-    Uncached, and each caller decides for itself whether to hold the answer: the
-    device types are a property of the machine and are cached, while free memory
-    is a live number that is read fresh every time it is asked for.
+    Runs the loader in whatever process calls it, which is why
+    :func:`_enumerate_vulkan_devices` calls it in a child rather than directly:
+    ``vkCreateInstance`` loads every vendor ICD on the host, and a faulting one
+    raises no exception, it raises a signal.
     """
     lib = _load_vulkan_loader()
     if lib is None:
@@ -513,6 +522,54 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     except OSError:
         # ctypes argument / call-site errors land here; treat as
         # "probe failed" rather than crashing the host process.
+        return None
+
+
+def _run_probe_child() -> tuple[str, int, str]:
+    """Run the enumeration in a child; returns ``(stdout, returncode, stderr)``."""
+    from lilbee.providers.fleet.proc import run_bounded
+
+    argv = [sys.executable, "-m", _PROBE_MODULE]
+    stdout, returncode = run_bounded(
+        argv,
+        timeout_s=_PROBE_TIMEOUT_S,
+        kill_wait_s=_PROBE_KILL_WAIT_S,
+        label="vulkan-probe",
+    )
+    return stdout, returncode, ""
+
+
+def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
+    """The adapters the Vulkan loader reports, or ``None`` for no opinion.
+
+    Asked of a short-lived child. ``vkCreateInstance`` pre-loads every vendor ICD
+    on the host, and a broken or conflicting one faults inside the loader; a
+    fault is a signal, so no ``except`` here could keep the daemon alive. In a
+    child, dying is simply an answer. Every failure reads the same as an
+    unreachable loader, which is the state the callers were written for.
+
+    An empty list still means "loader present, no adapters", which is a
+    different fact and propagates back intact.
+
+    Uncached, and each caller decides for itself whether to hold the answer: the
+    device types are a property of the machine and are cached, while free memory
+    is a live number that is read fresh every time it is asked for.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.vulkan_probe import from_json
+
+    try:
+        stdout, returncode, stderr = _run_probe_child()
+    except (ProviderError, OSError) as exc:
+        log.debug("Vulkan probe child could not be run: %s", exc)
+        return None
+    if returncode != 0:
+        log.debug("Vulkan probe child exited %s: %s", returncode, stderr.strip() or stdout.strip())
+        return None
+    try:
+        return from_json(json.loads(stdout))
+    except (ValueError, KeyError, TypeError) as exc:
+        log.debug("Vulkan probe child printed no usable device list: %s", exc)
         return None
 
 

@@ -1326,7 +1326,7 @@ class TestVulkanGpuSelect:
         from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: None)
-        assert gpu_select._enumerate_vulkan_devices() is None
+        assert gpu_select.enumerate_in_process() is None
 
     def test_enumerate_catches_oserror_from_ctypes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.fleet import gpu_select
@@ -1337,7 +1337,7 @@ class TestVulkanGpuSelect:
             raise OSError("symbol not found")
 
         monkeypatch.setattr(gpu_select, "_list_devices_with_instance", _raises)
-        assert gpu_select._enumerate_vulkan_devices() is None
+        assert gpu_select.enumerate_in_process() is None
 
     def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
         """``_resolve_vk_symbols`` reads five named attributes off the loader."""

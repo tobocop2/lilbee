@@ -73,6 +73,8 @@ _VISION_PAGE_CTX_CAP = 32768
 image tokens plus prompt, while keeping a long-context VLM placeable beside a chat giant."""
 
 _N_GPU_LAYERS_AUTO = -1
+# llama.cpp's "offload nothing"; the user's CPU-only opt-out rather than a budget.
+_N_GPU_LAYERS_NONE = 0
 """llama.cpp's "offload every layer" sentinel for n_gpu_layers."""
 
 
@@ -174,7 +176,18 @@ def resolve_chat_ctx(
 
 
 def resolve_n_gpu_layers(*, embedding: bool) -> int:
-    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama.cpp's offload integer."""
+    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama.cpp's offload integer.
+
+    Zero is honoured for every role. It is not a layer budget but the way a user
+    says "run this on the CPU", and the search roles used to take the
+    full-offload sentinel before the setting was read, so embed, rerank and
+    vision kept loading onto the GPU that had just been excluded.
+
+    Any other value is a chat-shaped budget and says nothing useful about a small
+    embedding model, which still offloads fully.
+    """
+    if cfg.n_gpu_layers == _N_GPU_LAYERS_NONE:
+        return _N_GPU_LAYERS_NONE
     if embedding or cfg.n_gpu_layers is None:
         return _N_GPU_LAYERS_AUTO
     return cfg.n_gpu_layers

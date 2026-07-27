@@ -1639,3 +1639,71 @@ def test_probe_client_is_shared_across_calls() -> None:
         # Close before dropping the cache entry so the pool is not leaked.
         client.close()
         sm._probe_client.cache_clear()
+
+
+class TestEstimateReadback:
+    """A newly-ready engine is compared to what placement charged it, once."""
+
+    @staticmethod
+    def _manager(tmp_path):
+        from lilbee.providers.fleet.groups import SwapGroup
+        from lilbee.providers.fleet.swap_manager import SwapManager
+
+        return SwapManager(tmp_path, SwapGroup.CHAT)
+
+    @staticmethod
+    def _launch(est: int):
+        from lilbee.providers.fleet.launch import InstanceLaunch
+        from lilbee.providers.roles import WorkerRole
+
+        return InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="org/chat.gguf",
+            est_vram_bytes=est,
+        )
+
+    def test_a_ready_engine_is_checked_against_its_estimate(self, tmp_path, caplog) -> None:
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors:  CUDA0 model buffer size =  8192.00 MiB\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert "planned for 4.0 GiB" in caplog.text
+
+    def test_it_does_not_repeat_on_every_readiness_poll(self, tmp_path, caplog) -> None:
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors:  CUDA0 model buffer size =  8192.00 MiB\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+            manager._check_estimates({"chat-0"})
+        assert caplog.text.count("planned for") == 1
+
+    def test_an_unsized_model_is_skipped(self, tmp_path, caplog) -> None:
+        # A model the estimator could not size is enrolled at 0; there is nothing
+        # to compare it to, and a warning would be noise.
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(0)}
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert caplog.text == ""
+
+    def test_an_unknown_model_id_is_skipped(self, tmp_path, caplog) -> None:
+        manager = self._manager(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"ghost-0"})
+        assert caplog.text == ""

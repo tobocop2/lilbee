@@ -27,6 +27,9 @@ _LIST_DEVICES_TIMEOUT_S = 60.0
 # How long to wait for a killed probe to be reaped before abandoning it: a child
 # wedged in uninterruptible GPU-driver I/O ignores even SIGKILL.
 _PROBE_KILL_WAIT_S = 5.0
+# How much of the probe's own output to quote in a diagnostic. Enough to carry
+# the driver's error line, short enough to stay a readable message.
+_PROBE_TAIL_CHARS = 400
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # llama-server prints this before the device loop, so a run that lists no GPUs
@@ -46,6 +49,8 @@ _CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
 _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
 _ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
 _HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
+# ROCm's third numeric visibility variable, filtering exactly as the other two do.
+_GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
 _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
@@ -181,13 +186,37 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     """
     try:
         output, returncode = _run_list_devices(binary, timeout_s)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Silently returning an empty probe here made an unrunnable binary look
+        # exactly like a host with no GPU, and the fleet planned for CPU with
+        # nothing said. The reason is the whole diagnosis: a wrong architecture,
+        # a missing loader, a permission denial.
+        log.warning(
+            "Could not run the GPU device probe (%s --list-devices): %s. Continuing "
+            "as though this host has no GPU; check that the engine binary is "
+            "executable and built for this machine.",
+            binary.name,
+            exc,
+        )
         return DeviceProbe([], "")
     parsed = _parse_devices(output)
     selected = _select_backend(parsed)
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
-    spoke = returncode == 0 and _DEVICE_LIST_HEADER in output
-    if not spoke:
+    answered = _DEVICE_LIST_HEADER in output
+    spoke = returncode == 0 and answered
+    if not spoke and answered:
+        # It knew the flag and started answering, then died. Blaming the flag
+        # here sent the reader looking for the wrong engine build, when what
+        # they have is a crash partway through enumeration.
+        log.warning(
+            "%s --list-devices printed its device header then crashed (exit %d), so the "
+            "device list may be incomplete. This is usually a GPU driver or ICD fault "
+            "during enumeration. The probe reported: %s",
+            binary.name,
+            returncode,
+            _probe_tail(output),
+        )
+    elif not spoke:
         log.warning(
             "%s --list-devices exited %d without printing its device header, so it "
             "does not appear to support the flag. Falling back to the host's Vulkan "
@@ -223,15 +252,32 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             label=f"{binary.name} --list-devices",
             bind_lifetime=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        # Whatever the probe managed to print before it wedged says more than any
+        # fixed advice can, and the fixed advice named one vendor's tool at a host
+        # that may have neither that vendor nor that tool.
         raise ProviderError(
             f"The GPU device probe ({binary.name} --list-devices) did not respond "
-            f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver "
-            "may be in a bad state: check that 'nvidia-smi' responds, and reboot "
-            "the host if it hangs.",
+            f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver is "
+            "most likely wedged; check that your vendor's tool responds (nvidia-smi, "
+            "rocm-smi, xpu-smi) and reboot the host if it hangs.\n"
+            f"The probe reported: {_probe_tail(_decoded_output(exc.output))}",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from None
+
+
+def _decoded_output(output: object) -> str:
+    """Partial child output from a timeout, which arrives as bytes even under text mode."""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output if isinstance(output, str) else ""
+
+
+def _probe_tail(output: str) -> str:
+    """The tail of what the probe printed, for a message that has to stay readable."""
+    text = output.strip()
+    return text[-_PROBE_TAIL_CHARS:] if text else "(nothing)"
 
 
 def _parse_devices(text: str) -> list[FleetDevice]:
@@ -495,12 +541,21 @@ def amd_visible_var() -> str:
     wrong cards, or none at all: ``1`` on a two-GPU box exposes physical GPU 1 as
     index 0 through ROCr, and HIP then asks for index 1 of a one-device list.
 
-    So exactly one is ever written: the one the environment already restricts,
-    or HIP when it restricts neither. Every caller writing an AMD pin asks here,
-    since two callers each picking their own would put the pair back.
+    ``GPU_DEVICE_ORDINAL`` is the third, and it filters the same way. Writing HIP
+    on top of an ordinal mask both overrode it and re-exposed cards it had
+    hidden, since the indices were enumerated against the list the ordinal had
+    already filtered.
+
+    So exactly one is ever written: whichever the environment already restricts,
+    in the runtime's own precedence (HIP, then the ordinal, then ROCr), or HIP
+    when nothing restricts. An empty value says "no devices" rather than "this is
+    the variable in use", so it does not claim precedence. Every caller writing an
+    AMD pin asks here, since two callers each picking their own would put the
+    pair back.
     """
-    if _ROCR_VISIBLE_VAR in os.environ and _HIP_VISIBLE_VAR not in os.environ:
-        return _ROCR_VISIBLE_VAR
+    for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
+        if os.environ.get(name, "").strip():
+            return name
     return _HIP_VISIBLE_VAR
 
 

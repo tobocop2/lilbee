@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 # (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
@@ -118,7 +118,8 @@ def plan_placement(
         return _place_shared_memory(models, unified_budget)
     if not devices:
         return _place_ungated(models)
-    remaining: dict[int, float] = {idx: vram * USABLE_VRAM_FRACTION for idx, vram in devices}
+    usable = usable_vram_fraction()
+    remaining: dict[int, float] = {idx: vram * usable for idx, vram in devices}
 
     # The persistent singles are every replicas<=1 role plus replica 0 of each
     # replicated role. They are charged before the elastic replicas, and the chat
@@ -535,9 +536,10 @@ def placement_from_spec(
     plan defines the fleet's full intended residency, so charging it against live
     free VRAM would double-count models already loaded. Every active role must
     have an entry; every device must exist; each card must fit the sum of the
-    per-device peaks charged to it, within the USABLE_VRAM_FRACTION headroom.
+    per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
     """
-    remaining = {idx: total * USABLE_VRAM_FRACTION for idx, total in device_capacity.items()}
+    usable = usable_vram_fraction()
+    remaining = {idx: total * usable for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)

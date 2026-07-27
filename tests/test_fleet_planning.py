@@ -317,8 +317,7 @@ def test_unified_memory_budget_subtracts_os_floor_when_no_gpu(monkeypatch) -> No
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 20 * 10**9)
     monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 64 * 10**9)
     assert (
-        planning_mod._unified_memory_budget([])
-        == 20 * 10**9 - planning_mod._SYSTEM_MEMORY_FLOOR_CAP_BYTES
+        planning_mod._unified_memory_budget([]) == 20 * 10**9 - planning_mod._system_memory_floor()
     )
 
 
@@ -891,8 +890,8 @@ class TestBuildFleetWiring:
 
         chat = planning_mod._estimate_role(WorkerRole.CHAT, "ref")
         embed = planning_mod._estimate_role(WorkerRole.EMBED, "ref")
-        # chat charged at the serve budget: 10000 * (USABLE_VRAM_FRACTION / 0.75); embed raw.
-        assert chat.est_vram_bytes == int(10000 * (planning_mod.USABLE_VRAM_FRACTION / 0.75))
+        # chat charged at the serve budget: 10000 * (usable fraction / 0.75); embed raw.
+        assert chat.est_vram_bytes == int(10000 * (planning_mod.usable_vram_fraction() / 0.75))
         assert embed.est_vram_bytes == 10000
 
     def test_launch_for_vision_passes_mmproj(self, tmp_path, monkeypatch) -> None:
@@ -1520,20 +1519,26 @@ class TestResolveDevicesProbeFailureWarning:
             "probe_devices",
             lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
         )
-        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        # Any installed GPU vendor triggers it now, not only NVIDIA.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
+            lambda: frozenset({0x10DE}),
+        )
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
             devices = planning_mod.resolve_devices(Path("/bin/llama-server"))
         assert devices == []
         assert any("shared-memory mode" in record.message for record in caplog.records)
 
-    def test_no_warning_without_an_nvidia_gpu(self, monkeypatch, caplog) -> None:
+    def test_no_warning_without_any_gpu(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
             lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
         )
-        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids", frozenset
+        )
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
             planning_mod.resolve_devices(Path("/bin/llama-server"))
@@ -1956,7 +1961,7 @@ class TestPlanProbe:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
         monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
         monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
+            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
         )
         # The capture takes devices and the all-refused fact from one probe run.
         monkeypatch.setattr(
@@ -2021,7 +2026,7 @@ class TestPlacementChargesAgainstFreeMemory:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
         monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
         monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
+            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
         )
         monkeypatch.setattr(
             planning_mod, "_resolve_devices_and_refusal", lambda _b: (devices, False)
@@ -2076,6 +2081,36 @@ class TestPlacementChargesAgainstFreeMemory:
             charge_against_free=False,
         )
         assert placement.tight_roles == {}
+
+
+class TestFlashAttentionParity:
+    """One decision feeds both the estimate and the launch.
+
+    The estimate's role set and the launch's disagreed: an LLM reranker is
+    generative and launches with flash attention, but the registry marks RERANK
+    as a non-flash role, so it was always sized as though it had none.
+    """
+
+    def test_an_llm_reranker_is_estimated_with_the_flash_it_launches_with(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "CUDA")
+        assert planning_mod.flash_attn_flag() == "on"
+        assert planning_mod._role_flash(WorkerRole.RERANK, RerankMode.LLM) is True
+
+    def test_a_cross_encoder_reranker_is_still_estimated_without_flash(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "CUDA")
+        assert planning_mod._role_flash(WorkerRole.RERANK, RerankMode.CROSS_ENCODER) is False
+
+    def test_auto_is_still_estimated_as_though_off(self, monkeypatch) -> None:
+        # Under auto the engine decides at load, so the estimate must assume the
+        # larger no-flash cache rather than the one it might not get.
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "Vulkan")
+        assert planning_mod.flash_attn_flag() == "auto"
+        assert planning_mod._role_flash(WorkerRole.CHAT) is False
 
 
 class TestSlotsAreChargedOnce:
@@ -2163,7 +2198,7 @@ class TestSizingBudgetComesFromTheDevice:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
         monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
         monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
+            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
         )
         monkeypatch.setattr(
             planning_mod, "_resolve_devices_and_refusal", lambda _b: (devices, False)
@@ -3021,7 +3056,9 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
     monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr("lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
+    )
     monkeypatch.setattr(
         "lilbee.providers.fleet.cuda_runtime.assert_gpu_devices_usable", lambda *_a: None
     )

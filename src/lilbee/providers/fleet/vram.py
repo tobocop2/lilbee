@@ -54,7 +54,20 @@ _CACHE_SIZE = 64
 
 # Mirrors vLLM's gpu_memory_utilization default: never charge a GPU past 90% of
 # its free VRAM, leaving headroom for allocator fragmentation and driver overhead.
+# The default for cfg.usable_vram_fraction, which is what callers should read.
 USABLE_VRAM_FRACTION = 0.9
+
+
+def usable_vram_fraction() -> float:
+    """Share of a card placement may charge.
+
+    Configurable because it decides admission rather than merely tuning it: at
+    the default, a host whose chat model lands just over the line is refused chat
+    with no way for its owner to say the card has the room.
+    """
+    from lilbee.core.config import cfg
+
+    return cfg.usable_vram_fraction
 
 
 @dataclass(frozen=True)

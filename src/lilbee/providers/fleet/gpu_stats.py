@@ -109,21 +109,30 @@ _BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
     # Innermost mask first. ROCr filters, then HIP re-indexes within the
     # survivors, so walking outward from the fleet's index means undoing HIP
     # before ROCr.
-    "ROCm": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
-    "HIP": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
+    "ROCm": ("HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCR_VISIBLE_DEVICES"),
+    "HIP": ("HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCR_VISIBLE_DEVICES"),
 }
 
 
-def _physical_index(backend_name: str, fleet_index: int) -> int:
+def _physical_index(backend_name: str, fleet_index: int) -> int | None:
     """The index the vendor's SMI tool uses for the fleet's device *fleet_index*.
 
     Resolved by walking the visible-devices masks outward from the fleet's own
     index, undoing each one in the reverse of the order the runtime applied it.
+    ``None`` when a mask cannot be undone, which is the whole point of the
+    return type.
 
-    An unset mask, a mask naming devices by UUID, or a backend with no mask
-    leaves the index unchanged, which is what every unmasked host has today.
-    Intel is absent: ONEAPI_DEVICE_SELECTOR is a selector grammar rather than an
-    index list, and xpu-smi is called with the fleet index directly.
+    A mask naming devices by UUID or MIG instance cannot be inverted by
+    arithmetic, and neither can an index the mask does not reach. Returning the
+    fleet index there was a guess, and on a masked host it is reliably the wrong
+    card: another tenant's utilization, temperature and free VRAM then drive both
+    the GPU panel and the adaptive ingest throttle. No sample is the honest
+    answer, and the caller already has a device-reported baseline to fall back on.
+
+    An unset mask, or a backend with no mask, leaves the index alone: that is
+    every unmasked host. Intel is absent because ONEAPI_DEVICE_SELECTOR is a
+    selector grammar rather than an index list, and xpu-smi is called with the
+    fleet index directly.
     """
     index = fleet_index
     for var in _BACKEND_VISIBLE_VARS.get(backend_name, ()):
@@ -132,7 +141,7 @@ def _physical_index(backend_name: str, fleet_index: int) -> int:
             continue
         entries = [e.strip() for e in raw.split(",")]
         if not all(e.isdigit() for e in entries) or index >= len(entries):
-            return fleet_index
+            return None
         index = int(entries[index])
     return index
 
@@ -158,7 +167,14 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     for backend_name, group in by_backend.items():
         # Ask the SMI tool about its own indices, and merge its answers back into
         # the engine's; the two spaces differ whenever a visible-devices mask is set.
-        fleet_by_physical = {_physical_index(backend_name, d.index): d.index for d in group}
+        # A device whose mask cannot be inverted is left out entirely rather than
+        # merged under a guessed index: it keeps the structural reading the probe
+        # already gave it, which is right, instead of another card's live one.
+        fleet_by_physical = {
+            physical: d.index
+            for d in group
+            if (physical := _physical_index(backend_name, d.index)) is not None
+        }
         for physical, sample in _safe_sample(backend_name, frozenset(fleet_by_physical)).items():
             index = fleet_by_physical.get(physical)
             if index is None or index not in stats:

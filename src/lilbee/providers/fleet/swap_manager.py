@@ -30,6 +30,7 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
+from lilbee.providers.fleet.readback import check_launch
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 from lilbee.runtime.engine_lock import clear_keep_warm
 
@@ -195,6 +196,10 @@ class SwapManager:
         self._group = group
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
+        # Instances whose engine report has already been compared to the estimate,
+        # so the check runs once per start rather than on every readiness poll.
+        self._estimate_checked: set[str] = set()
+        self._launch_by_model: dict[str, InstanceLaunch] = {}
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
@@ -241,11 +246,18 @@ class SwapManager:
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
         self._launches_payload = [launch.to_state() for launch in launches]
+        self._launch_by_model = {launch.model_id: launch for launch in launches}
+        self._estimate_checked.clear()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             self._config_path,
             build_swap_config(
-                launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds
+                launches,
+                member_ports,
+                swap=self._group.swaps,
+                ttl_seconds=ttl_seconds,
+                engine_log_dir=self._log_path.parent,
             ),
         )
         self._port = ports[0]
@@ -324,7 +336,29 @@ class SwapManager:
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
-        return any(model.startswith(prefix) for model in self._ready_models())
+        ready = self._ready_models()
+        self._check_estimates(ready)
+        return any(model.startswith(prefix) for model in ready)
+
+    def _check_estimates(self, ready: set[str]) -> None:
+        """Compare each newly-ready engine's own report against what it was planned for.
+
+        The plan is otherwise open-loop, and a wrong estimate only ever surfaces
+        as a failed request much later. Once per instance per start: readiness is
+        polled, and the answer does not change once the engine has loaded.
+        """
+        for model_id in ready - self._estimate_checked:
+            launch = self._launch_by_model.get(model_id)
+            self._estimate_checked.add(model_id)
+            if launch is None or launch.est_vram_bytes <= 0:
+                continue
+            check_launch(
+                self._log_path.parent,
+                model_id,
+                launch.role,
+                launch.model,
+                launch.est_vram_bytes,
+            )
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""
