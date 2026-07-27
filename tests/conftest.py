@@ -1,6 +1,7 @@
 """Shared test helpers."""
 
 import os
+import shutil
 import sys
 import threading
 import warnings
@@ -35,6 +36,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.providers.fleet.binary import EngineTool
 
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
 pytest_plugins = ["tests._hang_watchdog"]
@@ -192,10 +194,6 @@ def _sealed_engine_resolution(request, monkeypatch):
     ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
     ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
     """
-    import shutil
-
-    from lilbee.providers.fleet.binary import EngineTool
-
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr(cfg, "llama_server_path", "")
