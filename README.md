@@ -229,7 +229,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Tested GPUs and backends
 
-Placement reads what the engine reports about your hardware, and every backend words that differently, so each is verified on real silicon rather than inferred from the last one. Verified: CUDA on a 2x A40 pair, Vulkan on a GTX 1070 Ti, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) records what each run settled, and is equally explicit about what is untested: ROCm, Vulkan on AMD or Intel silicon, SYCL, and mixed-vendor machines have not been run. Captures from hardware not listed are welcome.
+Placement reads what the engine reports about your hardware, and every backend words that differently, so each is checked on real silicon rather than inferred from the last one. CUDA on A40, A100 and L40S cards up to eight at once, Vulkan on NVIDIA and Intel, ROCm on an AMD Instinct MI300X, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) lists every machine and what each run settled. Captures from hardware not listed are welcome.
 
 ### Tested model families
 

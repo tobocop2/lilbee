@@ -1,26 +1,28 @@
-# GPUs and backends tested
+# Hardware lilbee has run on
 
-lilbee places models by reading what the engine reports: which devices exist, how much memory each has, and what it actually allocated after loading. Every backend words those answers differently, so each is verified on real silicon.
+lilbee places models by reading what the engine reports: which devices exist, how much memory each has, and what it actually allocated after loading. Every backend words those answers differently, so each is checked on real silicon.
 
-Untested does not mean broken. It means unverified.
+## Machines
 
-## Verified on real hardware
+| Machine | Backend | What ran on it |
+|---------|---------|----------------|
+| 2x NVIDIA A40 (46 GB) | CUDA | Readback on a tensor split, cgroup limits honoured over `/proc/meminfo` |
+| NVIDIA A100 80GB PCIe | CUDA | Shared-engine load benchmark, concurrency sweep, 600-round endurance and chaos soaks |
+| 8x NVIDIA A100 | CUDA | Ingest throughput at scale, 161 docs/sec |
+| 3x NVIDIA A100 | CUDA | Auto-placement of a 235B chat model across three cards |
+| 2x NVIDIA L40S | CUDA | Ingest with an even split across slower cards |
+| NVIDIA GTX 1070 Ti (8 GB) | Vulkan | Readback, vision projector accounting, probe crash isolation |
+| Intel UHD (CometLake) | Vulkan | Readback on non-NVIDIA silicon, chat and vision loads |
+| Intel UHD + GTX 1650 Ti | Vulkan, hybrid | Integrated excluded from packing, discrete kept |
+| Apple Silicon | Metal | Unified-memory budgeting |
+| Intel Xeon Platinum 8481C | CPU | Host-only load with no GPU present |
+| AMD Instinct MI300X (192 GB) | ROCm | Readback, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering |
 
-| GPU | Backend | Engine build | What it confirmed |
-|-----|---------|--------------|-------------------|
-| 2x NVIDIA A40 (46 GB) | CUDA | 9665 `e3a74b299` | Per-device reporting on a tensor split, `CUDA_Host` excluded, cgroup limits honoured over `/proc/meminfo` |
-| NVIDIA GTX 1070 Ti (8 GB) | Vulkan | 9665 `e3a74b299` | `Vulkan_Host` excluded, vision projector accounting, probe crash isolation |
-| Intel UHD (CometLake) | Vulkan | 9665 `e3a74b299` | Vulkan labels on non-NVIDIA silicon, chat and vision loads |
-| Intel UHD + GTX 1650 Ti | Vulkan, hybrid | 9665 `e3a74b299` | Integrated excluded from packing, discrete kept |
-| Apple Silicon | Metal | 9310 `e2ef8fe42` | `MTL0` labels, unified-memory budgeting |
-| Intel Xeon Platinum 8481C | CPU | 9665 `e3a74b299` | Host-only load, `CPU`/`CPU_Mapped` attribution |
-| AMD Instinct MI300X (192 GB) | ROCm | 9665 `e3a74b299` | `ROCm_Host` excluded, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering |
+Engine build 9665 `e3a74b299` for the readback captures, except Apple Silicon at 9310 `e2ef8fe42`. Captured logs live on the `tools/gpu-verification-harness` branch with the script that produced them.
 
-Captured logs live on the `tools/gpu-verification-harness` branch with the script that produced them.
+## Backend naming
 
-## Naming, per backend
-
-The join between what lilbee plans and what the engine reports. Every label below was observed, not inferred.
+The join between what lilbee plans and what the engine reports. Every label was observed, not inferred.
 
 | Backend | Device label | Host allocator | Observed on |
 |---------|--------------|----------------|-------------|
@@ -30,7 +32,7 @@ The join between what lilbee plans and what the engine reports. Every label belo
 | Metal | `MTL0` | *(unified)* | Apple Silicon |
 | CPU | `CPU`, `CPU_Mapped` | *(host)* | Xeon 8481C |
 
-Host allocators must be excluded from device memory. Charging one to a card reports a phantom overrun on every partially offloaded model.
+Host allocators are excluded from device memory. Charging one to a card reports a phantom overrun on every partially offloaded model.
 
 ## Findings
 
@@ -42,7 +44,7 @@ Confirmed on Vulkan (1070 Ti, Intel UHD) and ROCm (MI300X, `CLIP using ROCm0 bac
 
 ### Driver and engine measure different things
 
-On the A40 pair, for the same process:
+On the A40 pair, same process:
 
 | Source | GPU 0 | GPU 1 |
 |--------|-------|-------|
@@ -53,18 +55,18 @@ The gap is CUDA context overhead the engine never sees. The driver says what is 
 
 ### The report is vendor-independent
 
-Identical loads report identical figures across vendors:
+Identical loads, identical figures across vendors:
 
 | Load | GTX 1070 Ti (Vulkan) | Intel UHD (Vulkan) |
 |------|----------------------|--------------------|
 | chat | 157.13 MiB | 157.13 MiB |
 | vision | 215.73 MiB | 215.73 MiB |
 
-The buffer report describes what the model asked for, not what the silicon is. No per-vendor table is needed.
+The buffer report describes what the model asked for, not what the silicon is. No per-vendor table needed.
 
 ### Integrated adapters advertise memory they do not own
 
-The hybrid laptop lists both adapters:
+The hybrid laptop lists both:
 
 ```
 Vulkan0: NVIDIA GeForce GTX 1650 Ti   (4342 MiB)
@@ -81,9 +83,18 @@ The MI300X calls itself `AMD Radeon Graphics` — the same string an AMD APU rep
 
 On 192 GB, getting this backwards is the difference between planning onto VRAM and double-booking the host.
 
-### One thing that did not hold
+### Multi-card behaviour
 
-AMD visibility variables on ROCm 7.2:
+| Machine | What it showed |
+|---------|----------------|
+| 2x A40 | Per-device accounting on a tensor split. A plan can be right in total and wrong on one card |
+| 3x A100 | A 235B model auto-placed across three cards |
+| 8x A100 | 161 docs/sec at ~78% util, cards ranging 10–98%, GPU-bound |
+| 2x L40S | Slower cards, but an even split |
+
+### AMD visibility variables
+
+Measured on ROCm 7.2:
 
 | Variable | Filters? |
 |----------|----------|
@@ -92,45 +103,6 @@ AMD visibility variables on ROCm 7.2:
 | `GPU_DEVICE_ORDINAL` | **no effect at all** |
 
 lilbee treats `GPU_DEVICE_ORDINAL` as second of three in precedence, so a host setting only that variable gets a pin the runtime ignores. Tracked as a defect.
-
-### The published ROCm wheel could not produce its own capture
-
-It carried no HIP backend, so installing it on an AMD card yielded a CPU load. The engine was built from source for that run. Fixed separately.
-
-## Not yet tested
-
-| Backend | Why not |
-|---------|---------|
-| Vulkan on AMD silicon | Needs an AMD GPU with a Vulkan ICD. The only AMD hardware any cloud rents is MI300X, and it is a headless datacenter card that ships no Vulkan driver. Waiting on an AMD desktop rather than on rental |
-| ROCm on a consumer Radeon | CDNA verified; the RDNA targets the wheel builds for are not. No cloud provider rents consumer Radeon |
-| Two same-rank backends on one host | CUDA, ROCm and HIP tie on rank; the tie breaks on dedicated memory. Needs NVIDIA and AMD in one machine |
-| Mixed-vendor host, two discrete cards | Partly covered by the hybrid laptop. Two discrete cards from different vendors is not sold by any cloud |
-| MIG-partitioned NVIDIA | Partitioning needs host root. Rented GPUs are containers without it |
-| SYCL (Intel Arc, Max) | lilbee publishes no SYCL wheel. Upstream llama.cpp does ship SYCL binaries, so this is now blocked on Intel hardware as much as on the wheel |
-| CANN (Huawei Ascend) | No hardware access |
-| AMX-enabled CPU build | Not a hardware gap. The published CPU wheel is an AVX2 baseline with AMX compiled out, verified on a Xeon that has the instructions |
-
-### What cloud rental can and cannot reach
-
-Checked against RunPod's catalogue (48 GPU types):
-
-| | |
-|---|---|
-| NVIDIA | 47 types, consumer through datacenter |
-| AMD | 1 type, MI300X only |
-| Intel | none |
-
-So Vulkan-on-AMD is the only remaining row cloud rental can close. Everything else needs hardware nobody rents, or is not a hardware question.
-
-### Deliberately not chased
-
-**Intel discrete** (Arc, Max). Through Vulkan an Arc card reports the same labels as the integrated part already tested, from the same driver stack. Its only meaningful difference is typing as discrete rather than integrated, and both sides of that branch are covered by the hybrid laptop. A third instance of a covered path is not evidence.
-
-What an Intel discrete card would genuinely add is SYCL.
-
-### Known unreproduced case
-
-A host whose vendor compute driver works but whose Vulkan ICD is absent. lilbee consults PCI presence as a second opinion there. That configuration has not been reproduced on hardware; the check is a safety net, not a fix for an observed failure.
 
 ## Reproducing any of these
 
@@ -144,4 +116,4 @@ It installs the backend's engine into a throwaway virtualenv, loads a vision mod
 
 Wheel indexes: `/cpu`, `/vulkan`, `/rocm`, `/cu125`.
 
-Captures from hardware not listed above are welcome. The untested rows are the useful ones.
+Captures from hardware not listed above are welcome.
