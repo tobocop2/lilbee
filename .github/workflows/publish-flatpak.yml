@@ -1,0 +1,127 @@
+name: Publish Flatpak
+
+run-name: Publish Flatpak ${{ inputs.tag }}
+
+# Publishes every flatpak variant -- stock, CUDA and compat -- to the shared
+# OSTree pages repo.
+#
+# All three live in one workflow because each regenerates the repo's summary and
+# static deltas wholesale, so only one may write at a time. They used to be a job
+# apiece in the three packaging fan-outs, serialized by a shared
+# `flatpak-lilbee-repo` concurrency group. That cannot express three writers: a
+# concurrency group holds a single pending run, so when the fan-outs queued
+# together the waiting one was evicted rather than queued and its bundle never
+# attached. A max-parallel-1 matrix in one run serializes them by construction.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish flatpaks for (e.g. v0.6.90b420.dev727)."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flatpak-lilbee-repo
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      sha_stock: ${{ steps.info.outputs.sha_stock }}
+      size_stock: ${{ steps.info.outputs.size_stock }}
+      sha_cuda: ${{ steps.info.outputs.sha_cuda }}
+      size_cuda: ${{ steps.info.outputs.size_cuda }}
+      sha_compat: ${{ steps.info.outputs.sha_compat }}
+      size_compat: ${{ steps.info.outputs.size_compat }}
+    steps:
+      # Dispatched as soon as the stock executables are attached, which can be
+      # before the CUDA and compat binaries land, so wait for them before reading
+      # their digests rather than publishing a partial set.
+      - name: Wait for the variant binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          WAIT_MINUTES: "90"
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          while true; do
+            names=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
+            missing=""
+            for a in lilbee-linux-x86_64 lilbee-linux-x86_64-cu125 lilbee-compat-linux-x86_64; do
+              case " ${names} " in *" ${a} "*) ;; *) missing="${missing} ${a}" ;; esac
+            done
+            [ -n "${missing}" ] || break
+            [ "$(date +%s)" -lt "${deadline}" ] || {
+              echo "::error::variant binaries missing after ${WAIT_MINUTES}m:${missing}"; exit 1; }
+            echo "waiting for:${missing}"
+            sleep 60
+          done
+      - name: Resolve each variant's digest and size
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${REPO}/releases/tags/${TAG}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
+          field() { awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }' /tmp/assets.tsv; }
+          {
+            echo "version=${TAG#v}"
+            echo "sha_stock=$(field lilbee-linux-x86_64 2)"
+            echo "size_stock=$(field lilbee-linux-x86_64 3)"
+            echo "sha_cuda=$(field lilbee-linux-x86_64-cu125 2)"
+            echo "size_cuda=$(field lilbee-linux-x86_64-cu125 3)"
+            echo "sha_compat=$(field lilbee-compat-linux-x86_64 2)"
+            echo "size_compat=$(field lilbee-compat-linux-x86_64 3)"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      # One writer at a time: each variant rewrites the repo summary and static
+      # deltas wholesale, so a second in flight would drop the first's app.
+      max-parallel: 1
+      # A variant that fails must not stop the others from publishing.
+      fail-fast: false
+      matrix:
+        include:
+          - app-id: io.github.tobocop2.lilbee
+            asset: lilbee-linux-x86_64
+            bundle: lilbee.flatpak
+            sha: ${{ needs.resolve.outputs.sha_stock }}
+            size: ${{ needs.resolve.outputs.size_stock }}
+          - app-id: io.github.tobocop2.lilbee.cuda
+            asset: lilbee-linux-x86_64-cu125
+            bundle: lilbee-cuda.flatpak
+            sha: ${{ needs.resolve.outputs.sha_cuda }}
+            size: ${{ needs.resolve.outputs.size_cuda }}
+          - app-id: io.github.tobocop2.lilbee.compat
+            asset: lilbee-compat-linux-x86_64
+            bundle: lilbee-compat.flatpak
+            sha: ${{ needs.resolve.outputs.sha_compat }}
+            size: ${{ needs.resolve.outputs.size_compat }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/publish-flatpak
+        with:
+          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
+          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ matrix.sha }}
+          size-linux: ${{ matrix.size }}
+          tag: ${{ inputs.tag }}
+          app-id: ${{ matrix['app-id'] }}
+          manifest-path: packaging/flatpak/${{ matrix['app-id'] }}.yml
+          asset-name: ${{ matrix.asset }}
+          bundle-name: ${{ matrix.bundle }}

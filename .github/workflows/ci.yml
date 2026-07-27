@@ -284,13 +284,10 @@ jobs:
             echo "${helperdir}" >> "${GITHUB_PATH}"
           fi
 
-      - name: Restore Ollama binary cache (Windows)
-        if: runner.os == 'Windows'
-        id: ollama-bin-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-${{ env.OLLAMA_PIN }}
+      # No cache for C:\ollama: the extracted tree (ollama plus its CUDA/ROCm
+      # runner DLLs) was 1.4 GB, the largest entry in the repo, to save a ~1 min
+      # download. Against a hard 10 GB cap it was evicting engine caches worth
+      # ~50 min apiece to a release build.
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
@@ -313,13 +310,15 @@ jobs:
           echo "spacy model install failed after 5 attempts" >&2
           exit 1
 
+      # Keyed on the browser revision, not uv.lock: the browsers do not change when
+      # an unrelated dependency does, and hashing the lock minted a fresh ~300 MB
+      # entry per OS on every bump while the old ones sat on the cap until evicted.
       - name: Restore Playwright cache
         id: pw-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: playwright-${{ runner.os }}-
+          key: playwright-${{ runner.os }}-chromium-v1
 
       - name: Install Playwright for crawl4ai
         if: steps.pw-cache.outputs.cache-hit != 'true'
@@ -334,16 +333,17 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          key: playwright-${{ runner.os }}-chromium-v1
 
-      - name: Cache HuggingFace models
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/huggingface/hub
-          key: hf-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: hf-models-${{ runner.os }}-
+      # GGUF models come from the ci-models release (restore-ci-models below), so
+      # nothing ever wrote ~/.cache/huggingface/hub. The cache block that used to
+      # sit here only churned a key off pyproject.toml and consumed the cap.
 
+      # Linux only, deliberately. The pull is ~2 min; the entry is ~750 MB per OS,
+      # and the repo cache sits against a hard 10 GB cap where every GB evicts an
+      # engine cache worth ~50 min to a release build. Windows/macOS re-pull.
       - name: Cache Ollama models
+        if: runner.os == 'Linux'
         uses: actions/cache@v6
         with:
           path: ~/.ollama/models
@@ -363,19 +363,12 @@ jobs:
           sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
 
       - name: Install Ollama (Windows)
-        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri "https://github.com/ollama/ollama/releases/download/v$env:OLLAMA_PIN/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
           Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
-
-      - name: Save Ollama binary cache (Windows)
-        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-${{ env.OLLAMA_PIN }}
 
       # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
       # past ollama's 5-minute default unload, and a cold reload plus first

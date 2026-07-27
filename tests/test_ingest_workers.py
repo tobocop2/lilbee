@@ -103,7 +103,7 @@ class TestBatchDispatcher:
     """The dispatcher maps plan position to batch, submits lazily, and frees results."""
 
     @staticmethod
-    def _dispatcher(count, pool, monkeypatch, seen=None):
+    def _dispatcher(count, pool, monkeypatch, seen=None, *, shard=None):
         files = [_entry(f"{i}.txt") for i in range(count)]
 
         def fake_run_batch(batch):
@@ -112,13 +112,35 @@ class TestBatchDispatcher:
             return [WorkerOutcome(name=f.name) for f in batch]
 
         monkeypatch.setattr(workers, "run_batch", fake_run_batch)
-        return BatchDispatcher(pool, files)
+        dispatcher = BatchDispatcher(pool)
+        # Feed the plan in shards of *shard* files, as the streamed planner does.
+        step = shard or count
+        for start in range(0, count, step):
+            dispatcher.add_shard(files[start : start + step], start)
+        return dispatcher
 
     @pytest.mark.asyncio
     async def test_each_file_maps_to_its_own_outcome(self, monkeypatch):
         with ThreadPoolExecutor(max_workers=2) as pool:
             dispatcher = self._dispatcher(BATCH_FILES + 3, pool, monkeypatch)
             for index in (0, 1, BATCH_FILES - 1, BATCH_FILES, BATCH_FILES + 2):
+                outcome = await dispatcher.outcome_for(index)
+                assert outcome.name == f"{index}.txt"
+
+    @pytest.mark.asyncio
+    async def test_shards_smaller_than_a_batch_still_map_each_file_to_its_outcome(
+        self, monkeypatch
+    ):
+        """A shard shorter than BATCH_FILES must not serve later files from its batch.
+
+        Sizing a batch off a fixed stride over a still-growing plan submits a short
+        batch for the part that is planned, then hands the rest of the stride that
+        same batch's outcomes: every one of them the wrong file's.
+        """
+        total = BATCH_FILES * 2
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            dispatcher = self._dispatcher(total, pool, monkeypatch, shard=5)
+            for index in range(total):
                 outcome = await dispatcher.outcome_for(index)
                 assert outcome.name == f"{index}.txt"
 
@@ -163,7 +185,7 @@ class TestCollectFromWorker:
             entry,
             1,
             Dispatcher(),
-            total_files=1,
+            planned=lambda: 1,
             pages_done=[0],
             on_progress=lambda *a, **k: None,
             cancel=None,
@@ -221,7 +243,7 @@ class TestCollectFromWorker:
                 _entry(),
                 1,
                 Dispatcher(),
-                total_files=1,
+                planned=lambda: 1,
                 pages_done=[0],
                 on_progress=raising_progress,
                 cancel=None,
@@ -244,64 +266,12 @@ class TestCollectFromWorker:
                 _entry(),
                 1,
                 Dispatcher(),
-                total_files=1,
+                planned=lambda: 1,
                 pages_done=[0],
                 on_progress=lambda *a, **k: None,
                 cancel=cancel,
                 fallback=mock.AsyncMock(),
             )
-
-
-class TestDispatchPlan:
-    """Choosing between the in-process path and a pool."""
-
-    def test_single_process_builds_no_pool(self):
-        async def in_process(entry, index):  # pragma: no cover - never awaited here
-            raise AssertionError
-
-        pool, pending = pipeline._dispatch_plan(
-            [_entry()],
-            1,
-            in_process,
-            pages_done=[0],
-            on_progress=lambda *a, **k: None,
-            cancel=None,
-        )
-        assert pool is None
-        coros = list(pending)
-        assert len(coros) == 1
-        for coro in coros:
-            coro.close()
-
-    def test_multiple_processes_build_a_pool_over_every_file(self, monkeypatch):
-        built = {}
-
-        def fake_build_pool(processes, config, inflight):
-            built["processes"] = processes
-            built["inflight"] = inflight
-            return mock.MagicMock()
-
-        monkeypatch.setattr(pipeline, "build_pool", fake_build_pool)
-        entries = [_entry(f"{i}.txt") for i in range(3)]
-
-        async def in_process(entry, index):  # pragma: no cover - never awaited here
-            raise AssertionError
-
-        pool, pending = pipeline._dispatch_plan(
-            entries,
-            4,
-            in_process,
-            pages_done=[0],
-            on_progress=lambda *a, **k: None,
-            cancel=None,
-        )
-        assert pool is not None
-        assert built["processes"] == 4
-        assert built["inflight"] > 0  # admission is passed through, not defaulted
-        coros = list(pending)
-        assert len(coros) == len(entries)
-        for coro in coros:
-            coro.close()
 
 
 class TestRunBatch:

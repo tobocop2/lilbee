@@ -271,29 +271,48 @@ def build_pool(processes: int, config: Config, inflight: int) -> ProcessPoolExec
 class BatchDispatcher:
     """Maps a file's position in the plan to the worker batch that produces it.
 
-    Batches are submitted on first demand, so the parent's bounded task window
-    is also what bounds how many batches are outstanding: nothing reads the
-    whole plan into the pool up front.
+    The plan arrives shard by shard, so each shard is cut into batches the moment
+    it lands and every file gets its slot then. Cutting batches from a fixed
+    stride over a still-growing plan instead would submit a short batch whenever
+    the rest of its stride was not planned yet, and then serve files that batch
+    never contained from its results.
+
+    Batches are submitted on first demand, so the parent's bounded task window is
+    also what bounds how many batches are outstanding: nothing reads the whole
+    plan into the pool up front.
     """
 
-    def __init__(self, pool: ProcessPoolExecutor, files: list[FileToProcess]) -> None:
+    def __init__(self, pool: ProcessPoolExecutor) -> None:
         self._pool = pool
-        self._files = files
+        self._batches: dict[int, list[FileToProcess]] = {}
+        self._slots: dict[int, tuple[int, int]] = {}
         self._pending: dict[int, asyncio.Future[list[WorkerOutcome]]] = {}
+        self._unread: dict[int, int] = {}
+
+    def add_shard(self, files: list[FileToProcess], start: int) -> None:
+        """Slot a planned shard whose first file is at plan index *start*."""
+        for offset in range(0, len(files), BATCH_FILES):
+            batch = files[offset : offset + BATCH_FILES]
+            key = start + offset
+            self._batches[key] = batch
+            self._unread[key] = len(batch)
+            for position in range(len(batch)):
+                self._slots[key + position] = (key, position)
 
     async def outcome_for(self, index: int) -> WorkerOutcome:
         """The outcome for the file at *index* (0-based) in the plan."""
-        batch_index, offset = divmod(index, BATCH_FILES)
-        start = batch_index * BATCH_FILES
-        batch = self._files[start : start + BATCH_FILES]
-        future = self._pending.get(batch_index)
+        key, offset = self._slots.pop(index)
+        future = self._pending.get(key)
         if future is None:
             loop = asyncio.get_running_loop()
-            future = loop.run_in_executor(self._pool, run_batch, batch)
-            self._pending[batch_index] = future
+            future = loop.run_in_executor(self._pool, run_batch, self._batches[key])
+            self._pending[key] = future
         outcomes = await future
-        if offset == len(batch) - 1:
+        self._unread[key] -= 1
+        if not self._unread[key]:
             # Last consumer of this batch: drop it so results are not retained
             # for the whole run.
-            self._pending.pop(batch_index, None)
+            self._pending.pop(key, None)
+            self._batches.pop(key, None)
+            self._unread.pop(key, None)
         return outcomes[offset]
