@@ -152,8 +152,9 @@ done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o
 #
 # Both platforms broke without this, in different ways. On Windows cudart is a hard
 # import of the process, so llama-server.exe died before binding its port with a
-# "cudart64_12.dll was not found" dialog. On Linux ggml dlopens libggml-cuda.so and
-# tolerates the failure, so the GPU silently disappeared and work fell back to CPU.
+# "cudart64_12.dll was not found" dialog. On Linux the backend is a DT_NEEDED of
+# libggml.so.0, since GGML_BACKEND_DL is off (see cmake_args.sh), so a missing runtime
+# is a loader failure at startup rather than a silent fall back to CPU.
 #
 # ROCm gets the same treatment further down, for the same reason and with the same
 # goal: an AMD user should need a driver and nothing else, exactly as an NVIDIA one
