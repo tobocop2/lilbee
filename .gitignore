@@ -1,5 +1,4 @@
-data/
-!src/lilbee/data/
+/data/
 __pycache__/
 *.pyc
 .venv/

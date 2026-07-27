@@ -1080,6 +1080,7 @@ async def _collect_from_worker(
     on_progress: DetailedProgressCallback,
     cancel: threading.Event | None,
     fallback: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+    fallback_gate: asyncio.Semaphore,
 ) -> _IngestResult:
     """Collect one file's records from a worker, or run it via *fallback* if the pool died.
 
@@ -1104,7 +1105,11 @@ async def _collect_from_worker(
         # file and the rest of the run in-process rather than failing every
         # remaining file.
         log.warning("Ingest worker pool broke; falling back to in-process ingest")
-        return await fallback(entry, file_index)
+        # Under the in-process ceiling, not the wide worker-mode gate: the pool
+        # usually breaks on memory pressure, and that is the worst moment to let
+        # the parent run a worker-sized fan-out itself.
+        async with fallback_gate:
+            return await fallback(entry, file_index)
     if outcome.error is not None:
         with contextlib.suppress(TaskCancelledError):
             on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="error", chunks=0))
@@ -1144,9 +1149,35 @@ async def _warm_engine_for_workers(processes: int) -> None:
         await to_ingest_thread(warm_parent_engine)
 
 
+def _failed_result(
+    exc: Exception,
+    entry: FileToProcess,
+    *,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+    cancel: threading.Event | None,
+) -> _IngestResult:
+    """A file's failure as a result, or cancellation when the run is stopping.
+
+    During shutdown, worker pools raise RuntimeError from submit(). Those are
+    cancellation, not ingest failures: the cancel flag is the source of truth,
+    and the executor's shutdown message covers the race where cancel was set
+    after the submit.
+    """
+    if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
+        raise asyncio.CancelledError from exc
+    # Suppress TaskCancelledError on the FILE_DONE notice: the user already
+    # cancelled, and re-raising here would strand sibling tasks awaiting in
+    # _collect_results.
+    with contextlib.suppress(TaskCancelledError):
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="error", chunks=0))
+    pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
+    return _IngestResult(entry.name, entry.path, 0, error=exc)
+
+
 async def _stream_tasks(
     shards: AsyncGenerator[list[FileToProcess]],
-    dispatcher: BatchDispatcher | None,
+    workers: _WorkerDispatch | None,
     make_task: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
 ) -> AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]:
     """Each shard's per-file coroutines, slotted into worker batches as the shard lands.
@@ -1157,22 +1188,34 @@ async def _stream_tasks(
     index = count(1)
     start = 0
     async for shard in shards:
-        if dispatcher is not None:
-            dispatcher.add_shard(shard, start)
+        if workers is not None:
+            workers.dispatcher.add_shard(shard, start)
         yield [make_task(entry, next(index)) for entry in shard]
         start += len(shard)
 
 
-async def _open_worker_pool(
-    processes: int,
-) -> tuple[ProcessPoolExecutor | None, BatchDispatcher | None]:
-    """The worker pool and its dispatcher, or (None, None) when ingest stays in-process."""
+@dataclass(frozen=True)
+class _WorkerDispatch:
+    """The worker pool, the dispatcher over it, and the gate a fallback runs under."""
+
+    pool: ProcessPoolExecutor
+    dispatcher: BatchDispatcher
+    # Worker-mode admission is deliberately wide: the workers do the compute, so
+    # the gate only has to keep batches queued. A file that falls back in-process
+    # must not inherit that width, or a pool that broke on memory pressure is
+    # followed by the parent running hundreds of files at once. The fallback runs
+    # under the in-process ceiling instead.
+    fallback_gate: asyncio.Semaphore
+
+
+async def _open_worker_pool(processes: int) -> _WorkerDispatch | None:
+    """The worker dispatch for this run, or None when ingest stays in-process."""
     await _warm_engine_for_workers(processes)
     if processes <= 1:
-        return None, None
+        return None
     pool = build_pool(processes, active_config(), _max_concurrent())
     log.warning("Ingesting across %d worker processes", processes)
-    return pool, BatchDispatcher(pool)
+    return _WorkerDispatch(pool, BatchDispatcher(pool), asyncio.Semaphore(_max_concurrent()))
 
 
 async def _chain_shards(
@@ -1196,7 +1239,7 @@ async def ingest_stream(
     cancel: threading.Event | None = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
-    unindexed_files: int = 0,
+    unindexed_files: int,
 ) -> None:
     """Ingest a stream of planned file shards, optionally showing a Rich progress bar.
 
@@ -1274,42 +1317,28 @@ async def ingest_stream(
                 # cleanly instead of orphaning their pending exceptions.
                 raise asyncio.CancelledError from exc
             except Exception as exc:
-                # During shutdown, worker pools raise RuntimeError from
-                # submit(). Prefer to treat these as cancellation rather than
-                # as ingest failures. Detect via the cancel flag (source of
-                # truth) or the executor's well-known shutdown message as a
-                # fallback when cancel was set after the submit race.
-                if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
-                    raise asyncio.CancelledError from exc
-                # Suppress TaskCancelledError on the FILE_DONE notice: the user
-                # already cancelled, and re-raising here would leak past
-                # _process_one and strand sibling tasks awaiting in
-                # _collect_results.
-                with contextlib.suppress(TaskCancelledError):
-                    on_progress(
-                        EventType.FILE_DONE,
-                        FileDoneEvent(file=name, status="error", chunks=0),
-                    )
-                pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
-                return _IngestResult(name, entry.path, 0, error=exc)
+                return _failed_result(
+                    exc, entry, pages_done=pages_done, on_progress=on_progress, cancel=cancel
+                )
 
-    pool, dispatcher = await _open_worker_pool(processes)
+    workers = await _open_worker_pool(processes)
 
     def _make_task(entry: FileToProcess, file_index: int) -> Coroutine[Any, Any, _IngestResult]:
-        if dispatcher is None:
+        if workers is None:
             return _process_one(entry, file_index)
         return _collect_from_worker(
             entry,
             file_index,
-            dispatcher,
+            workers.dispatcher,
             planned=lambda: feed.planned,
             pages_done=pages_done,
             on_progress=on_progress,
             cancel=cancel,
             fallback=_process_one,
+            fallback_gate=workers.fallback_gate,
         )
 
-    feed = _ResultFeed(_stream_tasks(shards, dispatcher, _make_task))
+    feed = _ResultFeed(_stream_tasks(shards, workers, _make_task))
     collect = _collect_results if quiet else _collect_under_bar
     try:
         await collect(
@@ -1330,10 +1359,10 @@ async def ingest_stream(
             controller_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await controller_task
-        if pool is not None:
+        if workers is not None:
             # Drop queued batches on a cancel; in-flight ones are not
             # interruptible, so their files finish rather than being lost.
-            pool.shutdown(cancel_futures=True)
+            workers.pool.shutdown(cancel_futures=True)
 
 
 # Accumulate roughly this many chunks across documents before one batched

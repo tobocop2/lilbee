@@ -956,7 +956,9 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_stream(one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel)
+            await ingest_stream(
+                one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel, unindexed_files=0
+            )
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1150,7 +1152,9 @@ class TestCancellation:
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_stream(one_shard([entry]), added, {}, {}, {}, quiet=True)
+                await ingest_stream(
+                    one_shard([entry]), added, {}, {}, {}, quiet=True, unindexed_files=0
+                )
 
     @mock.patch(
         "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
@@ -1202,7 +1206,14 @@ class TestCancellation:
         # surrounding try/except in _do_sync catches it cleanly.
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(
-                one_shard(files), added, {}, failed, skipped, quiet=True, on_progress=on_progress
+                one_shard(files),
+                added,
+                {},
+                failed,
+                skipped,
+                quiet=True,
+                on_progress=on_progress,
+                unindexed_files=0,
             )
 
 

@@ -169,7 +169,7 @@ class TestCollectFromWorker:
     """The parent turns a worker outcome into the same _IngestResult it would build itself."""
 
     @staticmethod
-    async def _collect(outcome_or_exc, entry=None, fallback=None):
+    async def _collect(outcome_or_exc, entry=None, fallback=None, gate=None):
         entry = entry or _entry()
 
         class Dispatcher:
@@ -190,6 +190,7 @@ class TestCollectFromWorker:
             on_progress=lambda *a, **k: None,
             cancel=None,
             fallback=fallback or default_fallback,
+            fallback_gate=gate or asyncio.Semaphore(8),
         )
 
     @pytest.mark.asyncio
@@ -228,6 +229,38 @@ class TestCollectFromWorker:
         assert result.chunk_count == 7
 
     @pytest.mark.asyncio
+    async def test_the_fallback_runs_under_its_gate_not_the_wide_worker_admission(self):
+        """The pool usually breaks on memory pressure.
+
+        Worker-mode admission is sized for queueing batches, not for the parent
+        doing the work, so an ungated fallback would answer a pool that died of
+        memory pressure by running a worker-sized fan-out in the parent.
+        """
+        gate = asyncio.Semaphore(1)
+        live, peak = 0, 0
+
+        async def fallback(entry, index):
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            await asyncio.sleep(0)  # give the siblings a chance to overlap
+            live -= 1
+            return pipeline._IngestResult(entry.name, entry.path, 1, error=None)
+
+        await asyncio.gather(
+            *(
+                self._collect(
+                    BrokenProcessPool("worker died"),
+                    entry=_entry(f"{i}.txt"),
+                    fallback=fallback,
+                    gate=gate,
+                )
+                for i in range(4)
+            )
+        )
+        assert peak == 1
+
+    @pytest.mark.asyncio
     async def test_a_cooperative_cancel_on_file_start_becomes_asyncio_cancellation(self):
         """The TUI raises TaskCancelledError inside on_progress; siblings must drain."""
 
@@ -248,6 +281,7 @@ class TestCollectFromWorker:
                 on_progress=raising_progress,
                 cancel=None,
                 fallback=mock.AsyncMock(),
+                fallback_gate=asyncio.Semaphore(8),
             )
 
     @pytest.mark.asyncio
@@ -271,6 +305,7 @@ class TestCollectFromWorker:
                 on_progress=lambda *a, **k: None,
                 cancel=cancel,
                 fallback=mock.AsyncMock(),
+                fallback_gate=asyncio.Semaphore(8),
             )
 
 
