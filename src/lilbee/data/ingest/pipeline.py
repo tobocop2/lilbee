@@ -1213,9 +1213,12 @@ async def _open_worker_pool(processes: int) -> _WorkerDispatch | None:
     await _warm_engine_for_workers(processes)
     if processes <= 1:
         return None
-    pool = build_pool(processes, active_config(), _max_concurrent())
+    # One reading, shared by both: the fleet's fitted capacity is live, so two
+    # calls could size the pool and the fallback gate off different numbers.
+    inflight = _max_concurrent()
+    pool = build_pool(processes, active_config(), inflight)
     log.warning("Ingesting across %d worker processes", processes)
-    return _WorkerDispatch(pool, BatchDispatcher(pool), asyncio.Semaphore(_max_concurrent()))
+    return _WorkerDispatch(pool, BatchDispatcher(pool), asyncio.Semaphore(inflight))
 
 
 async def _chain_shards(
