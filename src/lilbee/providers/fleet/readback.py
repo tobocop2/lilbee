@@ -39,6 +39,7 @@ import logging
 import re
 from pathlib import Path
 
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -50,30 +51,42 @@ MIB = 1024 * 1024
 # report says what to compare with.
 VERIFIED_ENGINE_BUILD = "9310 (e2ef8fe42)"
 
-# "load_tensors:  MTL0_Mapped model buffer size =    82.41 MiB", plus the KV,
-# compute and output lines that follow under different prefixes (load_tensors,
-# llama_context, llama_kv_cache, sched_reserve). The device label is whatever the
-# backend calls itself: CUDA0, MTL0, Vulkan1, CPU. Sizes are always MiB.
-# A timestamp and level prefix the line when the engine writes to --log-file, so
-# the match is not anchored to the start.
-_BUFFER_RE = re.compile(
-    r"\S+:\s+(?P<device>\S+)\s+(?:model|KV|compute|output)\s+"
-    r"buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB"
-)
+# "load_tensors:  MTL0_Mapped model buffer size =    82.41 MiB", and its siblings.
+#
+# Deliberately does NOT enumerate the buffer kinds. Listing them by hand meant
+# reading two logs and hardcoding the four that happened to appear, which
+# silently dropped LoRA (every adapter), RS (every Mamba and RWKV model) and the
+# DeepSeek V4 state buffer. Upstream is free to add another tomorrow. The shape
+# is what is stable: a prefix, the device, some words, "buffer size = N MiB".
+#
+# What the "= N MiB" requirement keeps out is the point of writing it that way.
+# llama.cpp has three other lines carrying these words that are not allocations:
+# the self-check pair reading "compute buffer size is N MiB, matches expectation"
+# and "... of N MiB, does not match expectation", plus ggml-opencl's "buffer size
+# reduced from A to B". None uses "=", so none is counted.
+#
+# The device label is whatever the backend calls itself: CUDA0, MTL0, Vulkan1,
+# CPU. A timestamp and level prefix the line under --log-file, so the match is
+# not anchored to the start.
+_BUFFER_RE = re.compile(r"\S+:\s+(?P<device>\S+)\s+.*?buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB")
 # The engine names an mmapped weight buffer "<device>_Mapped" beside the same
 # device's other buffers. Same memory, so the suffix is folded away rather than
 # splitting one card's total across two keys.
 _MAPPED_SUFFIX = "_Mapped"
-# Devices that are host memory rather than a GPU. The engine names the mmapped
-# weight buffer CPU_Mapped and its scratch CPU; neither occupies VRAM, so
-# charging them against a card's budget would report a phantom overrun on every
-# partially offloaded model.
-_HOST_DEVICES = ("CPU",)
+# Devices that are host memory rather than a GPU. Two shapes, both from ggml:
+# the CPU backend's own buffers (CPU, CPU_Mapped), and every GPU backend's
+# pinned-host allocator, which it names "<backend>_Host" (ggml-cuda.cu returns
+# GGML_CUDA_NAME "_Host", and ggml-sycl, ggml-vulkan and ggml-cann do the same).
+# None of it occupies VRAM, so charging it to a card reports a phantom overrun on
+# every partially offloaded model. Found on real CUDA hardware, where CUDA_Host
+# was being counted as a third GPU.
+_HOST_PREFIXES = ("CPU",)
+_HOST_SUFFIX = "_Host"
 
 
 def _is_host_device(device: str) -> bool:
     """Whether *device* names host memory rather than a GPU."""
-    return device.upper().startswith(_HOST_DEVICES)
+    return device.startswith(_HOST_PREFIXES) or device.endswith(_HOST_SUFFIX)
 
 
 def parse_device_buffers(text: str) -> dict[str, int]:
@@ -119,6 +132,17 @@ def device_footprint(text: str) -> int:
     )
 
 
+def device_label(device: FleetDevice) -> str:
+    """The name the engine prints for *device*, and the join between the two sides.
+
+    ``ggml_backend_dev_name`` produces ``CUDA0`` / ``MTL0`` / ``Vulkan1``, which is
+    the same token ``--device`` and ``--tensor-split`` take and the same one the
+    buffer report is keyed by. Joining on it keeps the check out of the index-space
+    ambiguity that ``FleetDevice.from_loader`` exists to mark.
+    """
+    return f"{device.backend}{device.index}"
+
+
 def report_divergence(
     role: WorkerRole,
     model: str,
@@ -162,8 +186,16 @@ _ENGINE_LOG_TEMPLATE = "engine-{model_id}.log"
 # environment rather than argv because the launch is planned before the data
 # directory that holds these logs is chosen, and because neither affects sizing,
 # which is what the estimate-versus-launch argv parity test covers.
+# Both spellings, because the engine renamed them and lilbee has to work with
+# whichever build is installed. common/arg.cpp registers LLAMA_ARG_LOG_FILE and
+# LLAMA_ARG_LOG_VERBOSITY on current master; builds around 9310 read the same
+# settings as LLAMA_LOG_FILE and LLAMA_LOG_VERBOSITY, verified by running both
+# pairs against one. An unread variable costs nothing, and picking one meant the
+# readback silently produced no log at all on half the builds in the wild.
 ENV_LOG_FILE = "LLAMA_LOG_FILE"
 ENV_LOG_VERBOSITY = "LLAMA_LOG_VERBOSITY"
+ENV_ARG_LOG_FILE = "LLAMA_ARG_LOG_FILE"
+ENV_ARG_LOG_VERBOSITY = "LLAMA_ARG_LOG_VERBOSITY"
 # Level 4 ("trace") is where the per-device buffer report appears. Measured
 # against the bundled engine: the default 3 omits it entirely, and 5 adds a
 # per-layer and per-slot flood for the same six lines.
@@ -177,16 +209,32 @@ def engine_log_path(log_dir: Path, model_id: str) -> Path:
 
 def engine_log_env(log_dir: Path, model_id: str) -> dict[str, str]:
     """Environment that makes the engine report what it allocated, and where."""
+    path = str(engine_log_path(log_dir, model_id))
     return {
-        ENV_LOG_FILE: str(engine_log_path(log_dir, model_id)),
+        ENV_LOG_FILE: path,
+        ENV_ARG_LOG_FILE: path,
         ENV_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
+        ENV_ARG_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
     }
 
 
 def check_launch(
-    log_dir: Path, model_id: str, role: WorkerRole, model: str, estimated_bytes: int
+    log_dir: Path,
+    model_id: str,
+    role: WorkerRole,
+    model: str,
+    estimated_bytes: int,
+    est_by_device: dict[str, int] | None = None,
 ) -> bool:
     """Compare the engine's own report for *model_id* against the estimate.
+
+    Checked per device when *est_by_device* says what each card was planned for,
+    because per device is the only dimension the planner decides in: a split is a
+    ratio, a placement is a card, and a shortfall is recorded against a role on a
+    card. Two cards planned 50/50 that land 80/20 sum to exactly the planned
+    total, so a scalar comparison sees nothing while card 0 is the one that runs
+    out. Falls back to the total for a model the estimator could only size as one
+    number.
 
     Three outcomes, and the third is the one that matters. The engine has no API
     for any of this: /props carries no memory keys and /metrics is token
@@ -202,9 +250,20 @@ def check_launch(
     try:
         text = engine_log_path(log_dir, model_id).read_text(errors="replace")
     except OSError:
-        # No log yet: the engine has not started writing. Nothing to say.
+        # No log at all. Usually the engine simply has not written one yet, so
+        # this is silent by default. It is also exactly what a wrong environment
+        # variable name looks like, which is how an earlier spelling went
+        # unnoticed: the check returned False forever and read as "estimate fine".
+        # report_missing_log is how a caller that knows the engine is up says so.
         return False
-    actual = device_footprint(text)
+    per_device = {
+        label: size
+        for label, size in parse_device_buffers(text).items()
+        if not _is_host_device(label)
+    }
+    actual = sum(per_device.values())
+    if actual > 0 and est_by_device:
+        return _report_per_device(role, model, est_by_device, per_device)
     if actual <= 0:
         if load_finished(text):
             log.warning(
@@ -225,3 +284,64 @@ def check_launch(
 # enough that the estimator's normal error is quiet, narrow enough to catch the
 # whole-slot and whole-cache mistakes this exists to surface.
 _TOLERANCE = 0.25
+
+
+def _report_per_device(
+    role: WorkerRole,
+    model: str,
+    estimated: dict[str, int],
+    actual: dict[str, int],
+) -> bool:
+    """Warn about the card that diverged worst, naming both figures.
+
+    One warning rather than one per card: the operator needs to know the plan did
+    not hold and which card to look at, and a split that skews puts every card out
+    at once by construction.
+    """
+    worst_label, worst_gap, worst_over = "", 0.0, False
+    for label in set(estimated) | set(actual):
+        planned, landed = estimated.get(label, 0), actual.get(label, 0)
+        gap = abs(landed - planned) / planned if planned else float(landed)
+        over = landed > planned
+        # An overrun outranks an equal shortfall: a card holding more than it was
+        # planned for is the one that fails to load, while its partner holding
+        # less is only the symptom of the same skew.
+        if (over, gap) > (worst_over, worst_gap):
+            worst_label, worst_gap, worst_over = label, gap, over
+    if not worst_label or (estimated.get(worst_label) and worst_gap <= _TOLERANCE):
+        return False
+    log.warning(
+        "The %s model %s did not land where it was planned: %s holds %.1f GiB but was "
+        "planned for %.1f GiB. Placement, the tensor split and the context were all "
+        "decided per card, so a total that looks right can still overrun one of them.",
+        role.value,
+        model,
+        worst_label,
+        actual.get(worst_label, 0) / 1024**3,
+        estimated.get(worst_label, 0) / 1024**3,
+    )
+    return True
+
+
+def report_missing_log(log_dir: Path, model_id: str, role: WorkerRole) -> bool:
+    """Warn when a ready engine wrote no log where lilbee told it to.
+
+    Separate from :func:`check_launch` because only the caller knows the engine
+    finished loading; an absent file before that is ordinary. After it, the file
+    should exist, and its absence means the engine never accepted the settings
+    that produce it. That is a silent no-op rather than a wrong answer, which is
+    the harder kind to notice, so it is stated.
+    """
+    if engine_log_path(log_dir, model_id).exists():
+        return False
+    log.warning(
+        "The %s engine is running but wrote no log to %s, so its memory use could not "
+        "be checked against the estimate. The engine build most likely does not read "
+        "the variables lilbee sets to ask for one (%s or %s); placement estimates are "
+        "unverified until that is updated.",
+        role.value,
+        engine_log_path(log_dir, model_id),
+        ENV_LOG_FILE,
+        ENV_ARG_LOG_FILE,
+    )
+    return True

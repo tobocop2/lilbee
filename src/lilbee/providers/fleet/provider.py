@@ -2263,6 +2263,12 @@ class FleetProvider:
 
         restarted: list[WorkerRole] = []
         with self._build_lock:
+            # The device list is structural and was captured once at boot, so a
+            # card that has since left keeps being planned onto. The memory
+            # figures beside it are deliberately not re-taken: this fleet is
+            # resident, and charging it against itself is what the snapshot exists
+            # to prevent.
+            planning.refresh_plan_devices()
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a

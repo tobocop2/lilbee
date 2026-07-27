@@ -1,0 +1,57 @@
+"""The buffer regex, derived from every emit site in llama.cpp rather than samples."""
+
+from __future__ import annotations
+
+import pytest
+
+from lilbee.providers.fleet.readback import MIB, parse_device_buffers
+
+# Every "<n> buffer size = <n> MiB" format string in llama.cpp, rendered. Found by
+# grepping src/, ggml/src/, tools/ and common/ rather than by reading two logs.
+_EMITS = [
+    ("model", "load_tensors: %12s model buffer size = %8.2f MiB"),
+    ("KV", "llama_kv_cache: %10s KV buffer size = %8.2f MiB"),
+    ("compute", "sched_reserve: %10s compute buffer size = %8.2f MiB"),
+    ("output", "llama_context: %10s  output buffer size = %8.2f MiB"),
+    ("LoRA", "llama_adapter: %10s LoRA buffer size = %8.2f MiB"),
+    ("RS", "llama_memory_recurrent: %10s RS buffer size = %8.2f MiB"),
+    ("DSV4 state", "llama_kv_cache: %10s DSV4 shift state buffer size = %8.2f MiB"),
+]
+
+# Lines that contain "buffer size" and must NOT be read as an allocation.
+_NOT_ALLOCATIONS = [
+    "~llama_context:  MTL0 compute buffer size is 97.1250 MiB, matches expectation of 97.1250 MiB",
+    "~llama_context:  MTL0 compute buffer size of 97.1250 MiB, does not match expectation of 1 MiB",
+    "ggml_backend: copy buffer size: 128 MB",
+    "ggml_opencl: A_q_d buffer size reduced from 100 to 50 due to device limitations.",
+    "ggml_opencl: device max image buffer size (pixels): 16384",
+]
+
+
+class TestEveryUpstreamEmitIsRead:
+    """A kind this does not know is VRAM it does not count.
+
+    RS is recurrent state, which every Mamba and RWKV model allocates, and LoRA
+    is every adapter. Enumerating kinds by hand meant those were silently zero.
+    """
+
+    @pytest.mark.parametrize(("kind", "template"), _EMITS, ids=[k for k, _ in _EMITS])
+    def test_it_is_counted(self, kind: str, template: str) -> None:
+        line = template % ("CUDA0", 128.0)
+        assert parse_device_buffers(line) == {"CUDA0": int(128.0 * MIB)}
+
+
+class TestNothingElseIsMistakenForOne:
+    """Several upstream lines carry the words and are not allocations."""
+
+    @pytest.mark.parametrize("line", _NOT_ALLOCATIONS)
+    def test_it_is_ignored(self, line: str) -> None:
+        assert parse_device_buffers(line) == {}
+
+
+class TestTheTimestampPrefixDoesNotHideThem:
+    """--log-file prefixes every line with a timestamp and level."""
+
+    def test_a_prefixed_line_still_parses(self) -> None:
+        line = "0.00.220.431 I load_tensors:         MTL0 model buffer size =    82.41 MiB"
+        assert parse_device_buffers(line) == {"MTL0": int(82.41 * MIB)}

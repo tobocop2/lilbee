@@ -383,8 +383,54 @@ def _role_ctx(
     if role is WorkerRole.VISION:
         return resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
-        return cfg.num_ctx
+        return _pinned_chat_ctx(model_path, meta)
     return resolve_chat_ctx(model_path, meta, available_bytes=plan_sizing_budget(device))
+
+
+def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """``cfg.num_ctx``, clamped to what the model was trained for.
+
+    Every unpinned resolver already clamps, and both docstrings here claimed the
+    pin did too. It did not, so a pin past the trained window was passed straight
+    to the engine, which clamps it silently and serves a different number than
+    every budget was sized for.
+
+    Only against a window that is actually known. A GGUF whose header cannot be
+    read falls back to a default that is a guess, and contradicting an explicit
+    pin with a guess would break the hosts where the header is the thing that is
+    broken.
+    """
+    from lilbee.core.config import cfg
+
+    pinned = cfg.num_ctx
+    assert pinned is not None  # noqa: S101 - callers check; this documents the contract
+    ceiling = _known_chat_ceiling(model_path, meta)
+    if ceiling is None or pinned <= ceiling:
+        return pinned
+    log.warning(
+        "num_ctx is set to %d but %s was trained for %d, so %d is what will be served. "
+        "Lower num_ctx to stop planning against a window this model does not have.",
+        pinned,
+        model_path.name,
+        ceiling,
+        ceiling,
+    )
+    return ceiling
+
+
+def _known_chat_ceiling(model_path: Path, meta: dict[str, str] | None) -> int | None:
+    """The largest chat window this model is known to support, or ``None``.
+
+    ``None`` when the GGUF header gave no usable context length and the user set
+    no ``cfg.num_ctx_max``: there is then no measured ceiling, only a default.
+    """
+    from lilbee.core.config import cfg
+    from lilbee.providers.gguf_meta import train_ctx_from_meta
+
+    sentinel = -1
+    trained = train_ctx_from_meta(meta, fallback=sentinel, model_path=model_path)
+    known = [value for value in (trained, cfg.num_ctx_max) if value is not None and value > 0]
+    return min(known) if known else None
 
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
@@ -610,7 +656,11 @@ def _chat_serve_budget_footprint(footprint: int) -> int:
     """
     from lilbee.core.config import cfg
 
-    return int(footprint * (usable_vram_fraction() / cfg.gpu_memory_fraction))
+    # Never below 1.0. The ratio only compensates while the serve budget is the
+    # smaller of the two; a gpu_memory_fraction raised past the usable fraction
+    # inverts it, and the same line that exists to charge chat more starts
+    # charging it less than the model takes.
+    return int(footprint * max(1.0, usable_vram_fraction() / cfg.gpu_memory_fraction))
 
 
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
@@ -627,7 +677,7 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
 
     if role is WorkerRole.CHAT:
         if cfg.num_ctx is not None:
-            return cfg.num_ctx
+            return _pinned_chat_ctx(model_path, meta)
         return min(
             chat_ctx_ceiling(meta, model_path), max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
         )
@@ -1075,6 +1125,29 @@ def _non_chat_reservation(
     return reserved
 
 
+def _charge_by_device(
+    chosen: tuple[FleetDevice, ...], ratio: tuple[int, ...], total: int
+) -> dict[str, int]:
+    """What each of *chosen* was charged, keyed by the name the engine prints.
+
+    A single-card instance carries the whole charge. A split carries it in the
+    proportions it launches with, which is what the planner decided and therefore
+    what the engine's own report should be compared against.
+    """
+    from lilbee.providers.fleet.readback import device_label
+
+    if total <= 0 or not chosen:
+        return {}
+    if len(chosen) == 1:
+        return {device_label(chosen[0]): total}
+    weights = ratio if len(ratio) == len(chosen) else (1,) * len(chosen)
+    denominator = sum(weights) or len(chosen)
+    return {
+        device_label(device): total * weight // denominator
+        for device, weight in zip(chosen, weights, strict=True)
+    }
+
+
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
@@ -1085,6 +1158,7 @@ def _launch_for(
     chat_reservation: int = 0,
     reserved_by_device: dict[int, int] | None = None,
     est_vram_bytes: int = 0,
+    model_path: Path | None = None,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.engine_params import (
@@ -1093,7 +1167,9 @@ def _launch_for(
     )  # circular: fleet.planning -> engine_params -> app.services
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    model_path = resolve_model_path(model_ref)
+    # The self-check holds a downloaded file rather than a configured reference,
+    # so it hands the path over instead of asking for one to be resolved.
+    model_path = model_path or resolve_model_path(model_ref)
     weights_bytes = _weights_bytes(model_path)
     meta = read_gguf_metadata(model_path)
     from lilbee.core.config import cfg
@@ -1215,6 +1291,40 @@ def _launch_for(
         # What placement charged this instance, for the post-launch check against
         # the engine's own report of what it really allocated.
         est_vram_bytes=est_vram_bytes,
+        est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
+    )
+
+
+def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaunch:
+    """The launch the fleet would build for *role* serving *model_path*, alone.
+
+    One construction path. The self-check used to assemble its own beside this
+    one and the two disagreed on slot count, on the context that follows from it,
+    on device pinning and on the tensor split, so a green check proved nothing
+    about the launch serving actually performs, and a red one could be a
+    configuration serving would never have chosen.
+
+    Placement is the planner's, on the devices the plan snapshot holds, so the
+    check runs on the card the role would really land on.
+    """
+    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    apply_fleet_gpu_env()
+    binary = resolve_llama_server()
+    apply_cuda_runtime_env(binary)
+    devices = _plan_devices(binary)
+    by_index = {d.index: d for d in devices}
+    # The whole machine, since nothing else is resident during a self-check.
+    placed = (min(by_index),) if by_index else ()
+    plan = InstancePlan(role=role, devices=placed)
+    return _launch_for(
+        plan,
+        str(model_path),
+        binary,
+        by_index,
+        unified_budget=_unified_memory_budget(devices),
+        model_path=model_path,
     )
 
 
@@ -1527,6 +1637,49 @@ def capture_plan_probe() -> None:
     )
 
 
+def refresh_plan_devices() -> None:
+    """Re-read which devices exist, keeping the clean-box memory figures.
+
+    The snapshot is captured once and only a full teardown clears it, so an eGPU
+    unplugged, a driver reset, or a VM hot-remove left the fleet pinning a device
+    that is no longer there and every rebuild replanning onto it.
+
+    Only the structural half is restated. The memory figures are what make a
+    reload plan the way the boot did, and re-taking them while the fleet is
+    resident would charge it against itself, which is the whole reason the
+    snapshot exists.
+
+    A probe that cannot run leaves the snapshot alone: the last known device list
+    is a better answer than none, and the loud paths for an unreachable engine
+    live in the build, not here.
+    """
+    probe = _plan_probe_store.get()
+    if probe is None:
+        return
+    clear_read_device_cache()
+    try:
+        devices, refused_all = _probe_engine_devices()
+    except (ProviderError, OSError) as exc:
+        log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
+        return
+    if tuple(devices) == probe.devices:
+        return
+    log.info(
+        "The set of GPUs changed since this fleet was planned (%d device(s) now, %d before); "
+        "replanning against the ones that are here.",
+        len(devices),
+        len(probe.devices),
+    )
+    _plan_probe_store.set(
+        _PlanProbe(
+            devices=tuple(devices),
+            sizing_budget=_device_sizing_budget(devices),
+            free_system=probe.free_system,
+            engine_devices_all_refused=refused_all,
+        )
+    )
+
+
 def clear_plan_probe() -> None:
     """Drop the plan snapshot (full fleet teardown); the next build re-captures."""
     _plan_probe_store.clear()
@@ -1736,9 +1889,28 @@ def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> d
     with a tenant keeps a proportional margin rather than being packed to its
     last free byte, where fragmentation is worst.
     """
+    packable = _packable_devices(devices)
     if not charge_against_free:
-        return {d.index: d.total_bytes for d in devices}
-    return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
+        return {d.index: d.total_bytes for d in packable}
+    return {d.index: min(d.total_bytes, d.free_bytes) for d in packable}
+
+
+def _packable_devices(devices: list[FleetDevice]) -> list[FleetDevice]:
+    """The devices bin-packing may charge against.
+
+    An integrated GPU's memory is the host's. Packing it beside a dedicated card
+    promises the same RAM twice, once to its own budget and once to everything
+    else on the machine, and its heap is often the larger number, so the packer
+    prefers it: a 32 GiB shared heap outbids a 24 GiB card that actually has the
+    memory. Where a dedicated device exists it is the one to serve from, and the
+    integrated one is left to the shared-memory budget.
+
+    A host with nothing but integrated devices keeps them. There is nothing else
+    to serve from, and that path is governed by the system budget rather than by
+    per-device packing.
+    """
+    dedicated = [d for d in devices if not d.unified]
+    return dedicated or devices
 
 
 def _resolve_placement(

@@ -3489,6 +3489,7 @@ class TestLaunchStateRoundTrip:
             replica=1,
             rerank_mode=RerankMode.LLM,
             est_vram_bytes=7 * 1024**3,
+            est_vram_by_device={"CUDA0": 4 * 1024**3, "CUDA1": 3 * 1024**3},
         )
         rebuilt = InstanceLaunch.from_state(launch.to_state())
         assert rebuilt == launch
@@ -3501,7 +3502,9 @@ class TestLaunchStateRoundTrip:
             "argv": ["/bin/llama-server"],
             "model": "o/c-GGUF/c.gguf",
         }
-        assert InstanceLaunch.from_state(payload).est_vram_bytes == 0
+        rebuilt = InstanceLaunch.from_state(payload)
+        assert rebuilt.est_vram_bytes == 0
+        assert rebuilt.est_vram_by_device == {}
 
 
 # ── The engine acquisition ladder ───────────────────────────────────

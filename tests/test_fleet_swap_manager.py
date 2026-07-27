@@ -1695,12 +1695,30 @@ class TestEstimateReadback:
 
     def test_an_unsized_model_is_skipped(self, tmp_path, caplog) -> None:
         # A model the estimator could not size is enrolled at 0; there is nothing
-        # to compare it to, and a warning would be noise.
+        # to compare it to, and a warning about the comparison would be noise.
+        from lilbee.providers.fleet.readback import engine_log_path
+
         manager = self._manager(tmp_path)
         manager._launch_by_model = {"chat-0": self._launch(0)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors: CUDA0 model buffer size = 1.00 MiB\n"
+        )
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             manager._check_estimates({"chat-0"})
         assert caplog.text == ""
+
+    def test_a_ready_engine_that_wrote_no_log_says_so(self, tmp_path, caplog) -> None:
+        # The engine is up, so an absent log is not "too early": it means the
+        # build never accepted the settings that produce one. Silent, that reads
+        # as a passing check forever, which is how a wrong variable name hid.
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        manager._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert "wrote no log" in caplog.text
 
     def test_an_unknown_model_id_is_skipped(self, tmp_path, caplog) -> None:
         manager = self._manager(tmp_path)

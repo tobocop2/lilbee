@@ -30,7 +30,7 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
-from lilbee.providers.fleet.readback import check_launch
+from lilbee.providers.fleet.readback import check_launch, report_missing_log
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 from lilbee.runtime.engine_lock import clear_keep_warm
 
@@ -350,7 +350,12 @@ class SwapManager:
         for model_id in ready - self._estimate_checked:
             launch = self._launch_by_model.get(model_id)
             self._estimate_checked.add(model_id)
-            if launch is None or launch.est_vram_bytes <= 0:
+            if launch is None:
+                continue
+            # The engine is ready, so a missing log is not "too early" any more.
+            if report_missing_log(self._log_path.parent, model_id, launch.role):
+                continue
+            if launch.est_vram_bytes <= 0:
                 continue
             check_launch(
                 self._log_path.parent,
@@ -358,6 +363,7 @@ class SwapManager:
                 launch.role,
                 launch.model,
                 launch.est_vram_bytes,
+                launch.est_vram_by_device,
             )
 
     def is_live(self) -> bool:

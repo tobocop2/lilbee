@@ -1030,6 +1030,23 @@ def _platform_supports_icd_pin() -> bool:
 #     https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/issues/3796
 #   - Blender Vulkan backend startup failure on dual-vendor hosts:
 #     https://projects.blender.org/blender/blender/issues/129917
+def _icd_pin_is_ours_to_make() -> bool:
+    """Whether lilbee may set the ICD disable list at all.
+
+    Not on a platform with no documented dual-vendor crash class, not when the
+    caller has already set any of the loader's own variables, and not when a
+    gpu_devices pin has already named the hardware to use. Each is somebody
+    else's decision arriving first.
+    """
+    from lilbee.core.config import cfg
+
+    if not _platform_supports_icd_pin():
+        return False
+    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
+        return False
+    return not cfg.gpu_devices
+
+
 def disable_conflicting_vulkan_icds() -> str | None:
     """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
 
@@ -1041,18 +1058,27 @@ def disable_conflicting_vulkan_icds() -> str | None:
     Windows, XDG on Linux) and the device tree from the OS; enumerating via
     ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
-    from lilbee.core.config import cfg
-
-    if not _platform_supports_icd_pin():
-        return None
-    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
-        return None
-    if cfg.gpu_devices:
+    if not _icd_pin_is_ours_to_make():
         return None
     vendors = _vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
-    best = _select_best_vendor(_vendors_with_hardware(vendors) or vendors)
-    if best is None:  # pragma: no cover - invariant: vendors is non-empty here
+    with_hardware = _vendors_with_hardware(vendors)
+    if not with_hardware:
+        # The device tree could not be read, so nothing here is known to be
+        # present. Ranking the manifests alone is how a host whose /sys is
+        # masked, or WSL2, or an ARM SoC whose GPU is not on the PCI bus, could
+        # have its only working ICD disabled by a static vendor order. Silence is
+        # the safe answer: an extra ICD risks the crash class this avoids, while
+        # disabling the wrong one costs the GPU outright.
+        log.debug(
+            "Not disabling any Vulkan ICD: none of the %d manifest vendors could be "
+            "confirmed present in this host's device tree, so which one drives this "
+            "machine is unknown.",
+            len(vendors),
+        )
+        return None
+    best = _select_best_vendor(with_hardware)
+    if best is None:  # pragma: no cover - invariant: with_hardware is non-empty here
         return None
     return ",".join(_icds_to_disable(best, vendors))
