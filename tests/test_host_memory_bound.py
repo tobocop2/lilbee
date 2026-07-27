@@ -72,3 +72,62 @@ def test_the_estimator_fallback_is_bound_too(monkeypatch) -> None:
         WorkerRole.CHAT, _REF, RuntimeError("boom"), device_count=1, total_vram=24 * _GB
     )
     assert seen, "the fallback never consulted the host bound"
+
+
+class TestWhatCountsAsResident:
+    """The predicate the refusal turns on, exercised rather than stubbed."""
+
+    def test_a_non_chat_role_never_counts(self) -> None:
+        assert not planning._host_bytes_must_be_resident(WorkerRole.EMBED, _REF)
+
+    def test_an_unresolvable_model_counts_as_mappable(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _missing(_ref):
+            raise ProviderError("not installed")
+
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _missing)
+        assert not planning._host_bytes_must_be_resident(WorkerRole.CHAT, _REF)
+
+    def test_a_local_model_counts_as_mappable(self, monkeypatch, tmp_path) -> None:
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x")
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(planning, "is_network_path", lambda _p: False)
+        assert not planning._host_bytes_must_be_resident(WorkerRole.CHAT, _REF)
+
+    def test_a_network_model_small_enough_to_buffer_must_be_resident(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # The one path that asks for --no-mmap: a network filesystem where the
+        # host copy fits, because mmap page faults over the wire wedge the load.
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x")
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(planning, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: 1 * _GB)
+        monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 64 * _GB)
+        assert planning._host_bytes_must_be_resident(WorkerRole.CHAT, _REF)
+
+    def test_a_network_model_too_big_to_buffer_stays_mappable(self, monkeypatch, tmp_path) -> None:
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x")
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(planning, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: 500 * _GB)
+        monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 64 * _GB)
+        assert not planning._host_bytes_must_be_resident(WorkerRole.CHAT, _REF)
+
+
+def test_an_unsizable_model_the_host_cannot_hold_is_dropped(monkeypatch) -> None:
+    # The fallback consults the bound; this is the branch where it says no.
+    monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: 1)
+    monkeypatch.setattr(planning, "_weights_exceed_hardware", lambda *_a, **_k: False)
+    monkeypatch.setattr(planning, "_fallback_floor_for", lambda *_a: 400 * _GB)
+    monkeypatch.setattr(planning, "_host_memory_refuses", lambda *_a: True)
+    assert (
+        planning._sizing_failure_fallback(
+            WorkerRole.CHAT, _REF, RuntimeError("boom"), device_count=1, total_vram=24 * _GB
+        )
+        is None
+    )

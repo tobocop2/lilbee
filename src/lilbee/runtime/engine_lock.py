@@ -27,10 +27,12 @@ log = logging.getLogger(__name__)
 
 ENGINE_DIR_ENV = "LILBEE_ENGINE_DIR"
 _BUILD_LOCK_NAME = "engine.lock"
-# A legitimate build holds the lock only for the llama-swap spawn (its 30 s boot
-# budget); the model itself loads lazily on the first request, outside the lock.
-# So a wait longer than this is a wedged holder, not honest contention -- bound
-# it rather than block forever, which would deadlock every startup and exit.
+# A legitimate build holds the lock for the llama-swap spawn (a 30 s boot budget)
+# and, before it, the planning sweep, which shells out to gguf-parser once per
+# split candidate and per context probe. The model itself loads lazily on the
+# first request, outside the lock. So honest contention can run well past the
+# spawn budget on a wide box, and the bound is here to catch a wedged holder
+# rather than to block forever, which would deadlock every startup and exit.
 _BUILD_LOCK_TIMEOUT_S = 90.0
 # What a caller that will proceed without the lock waits for it. Teardown and
 # config-change are best-effort by definition, so spending the build timeout

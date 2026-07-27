@@ -63,6 +63,11 @@ class TestTheSelfCheckAsksThePlanner:
         launch = self._capture(monkeypatch, tmp_path, WorkerRole.CHAT)
         argv = launch.argv
         slots = int(argv[argv.index("--parallel") + 1])
+        # Only that argv agrees with the launch it was built from. This cannot
+        # catch a wrong slot count, because both sides come from the same
+        # resolution and one slot is the correct answer on the self-check path
+        # (a probe, not a serving fleet). A slot regression has to be caught
+        # where slots are decided, against a plan with real headroom.
         assert slots == launch.slots
         assert argv[argv.index("--ctx-size") + 1] == str(launch.ctx * slots)
 

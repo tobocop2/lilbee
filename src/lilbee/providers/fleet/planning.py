@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -958,7 +958,7 @@ def _estimate_or_fallback(
             host_committed=host_committed,
         )
     return _admit_estimate(
-        estimate,
+        _floor_implausible_estimate(estimate, role, ref),
         role,
         ref,
         total_vram=total_vram,
@@ -1016,6 +1016,41 @@ def _analytic_footprint_floor(
     kv_bytes = model_cache.kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg()) * ctx * max(slots, 1)
     overhead = int(weights * model_cache._BUFFER_OVERHEAD_FRACTION)
     return weights + kv_bytes + overhead
+
+
+def _estimate_is_implausible(*, estimated: int, floor: int) -> bool:
+    """Whether *estimated* describes a load that cannot exist.
+
+    Below the analytic floor, which is the model's own weight bytes plus the
+    cache and buffers it was asked to hold, there is no arrangement of memory
+    that serves it. A floor of zero means nothing could be computed to compare
+    against, and a guess is not grounds to discard the only measurement there is.
+    """
+    return floor > 0 and 0 < estimated < floor
+
+
+def _floor_implausible_estimate(
+    estimate: ModelPlacementInput, role: WorkerRole, ref: str
+) -> ModelPlacementInput:
+    """*estimate*, or the analytic floor when the estimator returned less than one.
+
+    The fallback floor otherwise fires only when the estimator cannot answer, so
+    an answer that is well formed and impossible went straight through, and
+    placement committed a card against a number the load then overran.
+    """
+    floor = _fallback_floor_for(role, ref, _role_weights_bytes(role, ref))
+    if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=floor):
+        return estimate
+    log.warning(
+        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB its "
+        "weights and cache alone need. Charging the floor instead; the estimate "
+        "cannot be describing this load.",
+        role.value,
+        ref,
+        estimate.est_vram_bytes / 1024**3,
+        floor / 1024**3,
+    )
+    return replace(estimate, est_vram_bytes=floor)
 
 
 def _sizing_failure_fallback(
