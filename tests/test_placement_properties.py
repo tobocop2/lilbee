@@ -180,6 +180,26 @@ class TestTheHostMemoryBound:
             )
         assert not (refused_at and not refused_more)
 
+    @given(
+        ram=st.integers(min_value=1, max_value=200 * _GB),
+        committed=st.integers(min_value=0, max_value=200 * _GB),
+    )
+    @settings(max_examples=60)
+    def test_the_refusal_is_the_plan_total_against_the_machine(
+        self, ram: int, committed: int
+    ) -> None:
+        # Monotonicity alone is satisfied by a bound that ignores what is already
+        # committed, since it then answers the same either way. This pins the
+        # actual sum, so dropping the committed term is caught rather than passed.
+        total = 64 * _GB
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "cpu_moe", True, raising=False)
+            mp.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
+            mp.setattr(planning, "total_system_memory", lambda: total)
+            mp.setattr(planning, "free_system_memory", lambda: total)
+            refused = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed)
+        assert refused == (committed + ram > total)
+
     @given(ram=st.integers(min_value=1, max_value=500 * _GB))
     def test_nothing_offloading_is_never_refused(self, ram: int) -> None:
         # The host figure describes memory nobody will allocate when the engine
