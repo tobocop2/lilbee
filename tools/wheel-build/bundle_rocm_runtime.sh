@@ -4,8 +4,8 @@
 #
 # Its own script rather than a block inside build_llama_server.sh because it is the
 # one piece of that build that can be exercised without a GPU, a ROCm install, or a
-# six-hour compile: give it a directory of ELF files and a ROCm tree and it either
-# closes the closure or fails. tests/test_bundle_rocm_runtime.py does exactly that.
+# six-hour compile: give it a directory of ELF files and a ROCm tree and it packs one
+# from the other. tests/test_bundle_rocm_runtime.py does exactly that.
 #
 # Reads:
 #   ROCM_PATH  the ROCm install to pack from (default /opt/rocm-7.2.0)

@@ -1,10 +1,12 @@
-"""The ROCm bundler packs the runtime the engine links, and proves the closure closes.
+"""The ROCm bundler packs the runtime the engine links, discovered rather than listed.
 
 The wheel this guards exists so an AMD user needs a kernel driver and nothing else.
-That claim is only testable on a machine without ROCm, which no CI runner and no
-build host is, so the closure is exercised here against a synthetic ROCm tree and a
-stubbed ``readelf`` instead: every dependency edge is declared by the fixture, so a
-library the bundler fails to follow is a test failure rather than a user's crash.
+These tests cover the walk that packs it: every dependency edge is declared by the
+fixture, so a library the bundler fails to follow is a test failure rather than a
+user's crash, and none of it needs a GPU or a six-hour build.
+
+Whether the result actually loads on a machine without ROCm is settled elsewhere,
+by build-multigpu.yml running the bundle through a real ld.so in a container.
 """
 
 from __future__ import annotations
@@ -197,16 +199,3 @@ def test_fails_when_the_kernels_are_missing(bin_dir, rocm_tree, tmp_path):
     result = _run(bin_dir, rocm_tree, tmp_path)
     assert result.returncode == 1
     assert "rocBLAS kernels missing" in result.stderr
-
-
-def test_ignores_dependencies_the_host_supplies(bin_dir, rocm_tree, tmp_path):
-    """Nothing outside the ROCm tree is packed: libc and libdrm must match the machine.
-
-    Whether what is left actually resolves is not this script's claim to make, since
-    every host that can build ROCm has ROCm on it. build-multigpu.yml settles that
-    against a real loader in a container with no ROCm installed.
-    """
-    needed = {**_NEEDED, "librocblas.so.5": ["libdrm_amdgpu.so.1"]}
-    result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
-    assert result.returncode == 0, result.stderr
-    assert not (bin_dir / "libdrm_amdgpu.so.1").exists()

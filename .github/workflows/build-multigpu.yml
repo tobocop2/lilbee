@@ -200,14 +200,23 @@ jobs:
             apt-get update -qq
             apt-get install -y -qq libnuma1 libdrm2 libdrm-amdgpu1 libelf1 >/dev/null
             status=0
+            checked=0
             for lib in /bundle/libggml-hip.so* /bundle/llama-server; do
-              missing=$(ldd "${lib}" 2>/dev/null | grep "not found" || true)
+              [ -e "${lib}" ] || continue
+              checked=$((checked + 1))
+              missing=$(ldd "${lib}" 2>&1 | grep "not found" || true)
               if [ -n "${missing}" ]; then
                 echo "UNRESOLVED in $(basename "${lib}"):" >&2
                 echo "${missing}" >&2
                 status=1
               fi
             done
+            # Without this the step passes on an empty bundle: an unmatched glob makes
+            # ldd fail, the grep finds no "not found", and nothing was ever checked.
+            if [ "${checked}" -lt 2 ]; then
+              echo "checked ${checked} file(s); expected libggml-hip.so and llama-server" >&2
+              exit 1
+            fi
             if [ "${status}" != 0 ]; then
               echo "the ROCm bundle does not close: the libraries above are neither" >&2
               echo "beside the binary nor installed by the apt line in this step" >&2
