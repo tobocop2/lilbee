@@ -76,7 +76,7 @@
       # CUDA variant: lives in sources-cuda.json so the standard publish path
       # (which overwrites sources.json) cannot wipe it. Only present on
       # x86_64-linux and only when sources-cuda.systems.${system} is populated;
-      # publish-cuda-packages fills it in after build-cuda-executables runs.
+      # publish-cuda-packages fills it in after build-gpu-executables runs.
       cudaSources = builtins.fromJSON (builtins.readFile ./sources-cuda.json);
       cudaSystems = builtins.attrNames cudaSources.systems;
       hasCuda = system: builtins.elem system cudaSystems;

@@ -185,7 +185,7 @@ jobs:
     # and have no internal lint gate of their own.
     needs: [resolve, create-prerelease, checks]
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.checks.result == 'success' && needs.create-prerelease.result != 'failure' }}
-    uses: ./.github/workflows/build-cuda-executables.yml
+    uses: ./.github/workflows/build-gpu-executables.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       skip_tests: ${{ inputs.skip_tests || false }}

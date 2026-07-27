@@ -1,7 +1,7 @@
 # Wheel build scripts
 
 Top-level scripts called by `build-multigpu.yml` (the engine wheel),
-`build-cuda-executables.yml`, and `release.yml` (the standalone executables).
+`build-gpu-executables.yml`, and `release.yml` (the standalone executables).
 Each script runs locally (`bash tools/wheel-build/<script>.sh`) and in CI with
 the same behavior, so a developer can reproduce a CI build off-runner.
 

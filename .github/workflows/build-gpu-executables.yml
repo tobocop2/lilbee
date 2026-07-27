@@ -37,7 +37,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-cuda-executables-${{ inputs.tag || inputs.ref || github.ref }}
+  group: build-gpu-executables-${{ inputs.tag || inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:

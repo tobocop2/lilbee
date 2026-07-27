@@ -2,7 +2,7 @@ name: Publish CUDA Packages
 
 # Updates the Homebrew lilbee-cuda formula, AUR lilbee-cuda PKGBUILD, and the
 # Nix flake CUDA entry to pin a tag's GH-release CUDA Linux binary. Runs
-# manually after build-cuda-executables.yml has attached the CUDA exe.
+# manually after build-gpu-executables.yml has attached the CUDA exe.
 
 on:
   workflow_dispatch:
@@ -44,7 +44,7 @@ jobs:
           }
           sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
 
-          [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-cuda-executables.yml first"; exit 1; }
+          [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-gpu-executables.yml first"; exit 1; }
 
           {
             echo "tag=$tag"
