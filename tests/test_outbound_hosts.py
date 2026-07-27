@@ -25,9 +25,6 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # Source references: docstrings, ported-from attributions, examples.
         # Present in source but not called at runtime.
         "arxiv.org",
-        # lilbee's own wheel index, named in the hint shown when the bundled
-        # engine is missing. A string in an error message, never fetched.
-        "lilbee.sh",
         "docs.python.org",
         "en.wikipedia.org",
         "example.com",
