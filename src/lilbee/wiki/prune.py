@@ -83,7 +83,11 @@ def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
     """Delete a wiki page's chunk and citation rows. Returns whether it succeeded."""
     try:
         store.delete_by_source(wiki_source)
-        store.delete_citations_for_wiki(wiki_source)
+        if not store.delete_citations_for_wiki(wiki_source):
+            log.warning(
+                "Citation delete failed for %s; the next prune pass retries it", wiki_source
+            )
+            return False
     except Exception:
         log.warning(
             "Failed to delete store rows for %s; the next prune pass retries them",

@@ -574,10 +574,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.WIKI,
         help_text=(
-            "Entity extraction strategy "
-            "(ner_entities = default, typed NER entities; "
-            "plus_llm_types = NER + LLM-proposed schema; "
-            "llm_tagged = LLM tags every chunk)"
+            "Entity extraction strategy. ner_entities (typed spaCy NER) is the "
+            "only implemented mode; the other values fall back to it with a warning"
         ),
         choices=tuple(m.value for m in WikiEntityMode),
     ),

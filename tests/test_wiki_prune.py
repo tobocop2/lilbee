@@ -483,3 +483,11 @@ class TestReconcileOrphanRows:
         report = prune_wiki(store)
 
         assert report.records == []
+
+    def test_swallowed_citation_delete_is_not_recorded(self, tmp_path: Path):
+        store = self._store({"wiki/summaries/gone.md"})
+        store.delete_citations_for_wiki.return_value = False
+
+        report = prune_wiki(store)
+
+        assert report.records == []

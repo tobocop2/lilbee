@@ -147,7 +147,10 @@ def archive_legacy_concept_pages(
             slug = str(rel.with_suffix("")).replace("\\", "/")
             wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/{slug}.md"
             store.delete_by_source(wiki_source)
-            store.delete_citations_for_wiki(wiki_source)
+            if not store.delete_citations_for_wiki(wiki_source):
+                # Sentinel unwritten: the next build retries the migration.
+                log.warning("Citation delete failed for %s; migration will retry", wiki_source)
+                return
             src.replace(dest)
             archived_slugs.append(slug)
 

@@ -1914,6 +1914,17 @@ class TestLegacyConceptsMigration:
         store.delete_by_source.assert_called_once_with(wiki_source)
         store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
 
+    def test_a_failed_citation_delete_leaves_the_page_and_retries(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "foo.md").write_text("original")
+        data_dir = tmp_path / "data"
+        store = MagicMock(spec=Store)
+        store.delete_citations_for_wiki.return_value = False
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
+        assert (wiki_root / "concepts" / "foo.md").exists()
+        assert not (data_dir / ".phase-d-migrated").exists()
+
     def test_idempotent(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
