@@ -1192,7 +1192,7 @@ The tradeoff is that the token is all-or-nothing: a client trusted with retrieva
 ### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
-- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting or rejecting a draft is deliberately absent: that call is a human review decision, so it stays on the CLI and the TUI.
+- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting or rejecting a draft is deliberately absent from MCP: that call is a human review decision, so it stays on the CLI, the TUI, and the authenticated HTTP API.
 
 #### Transports
 

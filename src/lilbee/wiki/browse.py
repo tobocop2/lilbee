@@ -45,12 +45,17 @@ class WikiPageInfo:
 
 @dataclass
 class WikiPageContent:
-    """Full content of a wiki page with parsed frontmatter."""
+    """Full content of a wiki page with parsed frontmatter. Frontmatter values are JSON-safe."""
 
     slug: str
     title: str
     content: str
     frontmatter: dict[str, Any] = field(default_factory=dict)
+
+
+def _json_safe(value: Any) -> Any:
+    """yaml.safe_load returns datetime/date objects for date-like scalars; JSON needs strings."""
+    return value.isoformat() if isinstance(value, (datetime, date)) else value
 
 
 def list_md_files(directory: Path) -> list[Path]:
@@ -113,9 +118,7 @@ def build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
     title = _resolve_page_title(fm, text, path)
     page_type = _page_type_from_path(path, wiki_root)
     source_count = parse_source_count(text)
-    raw_at = fm.get("generated_at", "")
-    # yaml.safe_load returns datetime/date objects for date-like strings
-    created_at = raw_at.isoformat() if isinstance(raw_at, (datetime, date)) else str(raw_at)
+    created_at = str(_json_safe(fm.get("generated_at", "")))
     return WikiPageInfo(
         slug=slug,
         title=title,
@@ -172,4 +175,5 @@ def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:
     text = path.read_text(encoding="utf-8")
     fm = parse_frontmatter(text)
     title = _resolve_page_title(fm, text, path)
-    return WikiPageContent(slug=slug, title=title, content=text, frontmatter=fm)
+    frontmatter = {key: _json_safe(value) for key, value in fm.items()}
+    return WikiPageContent(slug=slug, title=title, content=text, frontmatter=frontmatter)

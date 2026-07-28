@@ -689,18 +689,18 @@ def reset(confirm: bool = False) -> dict[str, Any]:
 @_wiki_tool
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages; empty ``wiki_source`` lints all."""
-    from lilbee.wiki.lint import lint_all, lint_wiki_page
+    from lilbee.wiki.lint import LintReport, lint_all, lint_wiki_page
 
     store = get_services().store
-    if wiki_source:
-        issues = lint_wiki_page(wiki_source, store)
-    else:
-        report = lint_all(store)
-        issues = report.issues
+    report = (
+        LintReport(issues=lint_wiki_page(wiki_source, store)) if wiki_source else lint_all(store)
+    )
     return {
         "command": "wiki_lint",
-        "issues": [i.to_dict() for i in issues],
-        "total": len(issues),
+        "issues": [i.to_dict() for i in report.issues],
+        "total": len(report.issues),
+        "errors": report.error_count,
+        "warnings": report.warning_count,
     }
 
 

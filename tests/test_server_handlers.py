@@ -1807,6 +1807,19 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert crawl_done in drained
 
+    async def test_wiki_page_sheds_under_backpressure_while_wiki_phase_lands(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(10):
+            queue.put_event_nowait(f'event: wiki_page\ndata: {{"i": {i}}}\n\n', EventType.WIKI_PAGE)
+        assert queue.qsize() == 2
+        phase = 'event: wiki_phase\ndata: {"phase": "index"}\n\n'
+        queue.put_event_nowait(phase, EventType.WIKI_PHASE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert phase in drained
+
     async def test_callback_routes_progress_through_shedding_path(self):
         from lilbee.runtime.progress import EventType, FileDoneEvent
         from lilbee.server.handlers import SseStream

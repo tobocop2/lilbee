@@ -41,7 +41,7 @@
 
 `lilbee` (no args) launches the full Textual app: streaming chat with clickable
 citations, a model bar, a Task Center for background jobs, and screens for the
-catalog, settings, the setup wizard, and the auto-built wiki.
+catalog, settings, the setup wizard, and the generated wiki.
 
 Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
 command palette, and `/help` for the slash-command catalog. Every action lilbee
@@ -522,7 +522,8 @@ lilbee --json wiki build                       # generate the topic / entity wik
 lilbee --json wiki update                      # refresh after a sync (full rebuild today)
 lilbee --json wiki synthesize                  # cross-source synthesis pages
 lilbee --json wiki lint                        # orphans, stale citations, pending drafts
-lilbee --json wiki citations <source>          # per-section citation coverage for one source
+lilbee --json wiki citations <page>            # citations a page makes
+lilbee --json wiki citations --source <doc>    # pages citing a source document
 lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
 lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
 lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, or summaries/)
@@ -687,8 +688,9 @@ lilbee wiki prune                      # move stale pages to archive/
 MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_status`,
 `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`,
 `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting and rejecting
-drafts is left off on purpose: deciding whether a low-confidence page is good
-enough to publish is your call, so it stays on the CLI and the TUI.
+drafts is left off MCP on purpose: deciding whether a low-confidence page is
+good enough to publish is your call, so use the CLI, the TUI, or the
+authenticated HTTP API.
 
 ### Memory
 
@@ -986,7 +988,7 @@ Only relevant once the wiki is on and you have wikified at least once.
 | `LILBEE_WIKI_AUTO_UPDATE` | `false` | Regenerate touched wiki pages after every sync. Off means you wikify explicitly (`lilbee wiki build` / `wiki update`, `b` on the TUI wiki screen, or the HTTP and MCP build endpoints) |
 | `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Touched-page cap for auto-update. A sync that touches more pages than this skips regeneration and tells you to run `lilbee wiki update` |
 | `LILBEE_WIKI_DIR` | `wiki` | Directory under the data root where pages live. Set it before the first build; changing it later strands the pages already written |
-| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy: `ner_entities` (typed spaCy NER), `plus_llm_types` (NER plus an LLM-proposed schema), or `llm_tagged` (the LLM tags every chunk, the most expensive) |
+| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy: `ner_entities` (typed spaCy NER), `ner_concepts_plus_llm_types` (NER plus an LLM-proposed schema), or `llm_tagged` (the LLM tags every chunk, the most expensive) |
 | `LILBEE_WIKI_ENTITY_MIN_MENTIONS` | `3` | Distinct chunk mentions an entity or concept needs before it earns its own page |
 | `LILBEE_WIKI_EXTRACT_CONCEPTS` | `true` | Ask the batched call to curate concept pages alongside the extracted entities. `false` writes entity sections only |
 | `LILBEE_WIKI_BATCH_MIN_CHUNKS` | `3` | Chunks a source must contribute before it is eligible for concept curation. Keeps tables of contents and appendices from burning a call to invent concepts |

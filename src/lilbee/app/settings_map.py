@@ -554,7 +554,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Fraction of stale citations before a page is flagged by wiki prune / lint",
+        help_text="Fraction of stale citations before a page is flagged by wiki prune",
     ),
     "wiki_drift_threshold": SettingDef(
         float,
