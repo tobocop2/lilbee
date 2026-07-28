@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -154,15 +155,17 @@ class TestTruncateChunksToBudget:
 
     def test_truncates_when_exceeding_budget(self):
         """Large chunk sets are truncated to fit the context window."""
-        cfg.num_ctx = 100  # 100 tokens * 0.75 * 4 chars = 300 chars budget
-        big_text = "x" * 200  # 200 chars each, only one fits in 300
+        # The output cap alone exceeds the window, so the budget is the
+        # quarter-window floor: 25 tokens = 100 chars.
+        cfg.num_ctx = 100
+        big_text = "x" * 200  # 200 chars each, only the first is kept
         chunks = [_make_chunk(big_text, chunk_index=i) for i in range(5)]
         result = truncate_chunks_to_budget(chunks, cfg)
         assert len(result) == 1
 
     def test_always_keeps_at_least_one_chunk(self):
         """Even if the first chunk exceeds the budget, it is kept."""
-        cfg.num_ctx = 10  # tiny budget: 10 * 0.75 * 4 = 30 chars
+        cfg.num_ctx = 10  # floor of a tiny window: 2 tokens = 8 chars
         huge_chunk = _make_chunk("x" * 10000)
         result = truncate_chunks_to_budget([huge_chunk], cfg)
         assert len(result) == 1
@@ -170,7 +173,7 @@ class TestTruncateChunksToBudget:
     def test_uses_default_context_when_num_ctx_none(self):
         """Falls back to default context window when num_ctx is not set."""
         cfg.num_ctx = None
-        # Default 8192 * 0.75 * 4 = 24576 chars budget
+        # Default 8192 less the output cap and the prompt overhead, times 4 chars.
         small_chunks = [_make_chunk("hello", chunk_index=i) for i in range(10)]
         result = truncate_chunks_to_budget(small_chunks, cfg)
         assert len(result) == 10  # all fit easily
@@ -218,6 +221,35 @@ class TestTruncateChunksToBudget:
         cfg.wiki_summary_max_tokens = 4096
         chunks = [_make_chunk("x" * 400, chunk_index=i) for i in range(10)]
         assert len(truncate_chunks_to_budget(chunks, cfg)) == 1
+
+    def test_the_floor_never_raises_a_positive_budget(self):
+        """A budget between zero and a quarter of the window is honest and small.
+        Lifting it to the floor would overflow a window the real budget fits."""
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 3000
+        available = cfg.num_ctx - cfg.wiki_summary_max_tokens - prompt_overhead_tokens(cfg)
+        assert 0 < available < cfg.num_ctx * 0.25
+        chunks = [_make_chunk("x" * 400, chunk_index=i) for i in range(20)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        total = (
+            len(chunks_to_text(kept)) // 4
+            + cfg.wiki_summary_max_tokens
+            + prompt_overhead_tokens(cfg)
+        )
+        assert 0 < len(kept) < len(chunks)
+        assert total <= cfg.num_ctx
+
+    def test_a_rendered_prompt_is_charged_instead_of_the_raw_template(self):
+        """Per-call substitutions (concept instruction, entity list, source list)
+        are not in the template, so a caller that rendered them passes their size."""
+        cfg.num_ctx = 8192
+        cfg.wiki_summary_max_tokens = 2048
+        chunks = [_make_chunk("x" * 500, chunk_index=i) for i in range(40)]
+        from_template = truncate_chunks_to_budget(chunks, cfg)
+        rendered_chars = len(cfg.wiki_entity_batch_prompt) + 8000
+        from_rendered = truncate_chunks_to_budget(chunks, cfg, rendered_chars)
+        assert prompt_overhead_tokens(cfg, rendered_chars) > prompt_overhead_tokens(cfg)
+        assert len(from_rendered) < len(from_template)
 
 
 class TestWikiGenerationOptions:
@@ -1179,6 +1211,73 @@ class TestWritePageDrift:
         assert result.is_file()
 
 
+class TestWritePageToDrafts:
+    """A drafts target is a proposal, not a published body: no drift ratio is
+    computed, and the source set decides who may claim ``drafts/<slug>.md``."""
+
+    @staticmethod
+    def _page(body: str, sources: list[str]) -> str:
+        return (
+            "---\ngenerated_by: m\ngenerated_at: 2026-07-28T12:00:00+00:00\n"
+            f"sources: {json.dumps(sorted(sources))}\nfaithfulness_score: 0.10\n---\n\n{body}\n"
+        )
+
+    def _write(self, wiki_root: Path, body: str, sources: list[str]) -> Path:
+        return write_page(
+            wiki_root, WikiSubdir.DRAFTS, "brakes", self._page(body, sources), 0.3, sources
+        )
+
+    def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        first = self._write(wiki_root, "# Brakes\n\nfirst proposal", ["a.md"])
+        second = self._write(wiki_root, "# Brakes\n\nsecond proposal", ["a.md"])
+        assert second == first
+        text = first.read_text()
+        assert "second proposal" in text
+        assert "DRIFT" not in text
+        assert f"origin: {WikiSubdir.DRAFTS}" not in text
+
+    def test_a_different_source_set_lands_on_a_collision_draft(self, tmp_path: Path):
+        """Overwriting here is the loss the collision path exists to prevent."""
+        wiki_root = tmp_path / "wiki"
+        first = self._write(wiki_root, "# Brakes\n\nfrom a", ["a.md"])
+        second = self._write(wiki_root, "# Brakes\n\nfrom b", ["b.md"])
+        assert second != first
+        assert second.name.startswith("brakes-collision-")
+        assert "from a" in first.read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in second.read_text()
+
+    def test_a_pending_marker_at_the_slug_is_claimed(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        marker = write_pending_marker(
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->",
+        )
+        result = self._write(wiki_root, "# Brakes\n\nreal content", ["b.md"])
+        assert result == marker
+        assert "real content" in result.read_text()
+
+    def test_a_drift_draft_from_the_same_sources_is_superseded(self, tmp_path: Path):
+        """A drift draft records its sources in the frontmatter it carries, so a
+        later proposal from those sources replaces it in place."""
+        wiki_root = tmp_path / "wiki"
+        drift = divert_to_drafts(
+            self._page("# Brakes\n\nearlier proposal", ["a.md"]),
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        result = self._write(wiki_root, "# Brakes\n\nlater proposal", ["a.md"])
+        assert result == drift
+        text = drift.read_text()
+        assert "later proposal" in text
+        assert "DRIFT" not in text
+
+
 class TestDeleteDriftDraftIfPresent:
     def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
         assert delete_drift_draft_if_present(tmp_path, "missing") is False
@@ -1826,7 +1925,10 @@ class TestWritePendingMarker:
     def test_keeps_a_draft_holding_real_content(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
-        """A parse failure must not replace a page a human is reviewing with a marker."""
+        """A parse failure must not replace a page a human is reviewing with a marker.
+
+        The withheld write reports None so the caller does not count a marker that
+        never landed."""
         drafts = tmp_path / "drafts"
         review_path = divert_to_drafts(
             "# Brakes\n\nReviewed body.\n", drafts, "brakes", 0.4, "diff", "concepts", ["a.md"]
@@ -1835,7 +1937,7 @@ class TestWritePendingMarker:
             result = write_pending_marker(
                 drafts, "brakes", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
             )
-        assert result == review_path
+        assert result is None
         assert "Reviewed body." in review_path.read_text()
         assert PENDING_MARKER_KEYWORD_PARSE not in review_path.read_text()
         assert "pending review" in caplog.text

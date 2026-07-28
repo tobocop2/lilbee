@@ -24,7 +24,6 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citations import (
     ParsedCitation,
-    parse_wiki_citations,
     render_citation_block,
     strip_citation_block,
     verify_citations,
@@ -41,6 +40,7 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
     WikiSubdir,
+    atomic_write_text,
 )
 from lilbee.wiki.stats import BuildStats
 
@@ -179,7 +179,7 @@ def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
             for pattern, replacement in patterns:
                 rewritten = pattern.sub(replacement, rewritten)
             if rewritten != original:
-                md_path.write_text(rewritten, encoding="utf-8")
+                atomic_write_text(md_path, rewritten)
 
 
 def finalize_section(
@@ -224,13 +224,11 @@ def finalize_section(
         log.info("Empty slug for batched section %r; skipping", header_label)
         return None
 
-    # Only replay citation keys that this section actually references
-    # in the body; otherwise every section would claim every citation.
-    section_keys = {ref.citation_key for ref in parse_wiki_citations(body)}
-    # Also collect in-body ``[^keyN]`` references: a section that cites a
-    # footnote defined in the shared trailing block has no definition of
-    # its own, so definitions alone would leave it with no citations.
-    section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
+    # Only replay citation keys the section's prose references. Keys are read
+    # from the citation-stripped body: the response's trailing block lands in
+    # the last section, whose definitions would otherwise make it claim every
+    # citation in the response.
+    section_keys = set(_FOOTNOTE_MARKER_RE.findall(strip_citation_block(body)))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
     resolved = citation_resolver(relevant)
     verified = verify_citations(resolved, chunks, header_label, config)
@@ -267,13 +265,14 @@ def finalize_section(
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
             stats.record_pending_marker()
-            return divert_concept_collision(
+            divert_concept_collision(
                 slug=slug,
                 source=source,
                 first_source=first_source,
                 content=full_content,
                 drafts_dir=drafts_dir,
             )
+            return None
         written_concept_slugs.setdefault(slug, source)
 
     # Successful regen of a previously-PENDING slug: remove the old

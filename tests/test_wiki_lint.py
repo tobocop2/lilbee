@@ -12,7 +12,6 @@ from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk, Store
 from lilbee.wiki.lint import (
     IssueSeverity,
-    IssueType,
     LintIssue,
     LintReport,
     _lint_model_changed,
@@ -102,7 +101,10 @@ class TestLintWikiPage:
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert issues == []
 
-    def test_source_without_extracted_chunks_is_unverifiable(self, tmp_path: Path):
+    def test_source_pruned_of_its_chunks_is_not_flagged(self, tmp_path: Path):
+        """``wiki_prune_raw`` deletes a published page's source chunks, leaving the
+        file present and unchanged. Those citations were verified at build time and
+        must not warn on every lint run afterwards."""
         source = write_source(tmp_path, "doc.md", "Python supports gradual typing.")
         write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
         store = MagicMock(spec=Store)
@@ -110,9 +112,7 @@ class TestLintWikiPage:
             make_citation(source_hash=source_hash(source), excerpt="gradual typing"),
         ]
         store.get_chunks_by_source.return_value = []
-        issues = lint_wiki_page("wiki/summaries/doc.md", store)
-        assert [i.issue_type for i in issues] == [IssueType.UNVERIFIABLE]
-        assert issues[0].severity == IssueSeverity.WARNING
+        assert lint_wiki_page("wiki/summaries/doc.md", store) == []
 
     def test_deleted_source_is_error(self, tmp_path: Path):
         write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")

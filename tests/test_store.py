@@ -204,6 +204,23 @@ class TestWikiChunkSources:
         assert store.wiki_chunk_sources() == set()
 
 
+class TestWikiCitationSources:
+    def test_returns_distinct_wiki_sources(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="src1"),
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="src2"),
+                make_citation(wiki_source="wiki/entities/b.md", citation_key="src1"),
+            ]
+        )
+        assert store.wiki_citation_sources() == {"wiki/concepts/a.md", "wiki/entities/b.md"}
+
+    def test_empty_store_returns_empty_set(self, store):
+        assert store.wiki_citation_sources() == set()
+
+
 class TestReplaceCitationsForWiki:
     def test_swaps_one_page_and_leaves_the_others(self, store):
         from tests.conftest import make_citation

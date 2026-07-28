@@ -29,6 +29,17 @@ from lilbee.wiki.grammar import (
 
 log = logging.getLogger(__name__)
 
+# JSON-style escape sequences that may appear inside quoted excerpts the
+# model emits. Any backslash-prefixed character not in this map stays
+# verbatim (e.g. ``\\x`` passes through unchanged).
+_EXCERPT_ESCAPES: dict[str, str] = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+
+# Encoding side of the same table. A rendered footnote definition must stay on
+# one line and must re-parse to the excerpt it was rendered from.
+_EXCERPT_ESCAPE_INVERSE: dict[str, str] = {
+    char: f"\\{escape}" for escape, char in _EXCERPT_ESCAPES.items()
+}
+
 
 class CitationStatus(Enum):
     """Result of verifying a citation against its source."""
@@ -212,14 +223,8 @@ def _format_source_ref(rec: CitationRecord) -> str:
     elif has_line or has_line_end:
         ref += f", lines {rec['line_start']}-{rec['line_end']}"
     if rec["excerpt"]:
-        ref += f', excerpt: "{rec["excerpt"]}"'
+        ref += f', excerpt: "{_encode_excerpt_escapes(rec["excerpt"])}"'
     return ref
-
-
-# JSON-style escape sequences that may appear inside quoted excerpts the
-# model emits. Any backslash-prefixed character not in this map stays
-# verbatim (e.g. ``\\x`` passes through unchanged).
-_EXCERPT_ESCAPES: dict[str, str] = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
 
 
 def _extract_excerpt(source_ref: str) -> str:
@@ -238,9 +243,31 @@ def _extract_excerpt(source_ref: str) -> str:
     if idx == -1:
         return ""
     start = idx + len(marker)
-    end = source_ref.find('"', start)
+    end = _find_closing_quote(source_ref, start)
     raw = source_ref[start:].strip() if end == -1 else source_ref[start:end].strip()
     return _decode_excerpt_escapes(raw)
+
+
+def _find_closing_quote(text: str, start: int) -> int:
+    """Index of the first unescaped ``"`` at or after *start*, or -1.
+
+    An escaped quote belongs to the excerpt, so the scan steps over it rather
+    than ending the quoted span there.
+    """
+    i = start
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == '"':
+            return i
+        i += 1
+    return -1
+
+
+def _encode_excerpt_escapes(text: str) -> str:
+    """Escape *text* so :func:`_decode_excerpt_escapes` returns it unchanged."""
+    return "".join(_EXCERPT_ESCAPE_INVERSE.get(char, char) for char in text)
 
 
 def _decode_excerpt_escapes(raw: str) -> str:

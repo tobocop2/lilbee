@@ -23,7 +23,7 @@ from lilbee.wiki.entity_extractor import (
 )
 from lilbee.wiki.generation import _all_sources_in_scope, build_wiki
 from lilbee.wiki.page import WIKI_DEFAULT_SEED
-from lilbee.wiki.persistence import delete_pending_marker_if_present
+from lilbee.wiki.persistence import delete_pending_marker_if_present, divert_to_drafts
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
@@ -31,6 +31,8 @@ from lilbee.wiki.shared import (
 )
 from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import (
+    _MAX_REUSE_CONCEPT_LABELS,
+    _existing_concept_labels,
     _parse_declared_concepts,
     _prefix_heading,
     _split_batched_output,
@@ -188,6 +190,24 @@ class TestParseDeclaredConcepts:
 
     def test_blank_entries_are_dropped(self):
         assert _parse_declared_concepts("CONCEPTS: Brakes; ;  \n") == {"Brakes"}
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "**CONCEPTS:** Brake System; Assembly Line",
+            "**CONCEPTS: Brake System; Assembly Line**",
+            "`CONCEPTS: Brake System; Assembly Line`",
+            "## CONCEPTS: Brake System; Assembly Line",
+            "> CONCEPTS:  Brake System ; Assembly Line ",
+            "concepts: Brake System; Assembly Line",
+        ],
+    )
+    def test_markdown_decoration_around_the_declaration_is_tolerated(self, line: str):
+        """Instruct models bold, quote and fence the label they are told to emit."""
+        assert _parse_declared_concepts(f"{line}\n\n## Brake System\n\nbody\n") == {
+            "Brake System",
+            "Assembly Line",
+        }
 
 
 class TestMatchLabel:
@@ -524,6 +544,43 @@ class TestBuildStatsForABatch:
         }
         assert stats.citation_verify_rate == 1.0
 
+    def test_each_section_claims_only_the_citations_it_references(self, stub_embedder):
+        """The response's trailing citation block lands in the last section's body.
+        Its definitions must not make that page claim every citation in the run."""
+        second_excerpt = "The Model T sold widely."
+        chunks = [_chunk("s.txt", 0, _EXCERPT), _chunk("s.txt", 1, second_excerpt)]
+        text = (
+            _section("Henry Ford", f"> {_EXCERPT}[^src1]\n")
+            + _section("Model T", f"> {second_excerpt}[^src2]\n")
+            + "\n\n---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: s.txt, excerpt: "{_EXCERPT}"\n'
+            f'[^src2]: s.txt, excerpt: "{second_excerpt}"\n'
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("model-t", "Model T", ["s.txt"]),
+            ],
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        last_page = next(page for page in pages if page.stem == "model-t")
+        rendered = last_page.read_text()
+        assert "[^src2]:" in rendered
+        assert "[^src1]:" not in rendered
+        assert stats.verified_by_page == {
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/henry-ford.md": 1,
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/model-t.md": 1,
+        }
+
     def test_a_section_below_the_faithfulness_threshold_counts_as_drafted(
         self, stub_embedder, monkeypatch
     ):
@@ -571,6 +628,34 @@ class TestBuildStatsForABatch:
         assert stats.citation_verify_rate == 0.0
         assert stats.pending_markers == 1
 
+    def test_a_marker_withheld_by_a_draft_under_review_is_not_counted(self, stub_embedder):
+        """The draft holding review content is kept, so no marker landed to count."""
+        drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
+        review_draft = divert_to_drafts(
+            "# Henry Ford\n\nReviewed body.\n",
+            drafts_dir,
+            "henry-ford",
+            0.5,
+            "diff",
+            WikiSubdir.ENTITIES,
+            ["s.txt"],
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider("A response with no section headers at all.\n"),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pending_markers == 0
+        assert "Reviewed body." in review_draft.read_text()
+
     def test_a_failed_llm_call_counts_one_marker_per_expected_entity(self, stub_embedder):
         provider = MagicMock()
         provider.chat.side_effect = RuntimeError("LLM down")
@@ -604,21 +689,27 @@ class TestBuildStatsForABatch:
 
         written: dict[str, str] = {}
         stats = BuildStats()
+        returned: list[list[Path]] = []
         for source in ("s1.txt", "s2.txt"):
-            generate_source_batch(
-                source=source,
-                entities=[],
-                chunks=[_chunk(source, 0, "Brake system details.")],
-                provider=_mock_batch_provider(_batch_text(source)),
-                store=MagicMock(),
-                config=cfg,
-                extract_concepts=True,
-                written_concept_slugs=written,
-                stats=stats,
+            returned.append(
+                generate_source_batch(
+                    source=source,
+                    entities=[],
+                    chunks=[_chunk(source, 0, "Brake system details.")],
+                    provider=_mock_batch_provider(_batch_text(source)),
+                    store=MagicMock(),
+                    config=cfg,
+                    extract_concepts=True,
+                    written_concept_slugs=written,
+                    stats=stats,
+                )
             )
         assert stats.pages_published == 1
         assert stats.pending_markers == 1
         assert stats.pages_generated == 1
+        # The collision marker is a side channel, not a page: counting it would put
+        # the reported page count above pages_generated.
+        assert [len(pages) for pages in returned] == [1, 0]
 
     def test_a_batch_without_a_collector_still_generates(self, stub_embedder):
         """The stats argument is optional: callers that do not measure still build."""
@@ -812,6 +903,43 @@ class TestBatchGeneration:
         prompt_arg = provider.chat.call_args[0][0][0]["content"]
         assert "Reuse these existing concept names verbatim" in prompt_arg
         assert "assembly line" in prompt_arg
+
+    def test_the_reuse_list_is_capped(self, tmp_path: Path):
+        """Uncapped, the list grows with the wiki until it crowds chunks out of the
+        prompt: the budget is charged for it, so it cannot grow without bound."""
+        concepts_dir = tmp_path / WikiSubdir.CONCEPTS
+        concepts_dir.mkdir(parents=True)
+        for index in range(_MAX_REUSE_CONCEPT_LABELS + 10):
+            (concepts_dir / f"concept-{index:03d}.md").write_text("---\n---\n")
+        labels = _existing_concept_labels(tmp_path)
+        assert len(labels) == _MAX_REUSE_CONCEPT_LABELS
+        assert labels == sorted(labels)
+
+    def test_the_rendered_concept_instruction_is_charged_against_the_chunk_budget(
+        self, stub_embedder
+    ):
+        """The instruction and its reuse list are per-call substitutions the raw
+        template does not carry, so an unbudgeted one would overflow num_ctx."""
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 512
+        concepts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.CONCEPTS
+        concepts_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(_MAX_REUSE_CONCEPT_LABELS):
+            (concepts_dir / f"a-long-established-concept-name-{index:03d}.md").write_text("x")
+        chunks = [_chunk("s.txt", i, "x" * 400) for i in range(40)]
+        provider = _mock_batch_provider(_section("Henry Ford"))
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        prompt_arg = provider.chat.call_args[0][0][0]["content"]
+        assert len(prompt_arg) // 4 + cfg.wiki_summary_max_tokens <= cfg.num_ctx
 
     def test_generation_is_seeded_so_rebuilds_converge(self, stub_embedder):
         """No user seed means the fixed wiki seed, not sampler luck."""
