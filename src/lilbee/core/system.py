@@ -160,12 +160,72 @@ def chat_ctx_target_for_total_bytes(total_bytes: int) -> int:
     return _CTX_TIER_FLOOR
 
 
-def _read_total_memory_bytes() -> int:
-    """Total system RAM in bytes, or 0 when introspection is unavailable."""
-    try:
-        import psutil
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
 
-        return int(psutil.virtual_memory().total)
+
+def cgroup_memory_limit() -> int | None:
+    """Bytes this process's cgroup allows, or ``None`` when unlimited or unreadable.
+
+    cgroup v2 keeps the cap in ``memory.max`` (``max`` for unlimited); v1 uses
+    ``memory/memory.limit_in_bytes``, which spells unlimited as a near-int64
+    sentinel rather than a word, and so reads as a limit above installed RAM.
+    Both are read, matching the CPU quota reader in :mod:`lilbee.runtime.cpu`.
+
+    Every reader of host memory needs this: psutil reports the machine's
+    ``/proc/meminfo``, which a memory-capped container sees in full, so a 4 GiB
+    container on a 512 GiB machine sizes itself for the machine and is killed by
+    the OOM reaper on its first load.
+    """
+    for path in (_CGROUP_ROOT / "memory.max", _CGROUP_ROOT / "memory" / "memory.limit_in_bytes"):
+        try:
+            raw = path.read_text().strip()
+        except OSError:
+            continue
+        if raw == "max":
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def cgroup_memory_used() -> int | None:
+    """Bytes this process's cgroup currently holds, or ``None`` when unreadable."""
+    for path in (
+        _CGROUP_ROOT / "memory.current",
+        _CGROUP_ROOT / "memory" / "memory.usage_in_bytes",
+    ):
+        try:
+            return int(path.read_text().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def capped_total_memory() -> int:
+    """Total RAM this process may use in bytes; raises if the host cannot be read.
+
+    Bounded by the cgroup cap where one applies; a limit above installed RAM is
+    no limit at all, which is also how cgroup v1 spells unlimited.
+    """
+    import psutil
+
+    host_total = int(psutil.virtual_memory().total)
+    limit = cgroup_memory_limit()
+    return min(host_total, limit) if limit is not None else host_total
+
+
+def _read_total_memory_bytes() -> int:
+    """:func:`capped_total_memory`, or 0 when introspection is unavailable.
+
+    The config default needs an answer at import time and has a floor to fall
+    back to, so it swallows the failure. Callers sizing a real placement want the
+    exception instead: a budget silently computed from zero refuses every model
+    with no reason given.
+    """
+    try:
+        return capped_total_memory()
     except Exception:
         # psutil import or platform read failed; the caller falls back to the floor.
         return 0

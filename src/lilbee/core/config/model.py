@@ -513,6 +513,18 @@ class Config(BaseSettings):
     # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
+    # Share of a card placement may charge, leaving room for allocator
+    # fragmentation and driver overhead. Tunable because it decides admission: at
+    # the default, a 16 GB machine whose chat model needs 12-13 GB can be refused
+    # chat entirely, and the owner is the one who knows whether that card has the
+    # room. Raising it trades safety margin for the ability to serve at all.
+    usable_vram_fraction: float = ConfigField(default=0.9, ge=0.5, le=1.0, writable=True)
+
+    # RAM held back for the OS when placing against system memory, in GiB. Capped
+    # at a quarter of total RAM either way, so a small host keeps its proportional
+    # reserve however this is set.
+    system_memory_reserve_gb: float = ConfigField(default=4.0, ge=0.0, le=64.0, writable=True)
+
     # Data-parallel replicas of the embed / vision role across GPUs: N independent
     # servers, round-robined, so large-scale ingest fans the embedding / OCR work
     # across the whole box. 0 means "auto": one replica per detected GPU, capped by

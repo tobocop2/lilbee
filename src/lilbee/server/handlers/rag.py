@@ -46,7 +46,11 @@ from lilbee.retrieval.reasoning import (
     strip_reasoning,
 )
 from lilbee.runtime.progress import SseErrorCode, SseEvent
-from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
+from lilbee.server.chat_completions_api.errors import (
+    _BACKEND_FAILURE_MESSAGE,
+    _INFRASTRUCTURE_KINDS,
+    CompletionsErrorCode,
+)
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -86,7 +90,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# Unmapped kinds surface as their ProviderErrorKind string; shipped clients branch on it.
+# Unmapped kinds surface as their ProviderErrorKind string; shipped clients branch
+# on it. The kinds that describe the backend keep their code and lose their text
+# (see _classify_stream_error), so a client can still branch without being handed
+# engine internals.
 _STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
     ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,
@@ -104,6 +111,13 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
         if mapped is not None:
             return mapped, str(exc)
         code = None if exc.kind is ProviderErrorKind.UNKNOWN else exc.kind
+        if exc.kind in _INFRASTRUCTURE_KINDS:
+            # Kinds that describe the backend rather than the request. Their text
+            # is built at the fleet boundary and carries the dead engine's stderr,
+            # so it is logged rather than sent, exactly as the completions surface
+            # already does. Both surfaces answer to the same set.
+            log.warning("Backend failure on the stream surface: %s", exc)
+            return code, _BACKEND_FAILURE_MESSAGE
         return code, str(exc)
     return classify_load_error(str(exc))
 

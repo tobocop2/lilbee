@@ -1326,7 +1326,7 @@ class TestVulkanGpuSelect:
         from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: None)
-        assert gpu_select._enumerate_vulkan_devices() is None
+        assert gpu_select.enumerate_in_process() is None
 
     def test_enumerate_catches_oserror_from_ctypes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.fleet import gpu_select
@@ -1337,7 +1337,7 @@ class TestVulkanGpuSelect:
             raise OSError("symbol not found")
 
         monkeypatch.setattr(gpu_select, "_list_devices_with_instance", _raises)
-        assert gpu_select._enumerate_vulkan_devices() is None
+        assert gpu_select.enumerate_in_process() is None
 
     def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
         """``_resolve_vk_symbols`` reads five named attributes off the loader."""
@@ -2246,6 +2246,12 @@ class TestDisableConflictingVulkanIcds:
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
         )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(int(v) for v in {PCIVendorID.NVIDIA, PCIVendorID.AMD}),
+        )
         result = gpu_select.disable_conflicting_vulkan_icds()
         assert result is not None
         assert "amdvlk*" in result
@@ -2264,6 +2270,12 @@ class TestDisableConflictingVulkanIcds:
             gpu_select,
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.AMD, PCIVendorID.INTEL},
+        )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(int(v) for v in {PCIVendorID.AMD, PCIVendorID.INTEL}),
         )
         result = gpu_select.disable_conflicting_vulkan_icds()
         assert result is not None
@@ -2285,6 +2297,14 @@ class TestDisableConflictingVulkanIcds:
             gpu_select,
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD, PCIVendorID.INTEL},
+        )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(
+                int(v) for v in {PCIVendorID.NVIDIA, PCIVendorID.AMD, PCIVendorID.INTEL}
+            ),
         )
         result = gpu_select.disable_conflicting_vulkan_icds()
         assert result is not None
@@ -2310,6 +2330,12 @@ class TestDisableConflictingVulkanIcds:
             gpu_select,
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
+        )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(int(v) for v in {PCIVendorID.NVIDIA, PCIVendorID.AMD}),
         )
         result = gpu_select.disable_conflicting_vulkan_icds()
         assert result is not None
@@ -2355,6 +2381,12 @@ class TestDisableConflictingVulkanIcds:
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
         )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(int(v) for v in {PCIVendorID.NVIDIA, PCIVendorID.AMD}),
+        )
         # Source the override-var list from the enum so the test moves in
         # lockstep with the production set (e.g., when a new loader env var
         # joins the spec).
@@ -2382,6 +2414,12 @@ class TestDisableConflictingVulkanIcds:
             gpu_select,
             "_vulkan_vendors_present",
             lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
+        )
+        # The manifests prove a driver, not a card; the conflict needs both.
+        monkeypatch.setattr(
+            gpu_select,
+            "installed_gpu_vendor_ids",
+            lambda: frozenset(int(v) for v in {PCIVendorID.NVIDIA, PCIVendorID.AMD}),
         )
         monkeypatch.setattr(cfg, "gpu_devices", "1")
         assert gpu_select.disable_conflicting_vulkan_icds() is None

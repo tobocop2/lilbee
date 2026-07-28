@@ -2239,32 +2239,34 @@ def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
 def test_apply_fleet_gpu_env_clears_empty_cuda_visible_devices(monkeypatch) -> None:
     # SkyPilot / Docker GPU setups expose the GPU via NVIDIA_VISIBLE_DEVICES but export an
     # empty CUDA_VISIBLE_DEVICES, which hides the GPU from CUDA ("no CUDA-capable device").
-    # With a GPU present, the empty var must be cleared so the engine can enumerate it.
+    # The runtime's marker is what makes the empty value a contradiction rather than an
+    # instruction, so the test has to set it: without it, an empty mask means CPU.
     from lilbee.providers.fleet import gpu_env
     from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
     for name in _GPU_VISIBLE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cfg, "gpu_devices", None)
-    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     gpu_env.apply_fleet_gpu_env()
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
-def test_apply_fleet_gpu_env_clears_empty_non_cuda_visible_devices(monkeypatch) -> None:
-    # The clear covers every backend visible-devices var, not just CUDA: an empty
-    # GGML_VK_VISIBLE_DEVICES would otherwise hide adapters from the Vulkan VRAM fallback.
+def test_apply_fleet_gpu_env_keeps_another_vendors_empty_visible_devices(monkeypatch) -> None:
+    # The NVIDIA container runtime's marker speaks for NVIDIA only. An empty Vulkan
+    # or AMD mask is somebody fencing that backend off, and clearing it on the
+    # strength of an unrelated vendor's marker overrides a deliberate choice.
     from lilbee.providers.fleet import gpu_env
     from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
     for name in _GPU_VISIBLE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cfg, "gpu_devices", None)
-    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "")
     gpu_env.apply_fleet_gpu_env()
-    assert "GGML_VK_VISIBLE_DEVICES" not in os.environ
+    assert os.environ["GGML_VK_VISIBLE_DEVICES"] == ""
 
 
 def test_apply_fleet_gpu_env_keeps_nonempty_cuda_visible_devices(monkeypatch) -> None:
@@ -3486,9 +3488,23 @@ class TestLaunchStateRoundTrip:
             ctx=4096,
             replica=1,
             rerank_mode=RerankMode.LLM,
+            est_vram_bytes=7 * 1024**3,
+            est_vram_by_device={"CUDA0": 4 * 1024**3, "CUDA1": 3 * 1024**3},
         )
         rebuilt = InstanceLaunch.from_state(launch.to_state())
         assert rebuilt == launch
+
+    def test_a_state_file_written_before_the_estimate_existed_still_loads(self) -> None:
+        # Every field carries a default on the way in, so an engine recorded by an
+        # older lilbee is readable rather than a hard failure on upgrade.
+        payload = {
+            "role": "chat",
+            "argv": ["/bin/llama-server"],
+            "model": "o/c-GGUF/c.gguf",
+        }
+        rebuilt = InstanceLaunch.from_state(payload)
+        assert rebuilt.est_vram_bytes == 0
+        assert rebuilt.est_vram_by_device == {}
 
 
 # ── The engine acquisition ladder ───────────────────────────────────

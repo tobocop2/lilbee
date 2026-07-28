@@ -123,6 +123,8 @@ class ProviderErrorKind(StrEnum):
     BAD_REQUEST = "bad_request"
     CONNECTION = "connection"
     SERVER = "server"
+    CAPACITY = "capacity"
+    PORT_CONFLICT = "port_conflict"
     UNKNOWN = "unknown"
 
 

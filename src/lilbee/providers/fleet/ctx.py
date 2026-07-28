@@ -12,7 +12,7 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
-from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
+from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
 
 # Extra VRAM held back on the busiest card on top of the gguf-parser estimate.
@@ -41,9 +41,9 @@ def fit_split_ctx(
     """Largest quantized per-slot n_ctx that fits every card, capped at *ctx_ceiling*.
 
     Binary-searches the gguf-parser estimate at the launch tensor-split *ratio*:
-    the server serves ``--ctx-size = per_slot x slots``, so each probe estimates
-    that total and accepts the per-slot value when every device's own share stays
-    under that device's usable headroom. *ctx_ceiling* is the working context the
+    each probe passes a per-slot value, which the estimator charges across the
+    slot count as the server does, and accepts it when every device's own share
+    stays under that device's usable headroom. *ctx_ceiling* is the working context the
     caller planned for (``planning._placement_estimate_ctx``: a ``cfg.num_ctx`` pin,
     else ``cfg.chat_n_ctx_target``); the search never exceeds it, nor the model's
     trained context. Note the ceiling bounds the PER-SLOT window, not the total:
@@ -53,7 +53,7 @@ def fit_split_ctx(
     reserve. Falls to the floor when even the floor overflows.
     """
     headrooms = [
-        int(free * USABLE_VRAM_FRACTION) - _MAIN_GPU_SKEW_RESERVE_BYTES
+        int(free * usable_vram_fraction()) - _MAIN_GPU_SKEW_RESERVE_BYTES
         for free in per_device_free_bytes
     ]
     if min(headrooms) <= 0:
@@ -69,7 +69,7 @@ def fit_split_ctx(
     def _peak_fits(per_slot: int) -> bool:
         est = estimate_instance_footprint(
             model_path,
-            ctx=per_slot * slots,
+            ctx=per_slot,
             slots=slots,
             gpu_layers=gpu_layers,
             flash_attn=flash_attn,

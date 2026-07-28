@@ -166,6 +166,11 @@ _ALTERNATION_PROBE_OPTIONS = {"max_tokens": 1}
 _ALTERNATION_PROBE_TIMEOUT_S = 30.0
 _UPSTREAM_LOG_TAIL_CHARS = 2000
 _UPSTREAM_LOG_TIMEOUT_S = 2.0
+# Enough reads to cover one replay of llama-swap's 100KB per-model ring at
+# httpx's 64KB ceiling per chunk, with room to spare. The route keeps streaming
+# live lines afterwards, so without a bound this would cost the read timeout on
+# every death.
+_UPSTREAM_LOG_MAX_CHUNKS = 8
 
 log = logging.getLogger(__name__)
 
@@ -218,16 +223,84 @@ def _raise_for_status(resp: httpx.Response) -> None:
         tail = _upstream_failure_tail(resp)
         if tail:
             detail = f"{detail}\nupstream server output:\n{tail}"
-        if _BIND_FAILURE_MARKER in tail:
-            # A death from losing the port-bind race is transient, not a dead
-            # replica: the retry re-drives llama-swap's spawn, which normally
-            # binds once the passing connection has released the port.
-            kind = ProviderErrorKind.SERVER
+        classified = classify_upstream_death(tail)
+        if classified is not None:
+            kind = classified
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
         kind=kind,
     )
+
+
+# What the engine prints when a device allocation fails during load. Every
+# backend words it differently and all of them mean the same thing: the plan
+# asked for more memory than the device had. Taken from the emit sites in
+# upstream rather than guessed, and matched lowercased.
+#
+# One entry covers CUDA, HIP and MUSA: the vendor headers #define cudaMalloc to
+# their own allocator, but the log string in ggml-cuda.cu is a literal, so an
+# AMD or Moore Threads build still prints "cudaMalloc failed". A separate
+# hipMalloc marker would match nothing.
+#
+# Vulkan is the one that needs its own wording. It is where every AMD and Intel
+# GPU lands, and it says neither "out of memory" nor "failed to allocate".
+_OOM_MARKERS: tuple[str, ...] = (
+    "out of memory",
+    "failed to allocate",  # Metal's buffer failure, and most generic paths
+    "cudamalloc failed",  # CUDA, HIP and MUSA alike
+    "device memory allocation of size",  # ggml-vulkan's fatal allocation failure
+    "outofdevicememory",  # a vk::OutOfDeviceMemoryError that reached the log
+    "unable to allocate",
+    "insufficient memory",
+    "out_of_device_memory",  # SYCL, which exits through the runtime's own code
+    "out_of_resources",
+)
+
+# Lines that report a failure the engine then works around. ggml-vulkan warns
+# that pinned memory could not be allocated and falls back to unpinned, and that
+# text matches an allocation marker word for word, so a later unrelated death
+# would be read as a memory shortfall and answered with a context reduction.
+_SURVIVABLE_LINE_MARKERS: tuple[str, ...] = ("warning:", "warn:")
+
+
+def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
+    """The kind of failure an engine's dying output describes, or ``None``.
+
+    ``CAPACITY`` for a load that ran out of device memory: retrying the identical
+    launch respawns it into a crash loop, while a smaller context might fit.
+    ``PORT_CONFLICT`` for losing the port-bind race, which is worth retrying
+    because the retry re-drives llama-swap's spawn, and worth naming because a
+    port held for good needs a different port rather than another attempt at the
+    same one. ``None`` leaves the existing classification alone rather than
+    guessing at an unfamiliar death.
+    """
+    fatal = [
+        line
+        for line in tail.lower().splitlines()
+        if not any(marker in line for marker in _SURVIVABLE_LINE_MARKERS)
+    ]
+    if any(marker in line for line in fatal for marker in _OOM_MARKERS):
+        return ProviderErrorKind.CAPACITY
+    if _BIND_FAILURE_MARKER in tail:
+        return ProviderErrorKind.PORT_CONFLICT
+    return None
+
+
+# Deaths a role's rebuild can fix, and a retry against the same launch cannot: a
+# memory shortfall needs a smaller plan, a held port needs a different port. Both
+# come from rebuilding the role, which re-plans and re-picks.
+_REBUILDABLE_KINDS = frozenset({ProviderErrorKind.CAPACITY, ProviderErrorKind.PORT_CONFLICT})
+
+
+def is_load_capacity_failure(exc: BaseException) -> bool:
+    """True when *exc* is an engine that died for lack of device memory on load."""
+    return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.CAPACITY
+
+
+def is_rebuildable_failure(exc: BaseException) -> bool:
+    """True when rebuilding the role is what stands a chance, not another retry."""
+    return isinstance(exc, ProviderError) and exc.kind in _REBUILDABLE_KINDS
 
 
 def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
@@ -294,9 +367,17 @@ def _fetch_log_tail(url: str) -> str:
         contextlib.suppress(httpx.HTTPError),
         httpx.stream("GET", url, timeout=_UPSTREAM_LOG_TIMEOUT_S) as stream,
     ):
-        for chunk in stream.iter_text():
+        for taken, chunk in enumerate(stream.iter_text(), start=1):
+            # Bounded by chunk count, not by the tail size. llama-swap replays a
+            # model's whole ring in one write and httpx hands over at most 64KB
+            # at a time, so stopping at the first chunk past the tail size
+            # returned the head of a warm model's log, where the fatal last line
+            # never is. Only the tail is retained as the replay goes by, and the
+            # route streams live lines afterwards, so the count is what keeps
+            # this from waiting out the timeout on every death.
             chunks.append(chunk)
-            if sum(len(piece) for piece in chunks) > _UPSTREAM_LOG_TAIL_CHARS:
+            chunks = ["".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]]
+            if taken >= _UPSTREAM_LOG_MAX_CHUNKS:
                 break
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
@@ -344,7 +425,9 @@ _TRANSIENT_GATEWAY_STATUSES = frozenset({502, 503, 504})
 # Error kinds the busy retry treats as transient: a 429 (slots still loading)
 # and a bare gateway error (upstream momentarily unreachable) both clear on
 # their own once the server is ready again.
-_TRANSIENT_KINDS = frozenset({ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.SERVER})
+_TRANSIENT_KINDS = frozenset(
+    {ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.SERVER, ProviderErrorKind.PORT_CONFLICT}
+)
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0

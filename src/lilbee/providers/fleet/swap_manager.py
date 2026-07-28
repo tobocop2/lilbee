@@ -15,8 +15,9 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -30,6 +31,8 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
+from lilbee.providers.fleet.planning import clear_ctx_downshift
+from lilbee.providers.fleet.readback import check_launch, report_missing_log
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 from lilbee.runtime.engine_lock import clear_keep_warm
 
@@ -197,6 +200,10 @@ class SwapManager:
         self._group = group
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
+        # Instances whose engine report has already been compared to the estimate,
+        # so the check runs once per start rather than on every readiness poll.
+        self._estimate_checked: set[str] = set()
+        self._launch_by_model: dict[str, InstanceLaunch] = {}
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
@@ -245,11 +252,18 @@ class SwapManager:
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
         self._launches_payload = [launch.to_state() for launch in launches]
+        self._launch_by_model = {launch.model_id: launch for launch in launches}
+        self._estimate_checked.clear()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             self._config_path,
             build_swap_config(
-                launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds
+                launches,
+                member_ports,
+                swap=self._group.swaps,
+                ttl_seconds=ttl_seconds,
+                engine_log_dir=self._log_path.parent,
             ),
         )
         self._port = ports[0]
@@ -329,7 +343,40 @@ class SwapManager:
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
-        return any(model.startswith(prefix) for model in self._ready_models())
+        ready = self._ready_models()
+        self._check_estimates(ready)
+        return any(model.startswith(prefix) for model in ready)
+
+    def _check_estimates(self, ready: set[str]) -> None:
+        """Compare each newly-ready engine's own report against what it was planned for.
+
+        The plan is otherwise open-loop, and a wrong estimate only ever surfaces
+        as a failed request much later. Once per instance per start: readiness is
+        polled, and the answer does not change once the engine has loaded.
+        """
+        for model_id in ready - self._estimate_checked:
+            launch = self._launch_by_model.get(model_id)
+            self._estimate_checked.add(model_id)
+            if launch is None:
+                continue
+            # Ready means this role's context loaded, so any reduction taken to
+            # get here has done its job and must not follow the role into the
+            # next plan, a freed machine, or a model the user switched to.
+            clear_ctx_downshift(launch.role)
+            # The engine is ready, so a missing log is not "too early" any more.
+            if report_missing_log(self._log_path.parent, model_id, launch.role):
+                continue
+            if launch.est_vram_bytes <= 0:
+                continue
+            check_launch(
+                self._log_path.parent,
+                model_id,
+                launch.role,
+                launch.model,
+                launch.est_vram_bytes,
+                launch.est_vram_by_device,
+                launch.est_unreported_bytes,
+            )
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""
@@ -394,6 +441,8 @@ class SwapManager:
             self._launches_payload = []
             return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
+        # Nothing is coming back to bind these, so the picker can offer them again.
+        release_reserved_ports([*self._member_ports, *([self._port] if self._port else [])])
         self._state_path.unlink(missing_ok=True)
         if self._proc is not None:
             # Free this engine's death pipe so its watcher exits now, not at our death.
@@ -461,20 +510,119 @@ class SwapManager:
         raise ProviderError(message, provider=_PROVIDER, kind=ProviderErrorKind.SERVER)
 
 
+# Linux publishes the range here; every other platform is asked via sysctl.
+_PROC_PORT_RANGE = Path("/proc/sys/net/ipv4/ip_local_port_range")
+
+
+def _port_range_from(path: Path) -> tuple[int, int] | None:
+    """The two integers in *path*, or ``None`` when it is absent or unreadable."""
+    try:
+        low, high = path.read_text().split()[:2]
+        return int(low), int(high)
+    except (OSError, ValueError):
+        return None
+
+
+def _ephemeral_range() -> tuple[int, int] | None:
+    """The port range the kernel hands out for unbound sockets, if it says.
+
+    ``None`` when neither source answers, which is the signal to fall back to
+    letting the OS choose.
+    """
+    from_proc = _port_range_from(_PROC_PORT_RANGE)
+    if from_proc is not None:
+        return from_proc
+    try:  # macOS and the BSDs, which have no procfs entry for this
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "net.inet.ip.portrange.first", "net.inet.ip.portrange.last"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        low, high = out.stdout.split()[:2]
+        return int(low), int(high)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+# Where lilbee looks for engine ports when the kernel's ephemeral range is known.
+# Above the registered-service crowd, below every default ephemeral range.
+_PORT_SEARCH_FLOOR = 20000
+_PORT_SEARCH_ATTEMPTS = 200
+
+# Ports handed to a child that has not bound them yet. llama-swap binds a member
+# port only on that member's first request, so the probe socket is long closed
+# by then and the port looks free to every later probe. Without this the picker
+# hands the next group exactly what it gave the last one, every time.
+_reserved_ports: set[int] = set()
+_reserved_lock = threading.Lock()
+
+
+def release_reserved_ports(ports: Iterable[int]) -> None:
+    """Give *ports* back to the picker, once nothing is expected to bind them."""
+    with _reserved_lock:
+        _reserved_ports.difference_update(ports)
+
+
+def _search_start(ceiling: tuple[int, int]) -> int:
+    """Where this process begins its scan of the sub-ephemeral window.
+
+    Spread by pid. Reservation only covers this process, and two lilbee starts
+    racing each other cannot see each other's picks at all, so beginning at a
+    different offset per process is what keeps them apart.
+    """
+    span = max(1, min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_SEARCH_ATTEMPTS) - _PORT_SEARCH_FLOOR)
+    return _PORT_SEARCH_FLOOR + os.getpid() % span
+
+
 def _pick_free_ports(count: int) -> list[int]:
-    """Bind *count* ephemeral localhost ports at once and return them.
+    """Bind *count* free localhost ports at once and return them.
 
     All sockets stay open until every port is claimed so the OS cannot hand the
     same port out twice within one allocation.
+
+    Picked from below the kernel's ephemeral range rather than inside it. The
+    gap between lilbee picking a port and llama-server binding it spans the whole
+    lazy-spawn wait, and a port inside the ephemeral range can be handed to any
+    passing outbound connection during that gap; one below it cannot be handed to
+    anybody, so the only way to lose it is another server binding that exact port
+    on purpose. Falls back to letting the OS choose when the range is unknown.
     """
+    ceiling = _ephemeral_range()
     sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(count)]
     try:
         for sock in sockets:
-            sock.bind((_HOST, 0))
+            _bind_below_ephemeral(sock, ceiling)
         return [int(sock.getsockname()[1]) for sock in sockets]
     finally:
         for sock in sockets:
             sock.close()
+
+
+def _bind_below_ephemeral(sock: socket.socket, ceiling: tuple[int, int] | None) -> None:
+    """Bind *sock* to a free, unreserved port under the ephemeral floor.
+
+    Falls back to letting the OS choose when the range is unknown or the window
+    is used up, which keeps a fleet start working at the cost of returning to the
+    ephemeral range for those ports.
+    """
+    if ceiling is not None and ceiling[0] > _PORT_SEARCH_FLOOR:
+        top = min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_SEARCH_ATTEMPTS)
+        span = top - _PORT_SEARCH_FLOOR
+        start = _search_start(ceiling)
+        for offset in range(span):
+            port = _PORT_SEARCH_FLOOR + (start - _PORT_SEARCH_FLOOR + offset) % span
+            with _reserved_lock:
+                if port in _reserved_ports:
+                    continue
+                try:
+                    sock.bind((_HOST, port))
+                except OSError:
+                    continue
+                _reserved_ports.add(port)
+                return
+    sock.bind((_HOST, 0))
 
 
 def _live_children(pid: int) -> list[psutil.Process]:
