@@ -1,16 +1,16 @@
-class LilbeeCompat < Formula
-  desc "Whole local AI stack in one executable: models, search, crawler (pre-Haswell)"
+class LilbeeRocm < Formula
+  desc "Whole local AI stack in one executable: models, search, crawler (AMD ROCm)"
   homepage "https://github.com/tobocop2/lilbee"
   version "0.0.0"
   license "MIT"
 
   conflicts_with "tobocop2/lilbee/lilbee", because: "both install the lilbee binary"
   conflicts_with "tobocop2/lilbee/lilbee-cuda", because: "both install the lilbee binary"
-  conflicts_with "tobocop2/lilbee/lilbee-rocm", because: "both install the lilbee binary"
+  conflicts_with "tobocop2/lilbee/lilbee-compat", because: "both install the lilbee binary"
 
   on_linux do
     on_intel do
-      url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-compat-linux-x86_64"
+      url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-linux-x86_64-rocm"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
@@ -29,13 +29,13 @@ class LilbeeCompat < Formula
 
   def caveats
     <<~EOS
-      lilbee-compat installs the same `lilbee` binary as the regular `lilbee` formula,
-      held to an x86-64-v2 baseline so it runs on pre-Haswell CPUs (Sandy Bridge,
-      Bulldozer). Only pick it if `lilbee` crashes with an illegal instruction. If you
-      previously had `lilbee` installed, uninstall it first:
+      lilbee-rocm installs the same `lilbee` binary as the regular `lilbee` formula,
+      built to offload inference to an AMD GPU through ROCm. The ROCm userspace ships
+      inside it, so the host needs only the amdgpu kernel driver. If you previously had
+      `lilbee` installed, uninstall it first:
 
         brew uninstall lilbee
-        brew install tobocop2/lilbee/lilbee-compat
+        brew install tobocop2/lilbee/lilbee-rocm
     EOS
   end
 

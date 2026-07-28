@@ -16,4 +16,7 @@ requires-python = ">=3.11"
 packages = ["lilbee_engine"]
 
 [tool.setuptools.package-data]
-lilbee_engine = ["bin/*"]
+# bin/**/* as well as bin/*: rocm is the first backend to put anything in a
+# subdirectory (rocBLAS reads its Tensile kernels from bin/rocblas/library), and a
+# single-level glob shipped a wheel whose engine died on the first matrix multiply.
+lilbee_engine = ["bin/*", "bin/**/*"]

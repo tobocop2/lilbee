@@ -99,7 +99,10 @@ class TestEveryVendorGetsTheWarning:
             planning_mod, "probe_devices", lambda _b: DeviceProbe([], "", spoke_protocol=True)
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.assert_gpu_devices_usable", lambda *_a: None
+            "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.rocm_runtime.assert_rocm_devices_usable", lambda *_a: None
         )
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
