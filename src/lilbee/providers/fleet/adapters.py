@@ -8,12 +8,15 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
 from lilbee.providers.roles import RerankMode, WorkerRole
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
@@ -96,6 +99,8 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 # per-rerank request fan-out and the server's --parallel slot ceiling, so the
 # server can decode concurrently instead of serializing the fan-out.
 LLM_RERANK_CONCURRENCY = 8
+
+_FLAG_MAIN_GPU = "--main-gpu"
 
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
@@ -186,6 +191,36 @@ def _attention_args(
     return args
 
 
+def _main_gpu_args(devices: tuple[int, ...]) -> list[str]:
+    """``--main-gpu`` for this instance, empty when it does not apply.
+
+    The index is into this instance's own device list, which is the space its
+    visibility pin exposes to the engine, and it is what the setting's help text
+    already describes. llama.cpp ignores the flag with a single device, so it is
+    only emitted where it changes something: which card holds the model under
+    split-mode none, and the intermediate results and KV under split-mode row.
+
+    An index past the end is refused and said out loud. It was previously not
+    emitted at all, so a user could set it, watch it save, and get nothing.
+    """
+    from lilbee.core.config import cfg
+
+    main_gpu = cfg.main_gpu
+    if main_gpu is None or len(devices) <= 1:
+        return []
+    if not 0 <= main_gpu < len(devices):
+        log.warning(
+            "Ignoring main_gpu=%d: this server runs on %d device(s), so the index has "
+            "to be between 0 and %d. It counts within the cards this role was placed "
+            "on, not across every card in the machine.",
+            main_gpu,
+            len(devices),
+            len(devices) - 1,
+        )
+        return []
+    return [_FLAG_MAIN_GPU, str(main_gpu)]
+
+
 def build_server_argv(
     *,
     binary: Path,
@@ -211,6 +246,7 @@ def build_server_argv(
     ``--ctx-size`` is the per-slot context times the slot count, since
     llama-server divides total context across parallel slots. ``n_cpu_moe``
     wins over ``cpu_moe``; the pair would offload the same tensors twice.
+
     """
     argv = [
         str(binary),
@@ -226,6 +262,7 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
+    argv += _main_gpu_args(devices)
     argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
@@ -238,9 +275,15 @@ def build_server_argv(
         # space, and setting it also turns off ggml's own type filter, support
         # check and same-UUID dedup. This keeps all of that active.
         argv += ["--device", ",".join(device_names)]
-    if len(devices) > 1:
-        ratio = tensor_split or tuple(1 for _ in devices)
-        argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
+    if len(devices) > 1 and tensor_split:
+        # Only a ratio the planner actually chose. Inventing an even one for a
+        # group that did not choose disables the engine's own fit: it aborts the
+        # fit pass when tensor_split is user-set, and a negative n_gpu_layers
+        # then means every layer. The one group that arrives without a ratio is
+        # the tight placement, whose whole promise is that the engine keeps what
+        # fits and spills the rest, so an invented split turns that promise into
+        # a load-time out-of-memory.
+        argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
         argv += ["--no-mmap"]
     if n_cpu_moe is not None:

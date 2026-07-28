@@ -4003,14 +4003,20 @@ class TestClassifyStreamError:
         assert "rejected your API key" in msg
 
     def test_connection_provider_error_keeps_kind_code(self):
-        """A CONNECTION ProviderError keeps "connection" so clients can branch on it."""
+        """A CONNECTION ProviderError keeps "connection" so clients can branch on it.
+
+        Its text does not travel: a backend-describing error carries the dead
+        engine's own output, so the code is the client's signal and the detail
+        goes to the log, matching the completions surface.
+        """
         from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.chat_completions_api.errors import _BACKEND_FAILURE_MESSAGE
         from lilbee.server.handlers.rag import _classify_stream_error
 
         exc = ProviderError("backend unreachable.", kind=ProviderErrorKind.CONNECTION)
         code, msg = _classify_stream_error(exc)
         assert code == "connection"
-        assert "unreachable" in msg
+        assert msg == _BACKEND_FAILURE_MESSAGE
 
     def test_rate_limit_provider_error_keeps_kind_code(self):
         """A RATE_LIMIT ProviderError keeps "rate_limit", not the /v1 429 mapping."""

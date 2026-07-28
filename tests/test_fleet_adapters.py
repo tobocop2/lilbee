@@ -74,7 +74,11 @@ def test_build_argv_single_device_has_no_tensor_split() -> None:
     assert argv[argv.index("--parallel") + 1] == "4"
 
 
-def test_build_argv_multi_device_adds_tensor_split() -> None:
+def test_build_argv_multi_device_without_a_ratio_leaves_the_split_to_the_engine() -> None:
+    # A multi-device plan that carries no ratio is the tight placement, which
+    # exists to let the engine keep what fits and spill the rest. The engine
+    # aborts its fit pass when tensor_split is user-set, so inventing an even
+    # split here would force every layer onto the cards and OOM the load.
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.CHAT],
@@ -84,7 +88,7 @@ def test_build_argv_multi_device_adds_tensor_split() -> None:
         slots=2,
         ctx_per_slot=4096,
     )
-    assert argv[argv.index("--tensor-split") + 1] == "1,1"
+    assert "--tensor-split" not in argv
 
 
 def test_build_argv_uses_proportional_tensor_split() -> None:
