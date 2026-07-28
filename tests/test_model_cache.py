@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import platform
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
+from lilbee.core import system as system_mod
 from lilbee.providers.model_cache import (
     _BUFFER_OVERHEAD_FRACTION,
     _DYNAMIC_CTX_FLOOR,
@@ -222,9 +224,11 @@ class TestGetAvailableMemory:
 
 
 class TestFreeSystemMemory:
-    def test_returns_live_psutil_available(self, monkeypatch) -> None:
+    def test_returns_live_psutil_available(self, monkeypatch, tmp_path) -> None:
         # Unlike get_available_memory (total capacity), this is what's free right
         # now -- the number that decides whether a model load would swap-thrash.
+        # No cgroup, so the host figure stands; CI itself runs in a capped one.
+        monkeypatch.setattr(system_mod, "_CGROUP_ROOT", tmp_path / "absent")
         fake_psutil = mock.MagicMock()
         fake_psutil.virtual_memory.return_value.available = 7_000_000_000
         monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
@@ -232,7 +236,8 @@ class TestFreeSystemMemory:
 
 
 class TestTotalSystemMemory:
-    def test_returns_psutil_total(self, monkeypatch) -> None:
+    def test_returns_psutil_total(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(system_mod, "_CGROUP_ROOT", tmp_path / "absent")
         fake_psutil = mock.MagicMock()
         fake_psutil.virtual_memory.return_value.total = 8_000_000_000
         monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
@@ -441,3 +446,59 @@ class TestNvidiaSmiRowsThatDoNotParse:
         from lilbee.providers.model_cache import _parse_smi_row
 
         assert _parse_smi_row("8192") == ("", 8192 * 1024 * 1024)
+
+
+class TestSystemMemoryUnderACgroupCap:
+    """Both readers answer for this process, not for the machine it runs on."""
+
+    @staticmethod
+    def _capped(monkeypatch, tmp_path, *, limit: int, used: int | None = None) -> None:
+        (tmp_path / "memory.max").write_text(f"{limit}\n")
+        if used is not None:
+            (tmp_path / "memory.current").write_text(f"{used}\n")
+        monkeypatch.setattr(system_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+
+    def test_total_is_capped_by_the_cgroup_limit(self, monkeypatch, tmp_path) -> None:
+        self._capped(monkeypatch, tmp_path, limit=8 * 1024**3)
+        assert total_system_memory() == 8 * 1024**3
+
+    def test_free_is_the_cap_minus_what_the_cgroup_holds(self, monkeypatch, tmp_path) -> None:
+        self._capped(monkeypatch, tmp_path, limit=8 * 1024**3, used=3 * 1024**3)
+        assert free_system_memory() == 5 * 1024**3
+
+    def test_a_cap_with_no_usage_file_bounds_free_at_the_cap(self, monkeypatch, tmp_path) -> None:
+        self._capped(monkeypatch, tmp_path, limit=8 * 1024**3)
+        assert free_system_memory() == 8 * 1024**3
+
+    def test_an_uncapped_cgroup_leaves_the_host_figures_alone(self, monkeypatch, tmp_path) -> None:
+        (tmp_path / "memory.max").write_text("max\n")
+        monkeypatch.setattr(system_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert total_system_memory() == 64 * 1024**3
+        assert free_system_memory() == 60 * 1024**3
+
+    def test_an_unreadable_host_raises_rather_than_answering_zero(self, monkeypatch) -> None:
+        # A zero budget refuses every model with no reason given; the fleet's
+        # sizing paths want the failure surfaced instead.
+        monkeypatch.setattr("psutil.virtual_memory", mock.Mock(side_effect=RuntimeError("boom")))
+        with pytest.raises(RuntimeError):
+            total_system_memory()
+
+    def test_the_coarse_budget_is_capped_too(self, monkeypatch, tmp_path) -> None:
+        # The catalog fit chip reads this on a host with no device list, and a
+        # capped container must not be told a model fits the machine's RAM.
+        monkeypatch.setattr(system_mod, "_CGROUP_ROOT", tmp_path)
+        (tmp_path / "memory.max").write_text(f"{8 * 1024**3}\n")
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        assert get_available_memory(0.5) == 4 * 1024**3

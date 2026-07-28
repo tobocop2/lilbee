@@ -101,6 +101,13 @@ class Config(BaseSettings):
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
     # not the GPU-fed extract/embed batch.
     ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    # Worker PROCESSES for the extract/embed fan-out (distinct from ingest_workers,
+    # which sizes the planning pass's threads). Default 1 (off): multiprocess only
+    # pays when one process cannot saturate the fleet -- a small/fast embedder on
+    # several GPUs. A large/GPU-bound embedder ties single-process because the shared
+    # parent collect/write drain caps throughput regardless of process count (see
+    # docs/architecture.md, "Three ceilings"). 0 = auto-size, N = explicit opt-in.
+    ingest_processes: int = ConfigField(default=1, ge=0, writable=True)
     # Passages packed into one embed request. Larger batches keep a GPU's
     # continuous-batching slots full: small per-passage requests leave the card
     # batch-starved (~96% util, low throughput). The engine still re-splits to
@@ -404,6 +411,18 @@ class Config(BaseSettings):
 
     # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
+
+    # Share of a card placement may charge, leaving room for allocator
+    # fragmentation and driver overhead. Tunable because it decides admission: at
+    # the default, a 16 GB machine whose chat model needs 12-13 GB can be refused
+    # chat entirely, and the owner is the one who knows whether that card has the
+    # room. Raising it trades safety margin for the ability to serve at all.
+    usable_vram_fraction: float = ConfigField(default=0.9, ge=0.5, le=1.0, writable=True)
+
+    # RAM held back for the OS when placing against system memory, in GiB. Capped
+    # at a quarter of total RAM either way, so a small host keeps its proportional
+    # reserve however this is set.
+    system_memory_reserve_gb: float = ConfigField(default=4.0, ge=0.0, le=64.0, writable=True)
 
     # Data-parallel replicas of the embed / vision role across GPUs: N independent
     # servers, round-robined, so large-scale ingest fans the embedding / OCR work

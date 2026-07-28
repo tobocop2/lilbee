@@ -41,10 +41,13 @@ from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
     is_connection_failure,
+    is_load_capacity_failure,
+    is_rebuildable_failure,
     retry_on_busy,
 )
 from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.guest import NO_ENGINE_TO_ATTACH, bind_only_active
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -950,6 +953,14 @@ class FleetProvider:
             if wanted and self._bind_all_in_dir(engine_dir, states, pin, wanted):
                 self._hold_membership(engine_dir)
                 return True
+            if bind_only_active():
+                # An ingest worker: binding was the only permitted outcome, and
+                # building here would put a second fleet on the same GPUs.
+                raise ProviderError(
+                    NO_ENGINE_TO_ATTACH,
+                    provider=_PROVIDER_NAME,
+                    kind=ProviderErrorKind.SERVER,
+                )
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
                 states, pin, wanted
             )
@@ -1222,8 +1233,8 @@ class FleetProvider:
             )
         return list(clients)
 
-    def _with_rediscover(self, call: Callable[[], _T]) -> _T:
-        """Run *call*; on a connection-kind failure, re-run the ladder once.
+    def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
+        """Run *call*; on a connection-kind or load-capacity failure, retry once.
 
         A vanished engine (its last user left on a config change, or it died)
         surfaces as ProviderErrorKind.CONNECTION, or as a raw httpx transport
@@ -1232,16 +1243,53 @@ class FleetProvider:
         retrying sends the call through _ensure_fleet, which rediscovers the
         new proxy ports or rebuilds. One retry only; a second failure surfaces
         to the caller.
+
+        A ProviderErrorKind.CAPACITY failure is the engine dying on load because
+        the estimate was too optimistic. Retrying it unchanged respawns the same
+        launch into the same death, so *role*'s auto context steps down first and
+        the role is rebuilt against the smaller plan. When there is no step left
+        to take (a user-pinned context, or already at the floor) the failure
+        surfaces instead: a retry that asks for the same thing is a crash loop.
         """
         try:
             return call()
         except (ProviderError, httpx.TransportError) as err:
+            if is_rebuildable_failure(err) and role is not None:
+                return self._retry_rebuilt(call, role, err)
             if not is_connection_failure(err):
                 raise
             log.info("Engine unreachable; rediscovering before one retry")
             self._drop_swap_refs()
             self._release_holds()
             return call()
+
+    def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
+        """Rebuild *role* so the retry is a different launch, and run *call* again.
+
+        A held port just needs the rebuild, which picks a new one. A memory
+        shortfall needs the plan to come back smaller too, so the context steps
+        down first; when there is no step left to take, *err* is re-raised
+        untouched rather than rebuilding into the same death.
+        """
+        from lilbee.providers.fleet.planning import record_ctx_downshift
+
+        if is_load_capacity_failure(err):
+            if not record_ctx_downshift(role):
+                log.warning(
+                    "%s ran out of device memory on load and its context cannot be "
+                    "reduced further; lower num_ctx or use a smaller model",
+                    role.value,
+                )
+                raise err
+            log.warning(
+                "%s ran out of device memory on load; re-planning it with a smaller "
+                "context where its window has room to give",
+                role.value,
+            )
+        else:
+            log.warning("%s could not claim its port; rebuilding it on a new one", role.value)
+        self._rebuild_role(role)
+        return call()
 
     def _rebuild_role(self, role: WorkerRole) -> None:
         """Restart just *role*'s dead group (new port) from a fresh plan.
@@ -1524,12 +1572,14 @@ class FleetProvider:
                     _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_stream_items(
                         messages, tools=tools, tool_choice=tool_choice, options=server_options
                     )
-                )
+                ),
+                role=WorkerRole.CHAT,
             )
         return self._with_rediscover(
             lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
                 messages, tools=tools, tool_choice=tool_choice, options=server_options
-            )
+            ),
+            role=WorkerRole.CHAT,
         )
 
     def chat_with_tools(
@@ -1552,7 +1602,8 @@ class FleetProvider:
         return self._with_rediscover(
             lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_tools(
                 messages, tools=tools, tool_choice=tool_choice, options=server_options
-            )
+            ),
+            role=WorkerRole.CHAT,
         )
 
     def _fit_chat_context(
@@ -1598,7 +1649,7 @@ class FleetProvider:
         return result.messages
 
     def embed(self, texts: list[str]) -> list[Vector]:
-        return self._with_rediscover(lambda: self._embed_once(texts))
+        return self._with_rediscover(lambda: self._embed_once(texts), role=WorkerRole.EMBED)
 
     def _embed_once(self, texts: list[str]) -> list[Vector]:
         clients = self._require_clients(WorkerRole.EMBED)
@@ -1748,7 +1799,9 @@ class FleetProvider:
         return pages
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        return self._with_rediscover(lambda: self._rerank_once(query, candidates))
+        return self._with_rediscover(
+            lambda: self._rerank_once(query, candidates), role=WorkerRole.RERANK
+        )
 
     def _rerank_once(self, query: str, candidates: list[str]) -> list[float]:
         clients = self._require_clients(WorkerRole.RERANK)
@@ -2263,6 +2316,12 @@ class FleetProvider:
 
         restarted: list[WorkerRole] = []
         with self._build_lock:
+            # The device list is structural and was captured once at boot, so a
+            # card that has since left keeps being planned onto. The memory
+            # figures beside it are deliberately not re-taken: this fleet is
+            # resident, and charging it against itself is what the snapshot exists
+            # to prevent.
+            planning.refresh_plan_devices()
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a

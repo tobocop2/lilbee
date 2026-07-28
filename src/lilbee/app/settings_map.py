@@ -143,6 +143,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
     ),
+    "ingest_processes": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Worker processes for extracting and embedding a large corpus. 1 (default)"
+            " = off; 0 = auto-size; N = explicit. Only helps a small/fast embedder that"
+            " one process cannot use to fill a multi-GPU fleet"
+        ),
+    ),
     "mcp_tool_threads": SettingDef(
         int,
         nullable=False,
@@ -883,6 +893,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+    ),
+    "usable_vram_fraction": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Share of a GPU placement may fill, leaving room for fragmentation and driver "
+            "overhead (0.5-1.0). Raise it if a model that should fit is being refused; "
+            "lower it if loads fail near the top of the card."
+        ),
+    ),
+    "system_memory_reserve_gb": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "RAM held back for the OS in GiB when serving from system memory (no discrete "
+            "GPU). Capped at a quarter of total RAM either way."
+        ),
     ),
     "embed_replicas": SettingDef(
         int,

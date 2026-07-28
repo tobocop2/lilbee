@@ -905,6 +905,7 @@ effect on already-indexed material.
 | `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
 | `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
 | `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
+| `LILBEE_INGEST_PROCESSES` | `1` | Worker **processes** for extract/embed. Off by default. Turn it on (an explicit `N`, or `0` to auto-size) only when one process cannot keep a multi-GPU fleet busy: a large corpus with a small, fast embedder and GPUs to spare. A large or GPU-bound embedder (e.g. an 8B) ties single-process no matter the count, because the parent that writes the one index is serial, so leave it off there. For a one-off run, `lilbee sync --processes N` (also on `add` and `rebuild`) overrides the config value. See [architecture](architecture.md) |
 
 ### Generation
 
@@ -1210,6 +1211,37 @@ If a pinned placement no longer fits the card it names (after a hardware
 change, for example), lilbee surfaces an error naming the card rather than
 starting in a broken state. `lilbee placement clear` returns to automatic
 placement in that case.
+
+### Memory budget
+
+How much of each card, and of host RAM, the planner is allowed to promise.
+Defaults suit most machines; these exist for the cases where they don't.
+
+| Setting | Env var | Default | Description |
+|---------|---------|---------|-------------|
+| `usable_vram_fraction` | `LILBEE_USABLE_VRAM_FRACTION` | `0.9` | Fraction of a card's **free** VRAM the planner may fill. The rest absorbs driver overhead and allocator fragmentation, which the engine's own report does not include. Range 0.5–1.0 |
+| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. Range 0–64 |
+| `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `0.75` | Fraction of the card chat sizes its KV cache against. Keep it at or below `usable_vram_fraction`; raising it past that only shrinks what chat is charged |
+
+Raise `usable_vram_fraction` toward `1.0` on a dedicated box with nothing else
+on the card. Lower it if loads fail with out-of-memory despite the planner
+reporting the model fits.
+
+Lower `system_memory_reserve_gb` on a machine with a lot of RAM and nothing else
+running, if a model that offloads to host memory is being refused.
+
+Both are writable at runtime through `/settings`, `lilbee config set`, and MCP.
+
+**If a model is refused for memory it looks like it should have:** run
+`lilbee placement preview` to see what the planner budgeted. The planner charges
+free VRAM rather than the card's total, so another process holding memory shows
+up here. On a partially offloaded model, check `system_memory_reserve_gb` too:
+the host side is budgeted separately from the card.
+
+**If a load dies of out-of-memory,** lilbee re-plans that role smaller and
+retries rather than respawning the same launch. Repeated shrink-and-retry
+messages for one model mean the estimate is too optimistic for that card;
+lowering `usable_vram_fraction` fixes it more directly than pinning placement.
 
 ---
 

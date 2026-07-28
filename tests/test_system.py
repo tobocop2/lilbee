@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -282,3 +283,76 @@ def test_stderr_suppressed_can_nest():
 
     with stderr_suppressed(), stderr_suppressed():
         pass
+
+
+class TestCgroupCappedMemory:
+    """Host introspection answers for this process, not for the machine."""
+
+    def test_the_ctx_target_tiers_on_the_container_cap(self, monkeypatch, tmp_path):
+        # A 4 GiB container on a 64 GiB host. Tiered against the host it asks for a
+        # 24576-token window nothing in the container can back.
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text(f"{4 * 1024**3}\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 8192
+
+    def test_an_uncapped_host_still_tiers_on_its_own_ram(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path / "absent")
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 24576
+
+    def test_a_v1_limit_and_usage_are_read_too(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        v1 = tmp_path / "memory"
+        v1.mkdir()
+        (v1 / "memory.limit_in_bytes").write_text(f"{4 * 1024**3}\n")
+        (v1 / "memory.usage_in_bytes").write_text(f"{1024**3}\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() == 4 * 1024**3
+        assert sys_mod.cgroup_memory_used() == 1024**3
+
+    def test_unlimited_is_reported_as_no_limit(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text("max\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() is None
+
+    def test_an_unreadable_limit_is_reported_as_no_limit(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text("not-a-number\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() is None
+
+    def test_absent_cgroup_files_report_nothing(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path / "absent")
+        assert sys_mod.cgroup_memory_limit() is None
+        assert sys_mod.cgroup_memory_used() is None
+
+    def test_a_v1_sentinel_limit_does_not_shrink_the_ctx_target(self, monkeypatch, tmp_path):
+        # cgroup v1 spells unlimited as a near-int64 sentinel rather than a word.
+        from lilbee.core import system as sys_mod
+
+        v1 = tmp_path / "memory"
+        v1.mkdir()
+        (v1 / "memory.limit_in_bytes").write_text("9223372036854771712\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 24576

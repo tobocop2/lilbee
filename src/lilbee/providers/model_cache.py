@@ -89,7 +89,7 @@ def compute_dynamic_ctx(
     floor: int = _DYNAMIC_CTX_FLOOR,
     quantum: int = _DYNAMIC_CTX_QUANTUM,
 ) -> int:
-    """Pick the n_ctx that best fits target, ceiling, and host RAM.
+    """Pick the n_ctx that best fits target, ceiling, and ``available_bytes``.
 
     Selection rule, in order:
 
@@ -97,10 +97,10 @@ def compute_dynamic_ctx(
        model cannot exceed its training window and the caller may cap below it.
     2. If ``target`` is provided, prefer it (clamped to ``[floor, upper]``)
        so a 40K-context model still loads at 8K when chat doesn't need more,
-       rather than maximising n_ctx just because RAM allows it.
-    3. ``raw_ctx = budget // kv_bytes_per_tok`` is the largest n_ctx the host
-       can physically back. The result is clamped to ``raw_ctx`` so we never
-       over-allocate on memory-constrained boxes.
+       rather than maximising n_ctx just because the memory allows it.
+    3. ``raw_ctx = budget // kv_bytes_per_tok`` is the largest n_ctx the
+       available memory can physically back. The result is clamped to
+       ``raw_ctx`` so we never over-allocate on memory-constrained boxes.
     4. Result is quantized down to ``quantum`` and floored at ``floor``.
     """
     upper = min(training_ctx, ceiling)
@@ -113,7 +113,7 @@ def compute_dynamic_ctx(
     if budget <= 0:
         return floor
     raw_ctx = budget // kv_bytes_per_tok
-    # Aim for target when set, but never above what host RAM or model training_ctx permit.
+    # Aim for target when set, but never above what the memory or training_ctx permit.
     desired = min(target, raw_ctx, upper) if target is not None else min(raw_ctx, upper)
     bounded = max(floor, desired)
     quantized = (bounded // quantum) * quantum
@@ -129,20 +129,24 @@ def get_available_memory(fraction: float, *, total: bool = False) -> int:
     With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
     capacity, for deciding whether a model can run tensor-split across all of
     them); the default sizes against the smallest single card.
-    """
-    import psutil
 
+    A coarse figure for callers with no device list to hand. The fleet has one
+    and sizes against it instead
+    (:func:`lilbee.providers.fleet.planning.plan_sizing_budget`), because this
+    answers with system RAM on every host without an NVIDIA card. That system
+    figure is the process's, cgroup cap included, not the machine's.
+    """
     system = platform.system()
 
     if system == "Darwin":
-        return int(psutil.virtual_memory().total * fraction)
+        return int(total_system_memory() * fraction)
 
     if system in ("Linux", "Windows"):
         nvidia_mem = _try_nvidia_memory(sum if total else min)
         if nvidia_mem is not None:
             return int(nvidia_mem * fraction)
 
-    return int(psutil.virtual_memory().total * fraction)
+    return int(total_system_memory() * fraction)
 
 
 def free_system_memory() -> int:
@@ -150,17 +154,32 @@ def free_system_memory() -> int:
 
     The load-time counterpart to :func:`get_available_memory`, which scales total
     capacity for sizing rather than reporting what is free this instant.
+
+    Bounded by what this process's cgroup still has, for the reason in
+    :func:`lilbee.core.system.cgroup_memory_limit`.
     """
     import psutil
 
-    return int(psutil.virtual_memory().available)
+    from lilbee.core.system import cgroup_memory_limit, cgroup_memory_used
+
+    host_free = int(psutil.virtual_memory().available)
+    limit = cgroup_memory_limit()
+    if limit is None:
+        return host_free
+    used = cgroup_memory_used()
+    return min(host_free, limit if used is None else max(0, limit - used))
 
 
 def total_system_memory() -> int:
-    """Total installed system RAM in bytes."""
-    import psutil
+    """Total system RAM in bytes this process may use, cgroup cap included.
 
-    return int(psutil.virtual_memory().total)
+    Raises rather than answering zero when the host cannot be read: every caller
+    here is sizing a real placement, and a budget computed from zero refuses
+    every model without saying why.
+    """
+    from lilbee.core.system import capped_total_memory
+
+    return capped_total_memory()
 
 
 def has_nvidia_gpu() -> bool:
@@ -178,9 +197,9 @@ def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     """NVIDIA GPU total memory the CUDA runtime can actually reach, or ``None``.
 
     *reducer* combines the per-device totals. ``min`` (the default) sizes against
-    the smallest card, the safe budget for a single server or a per-card
-    tensor-split share. ``sum`` gives whole-fleet capacity, used only by the
-    catalog fit chip to decide whether a model can run split across every card.
+    the smallest card, the safe budget for a single server that has not been told
+    which card it will run on. ``sum`` gives whole-fleet capacity, used only by
+    the catalog fit chip to decide whether a model can run split across every card.
 
     Restricted to the devices ``CUDA_VISIBLE_DEVICES`` exposes. Neither NVML nor
     nvidia-smi applies that mask on its own: it is read by the CUDA runtime, and

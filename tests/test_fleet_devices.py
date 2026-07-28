@@ -433,6 +433,30 @@ def test_an_amd_apu_on_the_rocm_path_is_not_sized_as_dedicated_vram(
     assert [d.unified for d in parsed] == [True]
 
 
+def test_a_real_mi300x_is_sized_as_dedicated_vram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The line an AMD Instinct MI300X actually printed, engine build 9665.
+
+    It names itself "AMD Radeon Graphics", the same string an APU reports, so the
+    name cannot decide this and the absence of an integrated adapter has to. A
+    headless datacenter card has no Vulkan ICD to ask, which is the case here:
+    192 GiB must be charged as VRAM, not as a shared carveout of host RAM.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices, _select_backend, visible_env
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    (device,) = _parse_devices(
+        "Available devices:\n  ROCm0: AMD Radeon Graphics (196592 MiB, 196054 MiB free)"
+    )
+
+    assert (device.backend, device.index, device.unified) == ("ROCm", 0, False)
+    assert round(device.total_bytes / 1024**3) == 192
+    # HIP_VISIBLE_DEVICES is the var the runtime honours; confirmed on the card,
+    # where setting it to an index the host does not have hides every device.
+    assert visible_env(tuple(_select_backend([device]))) == {"HIP_VISIBLE_DEVICES": "0"}
+
+
 def test_a_discrete_nvidia_host_is_untouched_by_the_apu_rule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -882,3 +906,21 @@ class TestSyclPinsByNameNotBySelector:
 
         assert _device_names(devices) == ()
         assert visible_env(devices)["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_device_reporting_no_memory_is_dropped() -> None:
+    """A zero-memory device is not a GPU the fleet can plan onto.
+
+    Some drivers list an adapter before its memory is queryable, and a device
+    with no memory at all cannot hold a model. Kept, it is the smallest card in
+    the fleet, so every budget sized against the smallest collapses to nothing,
+    and a non-empty device list also switches off the shared-memory budget that
+    a host with no usable GPU depends on.
+    """
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    parsed = _parse_devices(
+        "  CUDA0: NVIDIA GeForce RTX 4090 (24564 MiB, 24000 MiB free)\n"
+        "  CUDA1: NVIDIA Graphics Device (0 MiB, 0 MiB free)"
+    )
+    assert [d.index for d in parsed] == [0]

@@ -902,10 +902,13 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
             return None
 
         def iter_text(self):
-            # Padded past the tail cap so the read stops at the size limit
-            # instead of waiting out the stream timeout.
-            yield "x" * 2500 + "E srv start: couldn't bind HTTP server socket, port: 5801\n"
-            raise AssertionError("must stop reading once the tail cap is reached")
+            # llama-swap's shape: the whole ring replayed first, the fatal line
+            # last in it, then the route stays open for live lines.
+            yield "x" * 65536
+            yield "x" * 30000 + "E srv start: couldn't bind HTTP server socket, port: 5801\n"
+            for _ in range(6):
+                yield "live chatter\n"
+            raise AssertionError("must stop reading once the chunk cap is reached")
 
     def _fake_stream(method: str, url: str, timeout: float) -> _FakeStream:
         seen["url"] = url
@@ -921,12 +924,13 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     assert "exited prematurely" in str(excinfo.value)
 
 
-def test_raise_for_status_bind_race_death_is_transient(monkeypatch) -> None:
+def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> None:
     # A member that died because it lost the pick-then-bind port race is not a
     # dead server: llama-swap re-spawns it on the next request and the port is
-    # normally free again by then (a passing ephemeral connection took it). The
-    # death must classify as transient so retry_on_busy re-drives the spawn,
-    # instead of CONNECTION which writes the only replica off as unhealthy.
+    # normally free again by then. The death classifies as PORT_CONFLICT, which
+    # is in the transient set so retry_on_busy re-drives the spawn, rather than
+    # CONNECTION which writes the only replica off as unhealthy. Naming it
+    # separately is what lets a port held for good reach a rebuild.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
     from lilbee.providers.fleet.client import _raise_for_status
@@ -938,13 +942,14 @@ def test_raise_for_status_bind_race_death_is_transient(monkeypatch) -> None:
     )
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
-    assert excinfo.value.kind is ProviderErrorKind.SERVER
+    assert excinfo.value.kind is ProviderErrorKind.PORT_CONFLICT
     assert "couldn't bind HTTP server socket" in str(excinfo.value)
 
 
 def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
-    # Any other exit reason (model load failure, missing CUDA runtime) keeps the
-    # CONNECTION kind, so the failover path still marks the replica unhealthy.
+    # An exit reason that is neither a bind race nor a memory shortfall (a missing
+    # CUDA runtime, a corrupt model file) keeps the CONNECTION kind, so the
+    # failover path still marks the replica unhealthy.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
     from lilbee.providers.fleet.client import _raise_for_status
@@ -952,7 +957,7 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     monkeypatch.setattr(
         client_mod,
         "_upstream_failure_tail",
-        lambda resp: "cudaMalloc failed: out of memory",
+        lambda resp: "error loading model: tensor 'blk.0.attn_q.weight' has invalid shape",
     )
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
