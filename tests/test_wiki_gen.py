@@ -27,8 +27,20 @@ from lilbee.wiki.citations import (
 )
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.generation import generate_synthesis_pages
-from lilbee.wiki.page import chunks_to_text, index_wiki_page, truncate_chunks_to_budget
-from lilbee.wiki.persistence import divert_to_drafts, write_pending_marker
+from lilbee.wiki.page import (
+    WIKI_DEFAULT_SEED,
+    chunks_to_text,
+    index_wiki_page,
+    prompt_overhead_tokens,
+    truncate_chunks_to_budget,
+    wiki_generation_options,
+    write_page,
+)
+from lilbee.wiki.persistence import (
+    delete_drift_draft_if_present,
+    divert_to_drafts,
+    write_pending_marker,
+)
 from lilbee.wiki.quality import (
     _embedding_faithfulness_score,
     _mean_vector,
@@ -169,6 +181,59 @@ class TestTruncateChunksToBudget:
         with caplog.at_level("WARNING", logger="lilbee.wiki.page"):
             truncate_chunks_to_budget(chunks, cfg)
         assert "Truncated chunks from 5 to 1" in caplog.text
+
+    def test_kept_chunks_leave_room_for_the_prompt_and_the_generation(self):
+        """The whole call has to fit: chunks + template + output cap <= num_ctx."""
+        cfg.num_ctx = 8192
+        cfg.wiki_summary_max_tokens = 2048
+        chunks = [_make_chunk("x" * 4000, chunk_index=i) for i in range(20)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        prompt_tokens = len(chunks_to_text(kept)) // 4
+        total = prompt_tokens + cfg.wiki_summary_max_tokens + prompt_overhead_tokens(cfg)
+        assert 0 < len(kept) < len(chunks)
+        assert total <= cfg.num_ctx
+
+    def test_a_bigger_output_cap_leaves_room_for_fewer_chunks(self):
+        cfg.num_ctx = 8192
+        chunks = [_make_chunk("x" * 500, chunk_index=i) for i in range(40)]
+        cfg.wiki_summary_max_tokens = 256
+        small_cap = truncate_chunks_to_budget(chunks, cfg)
+        cfg.wiki_summary_max_tokens = 4096
+        large_cap = truncate_chunks_to_budget(chunks, cfg)
+        assert len(large_cap) < len(small_cap)
+
+    def test_per_chunk_formatting_counts_against_the_budget(self):
+        """Chunk numbering and separators are prompt tokens too."""
+        cfg.num_ctx = 1200
+        cfg.wiki_summary_max_tokens = 256
+        chunks = [_make_chunk("x" * 100, chunk_index=i, page_start=i + 1) for i in range(40)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        budget_chars = (cfg.num_ctx - cfg.wiki_summary_max_tokens - prompt_overhead_tokens(cfg)) * 4
+        assert len(chunks_to_text(kept)) <= budget_chars
+
+    def test_budget_floors_at_a_quarter_of_the_window(self):
+        """An output cap larger than the whole window still leaves chunks room."""
+        cfg.num_ctx = 512
+        cfg.wiki_summary_max_tokens = 4096
+        chunks = [_make_chunk("x" * 400, chunk_index=i) for i in range(10)]
+        assert len(truncate_chunks_to_budget(chunks, cfg)) == 1
+
+
+class TestWikiGenerationOptions:
+    """Wiki calls sample deterministically so an unchanged corpus converges."""
+
+    def test_uses_the_fixed_seed_when_the_user_set_none(self):
+        cfg.seed = None
+        assert wiki_generation_options(cfg)["seed"] == WIKI_DEFAULT_SEED
+
+    def test_a_user_seed_wins_over_the_default(self):
+        cfg.seed = 99
+        assert wiki_generation_options(cfg)["seed"] == 99
+
+    def test_applies_the_wiki_temperature_and_output_cap(self):
+        options = wiki_generation_options(cfg)
+        assert options["temperature"] == cfg.wiki_temperature
+        assert options["max_tokens"] == cfg.wiki_summary_max_tokens
 
 
 class TestEmbeddingFaithfulness:
@@ -1081,6 +1146,88 @@ class TestDivertToDrafts:
         result = self._divert(drafts_dir, "# Regenerated\n", ["b.md"])
         assert result == marker_path
         assert "# Regenerated" in result.read_text()
+
+
+class TestWritePageDrift:
+    """Rebuilds converge: only body prose counts as drift, and a published
+    regen retires the proposal an earlier drift parked in drafts/."""
+
+    @staticmethod
+    def _page(body: str, timestamp: str) -> str:
+        return (
+            f"---\ngenerated_by: m\ngenerated_at: {timestamp}\n"
+            f'sources: ["a.md"]\nfaithfulness_score: 0.90\n---\n\n{body}\n'
+        )
+
+    def test_frontmatter_churn_alone_does_not_divert(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        body = "# Brakes\n\n" + "\n".join(f"line {i}" for i in range(20))
+        page = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        page.parent.mkdir(parents=True)
+        page.write_text(self._page(body, "2020-01-01T00:00:00+00:00"))
+        # A zero threshold diverts on any body change at all, so publishing
+        # here proves the timestamp and score churn was excluded.
+        result = write_page(
+            wiki_root,
+            WikiSubdir.CONCEPTS,
+            "brakes",
+            self._page(body, "2026-07-28T12:00:00+00:00"),
+            0.0,
+            ["a.md"],
+        )
+        assert result == page
+
+    def test_publishing_removes_a_superseded_drift_draft(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        stale = divert_to_drafts(
+            "# Old proposal\n",
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        assert stale.is_file()
+        write_page(
+            wiki_root,
+            WikiSubdir.CONCEPTS,
+            "brakes",
+            self._page("# Brakes\n\nfresh body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["a.md"],
+        )
+        assert not stale.exists()
+
+    def test_a_page_routed_to_drafts_survives_its_own_write(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        result = write_page(
+            wiki_root,
+            WikiSubdir.DRAFTS,
+            "brakes",
+            self._page("# Brakes\n\nlow score body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["a.md"],
+        )
+        assert result.is_file()
+
+
+class TestDeleteDriftDraftIfPresent:
+    def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
+        assert delete_drift_draft_if_present(tmp_path, "missing") is False
+
+    def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
+        draft = tmp_path / "x.md"
+        draft.write_text("---\nfaithfulness_score: 0.2\n---\n\nbody\n")
+        assert delete_drift_draft_if_present(tmp_path, "x") is False
+        assert draft.is_file()
+
+    def test_removes_a_drift_draft(self, tmp_path: Path):
+        draft = divert_to_drafts(
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+        )
+        assert delete_drift_draft_if_present(tmp_path, "x") is True
+        assert not draft.exists()
 
 
 class TestSynthesisDriftDetection:

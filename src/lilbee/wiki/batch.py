@@ -78,13 +78,20 @@ def match_label(
     expected: set[str],
     kind: EntityKind,
 ) -> tuple[EntityKind, str] | None:
-    """Case-insensitive substring match of *lowered_name* against *expected*.
+    """Case-insensitive match of *lowered_name* against *expected*.
 
-    Returns ``(kind, original_label)`` on hit, ``None`` otherwise.
-    A substring match (not equality) accommodates the LLM adding
-    qualifiers ("Brake System (hydraulic)" vs "brake system").
+    Returns ``(kind, original_label)`` on hit, ``None`` otherwise. An exact
+    match always wins; otherwise the longest label that overlaps the header as
+    a substring in either direction wins, which accommodates the LLM adding
+    qualifiers ("Brake System (hydraulic)" vs "brake system"). Candidates are
+    ordered by length then alphabetically, so overlapping labels ("Ford" and
+    "Henry Ford") bind the same way on every run.
     """
-    for label in expected:
+    ordered = sorted(expected, key=lambda label: (-len(label), label))
+    for label in ordered:
+        if label.lower() == lowered_name:
+            return (kind, label)
+    for label in ordered:
         low = label.lower()
         if low and (low in lowered_name or lowered_name in low):
             return (kind, label)

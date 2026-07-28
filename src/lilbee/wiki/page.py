@@ -15,6 +15,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
@@ -40,6 +41,7 @@ from lilbee.wiki.citations import (
     verify_citations,
 )
 from lilbee.wiki.persistence import (
+    delete_drift_draft_if_present,
     divert_to_drafts,
     persist_and_finalize,
     subdir_from_wiki_source,
@@ -57,13 +59,20 @@ log = logging.getLogger(__name__)
 WikiProgressCallback = Callable[[str, dict[str, object]], None]
 """Callback for wiki generation progress: (stage, data) -> None."""
 
-# Fraction of context window reserved for chunks. The remainder leaves
-# room for the system/user prompt template and generation output.
-_CONTEXT_BUDGET_FRACTION = 0.75
+# Floor on the chunk budget as a fraction of the context window, applied when
+# the output cap plus the template reserve already exceed ``num_ctx``.
+_MIN_CONTEXT_BUDGET_FRACTION = 0.25
 
 # Approximate characters per token for budget estimation. 4 chars/token
 # is a widely used heuristic for English text.
 _CHARS_PER_TOKEN = 4
+
+# Separator ``chunks_to_text`` puts between formatted chunk blocks.
+_CHUNK_SEPARATOR = "\n\n"
+
+# Seed used for wiki generation when the user set none, so an unchanged
+# corpus regenerates identically at the low wiki sampling temperature.
+WIKI_DEFAULT_SEED = 1
 
 # Directive recognized by chat templates that support a reasoning mode
 # (Qwen3, DeepSeek-R1, etc.). Wiki generation is a summarization task
@@ -89,23 +98,50 @@ def build_wiki_messages(prompt: str, provider: LLMProvider, config: Config) -> l
     return [{"role": "user", "content": prompt}]
 
 
+def wiki_generation_options(config: Config) -> dict[str, Any]:
+    """Sampling options for a wiki LLM call: wiki temperature, output cap, fixed seed."""
+    return config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_summary_max_tokens,
+        seed=WIKI_DEFAULT_SEED if config.seed is None else config.seed,
+    )
+
+
+def prompt_overhead_tokens(config: Config) -> int:
+    """Token cost of the longest wiki prompt template plus the ``/no_think`` prefix.
+
+    Measured from the templates themselves rather than assumed, so overriding a
+    prompt from settings moves the chunk budget with it.
+    """
+    longest = max(
+        len(config.wiki_summary_prompt),
+        len(config.wiki_synthesis_prompt),
+        len(config.wiki_entity_batch_prompt),
+    )
+    return -(-(longest + len(_NO_THINK_DIRECTIVE)) // _CHARS_PER_TOKEN)
+
+
 def truncate_chunks_to_budget(
     chunks: list[SearchChunk],
     config: Config,
 ) -> list[SearchChunk]:
-    """Drop trailing chunks so the total text fits within the model's context budget.
+    """Drop trailing chunks so the prompt plus its generation fits the context window.
 
-    Uses a chars/4 heuristic for token estimation. Returns the original list
-    unchanged when all chunks fit.
+    The budget is ``num_ctx`` less the output cap (``wiki_summary_max_tokens``)
+    less the prompt-template overhead, floored at a quarter of the window for
+    configurations whose cap alone exceeds it. Chunks are measured as
+    :func:`chunks_to_text` formats them, numbering and separators included.
+    Uses a chars/4 heuristic for token estimation.
     """
     context_window = config.num_ctx or DEFAULT_NUM_CTX
-    budget_tokens = int(context_window * _CONTEXT_BUDGET_FRACTION)
+    available = context_window - config.wiki_summary_max_tokens - prompt_overhead_tokens(config)
+    budget_tokens = max(available, int(context_window * _MIN_CONTEXT_BUDGET_FRACTION))
     budget_chars = budget_tokens * _CHARS_PER_TOKEN
 
     total_chars = 0
     kept: list[SearchChunk] = []
-    for chunk in chunks:
-        chunk_chars = len(chunk.chunk)
+    for index, chunk in enumerate(chunks):
+        chunk_chars = len(_format_chunk(chunk, index)) + len(_CHUNK_SEPARATOR)
         if total_chars + chunk_chars > budget_chars and kept:
             break
         kept.append(chunk)
@@ -121,17 +157,19 @@ def truncate_chunks_to_budget(
     return kept
 
 
+def _format_chunk(chunk: SearchChunk, index: int) -> str:
+    """Render one chunk as the numbered block the prompt embeds."""
+    location = ""
+    if chunk.page_start:
+        location = f" (page {chunk.page_start})"
+    elif chunk.line_start:
+        location = f" (lines {chunk.line_start}-{chunk.line_end})"
+    return f"[Chunk {index + 1}]{location}:\n{chunk.chunk}"
+
+
 def chunks_to_text(chunks: list[SearchChunk]) -> str:
     """Format chunks as numbered text blocks for the LLM prompt."""
-    parts: list[str] = []
-    for i, chunk in enumerate(chunks):
-        location = ""
-        if chunk.page_start:
-            location = f" (page {chunk.page_start})"
-        elif chunk.line_start:
-            location = f" (lines {chunk.line_start}-{chunk.line_end})"
-        parts.append(f"[Chunk {i + 1}]{location}:\n{chunk.chunk}")
-    return "\n\n".join(parts)
+    return _CHUNK_SEPARATOR.join(_format_chunk(chunk, i) for i, chunk in enumerate(chunks))
 
 
 def build_frontmatter(
@@ -173,21 +211,27 @@ def write_page(
     """Write page to disk with drift detection. Returns path written to.
 
     ``slug`` may contain forward slashes (e.g. ``cv-manual/page-0042``);
-    any intermediate directories are created before writing.
+    any intermediate directories are created before writing. Publishing
+    retires any drift draft still pending for the slug: that proposal
+    predates this body and accepting it would undo the regen.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
-        ratio = content_change_ratio(old_content, full_content)
+        # Frontmatter carries a fresh timestamp and score on every regen, so the
+        # ratio is taken over body prose only.
+        ratio = content_change_ratio(extract_body(old_content), extract_body(full_content))
         if ratio > drift_threshold:
-            drafts_dir = wiki_root / WikiSubdir.DRAFTS
             diff_text = diff_summary(old_content, full_content)
             return divert_to_drafts(
                 full_content, drafts_dir, slug, ratio, diff_text, subdir, source_names
             )
 
     atomic_write_text(page_path, full_content)
+    if subdir != WikiSubdir.DRAFTS:
+        delete_drift_draft_if_present(drafts_dir, slug)
     return page_path
 
 
@@ -279,10 +323,7 @@ def generate_page(
 
     messages = build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
-    options = config.generation_options(
-        temperature=config.wiki_temperature,
-        max_tokens=config.wiki_summary_max_tokens,
-    )
+    options = wiki_generation_options(config)
     try:
         response = provider.chat(messages, stream=False, options=options)
         wiki_text = strip_reasoning(response.text).strip()

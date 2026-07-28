@@ -3334,6 +3334,11 @@ class TestWikiDraftsCli:
     def _seed(self, isolated_env: Path) -> Path:
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
+        summaries = isolated_env / "wiki" / "summaries"
+        summaries.mkdir(parents=True)
+        (summaries / "x.md").write_text("old body\n", encoding="utf-8")
+        # Written after the published page, as a drift regen would: accept
+        # refuses a draft its published counterpart has already outrun.
         drafts = isolated_env / "wiki" / "drafts"
         drafts.mkdir(parents=True)
         (drafts / "x.md").write_text(
@@ -3341,9 +3346,6 @@ class TestWikiDraftsCli:
             "---\nfaithfulness_score: 0.8\n---\n\n# X\n\nnew body\n",
             encoding="utf-8",
         )
-        summaries = isolated_env / "wiki" / "summaries"
-        summaries.mkdir(parents=True)
-        (summaries / "x.md").write_text("old body\n", encoding="utf-8")
         return isolated_env
 
     def test_list_no_drafts(self, mock_svc, isolated_env):
