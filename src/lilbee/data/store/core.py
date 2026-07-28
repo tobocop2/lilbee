@@ -1689,12 +1689,18 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
-    def clear_table(self, name: str, predicate: str) -> None:
-        """Delete rows matching *predicate* from *name*. Acquires write lock."""
+    def clear_table(self, name: str, predicate: str) -> bool:
+        """Delete rows matching *predicate* from *name*. Acquires write lock.
+
+        Returns whether the delete succeeded, so a caller recording the
+        outcome (prune, the legacy migration) does not report success over a
+        swallowed failure.
+        """
         with self._write_lock():
             table = self.open_table(name)
-            if table is not None:
-                _safe_delete_unlocked(table, predicate)
+            if table is None:
+                return True
+            return _safe_delete_unlocked(table, predicate)
 
     def clear_and_add(self, name: str, schema: pa.Schema, rows: list[dict], predicate: str) -> None:
         """Replace the rows matching *predicate* with *rows* in one locked write.
@@ -1742,9 +1748,9 @@ class Store:
         )
         return rows
 
-    def delete_citations_for_wiki(self, wiki_source: str) -> None:
-        """Delete all citations for a wiki page (used before regeneration)."""
-        self.clear_table(CITATIONS_TABLE, _citations_for_wiki_predicate(wiki_source))
+    def delete_citations_for_wiki(self, wiki_source: str) -> bool:
+        """Delete all citations for a wiki page. Returns whether the delete succeeded."""
+        return self.clear_table(CITATIONS_TABLE, _citations_for_wiki_predicate(wiki_source))
 
     def replace_citations_for_wiki(self, wiki_source: str, records: list[CitationRecord]) -> None:
         """Swap a wiki page's citations for *records* under one write lock.
