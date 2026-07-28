@@ -448,6 +448,12 @@ def start_wikify(app: LilbeeApp) -> None:
         app.notify(msg.CMD_WIKI_DISABLED, severity="warning")
         return
 
+    queue = app.task_bar.queue
+    pending = queue.active_tasks + queue.queued_tasks
+    if any(t.task_type == TaskType.WIKI and t.name == msg.TASK_NAME_WIKI for t in pending):
+        app.notify(msg.WIKI_ALREADY_ACTIVE, severity="warning")
+        return
+
     def _target(reporter: ProgressReporter) -> None:
         from lilbee.wiki.generation import run_full_build
 

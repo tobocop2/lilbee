@@ -2950,7 +2950,12 @@ class TestWikiLint:
         assert data["issues"][0]["issue_type"] == "source_missing"
 
     def test_lint_runs_with_the_wiki_disabled(self, mock_svc, isolated_env):
-        """Reads stay available on a disabled wiki; only writers are gated."""
+        """CLI reads stay available on a disabled wiki; only CLI writers are gated.
+
+        The gate is per surface: the long-lived MCP and HTTP surfaces refuse
+        wiki reads outright, while a one-shot CLI invocation still inspects a
+        tree the user already has on disk.
+        """
         cfg.wiki = False
         cfg.wiki_dir = "wiki"
         mock_svc.store.get_citations_for_wiki.return_value = []
@@ -3473,6 +3478,42 @@ class TestWikiStatus:
         cfg.wiki_dir = "wiki"
         result = runner.invoke(app, ["wiki", "status"])
         assert result.exit_code == 0
+        assert "disabled" in result.output
+
+    def test_status_disabled_does_not_lint_a_leftover_tree(self, mock_svc, isolated_env):
+        """A disabled wiki reports the disabled state, like the HTTP and MCP surfaces."""
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "leftover.md").write_text("content")
+        with mock.patch("lilbee.wiki.lint.lint_all") as lint_all:
+            result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "disabled" in result.output
+        lint_all.assert_not_called()
+
+    def test_status_json_disabled_keeps_the_enabled_shape(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {
+            "wiki_enabled": False,
+            "summaries": 0,
+            "drafts": 0,
+            "pages": 0,
+            "lint_errors": 0,
+            "lint_warnings": 0,
+        }
+
+    def test_status_reports_a_missing_tree_on_an_enabled_wiki(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "never-built"
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "does not exist yet" in result.output
 
 
 class TestWikiPrune:
@@ -3747,7 +3788,7 @@ class TestWikiDraftsCli:
         assert (isolated_env / "wiki" / "drafts" / "x.md").exists()
 
     def test_list_still_reads_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
-        """Reads stay available on a disabled wiki; only the writers are gated."""
+        """CLI reads stay available on a disabled wiki; only CLI writers are gated."""
         self._seed(isolated_env)
         cfg.wiki = False
         result = runner.invoke(app, ["wiki", "drafts", "list"])

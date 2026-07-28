@@ -550,7 +550,8 @@ document. The layout under `$data_root/$wiki_dir/` is:
 ```
 concepts/    one page per LLM-curated concept from the source (e.g. braking-systems.md)
 entities/    one page per proper-noun entity (e.g. henry-ford.md)
-summaries/   legacy per-source pages (still supported, not the default)
+summaries/   accepted drafts with no published page to replace (plus any
+             pre-existing legacy per-source pages)
 synthesis/   cross-source pages produced by `wiki synthesize`
 drafts/      low-faithfulness drafts, drift drafts, and PENDING markers
              (parse-failure or slug-collision) surfaced via `wiki drafts list`

@@ -741,7 +741,16 @@ def wiki_status() -> dict[str, Any]:
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     if not cfg.wiki or not wiki_root.exists():
-        return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
+        # Same keys as the enabled arm so a client can key on lint_errors in
+        # either state; a disabled wiki reports zeros rather than being linted.
+        return {
+            "wiki_enabled": cfg.wiki,
+            WikiSubdir.SUMMARIES: 0,
+            WikiSubdir.DRAFTS: 0,
+            "pages": 0,
+            "lint_errors": 0,
+            "lint_warnings": 0,
+        }
 
     summaries_dir = wiki_root / WikiSubdir.SUMMARIES
     drafts_dir = wiki_root / WikiSubdir.DRAFTS

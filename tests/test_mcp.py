@@ -1384,7 +1384,14 @@ class TestWikiRuntimeGate:
         (isolated_env / "wiki" / "summaries" / "leftover.md").write_text("content")
         with mock.patch("lilbee.wiki.lint.lint_all") as lint_all:
             result = wiki_status()
-        assert result == {"wiki_enabled": False, "pages": 0, "issues": 0}
+        assert result == {
+            "wiki_enabled": False,
+            "summaries": 0,
+            "drafts": 0,
+            "pages": 0,
+            "lint_errors": 0,
+            "lint_warnings": 0,
+        }
         lint_all.assert_not_called()
 
     def test_drafts_list_names_the_real_promotion_policy(self):

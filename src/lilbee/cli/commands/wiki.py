@@ -284,11 +284,25 @@ def wiki_status(
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
     wiki_root = cfg.data_root / cfg.wiki_dir
-    if not wiki_root.exists():
+    if not cfg.wiki or not wiki_root.exists():
+        # A disabled wiki can still have a tree left over from an earlier build;
+        # report the disabled state rather than linting it.
         if cfg.json_mode:
-            json_output({"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0})
+            json_output(
+                {
+                    "wiki_enabled": cfg.wiki,
+                    WikiSubdir.SUMMARIES: 0,
+                    WikiSubdir.DRAFTS: 0,
+                    "pages": 0,
+                    "lint_errors": 0,
+                    "lint_warnings": 0,
+                }
+            )
             return
-        console.print("Wiki directory does not exist yet. Run `lilbee wiki build`.")
+        if not cfg.wiki:
+            console.print(f"Wiki: [{theme.ERROR}]disabled[/{theme.ERROR}]")
+        else:
+            console.print("Wiki directory does not exist yet. Run `lilbee wiki build`.")
         return
 
     summaries = _count_md_files(wiki_root / WikiSubdir.SUMMARIES)
@@ -312,9 +326,7 @@ def wiki_status(
         )
         return
 
-    color = theme.SUCCESS if cfg.wiki else theme.ERROR
-    label = "enabled" if cfg.wiki else "disabled"
-    console.print(f"Wiki: [{color}]{label}[/{color}]")
+    console.print(f"Wiki: [{theme.SUCCESS}]enabled[/{theme.SUCCESS}]")
     console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
     console.print(f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]")
     if report.error_count or report.warning_count:
