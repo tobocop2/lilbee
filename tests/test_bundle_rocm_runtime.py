@@ -42,6 +42,8 @@ _ROCM_GRAPH = {
     "librocsolver.so.0": ["librocroller.so.1"],
     "librocroller.so.1": [],
     "libomp.so": [],
+    # Nothing declares comgr: libamdhip64 dlopens it by name.
+    "libamd_comgr.so.3": [],
 }
 _LLVM_LIBS = ("libomp.so",)
 
@@ -287,6 +289,7 @@ def test_repoints_copied_libraries_at_the_bundle(bundled, tmp_path):
         "librocblas.so.5",
         "libhipblas.so.3",
         "libomp.so",
+        "libamd_comgr.so.3",
     }
     assert all("--set-rpath $ORIGIN" in line for line in rewrites)
 
@@ -398,3 +401,21 @@ def test_keeps_libraries_still_reachable_by_another_path(bundled):
     assert (bundled / "librocblas.so.5").is_file()
     assert (bundled / "libhipblas.so.3").is_file()
     assert (bundled / "libamdhip64.so.7").is_file()
+
+
+def test_bundles_the_library_that_is_only_ever_dlopened(bundled):
+    """libamdhip64 loads comgr by SONAME, so no DT_NEEDED walk can discover it."""
+    assert (bundled / "libamd_comgr.so.3").is_file()
+
+
+def test_never_collects_a_dlopened_library_as_an_orphan(bundled):
+    """It is unreachable by construction; collecting it breaks every AMD GPU."""
+    assert (bundled / "libamd_comgr.so.3").is_file()
+
+
+def test_fails_when_the_dlopened_library_is_missing(bin_dir, rocm_tree, tmp_path):
+    """Nothing links it, so only an explicit check can notice it never got copied."""
+    (rocm_tree / "lib/libamd_comgr.so.3").unlink()
+    result = _run(bin_dir, rocm_tree, tmp_path)
+    assert result.returncode == 1
+    assert "libamd_comgr" in result.stderr

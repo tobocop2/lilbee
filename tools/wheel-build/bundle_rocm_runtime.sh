@@ -27,10 +27,32 @@ bundled=""
 rocm_lib_dirs="${rocm_root}/lib ${rocm_root}/lib/llvm/lib"
 
 # The libraries a required-check names. Everything else is discovered.
-required_libs="libamdhip64 librocblas libhipblas"
+#
+# libamd_comgr is here because nothing links it: libamdhip64 dlopens it by SONAME, on
+# the ahead-of-time path, so the DT_NEEDED walk cannot see it and neither can an ldd
+# gate. It survives today only because librocroller happens to declare it. Seeded
+# explicitly so pruning an unrelated edge cannot take the code-object manager with it.
+required_libs="libamdhip64 librocblas libhipblas libamd_comgr"
+dlopened_libs="libamd_comgr.so"
 
 needed_by() {
   readelf -d "$1" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'
+}
+
+# Libraries loaded by name at runtime rather than linked. No walk can discover them.
+copy_dlopened_libs() {
+  local stem src match
+  for stem in ${dlopened_libs}; do
+    for match in "${rocm_root}"/lib/"${stem}"*; do
+      [ -e "${match}" ] || continue
+      src="$(basename "${match}")"
+      [ -e "${pkg_bin_dir}/${src}" ] && continue
+      cp -L "${match}" "${pkg_bin_dir}/"
+      bundled="${bundled} ${src}"
+      pending="${pending} ${pkg_bin_dir}/${src}"
+      echo "bundled dlopened library: ${src}"
+    done
+  done
 }
 
 resolve_in_rocm() {
@@ -51,6 +73,7 @@ copy_rocm_closure() {
   local pending next lib soname src
   bundled=""
   pending=$(find "${pkg_bin_dir}" -maxdepth 1 -type f)
+  copy_dlopened_libs
   while [ -n "${pending}" ]; do
     next=""
     for lib in ${pending}; do
@@ -167,7 +190,7 @@ prune_unreachable_deps() {
 # Delete bundled libraries the engine can no longer reach. Recomputed from DT_NEEDED
 # rather than listed, so removing one edge collects its private dependencies too.
 drop_orphans() {
-  local seeds="" reachable="" pending next lib soname obj name
+  local seeds="" reachable="" pending next lib soname obj name stem
   for obj in "${pkg_bin_dir}"/*; do
     [ -f "${obj}" ] || continue
     name="$(basename "${obj}")"
@@ -191,6 +214,13 @@ drop_orphans() {
   done
 
   local kept=""
+  # A dlopened library is unreachable by construction; that is why it is listed.
+  for stem in ${dlopened_libs}; do
+    for soname in ${bundled}; do
+      case "${soname}" in "${stem}"*) reachable="${reachable} ${soname}" ;; esac
+    done
+  done
+
   for soname in ${bundled}; do
     case " ${reachable} " in
       *" ${soname} "*) kept="${kept} ${soname}" ;;

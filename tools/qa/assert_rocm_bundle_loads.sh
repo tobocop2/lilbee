@@ -31,6 +31,9 @@ apt-get install -y -qq ${HOST_PACKAGES} ${DIAGNOSTIC_PACKAGES} >/dev/null
 # Name what must be here rather than counting whatever the glob matched: two SONAME
 # aliases of the backend would satisfy a count of two while llama-server was absent.
 [ -e /bundle/llama-server ] || { echo "no llama-server in the bundle" >&2; exit 1; }
+# ldd cannot see a dlopen: libamdhip64 loads comgr by SONAME at runtime, so its absence
+# is invisible here and fatal on a card.
+ls /bundle/libamd_comgr.so* >/dev/null 2>&1 || { echo "no libamd_comgr in the bundle" >&2; exit 1; }
 ls /bundle/libggml-hip.so* >/dev/null 2>&1 || { echo "no libggml-hip.so in the bundle" >&2; exit 1; }
 
 status=0
