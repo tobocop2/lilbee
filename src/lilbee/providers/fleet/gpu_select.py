@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import fnmatch
+import json
 import logging
 import ntpath
 import os
@@ -34,6 +35,13 @@ from lilbee.providers.fleet.vulkan_icd_discovery import (
 )
 
 log = logging.getLogger(__name__)
+
+# The child that runs the loader, and how long it may take. The bound matters:
+# a wedged ICD can hang inside vkCreateInstance rather than fault, and the
+# placement read that asked must not hang with it.
+_PROBE_MODULE = "lilbee.providers.fleet.vulkan_probe"
+_PROBE_TIMEOUT_S = 10.0
+_PROBE_KILL_WAIT_S = 5.0
 
 # vk.h constants. Mirrored here so we don't drag a vulkan-headers
 # dependency in for four magic numbers. See the upstream definitions in
@@ -456,6 +464,13 @@ def discrete_gpu_from_vendor(vendor_id: int) -> bool | None:
     )
 
 
+# Vendors whose PCI display controllers are always dedicated cards. AMD and
+# Intel both ship integrated parts under their own IDs, so their presence says
+# nothing about whether a discrete card exists; NVIDIA's desktop and laptop
+# parts are discrete without exception here.
+_DISCRETE_ONLY_VENDORS: frozenset[int] = frozenset({PCIVendorID.NVIDIA})
+
+
 def host_has_no_discrete_gpu() -> bool:
     """Whether the Vulkan loader can see adapters and none of them is discrete.
 
@@ -478,9 +493,21 @@ def host_has_no_discrete_gpu() -> bool:
     and an APU also answers False, which leaves the APU sized as dedicated;
     correlating individual devices across two backends' naming needs more than
     the type.
+
+    The loader is not the only witness, and on a hybrid laptop it is the wrong
+    one. Optimus and its equivalents leave the discrete card powered down until
+    something asks for it through prime-run, so the loader enumerates the
+    integrated adapter alone while a dedicated card sits on the PCI bus. Taking
+    that list at its word marked a real 4 GB card as sharing system memory,
+    which is the exact outcome the paragraph above promises never to reach. PCI
+    settles it: a vendor that only ever ships discrete parts, present in the
+    device tree but absent from the loader's list, means the loader is telling
+    an incomplete story rather than a complete one.
     """
     types = set(vulkan_device_types_by_name().values())
     if VkDeviceType.DISCRETE_GPU in types:
+        return False
+    if _DISCRETE_ONLY_VENDORS & installed_gpu_vendor_ids():
         return False
     return VkDeviceType.INTEGRATED_GPU in types
 
@@ -493,16 +520,17 @@ def _known_device_type(value: int) -> VkDeviceType | None:
         return None
 
 
-def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
+def enumerate_in_process() -> list[VulkanDevice] | None:
     """Open libvulkan, create a throwaway instance, enumerate adapters.
 
     Returns ``None`` if the loader can't be found or any Vulkan call
     fails; empty list ("loader present, no adapters") is a distinct
     outcome and propagates back.
 
-    Uncached, and each caller decides for itself whether to hold the answer: the
-    device types are a property of the machine and are cached, while free memory
-    is a live number that is read fresh every time it is asked for.
+    Runs the loader in whatever process calls it, which is why
+    :func:`_enumerate_vulkan_devices` calls it in a child rather than directly:
+    ``vkCreateInstance`` loads every vendor ICD on the host, and a faulting one
+    raises no exception, it raises a signal.
     """
     lib = _load_vulkan_loader()
     if lib is None:
@@ -513,6 +541,54 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     except OSError:
         # ctypes argument / call-site errors land here; treat as
         # "probe failed" rather than crashing the host process.
+        return None
+
+
+def _run_probe_child() -> tuple[str, int, str]:
+    """Run the enumeration in a child; returns ``(stdout, returncode, stderr)``."""
+    from lilbee.providers.fleet.proc import run_bounded
+
+    argv = [sys.executable, "-m", _PROBE_MODULE]
+    stdout, returncode = run_bounded(
+        argv,
+        timeout_s=_PROBE_TIMEOUT_S,
+        kill_wait_s=_PROBE_KILL_WAIT_S,
+        label="vulkan-probe",
+    )
+    return stdout, returncode, ""
+
+
+def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
+    """The adapters the Vulkan loader reports, or ``None`` for no opinion.
+
+    Asked of a short-lived child. ``vkCreateInstance`` pre-loads every vendor ICD
+    on the host, and a broken or conflicting one faults inside the loader; a
+    fault is a signal, so no ``except`` here could keep the daemon alive. In a
+    child, dying is simply an answer. Every failure reads the same as an
+    unreachable loader, which is the state the callers were written for.
+
+    An empty list still means "loader present, no adapters", which is a
+    different fact and propagates back intact.
+
+    Uncached, and each caller decides for itself whether to hold the answer: the
+    device types are a property of the machine and are cached, while free memory
+    is a live number that is read fresh every time it is asked for.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.vulkan_probe import from_json
+
+    try:
+        stdout, returncode, stderr = _run_probe_child()
+    except (ProviderError, OSError) as exc:
+        log.debug("Vulkan probe child could not be run: %s", exc)
+        return None
+    if returncode != 0:
+        log.debug("Vulkan probe child exited %s: %s", returncode, stderr.strip() or stdout.strip())
+        return None
+    try:
+        return from_json(json.loads(stdout))
+    except (ValueError, KeyError, TypeError) as exc:
+        log.debug("Vulkan probe child printed no usable device list: %s", exc)
         return None
 
 
@@ -973,6 +1049,23 @@ def _platform_supports_icd_pin() -> bool:
 #     https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/issues/3796
 #   - Blender Vulkan backend startup failure on dual-vendor hosts:
 #     https://projects.blender.org/blender/blender/issues/129917
+def _icd_pin_is_ours_to_make() -> bool:
+    """Whether lilbee may set the ICD disable list at all.
+
+    Not on a platform with no documented dual-vendor crash class, not when the
+    caller has already set any of the loader's own variables, and not when a
+    gpu_devices pin has already named the hardware to use. Each is somebody
+    else's decision arriving first.
+    """
+    from lilbee.core.config import cfg
+
+    if not _platform_supports_icd_pin():
+        return False
+    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
+        return False
+    return not cfg.gpu_devices
+
+
 def disable_conflicting_vulkan_icds() -> str | None:
     """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
 
@@ -984,18 +1077,27 @@ def disable_conflicting_vulkan_icds() -> str | None:
     Windows, XDG on Linux) and the device tree from the OS; enumerating via
     ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
-    from lilbee.core.config import cfg
-
-    if not _platform_supports_icd_pin():
-        return None
-    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
-        return None
-    if cfg.gpu_devices:
+    if not _icd_pin_is_ours_to_make():
         return None
     vendors = _vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
-    best = _select_best_vendor(_vendors_with_hardware(vendors) or vendors)
-    if best is None:  # pragma: no cover - invariant: vendors is non-empty here
+    with_hardware = _vendors_with_hardware(vendors)
+    if not with_hardware:
+        # The device tree could not be read, so nothing here is known to be
+        # present. Ranking the manifests alone is how a host whose /sys is
+        # masked, or WSL2, or an ARM SoC whose GPU is not on the PCI bus, could
+        # have its only working ICD disabled by a static vendor order. Silence is
+        # the safe answer: an extra ICD risks the crash class this avoids, while
+        # disabling the wrong one costs the GPU outright.
+        log.debug(
+            "Not disabling any Vulkan ICD: none of the %d manifest vendors could be "
+            "confirmed present in this host's device tree, so which one drives this "
+            "machine is unknown.",
+            len(vendors),
+        )
+        return None
+    best = _select_best_vendor(with_hardware)
+    if best is None:  # pragma: no cover - invariant: with_hardware is non-empty here
         return None
     return ",".join(_icds_to_disable(best, vendors))

@@ -64,6 +64,14 @@ class SkippedRole:
 
 
 @dataclass(frozen=True)
+class TightRole:
+    """A placed role whose estimate exceeds the memory on the card it landed on."""
+
+    role: WorkerRole
+    shortfall_bytes: int
+
+
+@dataclass(frozen=True)
 class PlacementView:
     """The full placement picture: GPUs, per-role placement, and whether manual."""
 
@@ -82,6 +90,10 @@ class PlacementView:
     # but the spec stays in config.toml and reapplies once it fits again, so a
     # surface has to say it is there rather than report placement as plain auto.
     rejected_spec_json: str | None = None
+    # Roles placed on a card that cannot hold them, with the shortfall in bytes.
+    # They load on demand and may fail; a view that omits this shows them as
+    # comfortably placed right up until they do.
+    tight: tuple[TightRole, ...] = ()
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -127,6 +139,10 @@ def _view(
         unplaceable=resolved.unplaceable_roles,
         manual=manual,
         spec_json=spec_json,
+        tight=tuple(
+            TightRole(role=role, shortfall_bytes=shortfall)
+            for role, shortfall in sorted(resolved.tight_roles.items(), key=lambda kv: kv[0].value)
+        ),
         skipped_not_installed=tuple(
             SkippedRole(role=role, model=ref)
             for role, ref in resolved.skipped_not_installed.items()

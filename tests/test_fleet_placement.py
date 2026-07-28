@@ -120,8 +120,10 @@ class TestPlanPlacement:
         assert plan.instances[0].devices == (0, 1)
         assert plan.instances[0].tensor_split == (21, 14)
 
-    def test_model_that_fits_nowhere_loads_tight_on_one_card(self) -> None:
-        # An oversize model still gets a server: placed tight on one card.
+    def test_model_that_fits_nowhere_loads_tight_across_every_card(self) -> None:
+        # An oversize model still gets a server, and gets every card rather than
+        # the most-free one: pinned to a card it does not fit on, the tight
+        # placement would only be a slower refusal.
         model = ModelPlacementInput(WorkerRole.CHAT, 100 * _GB)
         plan = plan_placement(
             [model],
@@ -130,10 +132,10 @@ class TestPlanPlacement:
         )
         assert len(plan.instances) == 1
         assert plan.instances[0].role is WorkerRole.CHAT
-        assert len(plan.instances[0].devices) == 1
+        assert plan.instances[0].devices == (0, 1)
         assert plan.unplaceable_roles == ()
-        # Short by its estimate minus one card's 90% headroom.
-        assert plan.tight_roles == {WorkerRole.CHAT: int(100 * _GB - 24 * _GB * 0.9)}
+        # Short by its estimate minus both cards' 90% headroom.
+        assert plan.tight_roles == {WorkerRole.CHAT: int(100 * _GB - 2 * 24 * _GB * 0.9)}
 
     def test_no_gpu_devices_places_every_role_on_cpu(self) -> None:
         # A GPU-less host (or a probe that found nothing): each role runs as a
@@ -759,8 +761,9 @@ class TestTightPlacement:
         assert plan.co_tenants == frozenset()
         assert plan.tight_roles.keys() == {WorkerRole.VISION}
 
-    def test_tight_role_lands_on_the_emptiest_card(self) -> None:
-        # Two unequal cards: the tight model takes the one with the most headroom.
+    def test_tight_role_takes_both_cards_emptiest_first(self) -> None:
+        # Two unequal cards: the tight model takes both, most-free first so the
+        # split's main device is the roomiest.
         models = [
             ModelPlacementInput(WorkerRole.EMBED, 4 * _GB),
             ModelPlacementInput(WorkerRole.VISION, 40 * _GB),
@@ -770,7 +773,7 @@ class TestTightPlacement:
         vision = next(i for i in plan.instances if i.role is WorkerRole.VISION)
         embed = next(i for i in plan.instances if i.role is WorkerRole.EMBED)
         assert embed.devices == (1,)  # most-free single placement charges card 1 first
-        assert vision.devices == (1,)  # 24GB minus embed still beats the empty 8GB card
+        assert vision.devices == (1, 0)  # both cards, the roomier one leading
         assert plan.tight_roles.keys() == {WorkerRole.VISION}
 
     def test_tight_role_drains_its_card_so_replicas_cannot_pile_on(self) -> None:

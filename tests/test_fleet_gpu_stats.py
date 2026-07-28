@@ -74,12 +74,14 @@ class TestMaskedHostsAttributeStatsToTheRightCards:
         assert _physical_index("ROCm", 0) == 1  # ROCr 1,2,3 -> HIP picks its 0 -> 1
         assert _physical_index("ROCm", 1) == 3  # HIP picks its 2 -> ROCr's third -> 3
 
-    def test_a_uuid_mask_is_left_alone_rather_than_guessed_at(self, monkeypatch) -> None:
+    def test_a_uuid_mask_yields_no_index_rather_than_a_guess(self, monkeypatch) -> None:
+        # Answering with the fleet index here reported another card's live stats
+        # as this one's, into both the GPU panel and the ingest throttle.
         from lilbee.providers.fleet.gpu_stats import _physical_index
 
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abcdef")
 
-        assert _physical_index("CUDA", 0) == 0
+        assert _physical_index("CUDA", 0) is None
 
     def test_intel_is_deliberately_not_translated(self, monkeypatch) -> None:
         """ONEAPI_DEVICE_SELECTOR is a selector grammar, not an index list."""

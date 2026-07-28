@@ -158,9 +158,9 @@ def planned_chat_ctx() -> int | None:
 
     Mirrors the fleet's own single-GPU chat sizing, so it answers before the
     engine is up: the same ``cfg.num_ctx`` short-circuit, then the same
-    :func:`resolve_chat_ctx` against the same memory read the fleet's plan
-    snapshot holds (both scale total VRAM by ``cfg.gpu_memory_fraction``, so
-    neither moves with what is currently resident).
+    :func:`resolve_chat_ctx` against the same budget the fleet sizes with, which
+    is the memory the GPU reports rather than the host's (see
+    :func:`lilbee.providers.fleet.planning.plan_sizing_budget`).
 
     A tensor-split chat is sized by the fleet against per-device headroom
     instead, so this can over-report there; it is only a fallback for a chat
@@ -169,6 +169,7 @@ def planned_chat_ctx() -> int | None:
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
+    from lilbee.providers.fleet.planning import plan_sizing_budget
     from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.model_ref import parse_model_ref
 
@@ -179,7 +180,9 @@ def planned_chat_ctx() -> int | None:
         return cfg.num_ctx
     try:
         path = resolve_model_path(ref)
-        return resolve_chat_ctx(path, read_gguf_metadata(path))
+        return resolve_chat_ctx(
+            path, read_gguf_metadata(path), available_bytes=plan_sizing_budget()
+        )
     except (ProviderError, OSError, ValueError):
         # Sizing needs the model file and its GGUF header; an absent or unreadable
         # one leaves the window unknown rather than failing the launch.

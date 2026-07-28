@@ -17,15 +17,32 @@ import pytest
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.litellm_sdk import _KIND_MESSAGES, _classify_litellm_error, _provider_error
 
+# The kinds this backend can actually raise. Kinds that only a local engine can
+# produce are excluded: a message for one here is unreachable text that reads as
+# coverage, and the fleet surfaces those in its own words.
+_SDK_KINDS = frozenset(
+    {
+        ProviderErrorKind.AUTH,
+        ProviderErrorKind.NOT_FOUND,
+        ProviderErrorKind.RATE_LIMIT,
+        ProviderErrorKind.CONTEXT_OVERFLOW,
+        ProviderErrorKind.BAD_REQUEST,
+        ProviderErrorKind.CONNECTION,
+        ProviderErrorKind.SERVER,
+    }
+)
+
 
 def test_every_actionable_kind_has_a_user_message() -> None:
     # Adding a kind without a message would silently fall back to the raw error.
-    for kind in ProviderErrorKind:
-        if kind is ProviderErrorKind.UNKNOWN:
-            assert kind not in _KIND_MESSAGES
-        else:
-            assert kind in _KIND_MESSAGES, f"{kind} has no user-facing message"
-            assert "{model}" in _KIND_MESSAGES[kind]
+    for kind in _SDK_KINDS:
+        assert kind in _KIND_MESSAGES, f"{kind} has no user-facing message"
+        assert "{model}" in _KIND_MESSAGES[kind]
+    assert ProviderErrorKind.UNKNOWN not in _KIND_MESSAGES
+
+
+def test_the_table_carries_nothing_this_backend_cannot_raise() -> None:
+    assert set(_KIND_MESSAGES) == set(_SDK_KINDS)
 
 
 def _fake_litellm() -> types.ModuleType:
