@@ -268,6 +268,42 @@ class TestEnsureFtsIndex:
         rebuild.assert_not_called()
         assert any("optimize()" in r.message for r in caplog.records)
 
+    def test_positionless_rebuild_covers_the_title_index_too(self, store, test_config):
+        """The title index carries the same positional encoding that overflows, so
+        a rebuild that skipped it would leave optimize() failing on half the store."""
+        test_config.title_search = True
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 1897296 exceeds length of values 1067891")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        rebuilt = [c for c in rebuild.call_args_list if c.kwargs.get("replace") is True]
+        assert [c.args[0] for c in rebuilt] == ["chunk", "title"]
+        assert all(c.kwargs["config"].with_position is False for c in rebuilt)
+
+    def test_positionless_rebuild_failure_leaves_the_old_index_serving(self, store, caplog):
+        """The rebuild is remediation, not a dependency: the existing index still
+        answers queries, so a failed rebuild warns rather than failing the build."""
+        import logging
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 1897296 exceeds length of values 1067891")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_index", side_effect=RuntimeError("no space")),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.ensure_fts_index()  # must not raise
+        assert any("Positionless FTS rebuild failed" in r.message for r in caplog.records)
+
     def test_first_call_creates_without_replace(self, store):
         """Fresh table goes through create_index(config=FTS()) with replace=False."""
         from lancedb.index import FTS
@@ -496,6 +532,23 @@ class TestEnsureScalarIndexes:
             store.ensure_scalar_indexes()
         warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("Scalar index create failed" in r.message for r in warns)
+
+    def test_scalar_build_skips_a_table_that_vanished_after_the_probe(self, store):
+        """ensure_scalar_indexes probes for pending work, then builds under the
+        lock; a table gone by then is skipped instead of crashing the build."""
+        store.add_chunks(_make_records())
+        assert store.open_table("no_such_table") is None
+        store._ensure_scalar_index_on("no_such_table", (("source", "BTREE"),))  # must not raise
+
+    def test_scalar_build_skips_a_column_the_table_does_not_have(self, store):
+        """Columns are re-checked at build time, so one the schema lacks is
+        skipped rather than attempted and logged as a failure."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "create_scalar_index") as spy:
+            store._ensure_scalar_index_on("chunks", (("not_a_column", "BTREE"),))
+        spy.assert_not_called()
 
     def test_search_builds_scalar_indexes_on_a_serve_only_store(self, store, test_config):
         """A store served without a fresh ingest never ran the ingest path that
