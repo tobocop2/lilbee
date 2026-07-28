@@ -554,7 +554,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Fraction of stale citations that triggers page regeneration",
+        help_text="Fraction of stale citations before a page is flagged by wiki prune / lint",
     ),
     "wiki_drift_threshold": SettingDef(
         float,
@@ -587,18 +587,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.WIKI,
         help_text="Minimum chunk mentions before an entity or concept gets its own page",
     ),
-    "wiki_concept_max_chunks_per_page": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.WIKI,
-        help_text="Maximum chunks passed into each concept or entity page generation call",
-    ),
-    "wiki_related_max": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.WIKI,
-        help_text="Maximum related concepts listed in the `## Related` section of each page",
-    ),
     "wiki_ingest_update_cap": SettingDef(
         int,
         nullable=False,
@@ -606,16 +594,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Touched-page cap for auto-update after sync. "
             "Beyond this count, run `lilbee wiki update` manually."
-        ),
-    ),
-    "wiki_summary_prompt": SettingDef(
-        str,
-        nullable=False,
-        render=RenderStyle.FULL,
-        group=SettingGroup.WIKI,
-        help_text=(
-            "Prompt for per-source summary pages. "
-            "Must keep the {source_name} and {chunks_text} placeholders."
         ),
     ),
     "wiki_synthesis_prompt": SettingDef(
