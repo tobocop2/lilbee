@@ -54,6 +54,7 @@ class IssueType(Enum):
     SOURCE_MISSING = "source_missing"
     STALE_HASH = "stale_hash"
     EXCERPT_MISSING = "excerpt_missing"
+    UNVERIFIABLE = "unverifiable"
     MODEL_CHANGED = "model_changed"
     UNMARKED_CLAIM = "unmarked_claim"
     ORPHAN = "orphan"
@@ -95,8 +96,9 @@ class LintReport:
 
 def _lint_citation(
     rec: CitationRecord,
+    store: Store,
 ) -> LintIssue | None:
-    """Check a single citation record against the filesystem.
+    """Check a single citation record against the filesystem and the chunk store.
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
     from lilbee.data.ingest.discovery import resolve_source_path_checked
@@ -131,11 +133,27 @@ def _lint_citation(
             issue_type=IssueType.STALE_HASH,
         )
 
-    source_text = source_path.read_text(encoding="utf-8", errors="replace")
-    status = verify_citation(rec, source_text)
-    if status == CitationStatus.EXCERPT_MISSING:
+    return _lint_excerpt(rec, store)
+
+
+def _lint_excerpt(rec: CitationRecord, store: Store) -> LintIssue | None:
+    """Verify a citation's excerpt against the source's extracted chunks.
+
+    Excerpts are quoted from extracted text, not from the raw file: a PDF's
+    bytes contain none of it.
+    """
+    chunk_texts = [c.chunk for c in store.get_chunks_by_source(rec["source_filename"])]
+    status = verify_citation(rec, chunk_texts)
+    if status is CitationStatus.UNVERIFIABLE:
         return LintIssue(
-            wiki_source=wiki_source,
+            wiki_source=rec["wiki_source"],
+            severity=IssueSeverity.WARNING,
+            message=f"No extracted text to verify {rec['citation_key']} against",
+            issue_type=IssueType.UNVERIFIABLE,
+        )
+    if status is CitationStatus.EXCERPT_MISSING:
+        return LintIssue(
+            wiki_source=rec["wiki_source"],
             severity=IssueSeverity.WARNING,
             message=f"Excerpt not found in source for {rec['citation_key']}",
             issue_type=IssueType.EXCERPT_MISSING,
@@ -187,7 +205,7 @@ def lint_wiki_page(
 
     citations = store.get_citations_for_wiki(wiki_source)
     for rec in citations:
-        issue = _lint_citation(rec)
+        issue = _lint_citation(rec, store)
         if issue is not None:
             issues.append(issue)
 

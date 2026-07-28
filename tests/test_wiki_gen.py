@@ -42,6 +42,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
 )
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
+from tests.conftest import make_citation
 
 
 @pytest.fixture(autouse=True)
@@ -248,11 +249,13 @@ class TestResolveCitations:
         assert records[0]["page_start"] == 3
         assert records[0]["claim_type"] == "fact"
 
-    def test_inference_when_no_excerpt(self):
+    def test_missing_excerpt_is_still_a_fact_claim(self):
+        """A footnote the model left unquoted is a parse failure, not an inference."""
         chunks = [_make_chunk("Some text")]
         parsed = [ParsedCitation("src1", "doc.md, no excerpt here", 1)]
         records = _resolve_citations(parsed, "doc.md", "hash", chunks)
-        assert records[0]["claim_type"] == "inference"
+        assert records[0]["claim_type"] == "fact"
+        assert records[0]["excerpt"] == ""
 
     def test_excerpt_not_found_gets_zero_locations(self):
         chunks = [_make_chunk("Different text entirely")]
@@ -341,28 +344,18 @@ class TestVerifyCitations:
         verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
-    def test_keeps_inference_citations(self):
-        from lilbee.data.store import CitationRecord
-
+    @pytest.mark.parametrize("claim_type", ["fact", "inference"])
+    def test_drops_citations_without_an_excerpt(self, claim_type: str):
+        """The gate has to be able to fail: an unquoted footnote verifies nothing."""
         chunks = [_make_chunk("text")]
-        recs: list[CitationRecord] = [
-            {
-                "wiki_source": "",
-                "wiki_chunk_index": 0,
-                "citation_key": "src1",
-                "claim_type": "inference",
-                "source_filename": "doc.md",
-                "source_hash": "h",
-                "page_start": 0,
-                "page_end": 0,
-                "line_start": 0,
-                "line_end": 0,
-                "excerpt": "",
-                "created_at": "now",
-            }
-        ]
-        verified = verify_citations(recs, chunks, "test", cfg)
-        assert len(verified) == 1
+        recs = [make_citation(excerpt="", claim_type=claim_type)]
+        assert verify_citations(recs, chunks, "test", cfg) == []
+
+    def test_drops_excerpt_stitched_across_two_chunks(self):
+        """Joining the chunk pool into one string would match a quote no source carries."""
+        chunks = [_make_chunk("chunk one end"), _make_chunk("start chunk two", chunk_index=1)]
+        recs = [make_citation(excerpt="chunk one end start chunk two")]
+        assert verify_citations(recs, chunks, "test", cfg) == []
 
     def test_skips_wiki_sourced_citations(self):
         from lilbee.data.store import CitationRecord
@@ -739,6 +732,11 @@ class TestFindExcerptSource:
         chunks = {"a.md": [_make_chunk("Unrelated")]}
         assert _find_excerpt_source("Missing text", chunks) == ""
 
+    def test_matches_across_whitespace_differences(self):
+        """Attribution uses the verification rule, so a re-wrapped quote still resolves."""
+        chunks = {"a.md": [_make_chunk("Beta\n   content here", source="a.md")]}
+        assert _find_excerpt_source("Beta content here", chunks) == "a.md"
+
 
 class TestResolveMultiSourceCitations:
     def test_resolves_to_correct_source(self):
@@ -770,7 +768,9 @@ class TestResolveMultiSourceCitations:
         )
         assert records[0]["source_filename"] == "a.md"
 
-    def test_falls_back_to_first_source(self):
+    def test_drops_unattributable_citation(self, caplog: pytest.LogCaptureFixture):
+        """Defaulting to the first source would invent the provenance."""
+        caplog.set_level("WARNING", logger="lilbee.wiki.citations")
         parsed = [ParsedCitation("src1", 'excerpt: "Not found anywhere"', 1)]
         records = resolve_multi_source_citations(
             parsed,
@@ -778,7 +778,8 @@ class TestResolveMultiSourceCitations:
             {},
             {},
         )
-        assert records[0]["source_filename"] == "fallback.md"
+        assert records == []
+        assert any("Dropping citation src1" in r.message for r in caplog.records)
 
 
 def _synthesis_wiki_text(sources: list[str], topic: str | None = None) -> str:
@@ -940,7 +941,8 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
-    def test_inference_citations_pass_verification(self, tmp_path: Path):
+    def test_excerpt_free_footnotes_do_not_publish(self, tmp_path: Path):
+        """A page whose only footnote quotes nothing has nothing verified to publish on."""
         sources = ["a.md"]
         (tmp_path / "documents" / "a.md").write_text("Fact from a.md.")
         chunks_by_source = {"a.md": [_make_chunk("Fact from a.md.", source="a.md")]}
@@ -962,8 +964,8 @@ class TestGenerateSynthesisPage:
             store,
             cfg,
         )
-        assert result is not None
-        store.add_citations.assert_called_once()
+        assert result is None
+        store.add_citations.assert_not_called()
 
 
 class _FakeClusterer:
