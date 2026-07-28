@@ -11,6 +11,7 @@ import pytest
 from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.core.text import make_slug
 from lilbee.data.store import ChunkType, SearchChunk, Store
+from lilbee.data.store.core import _check_vector_dims
 from lilbee.wiki.batch import (
     _group_chunks_by_page,
     _unwrap_archived_links,
@@ -101,22 +102,22 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
     return SearchChunk(**defaults)
 
 
-def _mock_provider(
-    wiki_text: str,
-    faith_score: str = "0.85",
-    capabilities: list[str] | None = None,
-) -> MagicMock:
+def _mock_provider(wiki_text: str) -> MagicMock:
+    """Provider whose single chat call returns *wiki_text*."""
     from lilbee.providers.base import ChatResult, FinishReason
 
-    def _result(text: str) -> ChatResult:
-        return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
-
     provider = MagicMock()
-    provider.chat.side_effect = [_result(wiki_text), _result(faith_score)]
-    provider.get_capabilities.return_value = (
-        list(capabilities) if capabilities is not None else ["completion"]
+    provider.chat.return_value = ChatResult(
+        text=wiki_text, tool_calls=(), finish_reason=FinishReason.STOP
     )
+    provider.get_capabilities.return_value = ["completion"]
     return provider
+
+
+def _orthogonal_body_vector() -> list[float]:
+    """A body vector whose cosine against the uniform chunk vectors is <= 0."""
+    half = cfg.embedding_dim // 2
+    return [1.0] * half + [-1.0] * (cfg.embedding_dim - half)
 
 
 def _mock_store() -> MagicMock:
@@ -828,8 +829,9 @@ class TestGenerateSynthesisPage:
         )
         assert result is not None
         assert result.exists()
-        assert "synthesis" in str(result)
+        assert WikiSubdir.SYNTHESIS in result.parts
         assert result.name == "gradual-typing.md"
+        provider.chat.assert_called_once()
         content = result.read_text()
         assert f"generated_by: {cfg.chat_model}" in content
         assert 'sources: ["a.md", "b.md", "c.md"]' in content
@@ -839,16 +841,21 @@ class TestGenerateSynthesisPage:
         assert "faithfulness_score: 1.00" in content
         store.replace_citations_for_wiki.assert_called_once()
 
-    def test_low_score_goes_to_drafts(self, tmp_path: Path):
+    def test_low_score_goes_to_drafts(self, tmp_path: Path, monkeypatch):
+        """A body that does not resemble its sources routes to drafts, not synthesis."""
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
             (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
+
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [_orthogonal_body_vector()]
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
 
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
         wiki_text = _synthesis_wiki_text(sources)
-        provider = _mock_provider(wiki_text, faith_score="0.3")
+        provider = _mock_provider(wiki_text)
         store = _mock_store()
 
         result = generate_synthesis_page(
@@ -860,7 +867,8 @@ class TestGenerateSynthesisPage:
             cfg,
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
+        assert WikiSubdir.SYNTHESIS not in result.parts
 
     def test_no_chunks_returns_none(self):
         provider = MagicMock()
@@ -928,7 +936,7 @@ class TestGenerateSynthesisPage:
             cfg,
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
 
     def test_llm_returns_empty_string(self, tmp_path: Path):
         chunks_by_source = {"a.md": [_make_chunk("text", source="a.md")]}
@@ -1026,7 +1034,7 @@ class TestGenerateSynthesisPages:
             _make_chunk(f"Fact from {name}.", source=name)
         ]
 
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         clusterer = _FakeClusterer(
             [
@@ -1041,7 +1049,7 @@ class TestGenerateSynthesisPages:
         result = generate_synthesis_pages(provider, store, clusterer)
         assert len(result) == 1
         assert result[0].exists()
-        assert "synthesis" in str(result[0]) or "drafts" in str(result[0])
+        assert WikiSubdir.SYNTHESIS in result[0].parts
 
     def test_failed_page_generation_omitted(self, tmp_path: Path):
         from lilbee.retrieval.clustering import SourceCluster
@@ -1256,7 +1264,7 @@ class TestSynthesisDriftDetection:
             "gradual typing", sources, chunks_by_source, provider, store, cfg
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
 
@@ -1405,6 +1413,22 @@ class TestWikiIndexing:
 
         _assert_cleared(store, target.wiki_source)
         store.replace_chunks.assert_not_called()
+
+    def test_wrong_dimension_vectors_hit_the_store_dimension_gate(self):
+        """Wiki rows embedded at the wrong width fail loudly instead of being written."""
+        store = MagicMock(spec=Store)
+        store.replace_chunks.side_effect = lambda records, predicate: _check_vector_dims(
+            records, cfg.embedding_dim
+        )
+        target = self._target()
+        services = self._services_mock(vector_dim=cfg.embedding_dim + 1)
+
+        with (
+            patch("lilbee.wiki.page.get_services", return_value=services),
+            patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
+            pytest.raises(ValueError, match="Vector dimension mismatch"),
+        ):
+            index_wiki_page(self._content("body"), target.wiki_source, store)
 
     def test_embedding_runs_before_any_store_write(self):
         """No crash window empties the page: chunking and embedding finish before the

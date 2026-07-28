@@ -1,4 +1,4 @@
-"""Coverage for chat + wiki flows after migration to TaskBarController.start_task.
+"""Coverage for the chat screen's TaskBarController-backed flows.
 
 These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 ``_run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
@@ -52,8 +52,9 @@ async def test_reporter_task_id_property_exposes_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_success_exception_is_swallowed() -> None:
-    """An exception raised inside on_success must not propagate."""
+async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
+    """An on_success failure leaves the task DONE and is reported in the log."""
+    caplog.set_level("WARNING", logger="lilbee.cli.tui.widgets.task_bar_controller")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await await_chat(app, pilot)
@@ -66,9 +67,16 @@ async def test_on_success_exception_is_swallowed() -> None:
         for _ in range(20):
             await pilot.pause()
             task = controller.queue.get_task(task_id)
-            if task is not None and task.status == TaskStatus.DONE:
+            swallowed = any("on_success" in r.message for r in caplog.records)
+            if task is not None and task.status == TaskStatus.DONE and swallowed:
                 break
-        # Test passes as long as we didn't blow up.
+
+    task = controller.queue.get_task(task_id)
+    assert task is not None
+    assert task.status == TaskStatus.DONE
+    raised = [r for r in caplog.records if "on_success" in r.message]
+    assert raised, "the swallowed on_success failure was never logged"
+    assert "boom" in raised[0].exc_text
 
 
 @pytest.mark.asyncio

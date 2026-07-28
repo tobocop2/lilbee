@@ -80,12 +80,14 @@ def stub_embedder(monkeypatch):
     return svc
 
 
-def _mock_batch_provider(text: str) -> MagicMock:
+def _mock_batch_provider(text: str, *, truncated: bool = False) -> MagicMock:
     from lilbee.providers.base import ChatResult, FinishReason
 
     provider = MagicMock()
     provider.chat.return_value = ChatResult(
-        text=text, tool_calls=(), finish_reason=FinishReason.STOP
+        text=text,
+        tool_calls=(),
+        finish_reason=FinishReason.LENGTH if truncated else FinishReason.STOP,
     )
     provider.get_capabilities.return_value = []
     return provider
@@ -316,6 +318,33 @@ class TestGenerateSourceBatchEdgeCases:
         assert any("empty response" in r.message for r in caplog.records)
         marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry.md"
         assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
+    def test_truncated_citation_block_publishes_nothing(self, stub_embedder):
+        """A response cut at max_tokens loses the shared citation block, so every
+        section it carried becomes a PENDING marker rather than an uncited page."""
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        entities = [
+            _entity("henry-ford", "Henry Ford", ["s.txt"]),
+            _entity("ford-motor", "Ford Motor", ["s.txt"]),
+        ]
+        text = _section("Henry Ford") + _section("Ford Motor") + "\n\n---\n<!-- citations (auto-"
+        provider = _mock_batch_provider(text, truncated=True)
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=entities,
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        for slug in ("henry-ford", "ford-motor"):
+            marker = wiki_root / WikiSubdir.DRAFTS / f"{slug}.md"
+            assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+        assert not (wiki_root / WikiSubdir.ENTITIES).exists()
 
     def test_section_failing_the_citation_gate_leaves_a_pending_marker(self, stub_embedder):
         """A parsed section dropped by a downstream gate is not silently lost."""

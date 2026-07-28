@@ -511,17 +511,43 @@ def allocate_server_port() -> int:
         return int(s.getsockname()[1])
 
 
-def wait_for_server(url: str, timeout: float) -> None:
+def session_token(env: dict[str, str]) -> str | None:
+    """Bearer token of a server spawned with *env*, or None before it boots.
+
+    ``lilbee serve`` writes the token to ``<data>/data/server.json`` during
+    startup, so callers re-read it per attempt rather than caching one read.
+    """
+    data = env.get("LILBEE_DATA")
+    if data is None:
+        return None
+    try:
+        payload = json.loads((Path(data) / "data" / "server.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    token = payload.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def auth_headers(env: dict[str, str]) -> dict[str, str]:
+    """Authorization header for a running server; empty while its token is absent."""
+    token = session_token(env)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def wait_for_server(url: str, timeout: float, env: dict[str, str]) -> None:
     """Block until ``url`` returns 200, swallowing the four ``httpx``
     transport errors that fire during cold-start on slow runners. Raises
     ``TimeoutError`` with the last transport error attached when the
     deadline elapses.
+
+    Every route including health is token-gated, so each attempt carries
+    the token once the booting server has written it.
     """
     deadline = time.monotonic() + timeout
     last_err: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            response = httpx.get(url, timeout=2.0)
+            response = httpx.get(url, timeout=2.0, headers=auth_headers(env))
         except (
             httpx.ConnectError,
             httpx.ConnectTimeout,
@@ -566,7 +592,7 @@ def serve_lilbee_with(
     )
     try:
         try:
-            wait_for_server(f"{base_url}/api/health", timeout=boot_timeout)
+            wait_for_server(f"{base_url}/api/health", timeout=boot_timeout, env=env)
         except TimeoutError as exc:
             proc.terminate()
             stdout, stderr = proc.communicate(timeout=_SERVER_TEARDOWN_GRACE)
