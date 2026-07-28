@@ -110,6 +110,24 @@ class TestWriteLockDir:
             assert (test_config.lancedb_dir / ".lock").exists()
 
 
+class _TableProxy:
+    """Table proxy running *on_delete* in place of ``delete``; other calls pass through."""
+
+    def __init__(self, table, on_delete):
+        self._table = table
+        self._on_delete = on_delete
+
+    def delete(self, predicate):
+        self._on_delete(predicate)
+
+    def __getattr__(self, name):
+        return getattr(self._table, name)
+
+
+def _raising_delete(predicate):
+    raise RuntimeError("delete failed")
+
+
 class TestClearAndAdd:
     def test_replaces_rows_atomically(self, store):
         import pyarrow as pa
@@ -131,26 +149,37 @@ class TestClearAndAdd:
         locked_during: list[bool] = []
         import lilbee.data.store.core as core_mod
 
-        real = core_mod._safe_delete_unlocked
+        real = core_mod.ensure_table
 
-        def spy_delete(table, predicate):
-            locked_during.append(_write_mutex.locked())
-            return real(table, predicate)
+        def spying_table(db, name, table_schema):
+            table = real(db, name, table_schema)
 
-        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", spy_delete)
+            def on_delete(predicate):
+                locked_during.append(_write_mutex.locked())
+                table.delete(predicate)
+
+            return _TableProxy(table, on_delete)
+
+        monkeypatch.setattr(core_mod, "ensure_table", spying_table)
         store.clear_and_add("t_lock", schema, [{"concept": "next"}], "concept IS NOT NULL")
         assert locked_during == [True]  # delete ran under the write lock
 
-    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+    def test_delete_failure_propagates_without_adding(self, store, monkeypatch):
+        """Swallowing it would add rows over stale ones and report success."""
         import pyarrow as pa
 
         import lilbee.data.store.core as core_mod
 
         schema = pa.schema([pa.field("concept", pa.utf8())])
         store.clear_and_add("t_fail", schema, [{"concept": "old"}], "concept IS NOT NULL")
-        # A failed delete must not add the new rows (would duplicate the stale ones).
-        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
-        store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
+        real = core_mod.ensure_table
+        monkeypatch.setattr(
+            core_mod,
+            "ensure_table",
+            lambda db, name, s: _TableProxy(real(db, name, s), _raising_delete),
+        )
+        with pytest.raises(RuntimeError, match="delete failed"):
+            store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
         rows = store.open_table("t_fail").search().to_list()
         assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
 
@@ -184,13 +213,14 @@ class TestReplaceChunks:
 
         assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
 
-    def test_skips_add_when_delete_fails(self, store, monkeypatch):
-        import lilbee.data.store.core as core_mod
-
+    def test_delete_failure_propagates_without_adding(self, store, monkeypatch):
+        """The caller has to see it: a wiki page whose rows were not swapped is stale."""
         store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
-        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
+        real = store._chunks_table
+        monkeypatch.setattr(store, "_chunks_table", lambda: _TableProxy(real(), _raising_delete))
 
-        assert store.replace_chunks(_make_records(1, chunk_type=ChunkType.WIKI), "1 = 1") == 0
+        with pytest.raises(RuntimeError, match="delete failed"):
+            store.replace_chunks(_make_records(1, chunk_type=ChunkType.WIKI), "1 = 1")
         assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
 
 

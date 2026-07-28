@@ -462,6 +462,17 @@ class TestVerifyCitations:
         recs = [make_citation(excerpt="chunk one end start chunk two")]
         assert verify_citations(recs, chunks, "test", cfg) == []
 
+    @pytest.mark.parametrize(("source_filename", "kept"), [("a.md", 1), ("b.md", 0)])
+    def test_verifies_against_the_source_the_record_names(self, source_filename: str, kept: int):
+        """Lint and accept check the named source's chunks; build has to agree, or a
+        footnote crediting b.md for a quote only a.md carries publishes as valid."""
+        chunks = [
+            _make_chunk("Ford built the Model T.", source="a.md"),
+            _make_chunk("Chevrolet built the Bel Air.", source="b.md"),
+        ]
+        recs = [make_citation(source_filename=source_filename, excerpt="Ford built the Model T.")]
+        assert len(verify_citations(recs, chunks, "test", cfg)) == kept
+
     def test_skips_wiki_sourced_citations(self):
         chunks = [_make_chunk("text")]
         recs: list[CitationRecord] = [
@@ -989,6 +1000,59 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
+    # Only a.md carries this sentence, and it names no source file, so the ref's
+    # attribution is decided by the filename the footnote spells out.
+    _A_QUOTE = "Ford built the Model T."
+
+    @staticmethod
+    def _cross_source_text(cited_source: str) -> str:
+        """A synthesis body quoting a.md in a footnote attributed to *cited_source*."""
+        return (
+            "# gradual typing\n\nThis page is about gradual typing.\n\n"
+            f"> {TestGenerateSynthesisPage._A_QUOTE}[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: {cited_source}, excerpt: "{TestGenerateSynthesisPage._A_QUOTE}"'
+        )
+
+    @classmethod
+    def _two_source_chunks(cls, tmp_path: Path) -> dict[str, list[SearchChunk]]:
+        bodies = {"a.md": cls._A_QUOTE, "b.md": "Chevrolet built the Bel Air."}
+        for name, body in bodies.items():
+            (tmp_path / "documents" / name).write_text(body)
+        return {name: [_make_chunk(body, source=name)] for name, body in bodies.items()}
+
+    def test_a_footnote_naming_the_wrong_cluster_source_does_not_publish(self, tmp_path: Path):
+        """The name in the ref decides attribution, so a b.md footnote quoting a.md
+        verifies nothing: publishing it would give the page b.md's hash, a zeroed
+        location, and an EXCERPT_MISSING the moment lint runs."""
+        chunks_by_source = self._two_source_chunks(tmp_path)
+        provider = _mock_provider(self._cross_source_text("b.md"))
+        store = _mock_store()
+
+        result = generate_synthesis_page(
+            "gradual typing", ["a.md", "b.md"], chunks_by_source, provider, store, cfg
+        )
+        assert result is None
+        store.replace_citations_for_wiki.assert_not_called()
+
+    def test_a_published_citation_still_verifies_at_accept(self, tmp_path: Path):
+        """Same body, correctly attributed: it publishes, and the record it wrote
+        survives the re-verification accept runs, so the two gates agree."""
+        from lilbee.wiki.drafts import _keeps_provenance
+
+        chunks_by_source = self._two_source_chunks(tmp_path)
+        provider = _mock_provider(self._cross_source_text("a.md"))
+        store = _mock_store()
+
+        result = generate_synthesis_page(
+            "gradual typing", ["a.md", "b.md"], chunks_by_source, provider, store, cfg
+        )
+        assert result is not None
+        records = store.replace_citations_for_wiki.call_args.args[1]
+        assert [r["source_filename"] for r in records] == ["a.md"]
+        assert all(_keeps_provenance(rec, chunks_by_source, "gradual-typing") for rec in records)
+
     def test_faithfulness_failure_uses_zero(self, tmp_path: Path, _stub_wiki_index_services):
         """Body-embedding failure routes to drafts (score 0.0)."""
         sources = ["a.md"]
@@ -1290,6 +1354,7 @@ class TestWritePageDrift:
             self._page(body, "2026-07-28T12:00:00+00:00"),
             0.0,
             ["a.md"],
+            WikiSubdir.CONCEPTS,
         )
         assert result == page
 
@@ -1312,6 +1377,7 @@ class TestWritePageDrift:
             self._page("# Brakes\n\nfresh body", "2026-07-28T12:00:00+00:00"),
             0.3,
             ["a.md"],
+            WikiSubdir.CONCEPTS,
         )
         assert not stale.exists()
 
@@ -1335,6 +1401,7 @@ class TestWritePageDrift:
             self._page("# Ford\n\nentity body", "2026-07-28T12:00:00+00:00"),
             0.3,
             ["b.md"],
+            WikiSubdir.ENTITIES,
         )
         assert other.is_file()
         assert "Ford the concept" in other.read_text()
@@ -1348,6 +1415,7 @@ class TestWritePageDrift:
             self._page("# Brakes\n\nlow score body", "2026-07-28T12:00:00+00:00"),
             0.3,
             ["a.md"],
+            WikiSubdir.CONCEPTS,
         )
         assert result.is_file()
 
@@ -1365,7 +1433,13 @@ class TestWritePageToDrafts:
 
     def _write(self, wiki_root: Path, body: str, sources: list[str]) -> Path:
         return write_page(
-            wiki_root, WikiSubdir.DRAFTS, "brakes", self._page(body, sources), 0.3, sources
+            wiki_root,
+            WikiSubdir.DRAFTS,
+            "brakes",
+            self._page(body, sources),
+            0.3,
+            sources,
+            WikiSubdir.CONCEPTS,
         )
 
     def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
@@ -1386,7 +1460,10 @@ class TestWritePageToDrafts:
         assert second != first
         assert second.name.startswith("brakes-collision-")
         assert "from a" in first.read_text()
-        assert PENDING_MARKER_KEYWORD_COLLISION in second.read_text()
+        marker = second.read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in marker
+        # The page type it would have published to, for an unpaired accept.
+        assert f"origin: {WikiSubdir.CONCEPTS}" in marker
 
     def test_a_pending_marker_at_the_slug_is_claimed(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"

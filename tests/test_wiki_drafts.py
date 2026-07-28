@@ -15,6 +15,7 @@ from lilbee.wiki.drafts import (
     DraftInfo,
     PendingKind,
     StaleDraftError,
+    UnindexedDraftError,
     UnverifiedDraftError,
     _base_slug_for_collision,
     accept_draft,
@@ -22,7 +23,7 @@ from lilbee.wiki.drafts import (
     list_drafts,
     reject_draft,
 )
-from lilbee.wiki.persistence import divert_to_drafts
+from lilbee.wiki.persistence import divert_concept_collision, divert_to_drafts
 from lilbee.wiki.prune import prune_wiki
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
@@ -559,6 +560,58 @@ class TestAcceptCrashSafety:
         # Published page was updated (first write), but the draft
         # survives so the user can re-run accept once the indexer is back.
         assert (wiki_root / WikiSubdir.DRAFTS / "x.md").is_file()
+
+
+class TestAcceptAbortsBeforeConsumingTheDraft:
+    """A failed store step must leave the draft on disk, not report success over it."""
+
+    def test_a_failed_citation_replace_keeps_the_draft(self, tmp_path: Path) -> None:
+        """The store propagates a failed delete, so accept never reaches the unlink."""
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+        store.replace_citations_for_wiki.side_effect = RuntimeError("delete failed")
+
+        with pytest.raises(RuntimeError, match="delete failed"):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+
+    def test_a_body_that_indexed_no_chunks_keeps_the_draft(self, tmp_path: Path) -> None:
+        """An accepted body always chunks to at least one row, so zero is a failed step."""
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+
+        with (
+            patch("lilbee.wiki.drafts.index_wiki_page", return_value=0),
+            pytest.raises(UnindexedDraftError, match="no searchable chunks"),
+        ):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+
+
+class TestUnpairedCollisionAccept:
+    """A collision draft carries its origin, so accepting it restores its page type."""
+
+    def test_accepts_into_the_origin_subdir_from_the_marker(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        path = divert_concept_collision(
+            slug="brakes",
+            source="b.md",
+            first_source="a.md",
+            content=_cited_draft(),
+            drafts_dir=wiki_root / WikiSubdir.DRAFTS,
+            origin_subdir=WikiSubdir.CONCEPTS,
+        )
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft(path.stem, wiki_root, store, cfg)
+        assert result.moved_to == wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        assert not (wiki_root / WikiSubdir.SUMMARIES / "brakes.md").exists()
 
 
 class TestListDraftsWithOnlyDriftMarker:

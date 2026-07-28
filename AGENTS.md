@@ -544,8 +544,10 @@ See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the full
 ## Wiki Conventions
 
 lilbee's wiki layer is modelled after Karpathy's LLM Wiki: concept and
-entity pages that compound across sources rather than one page per
-document. The layout under `$data_root/$wiki_dir/` is:
+entity pages rather than one page per document, each written and cited
+from the source that mentions it most, with coverage across sources
+coming from synthesis pages and the `[[wiki link]]` graph. The layout
+under `$data_root/$wiki_dir/` is:
 
 ```
 concepts/    one page per LLM-curated concept from the source (e.g. braking-systems.md)
@@ -610,8 +612,8 @@ reads from the enum, so no update needed there).
 group in `core/config/model.py` and `app/settings_map.py`. Prefix with `wiki_`
 (for module-level behaviour) or `wiki_concept_` / `wiki_entity_`
 (for strategy-scoped knobs). Use `ConfigField(writable=True)` so the
-setting appears in `/settings`, the HTTP `/set` route, and
-`LILBEE_*` env vars.
+setting appears in `/settings`, `PATCH /api/config`, the MCP
+`settings_set` tool, and `LILBEE_*` env vars.
 
 **Writing to log.md**. Use `append_wiki_log(action, details)` from
 `wiki/index.py` with a `WikiLogAction` member from `wiki/shared.py`
