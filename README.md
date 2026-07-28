@@ -19,6 +19,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-6e6a86?style=flat-square&labelColor=191724" alt="License: MIT"></a>
   <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-c4a7e7?logo=obsidian&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Obsidian community plugin"></a>
   <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
+  <a href="https://mcptoplist.com/server/glama%2Ftobocop2%2Flilbee"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fmcptoplist.com%2Fbadge%2Fglama%252Ftobocop2%252Flilbee.svg&search=Top%20(%5B0-9%5D%2B%25%20of%20%5B0-9,%5D%2B)&replace=Top%20%241&label=MCP%20Toplist&labelColor=191724&color=ebbcba&style=flat-square" alt="MCP Toplist rank"></a>
   <a href="https://web.libera.chat/#lilbee"><img src="https://img.shields.io/badge/IRC-%23lilbee%20on%20Libera.Chat-f6c177?logo=liberadotchat&logoColor=f6c177&style=flat-square&labelColor=191724" alt="#lilbee on Libera.Chat"></a>
 </p>
 
