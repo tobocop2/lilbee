@@ -24,6 +24,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     atomic_write_text,
 )
+from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -151,17 +152,20 @@ def persist_and_finalize(
     source_names: list[str],
     store: Store,
     config: Config,
+    *,
+    stats: BuildStats | None = None,
 ) -> Path:
     """Write page to disk, persist citations, index body chunks, update index and log.
 
     Only a published page carries store state: a page routed to ``drafts/``
     (drift diversion or a failed quality gate) is written and logged, then
     returns. Its citations, chunks, and the raw sources it would supersede stay
-    untouched until the draft is accepted.
+    untouched until the draft is accepted. Every outcome is recorded on *stats*.
     """
     # circular: page -> persistence via persist_and_finalize
     from lilbee.wiki.page import index_wiki_page, write_page
 
+    stats = BuildStats.ensure(stats)
     page_path = write_page(
         target.wiki_root,
         target.subdir,
@@ -172,6 +176,7 @@ def persist_and_finalize(
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
+        stats.record_drafted()
         append_wiki_log(
             WikiLogAction.GENERATED,
             f"{target.page_type} page for {target.label} drifted; diverted to draft "
@@ -181,6 +186,7 @@ def persist_and_finalize(
         return page_path
 
     if target.subdir == WikiSubdir.DRAFTS:
+        stats.record_drafted()
         append_wiki_log(
             WikiLogAction.GENERATED,
             f"{target.page_type} page for {target.label} held in "
@@ -189,6 +195,7 @@ def persist_and_finalize(
         )
         return page_path
 
+    stats.record_published(target.wiki_source, len(verified))
     for rec in verified:
         rec["wiki_source"] = target.wiki_source
     store.replace_citations_for_wiki(target.wiki_source, verified)

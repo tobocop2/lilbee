@@ -24,11 +24,17 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
+from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
 
 runner = CliRunner()
 
 _SYNC_NOOP = SyncResult()
+
+
+def _stub_build_summary(paths: list[str], count: int) -> dict:
+    """``run_full_build`` result shape for tests that stub the whole run."""
+    return {"paths": paths, "entities": 0, "count": count, "stats": BuildStats().as_dict()}
 
 
 def _mock_stream(*texts: str):
@@ -2992,6 +2998,14 @@ class TestWikiSynthesize:
         data = json.loads(result.output)
         assert data["command"] == "wiki_synthesize"
         assert data["count"] == 1
+        assert data["stats"]["pages_generated"] == 0
+
+    def test_prints_what_the_gates_did(self, mock_svc, isolated_env, monkeypatch):
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: [])
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "No synthesis pages" in result.output
+        assert "0 published, 0 drafted, 0 markers, 0/0 citations verified" in result.output
 
     def test_wiki_disabled_exits_nonzero(self, mock_svc, isolated_env):
         cfg.wiki = False
@@ -3023,7 +3037,7 @@ class TestWikiBuild:
     def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
         monkeypatch.setattr(
             "lilbee.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+            lambda *a, **kw: _stub_build_summary([], 0),
         )
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
@@ -3033,7 +3047,7 @@ class TestWikiBuild:
         out = isolated_env / "wiki" / "concepts" / "braking.md"
         monkeypatch.setattr(
             "lilbee.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [str(out)], "entities": 0, "count": 1},
+            lambda *a, **kw: _stub_build_summary([str(out)], 1),
         )
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
@@ -3044,7 +3058,7 @@ class TestWikiBuild:
         out = isolated_env / "wiki" / "entities" / "henry-ford.md"
         monkeypatch.setattr(
             "lilbee.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [str(out)], "entities": 0, "count": 1},
+            lambda *a, **kw: _stub_build_summary([str(out)], 1),
         )
         result = runner.invoke(app, ["--json", "wiki", "build"])
         assert result.exit_code == 0
@@ -3052,6 +3066,23 @@ class TestWikiBuild:
         assert data["command"] == "wiki_build"
         assert data["count"] == 1
         assert data["entities"] == 0
+        assert data["stats"] == BuildStats().as_dict()
+
+    def test_prints_what_the_gates_did(self, mock_svc, isolated_env, monkeypatch):
+        """Every build reports its gate outcomes, including a run that published nothing."""
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/braking.md", 2)
+        stats.record_drafted()
+        stats.record_pending_marker()
+        stats.record_citations(rendered=2, dropped=1)
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0, "stats": stats.as_dict()},
+        )
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 0
+        assert "No concept or entity pages" in result.output
+        assert "1 published, 1 drafted, 1 markers, 2/3 citations verified" in result.output
 
     def test_status_counts_all_content_pages(self, mock_svc, isolated_env):
         """wiki status pages counts every content subdir (1 summary + 2 concepts),
@@ -3075,7 +3106,7 @@ class TestWikiBuild:
         """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
         monkeypatch.setattr(
             "lilbee.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+            lambda *a, **kw: _stub_build_summary([], 0),
         )
         result = runner.invoke(app, ["wiki", "update"])
         assert result.exit_code == 0

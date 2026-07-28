@@ -42,6 +42,7 @@ from lilbee.wiki.shared import (
     WikiLogAction,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats, BuildStatsDict
 from lilbee.wiki.synthesis import (
     generate_source_batch,
     generate_synthesis_page,
@@ -59,6 +60,7 @@ def _generate_for_cluster(
     provider: LLMProvider,
     store: Store,
     config: Config,
+    stats: BuildStats,
 ) -> Path | None:
     """Gather chunks for a cluster and generate a synthesis page."""
     source_names = sorted(sources)
@@ -71,7 +73,9 @@ def _generate_for_cluster(
     if len(chunks_by_source) < MIN_CLUSTER_SOURCES:
         return None
 
-    return generate_synthesis_page(label, source_names, chunks_by_source, provider, store, config)
+    return generate_synthesis_page(
+        label, source_names, chunks_by_source, provider, store, config, stats
+    )
 
 
 def generate_synthesis_pages(
@@ -80,10 +84,12 @@ def generate_synthesis_pages(
     clusterer: SourceClusterer,
     config: Config | None = None,
     on_progress: DetailedProgressCallback = noop_callback,
+    stats: BuildStats | None = None,
 ) -> list[Path]:
     """Generate synthesis pages for source clusters spanning 3+ documents."""
     if config is None:
         config = cfg
+    stats = BuildStats.ensure(stats)
 
     clusters = clusterer.get_clusters(min_sources=MIN_CLUSTER_SOURCES)
     if not clusters:
@@ -93,7 +99,7 @@ def generate_synthesis_pages(
     on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=len(clusters)))
     pages: list[Path] = []
     for index, cluster in enumerate(clusters, start=1):
-        page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config)
+        page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config, stats)
         if page is not None:
             pages.append(page)
         on_progress(
@@ -222,6 +228,7 @@ def build_wiki(
     *,
     extract_concepts: bool = True,
     on_progress: DetailedProgressCallback = noop_callback,
+    stats: BuildStats | None = None,
 ) -> list[Path]:
     """Produce entity and LLM-curated concept pages per source.
 
@@ -243,6 +250,7 @@ def build_wiki(
     """
     if config is None:
         config = cfg
+    stats = BuildStats.ensure(stats)
     wiki_root = config.data_root / config.wiki_dir
     archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
 
@@ -270,6 +278,7 @@ def build_wiki(
                 config=config,
                 extract_concepts=source_extract,
                 written_concept_slugs=written_concept_slugs,
+                stats=stats,
             )
             pages.extend(source_pages)
         else:
@@ -302,6 +311,7 @@ class WikiBuildSummary(TypedDict):
     paths: list[str]
     entities: int
     count: int
+    stats: BuildStatsDict
 
 
 class WikiEntityCandidate(TypedDict):
@@ -360,6 +370,7 @@ def run_full_build(
     """
     if config is None:
         config = cfg
+    stats = BuildStats()
     with WIKI_BUILD_LOCK:
         svc = get_services()
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
@@ -372,14 +383,19 @@ def run_full_build(
             config,
             extract_concepts=config.wiki_extract_concepts,
             on_progress=on_progress,
+            stats=stats,
         )
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.INDEX))
         update_wiki_index()
-        append_wiki_log(WikiLogAction.BUILD, f"{len(pages)} pages from {len(entities)} records")
+        append_wiki_log(
+            WikiLogAction.BUILD,
+            f"{len(pages)} pages from {len(entities)} records; {stats.summary_line()}",
+        )
     return {
         "paths": [str(p) for p in pages],
         "entities": len(entities),
         "count": len(pages),
+        "stats": stats.as_dict(),
     }
 
 
@@ -388,6 +404,7 @@ class WikiSynthesizeSummary(TypedDict):
 
     paths: list[str]
     count: int
+    stats: BuildStatsDict
 
 
 def run_full_synthesize(
@@ -400,12 +417,19 @@ def run_full_synthesize(
     """
     if config is None:
         config = cfg
+    stats = BuildStats()
     svc = get_services()
     with WIKI_BUILD_LOCK:
         paths = generate_synthesis_pages(
-            svc.provider, svc.store, svc.clusterer, config, on_progress
+            svc.provider, svc.store, svc.clusterer, config, on_progress, stats
+        )
+        append_wiki_log(
+            WikiLogAction.SYNTHESIZE,
+            f"{len(paths)} synthesis pages; {stats.summary_line()}",
+            config,
         )
     return {
         "paths": [str(p) for p in paths],
         "count": len(paths),
+        "stats": stats.as_dict(),
     }

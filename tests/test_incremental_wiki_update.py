@@ -162,6 +162,27 @@ class TestIncrementalWikiUpdate:
         assert "changed.txt" in log_path.read_text()
 
     @pytest.mark.asyncio
+    async def test_ingest_log_entry_reports_what_the_gates_did(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """An auto-update is a run like any other, so its log line carries the numbers."""
+        cfg.wiki_ingest_update_cap = 10
+        touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])
+        _install_service_stubs(monkeypatch, [touched])
+        page = _isolated_wiki / "wiki" / "concepts" / "braking.md"
+
+        def fake_build(entities, provider, store, config, *, extract_concepts, stats):
+            stats.record_published("wiki/concepts/braking.md", 2)
+            stats.record_pending_marker()
+            stats.record_citations(rendered=2, dropped=1)
+            return [page]
+
+        with patch("lilbee.wiki.build_wiki", side_effect=fake_build):
+            await incremental_update({"changed.txt"})
+        log_text = (_isolated_wiki / "wiki" / "log.md").read_text()
+        assert "1 published, 0 drafted, 1 markers, 2/3 citations verified" in log_text
+
+    @pytest.mark.asyncio
     async def test_returns_when_no_entities_touched(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:

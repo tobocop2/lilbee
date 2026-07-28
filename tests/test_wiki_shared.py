@@ -254,7 +254,9 @@ class TestWikiBuildMutex:
 
         held: list[bool] = []
 
-        def fake_build_wiki(entities, provider, store, config, *, extract_concepts, on_progress):
+        def fake_build_wiki(
+            entities, provider, store, config, *, extract_concepts, on_progress, stats
+        ):
             held.append(WIKI_BUILD_LOCK.locked())
             return []
 
@@ -281,7 +283,7 @@ class TestWikiBuildMutex:
 
         held: list[bool] = []
 
-        def fake_generate(provider, store, clusterer, config, on_progress):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats):
             held.append(WIKI_BUILD_LOCK.locked())
             return []
 
@@ -346,7 +348,7 @@ class TestWikiBuildMutex:
         services.store.get_sources.return_value = []
         observed: list[tuple[bool, int]] = []
 
-        def fake_build_wiki(entities, provider, store, config, *, extract_concepts):
+        def fake_build_wiki(entities, provider, store, config, *, extract_concepts, stats):
             observed.append((WIKI_BUILD_LOCK.locked(), threading.get_ident()))
             return []
 

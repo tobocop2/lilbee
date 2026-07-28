@@ -42,6 +42,7 @@ from lilbee.wiki.shared import (
     PageTarget,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +197,7 @@ def finalize_section(
     drafts_dir: Path,
     shared_parsed_citations: list[ParsedCitation],
     scoring_chunks_by_label: dict[str, list[SearchChunk]],
+    stats: BuildStats | None = None,
 ) -> Path | None:
     """Citation-check, faithfulness-check, write one batched section.
 
@@ -213,7 +215,10 @@ def finalize_section(
     multi-topic source is not compared to the document-wide centroid.
     A label with no entry (concepts, or refs that fell outside the
     budgeted chunks) scores against the full pool.
+
+    Citation counts and the section's outcome are recorded on *stats*.
     """
+    stats = BuildStats.ensure(stats)
     slug = make_slug(header_label)
     if not slug:
         log.info("Empty slug for batched section %r; skipping", header_label)
@@ -227,7 +232,9 @@ def finalize_section(
     # its own, so definitions alone would leave it with no citations.
     section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
-    verified = verify_citations(citation_resolver(relevant), chunks, header_label, config)
+    resolved = citation_resolver(relevant)
+    verified = verify_citations(resolved, chunks, header_label, config)
+    stats.record_citations(len(verified), len(resolved) - len(verified))
     if not verified:
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None
@@ -259,6 +266,7 @@ def finalize_section(
     if kind is EntityKind.CONCEPT:
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
+            stats.record_pending_marker()
             return divert_concept_collision(
                 slug=slug,
                 source=source,
@@ -281,7 +289,9 @@ def finalize_section(
         page_type=page_type,
         label=header_label,
     )
-    page_path = persist_and_finalize(full_content, target, verified, source_names, store, config)
+    page_path = persist_and_finalize(
+        full_content, target, verified, source_names, store, config, stats=stats
+    )
     log.info(
         "Generated batched page for %s -> %s (score=%.2f, citations=%d)",
         header_label,

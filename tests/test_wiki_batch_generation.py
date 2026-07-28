@@ -29,6 +29,7 @@ from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_PARSE,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import (
     _parse_declared_concepts,
     _prefix_heading,
@@ -483,6 +484,158 @@ class TestFinalizeSectionGuards:
         assert len(pages) == 1
         assert WikiSubdir.DRAFTS in pages[0].parts
         assert any("sending to drafts" in r.message for r in caplog.records)
+
+
+class TestBuildStatsForABatch:
+    """A batch run reports what its gates did, so a regression is measurable."""
+
+    def test_published_sections_count_with_their_verified_citations(self, stub_embedder):
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        entities = [
+            _entity("henry-ford", "Henry Ford", ["s.txt"]),
+            _entity("ford-motor", "Ford Motor", ["s.txt"]),
+        ]
+        text = (
+            _section("Henry Ford", f"> {_EXCERPT}[^src1]\n")
+            + _section("Ford Motor", f"> {_EXCERPT}[^src1]\n")
+            + _valid_citation_block()
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=entities,
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert len(pages) == 2
+        assert stats.pages_generated == 2
+        assert stats.pages_published == 2
+        assert stats.pages_drafted == 0
+        assert stats.pending_markers == 0
+        assert stats.publish_rate == 1.0
+        assert stats.verified_by_page == {
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/henry-ford.md": 1,
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/ford-motor.md": 1,
+        }
+        assert stats.citation_verify_rate == 1.0
+
+    def test_a_section_below_the_faithfulness_threshold_counts_as_drafted(
+        self, stub_embedder, monkeypatch
+    ):
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[0.0] * cfg.embedding_dim]
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.pages_generated == 1
+        assert stats.pages_published == 0
+        assert stats.pages_drafted == 1
+        assert stats.publish_rate == 0.0
+        assert stats.verified_by_page == {}
+
+    def test_an_unverifiable_excerpt_counts_as_a_dropped_citation_and_a_marker(
+        self, stub_embedder
+    ):
+        """The citation gate rejecting a footnote is visible in the run's numbers."""
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "Nothing in this chunk matches the excerpt.")],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pages_generated == 0
+        assert stats.citations_rendered == 0
+        assert stats.citations_dropped_unverified == 1
+        assert stats.citation_verify_rate == 0.0
+        assert stats.pending_markers == 1
+
+    def test_a_failed_llm_call_counts_one_marker_per_expected_entity(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("LLM down")
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("ford-motor", "Ford Motor", ["s.txt"]),
+            ],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.pending_markers == 2
+        assert stats.pages_generated == 0
+
+    def test_a_concept_slug_collision_counts_a_marker_not_a_published_page(self, stub_embedder):
+        def _batch_text(source: str) -> str:
+            return (
+                _declare("Brake System") + "## Brake System\n\n> Brake system details. [^src1]\n"
+                "\n\n---\n"
+                "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+                f'[^src1]: {source}, excerpt: "Brake system details."\n'
+            )
+
+        written: dict[str, str] = {}
+        stats = BuildStats()
+        for source in ("s1.txt", "s2.txt"):
+            generate_source_batch(
+                source=source,
+                entities=[],
+                chunks=[_chunk(source, 0, "Brake system details.")],
+                provider=_mock_batch_provider(_batch_text(source)),
+                store=MagicMock(),
+                config=cfg,
+                extract_concepts=True,
+                written_concept_slugs=written,
+                stats=stats,
+            )
+        assert stats.pages_published == 1
+        assert stats.pending_markers == 1
+        assert stats.pages_generated == 1
+
+    def test_a_batch_without_a_collector_still_generates(self, stub_embedder):
+        """The stats argument is optional: callers that do not measure still build."""
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert len(pages) == 1
 
 
 class TestAllSourcesInScope:

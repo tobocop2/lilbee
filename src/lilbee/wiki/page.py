@@ -51,6 +51,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     atomic_write_text,
 )
+from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -309,8 +310,10 @@ def generate_page(
     store: Store,
     config: Config,
     on_progress: WikiProgressCallback | None = None,
+    stats: BuildStats | None = None,
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
+    stats = BuildStats.ensure(stats)
 
     def _emit(stage: str, **data: object) -> None:
         if on_progress is not None:
@@ -335,7 +338,9 @@ def generate_page(
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
-    verified = verify_citations(citation_resolver(parsed_citations), chunks, label, config)
+    resolved = citation_resolver(parsed_citations)
+    verified = verify_citations(resolved, chunks, label, config)
+    stats.record_citations(len(verified), len(resolved) - len(verified))
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
         _emit("failed", error="No valid citations found")
@@ -362,7 +367,9 @@ def generate_page(
         page_type=page_type,
         label=label,
     )
-    page_path = persist_and_finalize(full_content, target, verified, source_names, store, config)
+    page_path = persist_and_finalize(
+        full_content, target, verified, source_names, store, config, stats=stats
+    )
 
     log.info(
         "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",

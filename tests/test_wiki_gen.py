@@ -54,6 +54,7 @@ from lilbee.wiki.shared import (
     PageTarget,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
 from tests.conftest import make_citation
 
@@ -1644,7 +1645,9 @@ class TestRunFullBuild:
             ext.extract.return_value = []
             return ext
 
-        def fake_build_wiki(entities, provider, store, config, *, extract_concepts, on_progress):
+        def fake_build_wiki(
+            entities, provider, store, config, *, extract_concepts, on_progress, stats
+        ):
             captured["config"] = config
             return []
 
@@ -1656,7 +1659,10 @@ class TestRunFullBuild:
 
         result = run_full_build()
         assert captured["config"] is cfg
-        assert result == {"paths": [], "entities": 0, "count": 0}
+        assert result["paths"] == []
+        assert result["entities"] == 0
+        assert result["count"] == 0
+        assert result["stats"] == BuildStats().as_dict()
 
 
 class TestRunFullSynthesize:
@@ -1669,7 +1675,7 @@ class TestRunFullSynthesize:
         def fake_get_services():
             return MagicMock()
 
-        def fake_generate(provider, store, clusterer, config, on_progress):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats):
             captured["config"] = config
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
 
@@ -1680,6 +1686,64 @@ class TestRunFullSynthesize:
         assert captured["config"] is cfg
         assert result["count"] == 1
         assert result["paths"][0].endswith("typing.md")
+
+
+class TestRunSummaryStats:
+    """Both run entry points report what their gates did, in the summary and log.md."""
+
+    def test_build_summary_and_log_carry_the_gate_stats(self, monkeypatch):
+        from lilbee.wiki.generation import run_full_build
+
+        def fake_build_wiki(
+            entities, provider, store, config, *, extract_concepts, on_progress, stats
+        ):
+            stats.record_published("wiki/concepts/brakes.md", 2)
+            stats.record_drafted()
+            stats.record_pending_marker()
+            stats.record_citations(rendered=2, dropped=1)
+            return [Path("wiki/concepts/brakes.md")]
+
+        def fake_extractor(*a, **kw):
+            ext = MagicMock()
+            ext.extract.return_value = []
+            return ext
+
+        services = MagicMock()
+        services.store.get_sources.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
+        monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+
+        result = run_full_build(cfg)
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["pages_drafted"] == 1
+        assert result["stats"]["pending_markers"] == 1
+        assert result["stats"]["citation_verify_rate"] == 2 / 3
+        assert result["stats"]["verified_by_page"] == {"wiki/concepts/brakes.md": 2}
+
+        log_text = (cfg.data_root / cfg.wiki_dir / "log.md").read_text()
+        assert "1 published, 1 drafted, 1 markers, 2/3 citations verified" in log_text
+
+    def test_synthesize_summary_and_log_carry_the_gate_stats(self, monkeypatch, tmp_path):
+        from lilbee.wiki.generation import run_full_synthesize
+
+        def fake_generate(provider, store, clusterer, config, on_progress, stats):
+            stats.record_published("wiki/synthesis/typing.md", 3)
+            stats.record_citations(rendered=3, dropped=0)
+            return [tmp_path / "wiki" / "synthesis" / "typing.md"]
+
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", MagicMock())
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", fake_generate)
+
+        result = run_full_synthesize(cfg)
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["publish_rate"] == 1.0
+        assert result["stats"]["verified_by_page"] == {"wiki/synthesis/typing.md": 3}
+
+        log_text = (cfg.data_root / cfg.wiki_dir / "log.md").read_text()
+        assert "synthesize | 1 synthesis pages" in log_text
+        assert "1 published, 0 drafted, 0 markers, 3/3 citations verified" in log_text
 
 
 class TestPersistAndFinalizeDrift:
@@ -1695,6 +1759,7 @@ class TestPersistAndFinalizeDrift:
         published.parent.mkdir(parents=True, exist_ok=True)
         published.write_text("Old published body, unrelated to the regen.", encoding="utf-8")
 
+        stats = BuildStats()
         old = cfg.wiki_drift_threshold
         cfg.wiki_drift_threshold = 0.1
         try:
@@ -1705,6 +1770,7 @@ class TestPersistAndFinalizeDrift:
                 [],
                 store,
                 cfg,
+                stats=stats,
             )
         finally:
             cfg.wiki_drift_threshold = old
@@ -1712,6 +1778,7 @@ class TestPersistAndFinalizeDrift:
         assert WikiSubdir.DRAFTS in page_path.parts
         assert "Old published body" in published.read_text()
         _assert_no_store_writes(store)
+        assert (stats.pages_drafted, stats.pages_published) == (1, 0)
 
 
 class TestPersistAndFinalizeDrafts:

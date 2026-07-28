@@ -1121,7 +1121,7 @@ Under `$LILBEE_DATA/$wiki_dir/` (default `wiki/`):
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
-| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+| `log.md` | Append-only audit trail of every build, synthesize, ingest, lint, and prune, with a per-run line reporting what the quality gates did |
 
 Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` target. `make_slug` lives at `src/lilbee/wiki/shared.py`.
 
