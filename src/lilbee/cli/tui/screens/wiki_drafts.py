@@ -28,6 +28,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.wiki.drafts import DraftAcceptError, accept_draft, diff_draft, list_drafts, reject_draft
 from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
@@ -379,7 +380,9 @@ class WikiDraftsScreen(Screen[None]):
 
         accept_draft takes the wiki build mutex, so running it inline would
         freeze the UI for the length of whatever build holds the mutex.
-        Failures re-raise after the toast so the task row records them too.
+        Failures re-raise the mapped text so the task row records what the
+        toast said, and the outcome is checked against a cancel that landed
+        while the work was running.
         """
         app = self.app
 
@@ -387,10 +390,13 @@ class WikiDraftsScreen(Screen[None]):
             reporter.update(0, slug, indeterminate=True)
             try:
                 work()
+            except TaskCancelledError:
+                raise
             except Exception as exc:
                 error, severity = _draft_failure(exc, slug)
                 _post_outcome(app, failure_template.format(error=error), severity)
-                raise
+                raise RuntimeError(error) from exc
+            reporter.check_cancelled()
             _post_outcome(app, success_message, "information")
 
         app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)

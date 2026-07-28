@@ -8822,13 +8822,33 @@ class TestWikify:
                 patch.object(app, "notify") as notify,
             ):
                 await pilot.press("b")
-                assert await pump_until(pilot, lambda: notify.called), "build never finished"
+                # The in-target notify fires before the worker returns, so wait
+                # for the finalized history row, not the toast.
+                assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
+                    "build never finished"
+                )
             assert build.call_count == 1
             done = app.task_bar.queue.history
             assert [(t.task_type, t.status) for t in done] == [
                 (TaskType.WIKI.value, TaskStatus.DONE)
             ]
             assert notify.call_args.args[0] == msg.WIKI_BUILD_DONE.format(count=2)
+
+    async def test_wikify_refuses_while_a_build_is_already_pending(self, tmp_path):
+        """A second press must not queue a duplicate corpus-wide build."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui import messages as msg
+            from lilbee.cli.tui.screens.wiki import start_wikify
+
+            app.task_bar.queue.enqueue(lambda: None, msg.TASK_NAME_WIKI, TaskType.WIKI.value)
+            with patch.object(app, "notify") as notify:
+                start_wikify(app)
+            notify.assert_called_once_with(msg.WIKI_ALREADY_ACTIVE, severity="warning")
+            assert len(app.task_bar.queue.queued_tasks) == 1
 
     async def test_wikify_is_refused_while_the_wiki_is_off(self, tmp_path):
         cfg.wiki = False
@@ -9002,10 +9022,11 @@ def _write_published(wiki_root, slug: str, body: str) -> None:
     (summaries / f"{slug}.md").write_text(f"---\n---\n\n{body}\n", encoding="utf-8")
 
 
-async def _run_draft_action(tmp_path, target: str, side_effect, *, accept: bool) -> MagicMock:
+async def _run_draft_action(tmp_path, target: str, side_effect, *, accept: bool):
     """Drive accept/reject on the drafts screen with the wiki call stubbed out.
 
-    Returns the notify mock, once the task thread has reported its outcome.
+    Returns the notify mock and the finalized task row, so callers can assert
+    on both the toast and the detail the Task Center renders.
     """
     from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
 
@@ -9024,8 +9045,10 @@ async def _run_draft_action(tmp_path, target: str, side_effect, *, accept: bool)
                 screen._do_accept("../../secret")
             else:
                 screen._do_reject("../../secret")
-            assert await pump_until(pilot, lambda: notify.called), "no outcome toast"
-    return notify
+            assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
+                "task never finalized"
+            )
+    return notify, app.task_bar.queue.history[-1]
 
 
 def test_wiki_drafts_go_back_guarded_against_empty_stack() -> None:
@@ -9068,11 +9091,12 @@ class TestWikiDraftsTraversal:
 
     async def test_do_accept_traversal_notifies_generic(self, tmp_path) -> None:
         from lilbee.core.security import PathTraversalError
+        from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
         from tests.conftest import make_mock_services
 
         set_services(make_mock_services())
         try:
-            notify = await _run_draft_action(
+            notify, row = await _run_draft_action(
                 tmp_path,
                 "accept_draft",
                 PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
@@ -9082,11 +9106,14 @@ class TestWikiDraftsTraversal:
             set_services(None)
         assert "invalid draft slug" in str(notify.call_args)
         assert "/abs/secret.md" not in str(notify.call_args)
+        # The Task Center renders row.detail: it must not leak what the toast hid.
+        assert row.detail == INVALID_DRAFT_SLUG_ERROR
 
     async def test_do_reject_traversal_notifies_generic(self, tmp_path) -> None:
         from lilbee.core.security import PathTraversalError
+        from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
-        notify = await _run_draft_action(
+        notify, row = await _run_draft_action(
             tmp_path,
             "reject_draft",
             PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
@@ -9094,6 +9121,56 @@ class TestWikiDraftsTraversal:
         )
         assert "invalid draft slug" in str(notify.call_args)
         assert "/abs/secret.md" not in str(notify.call_args)
+        assert row.detail == INVALID_DRAFT_SLUG_ERROR
+
+
+class TestWikiDraftsCancellation:
+    """A cancelled draft task must not report success."""
+
+    @staticmethod
+    def _capture_target(slug: str):
+        """Start a reject task against a mock app and return the task target."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        screen = WikiDraftsScreen()
+        fake_app = MagicMock()
+        with patch.object(
+            WikiDraftsScreen, "app", new_callable=PropertyMock, return_value=fake_app
+        ):
+            screen._do_reject(slug)
+        return fake_app.task_bar.start_task.call_args.args[2]
+
+    def test_cancel_during_the_work_suppresses_the_success_toast(self, tmp_path) -> None:
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        cfg.data_root = tmp_path
+        target = self._capture_target("some-draft")
+        reporter = MagicMock()
+        reporter.check_cancelled.side_effect = TaskCancelledError
+        with (
+            patch("lilbee.cli.tui.screens.wiki_drafts.reject_draft") as reject,
+            patch("lilbee.cli.tui.screens.wiki_drafts._post_outcome") as post,
+            pytest.raises(TaskCancelledError),
+        ):
+            target(reporter)
+        reject.assert_called_once()
+        post.assert_not_called()
+
+    def test_cancel_raised_by_the_work_is_not_toasted_as_a_failure(self, tmp_path) -> None:
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        cfg.data_root = tmp_path
+        target = self._capture_target("some-draft")
+        with (
+            patch(
+                "lilbee.cli.tui.screens.wiki_drafts.reject_draft",
+                side_effect=TaskCancelledError,
+            ),
+            patch("lilbee.cli.tui.screens.wiki_drafts._post_outcome") as post,
+            pytest.raises(TaskCancelledError),
+        ):
+            target(MagicMock())
+        post.assert_not_called()
 
 
 class TestWikiDraftsScreen:
@@ -9220,9 +9297,12 @@ class TestWikiDraftsScreen:
             await pilot.press("a")
             await pilot.pause()
             await pilot.press("y")
-            assert await pump_until(pilot, lambda: "slug" in captured), "accept never ran"
             # The mutation runs on the task bar, not the event loop: accept_draft
-            # takes the wiki build mutex and would otherwise freeze the UI.
+            # takes the wiki build mutex and would otherwise freeze the UI. The
+            # history row lands after the worker returns, so wait on it directly.
+            assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
+                "accept never finished"
+            )
             assert [t.task_type for t in app.task_bar.queue.history] == [TaskType.WIKI.value]
 
         assert captured.get("slug") == "to-accept"
@@ -9478,11 +9558,12 @@ class TestWikiDraftsScreen:
 
         set_services(make_mock_services())
         try:
-            notify = await _run_draft_action(tmp_path, "accept_draft", error, accept=True)
+            notify, row = await _run_draft_action(tmp_path, "accept_draft", error, accept=True)
         finally:
             set_services(None)
         assert notify.call_args.kwargs["severity"] == severity
         assert expected in notify.call_args.args[0]
+        assert expected in row.detail
 
     @pytest.mark.parametrize(
         "error",
@@ -9490,7 +9571,7 @@ class TestWikiDraftsScreen:
     )
     async def test_reject_failure_notifies(self, tmp_path, error):
         """Reject failures toast as errors rather than looking like a success."""
-        notify = await _run_draft_action(tmp_path, "reject_draft", error, accept=False)
+        notify, _row = await _run_draft_action(tmp_path, "reject_draft", error, accept=False)
         assert notify.call_args.kwargs["severity"] == "error"
 
     async def test_failure_refreshes_the_table(self, tmp_path, monkeypatch):

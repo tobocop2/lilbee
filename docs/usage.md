@@ -988,7 +988,7 @@ Only relevant once the wiki is on and you have wikified at least once.
 | `LILBEE_WIKI_AUTO_UPDATE` | `false` | Regenerate touched wiki pages after every sync. Off means you wikify explicitly (`lilbee wiki build` / `wiki update`, `b` on the TUI wiki screen, or the HTTP and MCP build endpoints) |
 | `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Touched-page cap for auto-update. A sync that touches more pages than this skips regeneration and tells you to run `lilbee wiki update` |
 | `LILBEE_WIKI_DIR` | `wiki` | Directory under the data root where pages live. Set it before the first build; changing it later strands the pages already written |
-| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy: `ner_entities` (typed spaCy NER), `ner_concepts_plus_llm_types` (NER plus an LLM-proposed schema), or `llm_tagged` (the LLM tags every chunk, the most expensive) |
+| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy. `ner_entities` (typed spaCy NER) is the only one implemented today; `ner_concepts_plus_llm_types` and `llm_tagged` are accepted but fall back to `ner_entities` with a warning |
 | `LILBEE_WIKI_ENTITY_MIN_MENTIONS` | `3` | Distinct chunk mentions an entity or concept needs before it earns its own page |
 | `LILBEE_WIKI_EXTRACT_CONCEPTS` | `true` | Ask the batched call to curate concept pages alongside the extracted entities. `false` writes entity sections only |
 | `LILBEE_WIKI_BATCH_MIN_CHUNKS` | `3` | Chunks a source must contribute before it is eligible for concept curation. Keeps tables of contents and appendices from burning a call to invent concepts |

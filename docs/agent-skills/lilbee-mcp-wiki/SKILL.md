@@ -11,12 +11,13 @@ it as opt-in, not part of normal answer flow. Skip everything here unless the
 user explicitly asks about wiki / synthesis pages, or `lilbee_status` already
 shows a wiki built.
 
-The build / read tools (`lilbee_wiki_list`, `lilbee_wiki_read`,
-`lilbee_wiki_build`, `lilbee_wiki_update`, `lilbee_wiki_synthesize`) return
-`{"error": "wiki not enabled"}` until the user enables it with
-`lilbee_settings_set({"wiki": true})`. The remaining wiki tools operate on the
-on-disk wiki directory regardless of the flag and report empty results when
-there's nothing to read.
+`lilbee_wiki_status` is the only wiki tool available regardless of the flag; it
+reports `wiki_enabled` with zeroed counts when the wiki is off. Every other wiki
+tool is absent from the surface when the server started with the wiki disabled,
+and returns `{"error": "wiki not enabled"}` if the flag is turned off while the
+server is running. Enabling the wiki with `lilbee_settings_set({"wiki": true})`
+brings the rest of the tools back on the next server session, not the current
+one.
 
 The shared-embedder rule from the parent `lilbee-mcp` skill still applies: any
 LLM-bound wiki op (`build`, `update`, `synthesize`) goes through the
