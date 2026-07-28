@@ -11,7 +11,7 @@ import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.core.text import make_slug
-from lilbee.data.store import ChunkType, SearchChunk, Store
+from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, Store
 from lilbee.data.store.core import _check_vector_dims
 from lilbee.wiki.batch import (
     _unwrap_archived_links,
@@ -22,7 +22,6 @@ from lilbee.wiki.citations import (
     _extract_excerpt,
     _find_excerpt_source,
     _match_citation_source,
-    _resolve_citations,
     find_unmarked_claims,
     resolve_multi_source_citations,
     verify_citations,
@@ -340,6 +339,18 @@ class TestExtractExcerpt:
         assert result == "hex \\x41"
 
 
+def _resolve_citations(
+    parsed: list[ParsedCitation],
+    source_name: str,
+    source_hash: str,
+    chunks: list[SearchChunk],
+) -> list[CitationRecord]:
+    """Single-source resolver, the shape generate_page's callers pass in."""
+    return resolve_multi_source_citations(
+        parsed, [source_name], {source_name: source_hash}, {source_name: chunks}
+    )
+
+
 class TestResolveCitations:
     def test_resolves_excerpt_to_chunk_location(self):
         chunks = [_make_chunk("Python supports typing.", page_start=3, page_end=3)]
@@ -367,8 +378,6 @@ class TestResolveCitations:
 
 class TestVerifyCitations:
     def test_keeps_matching_excerpts(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("Python supports typing.")]
         recs: list[CitationRecord] = [
             {
@@ -391,8 +400,6 @@ class TestVerifyCitations:
 
     def test_keeps_excerpts_that_differ_only_in_whitespace(self):
         """Source with a mid-sentence newline still matches an LLM quote that collapsed it."""
-        from lilbee.data.store import CitationRecord
-
         chunks = [
             _make_chunk(
                 "Congratulations on acquiring your new Ford Motor Company product.\n"
@@ -422,8 +429,6 @@ class TestVerifyCitations:
         assert len(verified) == 1
 
     def test_drops_unmatched_excerpts(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("Different text")]
         recs: list[CitationRecord] = [
             {
@@ -458,8 +463,6 @@ class TestVerifyCitations:
         assert verify_citations(recs, chunks, "test", cfg) == []
 
     def test_skips_wiki_sourced_citations(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("text")]
         recs: list[CitationRecord] = [
             {

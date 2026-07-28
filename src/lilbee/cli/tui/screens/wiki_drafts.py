@@ -76,17 +76,29 @@ def _draft_failure(exc: Exception, slug: str) -> tuple[str, SeverityLevel]:
     return str(exc), "error"
 
 
-def _post_outcome(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
-    """Marshal a draft outcome back to the event loop from the worker thread.
+def _post_success(app: LilbeeApp, message: str) -> None:
+    """Toast a completed draft mutation from the worker thread.
+
+    No reload here: the WIKI task's done hook rescans the wiki screens, and
+    each rescan re-walks every page's frontmatter from disk.
+    """
+    call_from_thread(app, app.notify, message, severity="information")
+
+
+def _post_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Marshal a failed draft mutation back to the event loop from the worker thread.
 
     Targets the app, not the screen: a WIKI task queues behind a running
     build, so the screen that started it may be gone by the time it lands.
     """
-    call_from_thread(app, _apply_outcome, app, message, severity)
+    call_from_thread(app, _apply_failure, app, message, severity)
 
 
-def _apply_outcome(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
-    """Toast the outcome and re-read the drafts the task just changed."""
+def _apply_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Toast the failure and re-read the drafts a partial mutation may have changed.
+
+    No done hook fires for a failed task, so this path reloads itself.
+    """
     app.notify(message, severity=severity)
     app.task_bar.reload_wiki_screens()
 
@@ -398,8 +410,8 @@ class WikiDraftsScreen(Screen[None]):
                 raise
             except Exception as exc:
                 error, severity = _draft_failure(exc, slug)
-                _post_outcome(app, failure_template.format(error=error), severity)
+                _post_failure(app, failure_template.format(error=error), severity)
                 raise RuntimeError(error) from exc
-            _post_outcome(app, success_message, "information")
+            _post_success(app, success_message)
 
         app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)

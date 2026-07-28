@@ -253,6 +253,9 @@ class TestWikiEnabled:
         assert body["slug"] == "summaries/my-doc"
         assert body["title"] == "Test Page"
         assert "# Test Page" in body["content"]
+        # Same payload the CLI and MCP reads return.
+        assert body["frontmatter"]["sources"] == ["documents/test.txt"]
+        assert body["frontmatter"]["faithfulness_score"] == 0.9
 
     async def test_read_missing_page_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -295,11 +298,30 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    async def test_citations_reverse_no_source(self):
+    async def test_citations_reverse_no_source_is_a_400(self):
+        """An empty result would read as 'nothing cites this document'; the CLI and
+        MCP both treat a missing direction as an error."""
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/citations", headers=_h())
+        assert resp.status_code == 400
+        assert "source" in resp.json()["detail"]
+
+    async def test_drafts_listing_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """list_drafts reads every draft's full text and stats its published
+        counterpart, so it runs in a worker thread like the page listing."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        on_loop: list[bool] = []
+
+        def fake_list_drafts(root: Path) -> list[object]:
+            on_loop.append(_on_the_event_loop())
+            return []
+
+        monkeypatch.setattr(server_wiki_mod, "list_drafts", fake_list_drafts)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts", headers=_h())
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert on_loop == [False]
 
     async def test_drafts_empty(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -714,6 +736,27 @@ class TestWikiDraftsEndpoints:
         body = resp.json()
         assert body["slug"] == "cv-manual"
         assert "Draft body text" in body["diff"]
+
+    async def test_diff_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """diff_draft reads both files and diffs them, so it runs in a worker
+        thread like every other route that scales with page size."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=30)
+        on_loop: list[bool] = []
+
+        def fake_diff(slug: str, root: Path) -> str:
+            on_loop.append(_on_the_event_loop())
+            return ""
+
+        monkeypatch.setattr(server_wiki_mod, "diff_draft", fake_diff)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/cv-manual", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
 
     async def test_diff_missing_404(self):
         async with AsyncTestClient(_create_app()) as client:

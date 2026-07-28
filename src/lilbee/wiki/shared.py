@@ -15,10 +15,12 @@ import yaml
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
 # Held by every mutating wiki entry point (build, synthesize, prune, draft
-# accept, post-ingest update) while it writes. Pages, index.md and log.md are
-# shared files that CLI, TUI, MCP and HTTP all reach inside one process, so the
-# serialization lives with the writers rather than on any one surface.
-WIKI_BUILD_LOCK = threading.Lock()
+# accept, lint's log append, post-ingest update) while it writes. Pages,
+# index.md and log.md are shared files that CLI, TUI, MCP and HTTP all reach
+# inside one process, so the serialization lives with the writers rather than
+# on any one surface. Re-entrant: a writer holding it calls helpers that take
+# it again (a prune that lints, a lint that records a log entry).
+WIKI_BUILD_LOCK = threading.RLock()
 
 
 class WikiSubdir(StrEnum):

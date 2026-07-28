@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -72,29 +72,39 @@ def hash_existing_sources(source_names: list[str]) -> dict[str, str]:
     return out
 
 
+def _first_label_where(
+    candidates: list[tuple[list[str], EntityKind]],
+    predicate: Callable[[str], bool],
+) -> tuple[EntityKind, str] | None:
+    for labels, kind in candidates:
+        for label in labels:
+            if predicate(label.lower()):
+                return (kind, label)
+    return None
+
+
 def match_label(
     lowered_name: str,
-    expected: set[str],
-    kind: EntityKind,
+    candidates: Sequence[tuple[set[str], EntityKind]],
 ) -> tuple[EntityKind, str] | None:
-    """Case-insensitive match of *lowered_name* against *expected*.
+    """Case-insensitive match of *lowered_name* against ordered *candidates*.
 
-    Returns ``(kind, original_label)`` on hit, ``None`` otherwise. An exact
-    match always wins; otherwise the longest label that overlaps the header as
-    a substring in either direction wins, which accommodates the LLM adding
-    qualifiers ("Brake System (hydraulic)" vs "brake system"). Candidates are
-    ordered by length then alphabetically, so overlapping labels ("Ford" and
-    "Henry Ford") bind the same way on every run.
+    Each candidate is an ``(expected labels, kind)`` pair. Returns
+    ``(kind, original_label)`` on hit, ``None`` otherwise. Every candidate set
+    is tried for an exact match before any is tried for a substring match, so a
+    header naming one set's label exactly is not taken by another set's label
+    that merely contains it. Substring overlap in either direction accommodates
+    the LLM adding qualifiers ("Brake System (hydraulic)" vs "brake system").
+    Labels are ordered by length then alphabetically, so overlapping labels
+    ("Ford" and "Henry Ford") bind the same way on every run.
     """
-    ordered = sorted(expected, key=lambda label: (-len(label), label))
-    for label in ordered:
-        if label.lower() == lowered_name:
-            return (kind, label)
-    for label in ordered:
-        low = label.lower()
-        if low and (low in lowered_name or lowered_name in low):
-            return (kind, label)
-    return None
+    ordered = [
+        (sorted(expected, key=lambda label: (-len(label), label)), kind)
+        for expected, kind in candidates
+    ]
+    return _first_label_where(ordered, lambda low: low == lowered_name) or _first_label_where(
+        ordered, lambda low: bool(low) and (low in lowered_name or lowered_name in low)
+    )
 
 
 def short_source_hash(source: str) -> str:

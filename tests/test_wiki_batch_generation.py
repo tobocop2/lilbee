@@ -197,6 +197,21 @@ class TestSplitBatchedOutput:
         parsed = _split_batched_output(text, set(), expected_concept_labels={"Assembly Line"})
         assert prose in parsed["Assembly Line"][1]
 
+    @pytest.mark.parametrize("entity_first", [True, False], ids=["entity-first", "concept-first"])
+    def test_an_exact_concept_header_beats_an_entity_substring(self, entity_first: bool):
+        """An entity label contained in a declared concept ("Assembly" vs "Assembly
+        Line") used to steal the concept's section, dropping both pages' real body."""
+        sections = [_section("Assembly"), _section("Assembly Line", "> line body.[^src1]\n")]
+        if not entity_first:
+            sections.reverse()
+        text = _declare("Assembly Line") + "".join(sections)
+        parsed = _split_batched_output(
+            text, {"Assembly"}, expected_concept_labels={"Assembly Line"}
+        )
+        assert parsed["Assembly Line"][0] is EntityKind.CONCEPT
+        assert "line body" in parsed["Assembly Line"][1]
+        assert parsed["Assembly"][0] is EntityKind.ENTITY
+
     def test_no_headers_returns_empty_dict(self):
         """A response that contains no H1/H2 headers recovers nothing."""
         text = "just a paragraph with no headings at all.\n\n> some body text\n"
@@ -268,22 +283,36 @@ class TestMatchLabel:
     """Overlapping labels must bind the same way on every run."""
 
     def test_exact_match_wins_over_a_longer_overlap(self):
-        matched = match_label("ford", {"Henry Ford", "Ford"}, EntityKind.ENTITY)
+        matched = match_label("ford", [({"Henry Ford", "Ford"}, EntityKind.ENTITY)])
         assert matched == (EntityKind.ENTITY, "Ford")
 
     def test_longest_overlapping_label_wins(self):
-        matched = match_label("henry ford jr.", {"Ford", "Henry Ford"}, EntityKind.ENTITY)
+        matched = match_label("henry ford jr.", [({"Ford", "Henry Ford"}, EntityKind.ENTITY)])
         assert matched == (EntityKind.ENTITY, "Henry Ford")
 
     def test_header_that_is_a_substring_of_a_label_still_matches(self):
-        matched = match_label("ford", {"Henry Ford"}, EntityKind.ENTITY)
+        matched = match_label("ford", [({"Henry Ford"}, EntityKind.ENTITY)])
         assert matched == (EntityKind.ENTITY, "Henry Ford")
 
     def test_empty_label_never_matches(self):
-        assert match_label("ford", {""}, EntityKind.ENTITY) is None
+        assert match_label("ford", [({""}, EntityKind.ENTITY)]) is None
 
     def test_no_overlap_returns_none(self):
-        assert match_label("chevrolet", {"Henry Ford"}, EntityKind.ENTITY) is None
+        assert match_label("chevrolet", [({"Henry Ford"}, EntityKind.ENTITY)]) is None
+
+    def test_an_exact_match_in_a_later_set_beats_an_earlier_substring(self):
+        matched = match_label(
+            "assembly line",
+            [({"Assembly"}, EntityKind.ENTITY), ({"Assembly Line"}, EntityKind.CONCEPT)],
+        )
+        assert matched == (EntityKind.CONCEPT, "Assembly Line")
+
+    def test_the_earlier_set_wins_when_both_only_overlap(self):
+        matched = match_label(
+            "assembly line (final)",
+            [({"Assembly"}, EntityKind.ENTITY), ({"Assembly Line"}, EntityKind.CONCEPT)],
+        )
+        assert matched == (EntityKind.ENTITY, "Assembly")
 
 
 class TestPrefixHeading:

@@ -577,7 +577,7 @@ Generation quality and retrieval behavior depend on your library, models, and kn
 
 ### Wiki
 
-lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources: concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Sections are citation-verified before publish, and plain-text concept references are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Lower-confidence pages land in a `drafts/` queue for review rather than publishing direct.
+lilbee analyzes the documents you've indexed and writes a wiki about them. Pages are per concept or entity rather than per document: something that shows up repeatedly gets its own page, written and cited from the source that mentions it most, with coverage across sources coming from synthesis pages and the `[[wiki link]]` graph. Sections are citation-verified before publish, and plain-text concept references are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Lower-confidence pages land in a `drafts/` queue for review rather than publishing direct.
 
 See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
 

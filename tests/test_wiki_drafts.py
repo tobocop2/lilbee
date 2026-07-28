@@ -22,6 +22,7 @@ from lilbee.wiki.drafts import (
     list_drafts,
     reject_draft,
 )
+from lilbee.wiki.persistence import divert_to_drafts
 from lilbee.wiki.prune import prune_wiki
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
@@ -612,6 +613,52 @@ class TestPendingKindDetection:
         [d] = list_drafts(wiki_root)
         assert d.pending_kind == PendingKind.COLLISION
         assert d.drift_ratio is None
+
+
+def _stacked_drift_collision_draft(wiki_root: Path) -> str:
+    """Write a drift draft whose target already holds another source's proposal.
+
+    The collision branch stacks the PENDING marker above the drift note, so the
+    draft carries two leading marker lines. Returns the resulting draft slug.
+    """
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
+    _write(drafts_dir / "brakes.md", _cited_draft("other.md"))
+    path = divert_to_drafts(
+        _cited_draft(),
+        drafts_dir,
+        "brakes",
+        0.4,
+        "diff text",
+        WikiSubdir.CONCEPTS,
+        ["a.md"],
+    )
+    return path.stem
+
+
+class TestDriftCollisionDraftsWithStackedMarkers:
+    """A drift that also collides carries a PENDING marker and a DRIFT marker."""
+
+    def test_listing_reports_both_the_kind_and_the_drift_ratio(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        slug = _stacked_drift_collision_draft(wiki_root)
+        [draft] = [d for d in list_drafts(wiki_root) if d.slug == slug]
+        assert draft.pending_kind == PendingKind.COLLISION
+        assert draft.drift_ratio == pytest.approx(0.4)
+        assert draft.faithfulness_score == pytest.approx(0.9)
+
+    def test_accept_publishes_it_with_its_frontmatter_honored(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        slug = _stacked_drift_collision_draft(wiki_root)
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft(slug, wiki_root, store, cfg)
+        # Origin subdir rides the drift marker, so the accept lands in concepts/.
+        assert result.moved_to == wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        published = result.moved_to.read_text(encoding="utf-8")
+        assert published.startswith("---")
+        assert "[^src1]" in published
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert [rec["citation_key"] for rec in records] == ["src1"]
 
 
 _QUOTED_DRIFT_MARKER = (

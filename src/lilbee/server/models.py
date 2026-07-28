@@ -456,11 +456,12 @@ class WikiBuildDryRunResult(BaseModel):
 
 
 class WikiPageDetail(BaseModel):
-    """Full content of a single wiki page."""
+    """Full content of a single wiki page, with its parsed frontmatter."""
 
     slug: str
     title: str = ""
     content: str = ""
+    frontmatter: dict[str, Any] = {}
 
 
 class WikiCitationsResult(BaseModel):

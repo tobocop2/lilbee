@@ -59,11 +59,18 @@ async def incremental_update(changed_sources: set[str], config: Config | None = 
             len(touched),
             config.wiki_ingest_update_cap,
         )
-        append_wiki_log(
-            WikiLogAction.INGEST,
-            f"skipped: {len(touched)} pages exceeds cap {config.wiki_ingest_update_cap}",
-            config,
-        )
+
+        def _log_skip() -> None:
+            with WIKI_BUILD_LOCK:
+                append_wiki_log(
+                    WikiLogAction.INGEST,
+                    f"skipped: {len(touched)} pages exceeds cap {config.wiki_ingest_update_cap}",
+                    config,
+                )
+
+        # log.md is shared with the builders, so the append takes the mutex in a
+        # worker thread for the same reason the regenerate path does.
+        await asyncio.to_thread(_log_skip)
         return
 
     # extract_concepts=False so an incremental sync does not churn

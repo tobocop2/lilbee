@@ -807,6 +807,23 @@ async def test_indexing_active_true_during_import_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_indexing_active_true_during_wiki_task() -> None:
+    """Wiki builds and draft accepts re-chunk and embed, the contention the gate
+    exists to avoid."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        tid = app.task_bar.queue.enqueue(lambda: None, "Wikify", TaskType.WIKI.value)
+        app.task_bar.queue.advance(TaskType.WIKI.value)
+        assert screen._indexing_active() is True
+        app.task_bar.queue.complete_task(tid)
+        assert screen._indexing_active() is False
+
+
+@pytest.mark.asyncio
 async def test_run_sync_rejects_when_already_active() -> None:
     """_run_sync refuses when another sync is already running."""
 

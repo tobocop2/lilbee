@@ -95,7 +95,10 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
-    return [DraftInfoResponse(**d.to_dict()) for d in list_drafts(_wiki_root())]
+    # list_drafts reads every draft and stats its published counterpart;
+    # offload like the page listing.
+    drafts = await asyncio.to_thread(list_drafts, _wiki_root())
+    return [DraftInfoResponse(**d.to_dict()) for d in drafts]
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
@@ -110,7 +113,8 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
     _require_wiki()
     slug = slug.lstrip("/")
     try:
-        diff = diff_draft(slug, _wiki_root())
+        # diff_draft reads both files and diffs them; offload like the listing.
+        diff = await asyncio.to_thread(diff_draft, slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -162,7 +166,7 @@ async def wiki_citations_reverse_route(
     """Reverse citation lookup: which wiki pages cite a given source."""
     _require_wiki()
     if not source:
-        return []
+        raise ClientException(detail="pass ?source=<document path> to look up citing wiki pages")
     # get_citations_for_source queries LanceDB; offload like wiki_lint_route.
     records = await asyncio.to_thread(svc_mod.get_services().store.get_citations_for_source, source)
     return [WikiCitationRecord(**r) for r in records]
@@ -183,6 +187,7 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
         slug=result.slug,
         title=result.title,
         content=result.content,
+        frontmatter=result.frontmatter,
     )
 
 

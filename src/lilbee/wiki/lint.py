@@ -24,6 +24,7 @@ from lilbee.wiki.citations import (
 from lilbee.wiki.grammar import WIKI_LINK_RE
 from lilbee.wiki.index import append_wiki_log
 from lilbee.wiki.shared import (
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
@@ -296,11 +297,13 @@ def lint_all(
 
     report.issues.extend(_lint_orphans(wiki_root, config))
     if record_log:
-        append_wiki_log(
-            WikiLogAction.LINT,
-            f"{report.error_count} error(s), {report.warning_count} warning(s)",
-            config,
-        )
+        # log.md is shared with the builders; the append takes the same mutex.
+        with WIKI_BUILD_LOCK:
+            append_wiki_log(
+                WikiLogAction.LINT,
+                f"{report.error_count} error(s), {report.warning_count} warning(s)",
+                config,
+            )
     return report
 
 

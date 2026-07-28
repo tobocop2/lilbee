@@ -164,12 +164,13 @@ class WikiScreen(Screen[None]):
             yield TaskBar()
             yield Footer()
 
-    def on_mount(self) -> None:
-        self.reload()
+    def on_screen_resume(self) -> None:
+        """Re-scan on every activation so out-of-band builds (`lilbee wiki build`
+        from a sibling shell), incremental updates, and builds that finished while
+        this screen was out of view land without a TUI restart.
 
-    def on_show(self) -> None:
-        """Re-scan on focus so out-of-band builds (`lilbee wiki build` from a
-        sibling shell) and incremental wiki updates land without a TUI restart.
+        Resume fires on the initial push and on each switch back; Show fires only
+        once per screen, so it cannot carry this.
         """
         self.reload()
 

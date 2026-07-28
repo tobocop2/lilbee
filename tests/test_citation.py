@@ -90,6 +90,15 @@ class TestParseWikiCitations:
         [citation] = parse_wiki_citations(md)
         assert citation.line_number == 3
 
+    def test_a_definition_inside_a_code_fence_is_an_example_not_a_citation(self):
+        md = (
+            "```markdown\n"
+            '[^src1]: example.md, excerpt: "sample"\n'
+            "```\n\n"
+            '[^src2]: doc.md, excerpt: "quote"\n'
+        )
+        assert [c.citation_key for c in parse_wiki_citations(md)] == ["src2"]
+
     def test_returns_empty_for_no_citation_block(self):
         assert parse_wiki_citations("# Just a heading\n\nSome text.") == []
 
@@ -516,6 +525,22 @@ class TestScrubUnverifiedMarkers:
         assert result.startswith("Claim one.\n")
         assert "doc.md" not in result
         assert "quote one" not in result
+
+    def test_fenced_footnote_syntax_survives_untouched(self):
+        """A page documenting footnote syntax quotes it in a fence; the scrub must
+        leave the example verbatim, like the link and title scanners do."""
+        body = (
+            "Cited claim.[^src1]\n\n"
+            "```markdown\n"
+            '[^src2]: example.md, excerpt: "sample"\n'
+            "Use [^src2] markers\n"
+            "```\n\n"
+            "Dropped claim.[^src3]\n"
+        )
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert '[^src2]: example.md, excerpt: "sample"' in result
+        assert "Use [^src2] markers" in result
+        assert "Dropped claim.\n" in result
 
 
 class TestFootnoteMarkerKeys:
