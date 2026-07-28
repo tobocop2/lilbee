@@ -437,3 +437,19 @@ def test_keeps_the_dlopened_soname_when_nothing_links_it(bin_dir, rocm_tree, tmp
     result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
     assert result.returncode == 0, result.stderr
     assert (bin_dir / "libamd_comgr.so.3").is_file()
+
+
+def test_never_repoints_a_library_it_deleted(bundled, tmp_path):
+    """patchelf fails hard on a missing file, so the bundled list must track deletions.
+
+    A stale entry took the whole rocm cell down after a dedup pass removed the file
+    the repoint step then tried to rewrite.
+    """
+    rewritten = [
+        line.split()[-1]
+        for line in (tmp_path / "patchelf.log").read_text().splitlines()
+        if "--set-rpath" in line
+    ]
+    assert rewritten, "no runpaths rewritten at all"
+    missing = [path for path in rewritten if not pathlib.Path(path).exists()]
+    assert missing == [], f"repointed files that no longer exist: {missing}"

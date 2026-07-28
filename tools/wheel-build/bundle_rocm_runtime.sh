@@ -140,8 +140,19 @@ drop_redundant_copies() {
     [ -z "${keep}" ] || continue
     identical_to_a_kept_name "${obj}" "${stem}" "${needed}" || continue
     rm -f "${obj}"
+    forget_bundled "${name}"
     echo "dropped redundant copy: ${name}"
   done
+}
+
+# bundled names files that exist. Every pass that deletes one maintains that, because
+# repoint_runpaths walks the list and patchelf fails hard on a missing file.
+forget_bundled() {
+  local gone="$1" soname kept=""
+  for soname in ${bundled}; do
+    [ "${soname}" = "${gone}" ] || kept="${kept} ${soname}"
+  done
+  bundled="${kept}"
 }
 
 # Does anything link against some member of this library's name group?
@@ -242,7 +253,6 @@ drop_orphans() {
       *) rm -f "${pkg_bin_dir}/${soname}"; echo "dropped orphaned library: ${soname}" ;;
     esac
   done
-  # The repoint pass walks this list, so a deleted library must leave it.
   bundled="${kept}"
 }
 
