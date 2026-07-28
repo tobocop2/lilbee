@@ -3,7 +3,7 @@
 import pytest
 
 from lilbee.data.store import CitationRecord
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
     find_unmarked_claims,

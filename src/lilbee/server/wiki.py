@@ -23,11 +23,13 @@ from lilbee.core.security import PathTraversalError
 from lilbee.server import handlers
 from lilbee.server.models import (
     DraftInfoResponse,
+    WikiBuildDryRunResult,
     WikiCitationRecord,
     WikiCitationsResult,
     WikiDraftAcceptResponse,
     WikiDraftDiffResponse,
     WikiDraftRejectResponse,
+    WikiEntityCandidateResponse,
     WikiLintIssueItem,
     WikiLintResult,
     WikiPageDetail,
@@ -77,11 +79,9 @@ def _find_page(slug: str) -> Path | None:
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
-    Reads the tree without touching it. This route is unauthenticated, so it
-    used to hand any caller a way to rewrite index.md on repeat and to race the
-    build path over the same file. The listing never depended on that write
-    anyway: it is built by walking pages, and every path that changes the tree
-    (build, update, synthesize, prune, draft-accept) refreshes the index itself.
+    Reads the tree without touching it. The listing is built by walking pages,
+    and every path that changes the tree (build, update, synthesize, prune,
+    draft-accept) refreshes index.md itself, so a read never rewrites it.
     """
     _require_wiki()
     # list_pages walks the whole tree; offload so the listing doesn't block
@@ -226,7 +226,9 @@ async def wiki_prune_route() -> WikiPruneResult:
 
 
 @post("/api/wiki/build")
-async def wiki_build_route() -> Stream:
+async def wiki_build_route(
+    dry_run: bool = Parameter(query="dry_run", default=False),
+) -> Stream | WikiBuildDryRunResult:
     """Build the concept and entity wiki across all ingested sources.
 
     A build issues per-source LLM calls and embeddings and can run for a long
@@ -234,9 +236,26 @@ async def wiki_build_route() -> Stream:
     while it runs, then a done event carrying the summary. The work runs in a
     worker thread and holds the wiki build mutex, so a second request streams
     its own progress only once the first run finishes.
+
+    ``dry_run=true`` answers with plain JSON instead: the NER entity candidates
+    a build would cover, with no LLM call made.
     """
     _require_wiki()
+    if dry_run:
+        return await _build_dry_run()
     return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
+
+
+async def _build_dry_run() -> WikiBuildDryRunResult:
+    """Extract entity candidates off the event loop and shape them for the wire."""
+    from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE, preview_build_entities
+
+    rows = await asyncio.to_thread(preview_build_entities, cfg)
+    return WikiBuildDryRunResult(
+        entities=[WikiEntityCandidateResponse(**row) for row in rows],
+        count=len(rows),
+        note=DRY_RUN_CONCEPT_NOTE,
+    )
 
 
 @patch("/api/wiki/update")
@@ -264,11 +283,8 @@ async def wiki_synthesize_route() -> Stream:
 async def wiki_status_route() -> WikiStatusResult:
     """Wiki layer status: page counts and recent lint counts.
 
-    Token-gated, unlike the other wiki reads: the lint behind it walks every
-    page and issues a store query each, so leaving it open made it an
-    unauthenticated way to spend the machine's IO budget. It still answers
-    while the wiki is disabled so a client can render the disabled state
-    without a second round trip to /api/config.
+    Answers while the wiki is disabled so a client can render the disabled
+    state without a second round trip to /api/config.
     """
     root = _wiki_root()
     if not cfg.wiki or not root.exists():

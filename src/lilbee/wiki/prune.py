@@ -221,7 +221,7 @@ def _reconcile_orphan_rows(store: Store, wiki_root: Path, config: Config) -> lis
     prefix = config.wiki_dir + "/"
     records: list[PruneRecord] = []
     for wiki_source in sorted(store.wiki_chunk_sources()):
-        subdir = subdir_from_wiki_source(wiki_source)
+        subdir = subdir_from_wiki_source(wiki_source, config.wiki_dir)
         page_path = wiki_root / wiki_source.removeprefix(prefix)
         if subdir in WIKI_CONTENT_SUBDIRS and page_path.is_file():
             continue

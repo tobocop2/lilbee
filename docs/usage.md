@@ -671,6 +671,11 @@ lilbee ask "Explain this" --model qwen3
 
 ```bash
 lilbee wiki build                      # build the wiki from the current index
+lilbee wiki build --dry-run            # preview the entity candidates, no LLM calls
+lilbee wiki list                       # list pages with type, source count, date
+lilbee wiki read <slug>                # print a page's markdown
+lilbee wiki citations <page>           # citations a page makes
+lilbee wiki citations --source <doc>   # pages citing a source document
 lilbee wiki lint                       # find orphan pages, stale links, pending drafts
 lilbee wiki synthesize                 # generate cross-source synthesis pages
 lilbee wiki drafts list                # list pending drafts

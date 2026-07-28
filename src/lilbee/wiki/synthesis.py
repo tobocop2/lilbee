@@ -33,8 +33,11 @@ from lilbee.wiki.batch import (
     hash_existing_sources,
     match_label,
 )
-from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations
-from lilbee.wiki.citations import resolve_multi_source_citations
+from lilbee.wiki.citations import (
+    ParsedCitation,
+    parse_wiki_citations,
+    resolve_multi_source_citations,
+)
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.page import (
     build_wiki_messages,
@@ -322,10 +325,33 @@ def generate_source_batch(
         # not inside any one section body. Parse once and replay for every
         # section, so pages other than the last still resolve their footnotes.
         shared_parsed_citations=parse_wiki_citations(text),
+        scoring_chunks_by_label=_entity_scoring_chunks(entities, budgeted),
     )
     pages, written_labels = _finalize_sections(parsed, finalize)
     _write_pending_markers(entities, written_labels, source, drafts_dir)
     return pages
+
+
+def _entity_scoring_chunks(
+    entities: list[ExtractedEntity],
+    chunks: list[SearchChunk],
+) -> dict[str, list[SearchChunk]]:
+    """Map each entity label to the budgeted chunks its extraction refs name.
+
+    Labels whose refs all fell outside the budget are absent, so
+    :func:`finalize_section` falls back to the whole-source pool.
+    """
+    by_ref = {(c.source, c.chunk_index): c for c in chunks}
+    scoped: dict[str, list[SearchChunk]] = {}
+    for entity in entities:
+        selected = [
+            by_ref[(ref.source, ref.chunk_index)]
+            for ref in entity.chunk_refs
+            if (ref.source, ref.chunk_index) in by_ref
+        ]
+        if selected:
+            scoped[entity.label] = selected
+    return scoped
 
 
 def _request_batch_sections(

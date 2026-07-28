@@ -22,8 +22,11 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
 from lilbee.data.store import Store
 from lilbee.wiki.batch import hash_existing_sources
-from lilbee.wiki.citation import parse_wiki_citations
-from lilbee.wiki.citations import resolve_multi_source_citations, verify_citations
+from lilbee.wiki.citations import (
+    parse_wiki_citations,
+    resolve_multi_source_citations,
+    verify_citations,
+)
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
@@ -380,7 +383,7 @@ def accept_draft(
 
         wiki_source = _wiki_source_for(target, wiki_root)
         _persist_accepted_citations(clean, wiki_source, store, config)
-        reindexed = index_wiki_page(clean, wiki_source, store)
+        reindexed = index_wiki_page(clean, wiki_source, store, config)
         draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(

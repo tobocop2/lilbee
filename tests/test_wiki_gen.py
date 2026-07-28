@@ -13,12 +13,11 @@ from lilbee.core.text import make_slug
 from lilbee.data.store import ChunkType, SearchChunk, Store
 from lilbee.data.store.core import _check_vector_dims
 from lilbee.wiki.batch import (
-    _group_chunks_by_page,
     _unwrap_archived_links,
     archive_legacy_concept_pages,
 )
-from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.citations import (
+    ParsedCitation,
     _extract_excerpt,
     _find_excerpt_source,
     _match_citation_source,
@@ -653,47 +652,6 @@ class TestTitleContentCoherence:
         chunks = [_chunk_with_vector([1.0])]
         check_faithfulness(chunks, "# bad\n\nbody", "brakes")
         assert any("coherence failed" in r.message for r in caplog.records)
-
-
-class TestGroupChunksByPage:
-    def test_empty_returns_empty(self):
-        assert _group_chunks_by_page([]) == []
-
-    def test_single_page_preserves_chunk_order(self):
-        chunks = [
-            _make_chunk("a", page_start=1, chunk_index=0),
-            _make_chunk("b", page_start=1, chunk_index=1),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert len(result) == 1
-        page_num, group = result[0]
-        assert page_num == 1
-        assert [c.chunk for c in group] == ["a", "b"]
-
-    def test_sorts_by_page_number(self):
-        chunks = [
-            _make_chunk("z", page_start=5, chunk_index=0),
-            _make_chunk("a", page_start=1, chunk_index=1),
-            _make_chunk("m", page_start=3, chunk_index=2),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert [page for page, _ in result] == [1, 3, 5]
-
-    def test_non_contiguous_pages_kept_separately(self):
-        chunks = [
-            _make_chunk("a", page_start=1, chunk_index=0),
-            _make_chunk("b", page_start=7, chunk_index=1),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert [page for page, _ in result] == [1, 7]
-
-    def test_non_paginated_source_single_bucket(self):
-        """Chunks with page_start=0 (markdown, code, HTML) collapse to one entry."""
-        chunks = [_make_chunk(f"c{i}", chunk_index=i) for i in range(4)]
-        result = _group_chunks_by_page(chunks)
-        assert len(result) == 1
-        assert result[0][0] == 0
-        assert len(result[0][1]) == 4
 
 
 class TestMakeSlug:
@@ -1331,7 +1289,7 @@ class TestWikiIndexing:
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
-            index_wiki_page(content, target.wiki_source, store)
+            index_wiki_page(content, target.wiki_source, store, cfg)
 
         store.clear_table.assert_not_called()
         store.replace_chunks.assert_called_once()
@@ -1360,10 +1318,26 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
         ):
-            index_wiki_page(self._content("body"), target.wiki_source, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store, cfg)
 
         store.clear_table.assert_not_called()
         store.replace_chunks.assert_not_called()
+
+    def test_nested_wiki_dir_still_resolves_the_subdir(self):
+        """A wiki_dir carrying a separator keeps its pages in retrieval."""
+        store = MagicMock(spec=Store)
+        config = cfg.model_copy(update={"wiki_dir": "notes/wiki"})
+        wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/brakes.md"
+
+        with (
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
+        ):
+            index_wiki_page(self._content("body"), wiki_source, store, config)
+
+        store.replace_chunks.assert_called_once()
+        _records, predicate = store.replace_chunks.call_args.args
+        assert wiki_source in predicate
 
     def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
         """A ``wiki_source`` without a subdir component is logged and
@@ -1371,7 +1345,7 @@ class TestWikiIndexing:
         """
         store = MagicMock(spec=Store)
         caplog.set_level("WARNING", logger="lilbee.wiki.page")
-        result = index_wiki_page(self._content("body"), "malformed", store)
+        result = index_wiki_page(self._content("body"), "malformed", store, cfg)
         assert result == 0
         store.clear_table.assert_not_called()
         assert any("malformed wiki_source" in r.message for r in caplog.records)
@@ -1394,7 +1368,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text") as chunker,
         ):
-            index_wiki_page(content, target.wiki_source, store)
+            index_wiki_page(content, target.wiki_source, store, cfg)
 
         _assert_cleared(store, target.wiki_source)
         chunker.assert_not_called()
@@ -1409,7 +1383,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text", return_value=[]),
         ):
-            index_wiki_page(self._content("some body"), target.wiki_source, store)
+            index_wiki_page(self._content("some body"), target.wiki_source, store, cfg)
 
         _assert_cleared(store, target.wiki_source)
         store.replace_chunks.assert_not_called()
@@ -1428,7 +1402,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
             pytest.raises(ValueError, match="Vector dimension mismatch"),
         ):
-            index_wiki_page(self._content("body"), target.wiki_source, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store, cfg)
 
     def test_embedding_runs_before_any_store_write(self):
         """No crash window empties the page: chunking and embedding finish before the
@@ -1448,7 +1422,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.chunk_text", return_value=["one chunk"]),
             pytest.raises(RuntimeError),
         ):
-            index_wiki_page(self._content("first body"), target.wiki_source, store)
+            index_wiki_page(self._content("first body"), target.wiki_source, store, cfg)
 
         assert embedded == [["one chunk"]]
         store.clear_table.assert_not_called()

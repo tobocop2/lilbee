@@ -318,7 +318,7 @@ class TestWikiBuildMutex:
         (wiki_root / "drafts" / "x.md").write_text("---\nsources: [a.txt]\n---\n\nbody\n")
         held: list[bool] = []
 
-        def fake_index(content, wiki_source, store):
+        def fake_index(content, wiki_source, store, config):
             held.append(WIKI_BUILD_LOCK.locked())
             return 1
 

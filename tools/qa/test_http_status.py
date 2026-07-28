@@ -9,30 +9,44 @@ from conftest import HTTP_FAST_TIMEOUT
 
 
 @pytest.mark.http
-def test_status_returns_200(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT)
+def test_status_returns_200(server_url: str, server_headers: dict[str, str]) -> None:
+    response = httpx.get(
+        f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT, headers=server_headers
+    )
     assert response.status_code == httpx.codes.OK
 
 
 @pytest.mark.http
-def test_status_payload_has_command_and_config(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT)
+def test_status_payload_has_command_and_config(
+    server_url: str, server_headers: dict[str, str]
+) -> None:
+    response = httpx.get(
+        f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT, headers=server_headers
+    )
     payload = response.json()
     assert payload.get("command") == "status"
     assert isinstance(payload.get("config"), dict)
 
 
 @pytest.mark.http
-def test_status_payload_zero_chunks_initially(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT)
+def test_status_payload_zero_chunks_initially(
+    server_url: str, server_headers: dict[str, str]
+) -> None:
+    response = httpx.get(
+        f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT, headers=server_headers
+    )
     payload = response.json()
     assert payload["total_chunks"] == 0
     assert payload["sources"] == []
 
 
 @pytest.mark.http
-def test_status_config_lists_model_roles(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT)
+def test_status_config_lists_model_roles(
+    server_url: str, server_headers: dict[str, str]
+) -> None:
+    response = httpx.get(
+        f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT, headers=server_headers
+    )
     config = response.json()["config"]
     for role in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
         assert role in config, f"missing role in status config: {role}"

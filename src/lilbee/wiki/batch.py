@@ -22,13 +22,13 @@ from lilbee.core.config import Config
 from lilbee.core.text import make_slug
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     ParsedCitation,
     parse_wiki_citations,
     render_citation_block,
     strip_citation_block,
+    verify_citations,
 )
-from lilbee.wiki.citations import verify_citations
 from lilbee.wiki.entity_extractor import EntityKind
 from lilbee.wiki.page import assemble_content, build_frontmatter
 from lilbee.wiki.persistence import (
@@ -98,30 +98,9 @@ def match_label(
     return None
 
 
-def chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
-    """Return the subset of *chunks* whose ``source`` matches, preserving order."""
-    return [c for c in chunks if c.source == source]
-
-
 def short_source_hash(source: str) -> str:
     """8-char sha256 digest of *source* (stable collision-marker suffix)."""
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
-
-
-def _group_chunks_by_page(
-    chunks: list[SearchChunk],
-) -> list[tuple[int, list[SearchChunk]]]:
-    """Group chunks by ``page_start``, preserving in-document order within a page.
-
-    Returns ``(page_start, chunks)`` tuples sorted ascending by page number.
-    Chunks with ``page_start=0`` (non-paginated sources) collapse to a single
-    entry keyed at 0, so a markdown or code source still emits exactly one
-    summary file until structure detection arrives in a later stage.
-    """
-    grouped: dict[int, list[SearchChunk]] = {}
-    for chunk in chunks:
-        grouped.setdefault(chunk.page_start, []).append(chunk)
-    return sorted(grouped.items())
 
 
 def archive_legacy_concept_pages(
@@ -216,6 +195,7 @@ def finalize_section(
     written_concept_slugs: dict[str, str],
     drafts_dir: Path,
     shared_parsed_citations: list[ParsedCitation],
+    scoring_chunks_by_label: dict[str, list[SearchChunk]],
 ) -> Path | None:
     """Citation-check, faithfulness-check, write one batched section.
 
@@ -226,6 +206,13 @@ def finalize_section(
     definition list parsed once over the whole response: every
     section replays it so pages other than the last one still have
     their footnotes resolved.
+
+    ``scoring_chunks_by_label`` maps an entity label to the chunks its
+    extraction refs named. Faithfulness scores against those rather
+    than the whole-source mean, so a section about one entity in a
+    multi-topic source is not compared to the document-wide centroid.
+    A label with no entry (concepts, or refs that fell outside the
+    budgeted chunks) scores against the full pool.
     """
     slug = make_slug(header_label)
     if not slug:
@@ -235,9 +222,9 @@ def finalize_section(
     # Only replay citation keys that this section actually references
     # in the body; otherwise every section would claim every citation.
     section_keys = {ref.citation_key for ref in parse_wiki_citations(body)}
-    # Fall back to in-body ``[^keyN]`` references when no definitions
-    # live inside the section: count occurrences of the footnote
-    # marker against the shared definition set.
+    # Also collect in-body ``[^keyN]`` references: a section that cites a
+    # footnote defined in the shared trailing block has no definition of
+    # its own, so definitions alone would leave it with no citations.
     section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
     verified = verify_citations(citation_resolver(relevant), chunks, header_label, config)
@@ -245,7 +232,9 @@ def finalize_section(
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None
 
-    score = check_faithfulness(chunks, body, header_label, config)
+    score = check_faithfulness(
+        scoring_chunks_by_label.get(header_label, chunks), body, header_label, config
+    )
     threshold = config.wiki_embedding_faithfulness_threshold
     page_type = WikiSubdir.CONCEPTS if kind is EntityKind.CONCEPT else WikiSubdir.ENTITIES
     subdir = page_type if score >= threshold else WikiSubdir.DRAFTS
