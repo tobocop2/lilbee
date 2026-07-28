@@ -121,7 +121,9 @@ class TestEstimateInstanceFootprint:
             kv_cache_type=KvCacheType.Q8_0,
         )
         argv = calls[0]
-        assert argv[argv.index("--ctx-size") + 1] == "8192"
+        # Per-slot in, total out: the parser's --parallel does not divide the
+        # context, so --ctx-size has to carry all four slots' worth.
+        assert argv[argv.index("--ctx-size") + 1] == "32768"
         assert argv[argv.index("--parallel") + 1] == "4"
         assert argv[argv.index("--gpu-layers") + 1] == "33"
         assert argv[argv.index("--cache-type-k") + 1] == "q8_0"

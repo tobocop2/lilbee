@@ -73,6 +73,8 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.RATE_LIMIT: (429, CompletionsErrorCode.RATE_LIMIT_EXCEEDED),
     ProviderErrorKind.CONNECTION: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.CAPACITY: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
 
@@ -80,7 +82,14 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
 # at the fleet boundary and carries up to 600 bytes of upstream body plus the
 # dead server's stderr (loopback ports, engine paths), so it is logged rather
 # than returned. The client-input kinds stay pass-through.
-_INFRASTRUCTURE_KINDS = frozenset({ProviderErrorKind.CONNECTION, ProviderErrorKind.SERVER})
+_INFRASTRUCTURE_KINDS = frozenset(
+    {
+        ProviderErrorKind.CONNECTION,
+        ProviderErrorKind.SERVER,
+        ProviderErrorKind.CAPACITY,
+        ProviderErrorKind.PORT_CONFLICT,
+    }
+)
 
 _BACKEND_FAILURE_MESSAGE = "The model backend is unavailable. Check the server logs for details."
 

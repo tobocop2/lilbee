@@ -137,8 +137,8 @@ def test_assert_devices_passes_when_no_nvidia_gpu(monkeypatch: pytest.MonkeyPatc
 
 
 def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The bb-3xnx failure: a CUDA build + an NVIDIA GPU, but the probe sees nothing.
-    # Must hard-fail, surface the engine's real error, and list causes (not assert one).
+    # A CUDA build plus an NVIDIA GPU, but the probe sees nothing. Must hard-fail,
+    # surface the engine's real error, and list causes rather than assert one.
     _force_linux(monkeypatch)
     _have_ldd(monkeypatch)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
@@ -150,7 +150,8 @@ def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.Monkey
     message = str(exc.value)
     assert "failed to initialize CUDA" in message  # the engine's own diagnostic, surfaced
     assert "nvidia-smi" in message
-    assert "12.4" in message
+    assert "MIG" in message  # the one host shape that reliably produces this symptom
+    assert "nvidia-cuda-runtime" in message  # the wheels to match, major-agnostic
     assert "CUDA_VISIBLE_DEVICES" in message  # causes listed, not one asserted
 
 
