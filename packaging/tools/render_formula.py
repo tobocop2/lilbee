@@ -45,7 +45,7 @@ def _replace_version(content: str, version: str) -> str:
     new_content, count = re.subn(r'  version "[^"]*"', f'  version "{version}"', content)
     if count != 1:
         sys.exit("expected exactly one version line")
-    return _replace_license(new_content)
+    return new_content
 
 
 def _render_default(content: str, args: argparse.Namespace) -> str:
@@ -135,7 +135,7 @@ def main() -> None:
         if not getattr(args, digest):
             parser.error(f"--{name} requires --{digest.replace('_', '-')}")
 
-    args.formula.write_text(render(args.formula.read_text(), args))
+    args.formula.write_text(_replace_license(render(args.formula.read_text(), args)))
 
 
 if __name__ == "__main__":
