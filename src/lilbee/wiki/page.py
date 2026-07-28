@@ -29,15 +29,13 @@ from lilbee.data.store import (
 )
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.reasoning import strip_reasoning
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     ParsedCitation,
     extract_body,
     parse_wiki_citations,
     render_citation_block,
-    strip_citation_block,
-)
-from lilbee.wiki.citations import (
     render_provenance,
+    strip_citation_block,
     verify_citations,
 )
 from lilbee.wiki.persistence import (
@@ -246,10 +244,10 @@ def assemble_content(
     return full
 
 
-def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
+def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
-    ``wiki_source`` must follow the ``<wiki_dir>/<subdir>/<slug>.md``
+    ``wiki_source`` must follow the ``<config.wiki_dir>/<subdir>/<slug>.md``
     shape (see :attr:`PageTarget.wiki_source`). Three branches:
 
     - subdir in :data:`WIKI_CONTENT_SUBDIRS`: chunk, embed, then swap
@@ -266,7 +264,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     ``lilbee.data.ingest``: ``content_type="text"``, all four page/line
     positions ``0`` (wiki pages are not paginated).
     """
-    subdir = subdir_from_wiki_source(wiki_source)
+    subdir = subdir_from_wiki_source(wiki_source, config.wiki_dir)
     if subdir is None:
         log.warning("index_wiki_page: malformed wiki_source %r (no subdir)", wiki_source)
         return 0

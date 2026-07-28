@@ -445,6 +445,35 @@ class TestWikiEnabled:
         assert events[1][1]["label"] == "doc.txt"
         assert events[2][1] == {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
 
+    async def test_build_dry_run_returns_candidates_as_json(self, monkeypatch):
+        """dry_run answers with the entity candidates, not an SSE stream."""
+
+        def build_boom(*a, **kw):
+            raise AssertionError("dry_run must not build")
+
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", build_boom)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.preview_build_entities",
+            lambda config: [
+                {
+                    "slug": "ford",
+                    "label": "Ford",
+                    "kind": "entity",
+                    "type_hint": "ORG",
+                    "mentions": 2,
+                    "sources": ["a.md"],
+                }
+            ],
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build?dry_run=true", headers=_h())
+        assert resp.status_code == 201
+        payload = resp.json()
+        assert payload["dry_run"] is True
+        assert payload["count"] == 1
+        assert payload["entities"][0]["slug"] == "ford"
+        assert payload["note"]
+
     async def test_build_runs_off_the_event_loop(self, monkeypatch):
         """The build is CPU- and IO-bound, so it runs in a worker thread."""
         import threading

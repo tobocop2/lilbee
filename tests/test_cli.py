@@ -3015,7 +3015,7 @@ class TestWikiBuild:
         fake_extractor = MagicMock()
         fake_extractor.extract.return_value = []
         monkeypatch.setattr(
-            "lilbee.wiki.entity_extractor.get_entity_extractor",
+            "lilbee.wiki.generation.get_entity_extractor",
             lambda *a, **kw: fake_extractor,
         )
         return fake_extractor
@@ -3209,6 +3209,92 @@ class TestWikiBuild:
         assert chunk_calls == ["a.txt", "b.txt"]
 
 
+def _citation_row(**overrides: object) -> dict:
+    """A citation record with every field the renderers read."""
+    return {
+        "wiki_source": "wiki/summaries/doc.md",
+        "wiki_chunk_index": 0,
+        "citation_key": "src1",
+        "claim_type": "fact",
+        "source_filename": "doc.md",
+        "source_hash": "abc",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 1,
+        "line_end": 10,
+        "excerpt": "Python supports typing.",
+        "created_at": "2026-01-01",
+        **overrides,
+    }
+
+
+class TestWikiBrowseCommands:
+    """``wiki list`` and ``wiki read`` mirror the HTTP and MCP browse surface."""
+
+    @staticmethod
+    def _write_page(root: Path) -> None:
+        page_dir = root / "wiki" / "entities"
+        page_dir.mkdir(parents=True)
+        (page_dir / "chevrolet.md").write_text(
+            "---\ntitle: Chevrolet\nsource_count: 2\n---\n\n# Chevrolet\n\nBody text.\n"
+        )
+
+    def test_list_empty(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "list"])
+        assert result.exit_code == 0
+        assert "No wiki pages found" in result.output
+
+    def test_list_shows_pages(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        self._write_page(isolated_env)
+        result = runner.invoke(app, ["wiki", "list"])
+        assert result.exit_code == 0
+        assert "chevrolet" in result.output
+
+    def test_list_json_output(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        self._write_page(isolated_env)
+        result = runner.invoke(app, ["--json", "wiki", "list"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_list"
+        assert data["total"] == 1
+        assert data["pages"][0]["slug"] == "entities/chevrolet"
+
+    def test_read_prints_markdown(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        self._write_page(isolated_env)
+        result = runner.invoke(app, ["wiki", "read", "entities/chevrolet"])
+        assert result.exit_code == 0
+        assert "Body text." in result.output
+
+    def test_read_json_output(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        self._write_page(isolated_env)
+        result = runner.invoke(app, ["--json", "wiki", "read", "entities/chevrolet"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_read"
+        assert data["title"] == "Chevrolet"
+        assert data["frontmatter"]["source_count"] == 2
+
+    def test_read_missing_page_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "read", "entities/nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_read_missing_page_json_error(self, mock_svc, isolated_env):
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "read", "entities/nope"])
+        assert result.exit_code == 1
+        assert "not found" in json.loads(result.output)["error"]
+
+
 class TestWikiCitations:
     def test_citations_empty(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = []
@@ -3217,22 +3303,7 @@ class TestWikiCitations:
         assert "No citations found" in result.output
 
     def test_citations_with_records(self, mock_svc):
-        mock_svc.store.get_citations_for_wiki.return_value = [
-            {
-                "wiki_source": "wiki/summaries/doc.md",
-                "wiki_chunk_index": 0,
-                "citation_key": "src1",
-                "claim_type": "fact",
-                "source_filename": "doc.md",
-                "source_hash": "abc",
-                "page_start": 0,
-                "page_end": 0,
-                "line_start": 1,
-                "line_end": 10,
-                "excerpt": "Python supports typing.",
-                "created_at": "2026-01-01",
-            }
-        ]
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row()]
         result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
         assert "src1" in result.output
@@ -3241,20 +3312,7 @@ class TestWikiCitations:
     def test_citations_long_excerpt_truncated(self, mock_svc):
         long_excerpt = "A" * 80
         mock_svc.store.get_citations_for_wiki.return_value = [
-            {
-                "wiki_source": "wiki/summaries/doc.md",
-                "wiki_chunk_index": 0,
-                "citation_key": "src1",
-                "claim_type": "fact",
-                "source_filename": "doc.md",
-                "source_hash": "abc",
-                "page_start": 0,
-                "page_end": 0,
-                "line_start": 1,
-                "line_end": 10,
-                "excerpt": long_excerpt,
-                "created_at": "2026-01-01",
-            }
+            _citation_row(excerpt=long_excerpt)
         ]
         result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
@@ -3269,6 +3327,39 @@ class TestWikiCitations:
         data = json.loads(result.output)
         assert data["command"] == "wiki_citations"
         assert data["total"] == 0
+
+    def test_reverse_lookup_lists_pages_citing_a_source(self, mock_svc):
+        mock_svc.store.get_citations_for_source.return_value = [_citation_row()]
+        result = runner.invoke(app, ["wiki", "citations", "--source", "doc.md"])
+        assert result.exit_code == 0
+        assert "Pages citing" in result.output
+        assert "summaries" in result.output
+        mock_svc.store.get_citations_for_wiki.assert_not_called()
+
+    def test_reverse_lookup_json_output(self, mock_svc):
+        cfg.json_mode = True
+        mock_svc.store.get_citations_for_source.return_value = [_citation_row()]
+        result = runner.invoke(app, ["--json", "wiki", "citations", "--source", "doc.md"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["source"] == "doc.md"
+        assert data["total"] == 1
+
+    @pytest.mark.parametrize(
+        "args",
+        [[], ["wiki/summaries/doc.md", "--source", "doc.md"]],
+        ids=["neither", "both"],
+    )
+    def test_ambiguous_direction_exits_nonzero(self, mock_svc, args):
+        result = runner.invoke(app, ["wiki", "citations", *args])
+        assert result.exit_code == 1
+        assert "not both" in result.output
+
+    def test_ambiguous_direction_json_error(self, mock_svc):
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "citations"])
+        assert result.exit_code == 1
+        assert "not both" in json.loads(result.output)["error"]
 
 
 class TestWikiStatus:

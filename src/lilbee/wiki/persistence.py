@@ -39,8 +39,8 @@ _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 # same wording with a regex.
 _DRIFT_MARKER_PREFIX = "<!-- DRIFT:"
 
-# A ``<wiki_dir>/<subdir>/<slug>.md`` source has at least this many ``/``-split
-# parts. Anything shorter is a malformed wiki source and has no subdir.
+# Once ``<wiki_dir>/`` is stripped, a well-formed source leaves at least
+# ``<subdir>/<slug>.md``. Anything shorter has no subdir.
 _WIKI_SOURCE_MIN_PARTS = 2
 
 # Drift-marker field carrying the hash of the diverting page's sources, so a
@@ -128,15 +128,20 @@ def divert_to_drafts(
     return draft_path
 
 
-def subdir_from_wiki_source(wiki_source: str) -> str | None:
+def subdir_from_wiki_source(wiki_source: str, wiki_dir: str) -> str | None:
     """Return the subdir component (``summaries``, ``concepts``, ...) of *wiki_source*.
 
-    ``wiki_source`` is the ``<wiki_dir>/<subdir>/<slug>.md`` path
-    stored in citations and chunks. Returns None when the path has
-    fewer than two components.
+    ``wiki_source`` is the ``<wiki_dir>/<subdir>/<slug>.md`` path stored in
+    citations and chunks. ``wiki_dir`` is stripped as a prefix rather than
+    split positionally, so a nested wiki_dir (``notes/wiki``) still resolves
+    to its subdir. Returns None when the source is not under *wiki_dir* or
+    carries no subdir.
     """
-    parts = wiki_source.split("/")
-    return parts[1] if len(parts) >= _WIKI_SOURCE_MIN_PARTS else None
+    relative = wiki_source.removeprefix(wiki_dir + "/")
+    if relative == wiki_source:
+        return None
+    parts = relative.split("/")
+    return parts[0] if len(parts) >= _WIKI_SOURCE_MIN_PARTS else None
 
 
 def persist_and_finalize(
@@ -188,7 +193,7 @@ def persist_and_finalize(
         rec["wiki_source"] = target.wiki_source
     store.replace_citations_for_wiki(target.wiki_source, verified)
 
-    index_wiki_page(content, target.wiki_source, store)
+    index_wiki_page(content, target.wiki_source, store, config)
 
     if config.wiki_prune_raw:
         for name in source_names:

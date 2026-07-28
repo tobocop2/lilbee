@@ -15,6 +15,7 @@ from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.sessions import MessageRole
+from lilbee.wiki.entity_extractor import EntityKind
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -432,6 +433,26 @@ class WikiCitationRecord(BaseModel):
     line_end: int = 0
     excerpt: str = ""
     created_at: str = ""
+
+
+class WikiEntityCandidateResponse(BaseModel):
+    """One NER entity candidate returned by a build dry run."""
+
+    slug: str
+    label: str = ""
+    kind: EntityKind = EntityKind.ENTITY
+    type_hint: str = ""
+    mentions: int = 0
+    sources: list[str] = []
+
+
+class WikiBuildDryRunResult(BaseModel):
+    """Entity candidates a build would cover, with no LLM call made."""
+
+    dry_run: bool = True
+    entities: list[WikiEntityCandidateResponse] = []
+    count: int = 0
+    note: str = ""
 
 
 class WikiPageDetail(BaseModel):

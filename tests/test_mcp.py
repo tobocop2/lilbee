@@ -1042,6 +1042,25 @@ class TestWikiCitations:
         result = wiki_citations("wiki/summaries/missing.md")
         assert result["total"] == 0
 
+    def test_source_gives_the_reverse_lookup(self, mock_svc):
+        cfg.wiki = True
+        mock_svc.store.get_citations_for_source.return_value = [
+            {"wiki_source": "wiki/entities/ford.md", "citation_key": "src1"}
+        ]
+        result = wiki_citations(source="doc.md")
+        assert result["source"] == "doc.md"
+        assert result["citations"][0]["wiki_source"] == "wiki/entities/ford.md"
+        mock_svc.store.get_citations_for_wiki.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{}, {"wiki_source": "wiki/summaries/doc.md", "source": "doc.md"}],
+        ids=["neither", "both"],
+    )
+    def test_ambiguous_direction_returns_error(self, mock_svc, kwargs):
+        cfg.wiki = True
+        assert "error" in wiki_citations(**kwargs)
+
 
 class TestWikiStatus:
     def test_no_wiki_dir(self, tmp_path, mock_svc):
@@ -1086,6 +1105,23 @@ class TestWikiBuildTool:
         assert result["command"] == "wiki_build"
         assert result["count"] == 1
         assert result["entities"] == 7
+
+    def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
+        cfg.wiki = True
+
+        def build_boom(*a, **kw):
+            raise AssertionError("dry_run must not build")
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", build_boom)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.preview_build_entities",
+            lambda *a, **kw: [{"slug": "ford", "label": "Ford", "mentions": 2}],
+        )
+        result = wiki_build(dry_run=True)
+        assert result["dry_run"] is True
+        assert result["count"] == 1
+        assert result["entities"][0]["slug"] == "ford"
+        assert result["note"]
 
 
 class TestWikiUpdateTool:

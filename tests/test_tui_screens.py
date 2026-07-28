@@ -9964,11 +9964,30 @@ class TestWikiCoverageEdgeCases:
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             with patch("lilbee.wiki.browse.list_pages", side_effect=OSError("boom")):
-                screen._load_pages()
+                screen.reload()
             await pilot.pause()
             tree = screen.query_one("#wiki-page-list", Tree)
             assert [str(c.label) for c in tree.root.children] == [msg.WIKI_LOAD_FAILED_LEAF]
             assert "boom" in screen.query_one("#wiki-content", Markdown).source
+
+    async def test_filtering_reads_the_cache_instead_of_re_walking_disk(self, tmp_path):
+        """A debounced keystroke repaints from the cached list, not from disk."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "alpha", "Alpha")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.list_pages") as walk:
+                screen._load_pages(filter_text="alpha")
+                screen._load_pages(filter_text="al")
+            await pilot.pause()
+            walk.assert_not_called()
+            assert [p.title for p in screen._pages] == ["Alpha"]
 
     async def test_filtered_empty_keeps_the_content_pane(self, tmp_path):
         """A filter with no matches must not claim the wiki is empty."""

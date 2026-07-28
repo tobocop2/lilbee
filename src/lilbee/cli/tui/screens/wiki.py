@@ -126,6 +126,7 @@ class WikiScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._page_slugs: list[str] = []
+        self._pages: list[WikiPageInfo] = []
         self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -164,7 +165,7 @@ class WikiScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
-        self._load_pages()
+        self.reload()
 
     def on_show(self) -> None:
         """Re-scan on focus so out-of-band builds (`lilbee wiki build` from a
@@ -173,41 +174,43 @@ class WikiScreen(Screen[None]):
         self.reload()
 
     def reload(self) -> None:
-        """Refresh the sidebar from disk under the live search filter.
+        """Re-walk the wiki from disk, then repaint under the live search filter.
 
         Public entry point for external callers (the task bar refreshes an
-        open wiki screen after a sync or a wikify run).
+        open wiki screen after a sync or a wikify run). The walk parses every
+        page's frontmatter, so it runs here and not on every filter keystroke.
         """
-        self._load_pages(filter_text=self.query_one("#wiki-search", Input).value.strip())
-
-    def _load_pages(self, filter_text: str = "") -> None:
-        """Populate the sidebar tree with wiki pages, optionally filtered."""
         from lilbee.wiki.browse import list_pages
 
+        self._pages = []
+        if cfg.wiki:
+            try:
+                self._pages = list_pages(_wiki_root())
+            except Exception as exc:
+                log.warning("Failed to list wiki pages", exc_info=True)
+                tree = self._empty_tree()
+                tree.root.add_leaf(msg.WIKI_LOAD_FAILED_LEAF)
+                self._show_detail(msg.WIKI_LOAD_FAILED.format(error=exc))
+                return
+        self._load_pages(filter_text=self.query_one("#wiki-search", Input).value.strip())
+
+    def _empty_tree(self) -> Tree[str | None]:
+        """Clear the sidebar tree and the slug list it indexes."""
         tree = self.query_one("#wiki-page-list", Tree)
         tree.reset("Wiki")
         self._page_slugs = []
+        return tree
 
-        if not cfg.wiki:
-            tree.root.add_leaf(msg.wiki_empty_state_leaf())
-            self._show_placeholder()
-            return
-
-        try:
-            all_pages = list_pages(_wiki_root())
-        except Exception as exc:
-            log.warning("Failed to list wiki pages", exc_info=True)
-            tree.root.add_leaf(msg.WIKI_LOAD_FAILED_LEAF)
-            self._show_detail(msg.WIKI_LOAD_FAILED.format(error=exc))
-            return
-
-        if not all_pages:
+    def _load_pages(self, filter_text: str = "") -> None:
+        """Populate the sidebar tree from the cached page list, optionally filtered."""
+        tree = self._empty_tree()
+        if not self._pages:
             tree.root.add_leaf(msg.wiki_empty_state_leaf())
             self._show_placeholder()
             return
 
         needle = filter_text.lower()
-        pages = [p for p in all_pages if needle in p.title.lower()]
+        pages = [p for p in self._pages if needle in p.title.lower()]
         if not pages:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
@@ -334,7 +337,7 @@ class WikiScreen(Screen[None]):
 
     @on(Input.Changed, "#wiki-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Re-filter after a short debounce so a multi-key term re-walks the wiki
+        """Re-filter after a short debounce so a multi-key term repaints the
         tree once on pause, not once per keystroke."""
         filter_text = event.value.strip()
         if self._search_filter_timer is not None:

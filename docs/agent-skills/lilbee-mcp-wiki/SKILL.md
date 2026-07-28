@@ -40,6 +40,8 @@ LLM-bound wiki op (`build`, `update`, `synthesize`) goes through the
 | `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
 | `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |
 | `lilbee_wiki_citations(wiki_source)` | Per-section citation coverage for one wiki page. |
+| `lilbee_wiki_citations(source=...)` | Reverse lookup: the wiki pages citing one source document. |
+| `lilbee_wiki_build(dry_run=True)` | Preview the entity candidates a build would cover. No LLM calls, so it runs inline. |
 | `lilbee_wiki_drafts_list()` | Pending drafts with drift, faithfulness, and pairing info. |
 | `lilbee_wiki_drafts_diff(slug)` | Unified diff between a pending draft and the live page. |
 

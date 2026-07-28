@@ -15,7 +15,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
-from lilbee.wiki.batch import chunks_for_source, match_label
+from lilbee.wiki.batch import match_label
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
@@ -222,16 +222,6 @@ class TestPrefixHeading:
         assert out.startswith("# designer\n\n")
 
 
-class TestChunksForSource:
-    def test_filters_chunks_by_source(self):
-        c1 = _chunk("a.md", 0, "a0")
-        c2 = _chunk("b.md", 0, "b0")
-        c3 = _chunk("a.md", 1, "a1")
-        filtered = chunks_for_source([c1, c2, c3], "a.md")
-        assert [c.chunk_index for c in filtered] == [0, 1]
-        assert all(c.source == "a.md" for c in filtered)
-
-
 class TestDeletePendingMarkerIfPresent:
     def test_returns_false_when_path_missing(self, tmp_path: Path):
         assert delete_pending_marker_if_present(tmp_path, "missing") is False
@@ -365,6 +355,68 @@ class TestGenerateSourceBatchEdgeCases:
         assert pages == []
         marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry-ford.md"
         assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
+
+class TestSectionFaithfulnessScope:
+    """Which chunks a batched section is scored against."""
+
+    @staticmethod
+    def _record_scored_chunks(monkeypatch) -> list[list[int]]:
+        """Capture the chunk indices handed to each faithfulness check."""
+        scored: list[list[int]] = []
+
+        def _record(
+            chunks: list[SearchChunk], body: str, label: str, config: object = None
+        ) -> float:
+            scored.append([c.chunk_index for c in chunks])
+            return 1.0
+
+        monkeypatch.setattr("lilbee.wiki.batch.check_faithfulness", _record)
+        return scored
+
+    def test_entity_section_scores_against_its_own_chunk_refs(self, stub_embedder, monkeypatch):
+        """A niche section is compared to its entity's chunks, not the source centroid."""
+        chunks = [_chunk("s.txt", i, f"{_EXCERPT} passage {i}") for i in range(3)]
+        entity = ExtractedEntity(
+            slug="henry-ford",
+            kind=EntityKind.ENTITY,
+            label="Henry Ford",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef(source="s.txt", chunk_index=1),),
+        )
+        scored = self._record_scored_chunks(monkeypatch)
+        provider = _mock_batch_provider(_section("Henry Ford") + _valid_citation_block())
+
+        generate_source_batch(
+            source="s.txt",
+            entities=[entity],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert scored == [[1]]
+
+    def test_concept_section_scores_against_the_whole_source(self, stub_embedder, monkeypatch):
+        """Concepts have no extraction refs, so they keep the full chunk pool."""
+        chunks = [_chunk("s.txt", i, f"{_EXCERPT} passage {i}") for i in range(3)]
+        scored = self._record_scored_chunks(monkeypatch)
+        text = _declare("Assembly Line") + _section("Assembly Line") + _valid_citation_block()
+        provider = _mock_batch_provider(text)
+
+        generate_source_batch(
+            source="s.txt",
+            entities=[],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        assert scored == [[0, 1, 2]]
 
 
 class TestFinalizeSectionGuards:

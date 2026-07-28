@@ -1,9 +1,9 @@
-"""Wiki layer commands: build, update, lint, citations, status, prune, synthesize, drafts."""
+"""Wiki layer commands: build, update, browse, lint, citations, status, prune, drafts."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 from rich.table import Table
@@ -27,10 +27,15 @@ from lilbee.wiki.shared import (
 )
 
 if TYPE_CHECKING:
-    from lilbee.wiki.entity_extractor import ExtractedEntity
+    from collections.abc import Callable
+
+    from lilbee.data.store import CitationRecord
+    from lilbee.wiki.generation import WikiEntityCandidate
 
 
-wiki_app = typer.Typer(help="Wiki layer commands: generate, lint, citations, status, prune.")
+wiki_app = typer.Typer(
+    help="Wiki layer commands: generate, browse, lint, citations, status, prune."
+)
 
 # Citations table renders excerpts truncated to ``_CITATION_EXCERPT_MAX_CHARS``;
 # the ellipsis insertion point is one ``...`` shorter so the visible string never
@@ -107,22 +112,138 @@ def wiki_lint(
         raise typer.Exit(1)
 
 
-@wiki_app.command(name="citations")
-def wiki_citations(
-    wiki_source: str = typer.Argument(..., help="Wiki page path, e.g. wiki/summaries/doc.md."),
+@wiki_app.command(name="list")
+def wiki_list(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """Show citations for a wiki page."""
+    """List wiki pages with their type, source count, and creation date."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.browse import list_pages
 
-    records = get_services().store.get_citations_for_wiki(wiki_source)
+    pages = list_pages(cfg.data_root / cfg.wiki_dir)
 
     if cfg.json_mode:
         json_output(
             {
+                "command": "wiki_list",
+                "pages": [p.to_dict() for p in pages],
+                "total": len(pages),
+            }
+        )
+        return
+
+    if not pages:
+        console.print("No wiki pages found.")
+        return
+
+    table = Table(title=f"Wiki Pages ({len(pages)})")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Title")
+    table.add_column("Type", style=theme.MUTED)
+    table.add_column("Sources")
+    table.add_column("Created", style=theme.MUTED)
+    for page in pages:
+        table.add_row(
+            page.slug, page.title, page.page_type, str(page.source_count), page.created_at
+        )
+    console.print(table)
+
+
+@wiki_app.command(name="read")
+def wiki_read(
+    slug: str = typer.Argument(..., help="Page slug, e.g. entities/chevrolet."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Print a wiki page's markdown."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.browse import read_page
+
+    page = read_page(cfg.data_root / cfg.wiki_dir, slug)
+    if page is None:
+        message = f"wiki page not found: {slug}"
+        if cfg.json_mode:
+            json_output({"error": message})
+        else:
+            console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+        raise typer.Exit(1)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_read",
+                "slug": page.slug,
+                "title": page.title,
+                "content": page.content,
+                "frontmatter": page.frontmatter,
+            }
+        )
+        return
+    console.print(page.content)
+
+
+@wiki_app.command(name="citations")
+def wiki_citations(
+    wiki_source: str = typer.Argument("", help="Wiki page path, e.g. wiki/summaries/doc.md."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+    source: str = typer.Option(
+        "",
+        "--source",
+        help="Reverse lookup: list the wiki pages citing this source document.",
+    ),
+) -> None:
+    """Show a wiki page's citations, or the pages citing a source document."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if bool(wiki_source) == bool(source):
+        message = "Pass either a wiki page path or --source, not both."
+        if cfg.json_mode:
+            json_output({"error": message})
+        else:
+            console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+        raise typer.Exit(1)
+
+    store = get_services().store
+    if source:
+        _render_citations(
+            store.get_citations_for_source(source),
+            key="source",
+            value=source,
+            title=f"Pages citing: {source}",
+            column_header="Page",
+            column_value=lambda rec: rec["wiki_source"],
+        )
+        return
+    _render_citations(
+        store.get_citations_for_wiki(wiki_source),
+        key="wiki_source",
+        value=wiki_source,
+        title=f"Citations: {wiki_source}",
+        column_header="Source",
+        column_value=lambda rec: rec["source_filename"],
+    )
+
+
+def _render_citations(
+    records: list[CitationRecord],
+    *,
+    key: str,
+    value: str,
+    title: str,
+    column_header: str,
+    column_value: Callable[[CitationRecord], str],
+) -> None:
+    """Render citation rows as JSON or a table, in whichever direction was asked.
+
+    The second column differs by direction: the forward lookup names the source
+    a page cites, the reverse one names the page citing a source.
+    """
+    if cfg.json_mode:
+        json_output(
+            {
                 "command": "wiki_citations",
-                "wiki_source": wiki_source,
+                key: value,
                 "citations": [dict(r) for r in records],
                 "total": len(records),
             }
@@ -130,12 +251,12 @@ def wiki_citations(
         return
 
     if not records:
-        console.print(f"No citations found for [{theme.ACCENT}]{wiki_source}[/{theme.ACCENT}]")
+        console.print(f"No citations found for [{theme.ACCENT}]{value}[/{theme.ACCENT}]")
         return
 
-    table = Table(title=f"Citations: {wiki_source}")
+    table = Table(title=title)
     table.add_column("Key", style=theme.ACCENT)
-    table.add_column("Source")
+    table.add_column(column_header)
     table.add_column("Type", style=theme.MUTED)
     table.add_column("Excerpt", max_width=_CITATION_EXCERPT_MAX_CHARS)
     for rec in records:
@@ -144,7 +265,7 @@ def wiki_citations(
             if len(rec["excerpt"]) > _CITATION_EXCERPT_MAX_CHARS
             else rec["excerpt"]
         )
-        table.add_row(rec["citation_key"], rec["source_filename"], rec["claim_type"], excerpt)
+        table.add_row(rec["citation_key"], column_value(rec), rec["claim_type"], excerpt)
     console.print(table)
 
 
@@ -285,16 +406,9 @@ def wiki_build(
         _fail_wiki_disabled()
 
     if dry_run:
-        from lilbee.data.store import SearchChunk
-        from lilbee.wiki.entity_extractor import get_entity_extractor
+        from lilbee.wiki.generation import preview_build_entities
 
-        svc = get_services()
-        chunks: list[SearchChunk] = []
-        for record in svc.store.get_sources():
-            chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
-        extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
-        entities = extractor.extract(chunks)
-        _wiki_build_dry_run_output(entities)
+        _wiki_build_dry_run_output(preview_build_entities(cfg))
         return
 
     from lilbee.wiki import run_full_build
@@ -318,13 +432,7 @@ def wiki_build(
         console.print(f"  {path}")
 
 
-_DRY_RUN_CONCEPT_NOTE = (
-    "Note: LLM-curated concepts are not shown in --dry-run. "
-    "Run `lilbee wiki build` to see which concepts the LLM proposes."
-)
-
-
-def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
+def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
     """Render the extraction result as JSON or table without calling any LLM.
 
     Concepts come from the per-source batched LLM call, so listing
@@ -332,17 +440,7 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
     surface is NER-entity only, with a trailing note so a user who
     expected concepts in the output knows why they are missing.
     """
-    rows: list[dict[str, Any]] = [
-        {
-            "slug": e.slug,
-            "label": e.label,
-            "kind": e.kind.value,
-            "type_hint": e.type_hint,
-            "mentions": len(e.chunk_refs),
-            "sources": sorted({r.source for r in e.chunk_refs}),
-        }
-        for e in entities
-    ]
+    from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE
 
     if cfg.json_mode:
         json_output(
@@ -351,14 +449,14 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
                 "dry_run": True,
                 "entities": rows,
                 "count": len(rows),
-                "note": _DRY_RUN_CONCEPT_NOTE,
+                "note": DRY_RUN_CONCEPT_NOTE,
             }
         )
         return
 
     if not rows:
         console.print("No candidate entities extracted. Run sync first.")
-        console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+        console.print(f"[{theme.MUTED}]{DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
         return
 
     table = Table(title=f"Wiki build dry-run ({len(rows)} NER entity candidates)")
@@ -382,7 +480,7 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
         f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
         "No LLM calls were made."
     )
-    console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+    console.print(f"[{theme.MUTED}]{DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
 
 
 @wiki_app.command(name="update")

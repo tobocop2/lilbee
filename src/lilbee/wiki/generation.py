@@ -32,7 +32,7 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 from lilbee.wiki.batch import archive_legacy_concept_pages
-from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
+from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
@@ -304,6 +304,52 @@ class WikiBuildSummary(TypedDict):
     count: int
 
 
+class WikiEntityCandidate(TypedDict):
+    """One NER entity a build would write a page for."""
+
+    slug: str
+    label: str
+    kind: EntityKind
+    type_hint: str
+    mentions: int
+    sources: list[str]
+
+
+DRY_RUN_CONCEPT_NOTE = (
+    "LLM-curated concepts are not part of a dry run. "
+    "Run the build to see which concepts the LLM proposes."
+)
+
+
+def _corpus_chunks(store: Store) -> list[SearchChunk]:
+    """Every chunk of every ingested source, in source order."""
+    chunks: list[SearchChunk] = []
+    for record in store.get_sources():
+        chunks.extend(store.get_chunks_by_source(record["filename"]))
+    return chunks
+
+
+def preview_build_entities(config: Config) -> list[WikiEntityCandidate]:
+    """Entity candidates a build would cover, extracted with no LLM call.
+
+    The dry run every surface shares. Concepts come from the per-source
+    batched call, so they are absent here: see :data:`DRY_RUN_CONCEPT_NOTE`.
+    """
+    svc = get_services()
+    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
+    return [
+        WikiEntityCandidate(
+            slug=entity.slug,
+            label=entity.label,
+            kind=entity.kind,
+            type_hint=entity.type_hint,
+            mentions=len(entity.chunk_refs),
+            sources=sorted({ref.source for ref in entity.chunk_refs}),
+        )
+        for entity in extractor.extract(_corpus_chunks(svc.store))
+    ]
+
+
 def run_full_build(
     config: Config | None = None, on_progress: DetailedProgressCallback = noop_callback
 ) -> WikiBuildSummary:
@@ -317,12 +363,8 @@ def run_full_build(
     with WIKI_BUILD_LOCK:
         svc = get_services()
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
-        chunks: list[SearchChunk] = []
-        for record in svc.store.get_sources():
-            chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
-
         extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
-        entities = extractor.extract(chunks)
+        entities = extractor.extract(_corpus_chunks(svc.store))
         pages = build_wiki(
             entities,
             svc.provider,

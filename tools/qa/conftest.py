@@ -380,14 +380,6 @@ def extract_search_results(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def skip_if_search_unauthenticated(response: httpx.Response) -> None:
-    """``/api/search`` returns 401 in builds that enforce auth on the
-    public reads; the CLI lane covers the same flow without auth, so
-    the HTTP test skips rather than fails."""
-    if response.status_code == httpx.codes.UNAUTHORIZED:
-        pytest.skip("HTTP /api/search returned 401: auth is enforced in this build")
-
-
 def seed_fixture_corpus(lilbee_data: Path) -> Path:
     """Copy the shared fixture corpus (coffee + EV notes) into a test's
     documents directory and return the directory path."""
@@ -619,6 +611,17 @@ def server_url(lane: Lane, lilbee_data: Path) -> Iterator[str]:
     """
     with serve_lilbee_with(lane, lilbee_env(lilbee_data)) as base_url:
         yield base_url
+
+
+@pytest.fixture
+def server_headers(server_url: str, lilbee_data: Path) -> dict[str, str]:
+    """Authorization header for the ``server_url`` server.
+
+    Every route is token-gated, so an HTTP test that omits this asserts the
+    401 path, not the contract it names. Depends on ``server_url`` because the
+    token only lands in ``server.json`` once the server has booted.
+    """
+    return auth_headers(lilbee_env(lilbee_data))
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.security import PathTraversalError, validate_path_within
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, Store
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     find_unmarked_claims,
     verify_citation,

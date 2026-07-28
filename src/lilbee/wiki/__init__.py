@@ -11,7 +11,7 @@ from lilbee.wiki.browse import (
     list_pages,
     read_page,
 )
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
     find_unmarked_claims,

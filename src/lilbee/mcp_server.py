@@ -705,9 +705,23 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
 
 
 @_wiki_tool
-def wiki_citations(wiki_source: str) -> dict[str, Any]:
-    """List citations for a wiki page."""
-    records = get_services().store.get_citations_for_wiki(wiki_source)
+def wiki_citations(wiki_source: str = "", source: str = "") -> dict[str, Any]:
+    """List a wiki page's citations, or with ``source``, the pages citing that document.
+
+    Pass exactly one of ``wiki_source`` (forward) or ``source`` (reverse).
+    """
+    if bool(wiki_source) == bool(source):
+        return _error("pass either wiki_source or source, not both")
+    store = get_services().store
+    if source:
+        records = store.get_citations_for_source(source)
+        return {
+            "command": "wiki_citations",
+            "source": source,
+            "citations": [dict(r) for r in records],
+            "total": len(records),
+        }
+    records = store.get_citations_for_wiki(wiki_source)
     return {
         "command": "wiki_citations",
         "wiki_source": wiki_source,
@@ -777,10 +791,24 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @_wiki_tool
-def wiki_build() -> dict[str, Any]:
-    """Build the concept and entity wiki across all ingested sources. Blocks until done."""
-    from lilbee.wiki import run_full_build
+def wiki_build(dry_run: bool = False) -> dict[str, Any]:
+    """Build the concept and entity wiki across all ingested sources. Blocks until done.
 
+    ``dry_run=True`` returns the NER entity candidates a build would cover and
+    makes no LLM call.
+    """
+    from lilbee.wiki import run_full_build
+    from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE, preview_build_entities
+
+    if dry_run:
+        rows = preview_build_entities(cfg)
+        return {
+            "command": "wiki_build",
+            "dry_run": True,
+            "entities": rows,
+            "count": len(rows),
+            "note": DRY_RUN_CONCEPT_NOTE,
+        }
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
