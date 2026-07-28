@@ -296,7 +296,7 @@ class CatalogScreen(Screen[None]):
         self._spinner_frame: int = 0
         # Active-tab cache + per-tab widget memoization. Avoids a second
         # query_one on every _grid_container / _list_widget access. Default
-        # matches the TabbedContent's initial= value below.
+        # matches the tab _activate_initial_tab selects on mount.
         self._active_tab_id_cache: str = TAB_CHAT
         self._tab_grid_cache: dict[str, VerticalScroll] = {}
         self._tab_list_cache: dict[str, ModelList] = {}

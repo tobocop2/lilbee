@@ -28,6 +28,8 @@ from lilbee.retrieval.query.formatting import (
     unique_sources,
 )
 from lilbee.retrieval.query.searcher import (
+    _CONTEXT_TEMPLATE_TOKENS,
+    _PER_SOURCE_TOKENS,
     EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -135,6 +137,17 @@ def _make_result(
     )
 
 
+def _fit(
+    results: list[SearchChunk],
+    system: str = "sys",
+    question: str = "q",
+    history: list | None = None,
+) -> list[SearchChunk]:
+    """Sources kept by the budget fit, derived exactly as _finalize_context does."""
+    searcher = get_services().searcher
+    return searcher._fit_to_budget(results, searcher._context_budget(system, question, history))[0]
+
+
 class TestDisplaySourcePath:
     """source citations render absolute paths with ~ expansion."""
 
@@ -164,10 +177,16 @@ class TestDisplaySourcePath:
         from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
+        target = cfg.documents_dir / "anything.md"
 
-        # Force resolve() to raise so the fallback path runs.
+        # Raise only for the path under test; an unconditional patch also hits
+        # the config validator and blows up in fixture teardown.
+        real_resolve = _Path.resolve
+
         def _raise(self, strict=False):
-            raise OSError("simulated")
+            if self == target:
+                raise OSError("simulated")
+            return real_resolve(self, strict=strict)
 
         monkeypatch.setattr(_Path, "resolve", _raise)
         assert display_source_path("anything.md") == "anything.md"
@@ -433,6 +452,29 @@ class TestBuildContext:
         ctx = build_context(results)
         assert "[1] (notes.md)\nhello" in ctx
 
+    def test_header_omits_page_zero(self):
+        """PDF chunks whose page metadata was missing are stored with page 0.
+        The Sources block already suppresses that locator, so the prompt
+        header must too, or the model cites a page the user's list denies."""
+        results = [
+            _make_result(
+                source="scan.pdf", content_type="pdf", chunk="body", page_start=0, page_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (scan.pdf)\nbody" in ctx
+        assert "page 0" not in ctx
+
+    def test_header_omits_line_zero_for_code(self):
+        results = [
+            _make_result(
+                source="app.py", content_type="code", chunk="x = 1", line_start=0, line_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (app.py)\nx = 1" in ctx
+        assert "line 0" not in ctx
+
 
 class TestCitedIndexExtraction:
     def test_single_brackets(self):
@@ -497,6 +539,59 @@ class TestSearchContext:
         mock_svc.store.search.return_value = [near, far]
         results = get_services().searcher.search("q")
         assert [r.source for r in results] == ["a.md"]
+
+    _TOC_CHUNK = "A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n"
+
+    def test_structural_chunk_the_query_missed_is_dropped(self, mock_svc):
+        """With the filter on, a lower-ranked TOC the query did not hit is
+        dropped, while the real answer passage survives."""
+        cfg.filter_structural_chunks = True
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
+        mock_svc.store.search.return_value = [real, toc]
+        results = get_services().searcher.search("q")
+        assert [r.source for r in results] == ["body.pdf"]
+
+    def test_structural_filter_runs_before_the_buffer_slice_so_real_passages_backfill(
+        self, mock_svc
+    ):
+        """The filter drops structural chunks from the candidate list before the
+        top_k*2 slice, so a real passage past the window backfills into it. If the
+        filter ran after the slice, the deeper real passage would be lost."""
+        cfg.top_k = 1  # window is top_k*2 = 2
+        cfg.filter_structural_chunks = True
+        real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
+        toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
+        toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
+        real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
+        mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
+        sources = [r.source for r in get_services().searcher.search("q")]
+        assert "b.pdf" in sources  # backfilled from past the pre-filter window
+        assert "toc1.pdf" not in sources and "toc2.pdf" not in sources
+
+    def test_structural_filter_keeps_query_matched_page(self, mock_svc):
+        """A page the query lexically hit is never dropped, whatever its shape:
+        it is content the answer may need."""
+        cfg.filter_structural_chunks = True
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        hit = _make_result(source="toc.pdf", distance=0.4, bm25_score=9.0, chunk=self._TOC_CHUNK)
+        mock_svc.store.search.return_value = [real, hit]
+        assert "toc.pdf" in [r.source for r in get_services().searcher.search("q")]
+
+    def test_structural_filter_keeps_top_hit(self, mock_svc):
+        """The top-ranked result is never dropped, whatever its shape."""
+        cfg.filter_structural_chunks = True
+        toc = _make_result(source="toc.pdf", distance=0.05, chunk=self._TOC_CHUNK)
+        mock_svc.store.search.return_value = [toc]
+        assert [r.source for r in get_services().searcher.search("q")] == ["toc.pdf"]
+
+    def test_structural_filter_off_by_default_keeps_toc(self, mock_svc):
+        """Off by default: the A/B found it net-negative on the eval corpus."""
+        assert cfg.filter_structural_chunks is False
+        toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        mock_svc.store.search.return_value = [real, toc]
+        assert "toc.pdf" in [r.source for r in get_services().searcher.search("q")]
 
     def test_far_row_with_lexical_support_survives_search(self, mock_svc):
         """A both-arm row keeps its standing past max_distance: dropping it
@@ -865,7 +960,7 @@ class TestContextBudget:
     def test_trims_lowest_ranked_sources_to_fit(self, mock_svc):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert 0 < len(kept) < len(results)
         assert kept == results[: len(kept)]  # keeps the top-ranked prefix
 
@@ -883,7 +978,7 @@ class TestContextBudget:
         system, question = "sys " * 40, "q " * 20
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 900) for i in range(5)]
 
-        kept = get_services().searcher._fit_context_budget(results, system, question, None)
+        kept = _fit(results, system, question)
 
         searcher = get_services().searcher
         assembled = (
@@ -900,12 +995,12 @@ class TestContextBudget:
     def test_keeps_all_when_budget_ample(self, mock_svc):
         cfg.num_ctx = 100_000
         results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
-        assert get_services().searcher._fit_context_budget(results, "sys", "q", None) == results
+        assert _fit(results) == results
 
     def test_keeps_top_source_even_if_alone_over_budget(self, mock_svc):
         cfg.num_ctx = 1
         results = [_make_result(source="big.pdf", chunk="x" * 9000), _make_result(source="b.pdf")]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert len(kept) == 1
 
     def test_history_counts_against_the_budget(self, mock_svc):
@@ -915,16 +1010,145 @@ class TestContextBudget:
         cfg.num_ctx = 3000
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 1200) for i in range(5)]
         history = [{"role": "user", "content": "h" * 3000}]
-        no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
-        with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
+        no_hist = _fit(results)
+        with_hist = _fit(results, history=history)
         assert len(with_hist) < len(no_hist)
 
     def test_logs_when_trimming(self, mock_svc, caplog):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
         with caplog.at_level("INFO"):
-            get_services().searcher._fit_context_budget(results, "sys", "q", None)
+            _fit(results)
         assert "to fit the model context window" in caplog.text
+
+
+class TestNeighborExpansion:
+    """Selected chunks widen with adjacent same-source chunks at answer time."""
+
+    def test_off_by_default_never_touches_neighbors(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(chunk="core text")]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources[0].chunk == "core text"
+        mock_svc.store.get_chunks_by_indices.assert_not_called()
+
+    def test_widens_the_passage_and_the_prompt(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        center = "core overlap padding text closing overlap padding"
+        mock_svc.store.search.return_value = [_make_result(chunk=center, chunk_index=2)]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="before core overlap padding", chunk_index=1),
+            _make_result(chunk="closing overlap padding after", chunk_index=3),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        widened = "before core overlap padding text closing overlap padding after"
+        assert result.sources[0].chunk == widened
+        assert result.sources[0].chunk_index == 2
+        prompt = mock_svc.provider.chat.call_args[0][0][-1]["content"]
+        assert widened in prompt
+
+    def test_widening_keeps_citation_numbering(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", chunk_index=5, distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", chunk_index=0, distance=0.2),
+        ]
+        mock_svc.store.get_chunks_by_indices.return_value = []
+        mock_svc.provider.chat.return_value = _text_result("From [1] and [2].")
+        answer = get_services().searcher.ask("q")
+        assert "1. [a.pdf](file://" in answer
+        assert "2. [b.pdf](file://" in answer
+
+    def test_sources_block_shows_the_widened_page_span(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        mock_svc.store.search.return_value = [
+            _make_result(chunk="core", chunk_index=2, page_start=3, page_end=3)
+        ]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="prev", chunk_index=1, page_start=2, page_end=2),
+            _make_result(chunk="next", chunk_index=3, page_start=4, page_end=4),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        answer = get_services().searcher.ask("q")
+        assert "pages 2-4" in answer
+
+    def test_tight_budget_sheds_expansion_never_the_original(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = 1200
+        mock_svc.store.search.return_value = [_make_result(chunk="x" * 300, chunk_index=2)]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="y" * 300, chunk_index=1),
+            _make_result(chunk="z" * 300, chunk_index=3),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources[0].chunk == "x" * 300
+
+    def test_overflow_retry_sheds_expansion_not_an_original(self, mock_svc):
+        """On the context-overflow retry the tighter refit must start from the
+        pre-widen originals, so it sheds a chunk's neighbor filler before it
+        drops a whole lower-ranked original chunk."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = 4096
+        mock_svc.provider.served_chat_ctx.return_value = None
+        a = _make_result(source="a.pdf", chunk="a" * 300, chunk_index=2, distance=0.1)
+        b = _make_result(source="b.pdf", chunk="b" * 300, chunk_index=0, distance=0.2)
+        mock_svc.store.search.return_value = [a, b]
+
+        def neighbors(source, indices):
+            if source == "a.pdf":
+                return [
+                    _make_result(source="a.pdf", chunk="n" * 3000, chunk_index=1),
+                    _make_result(source="a.pdf", chunk="m" * 3000, chunk_index=3),
+                ]
+            return []
+
+        mock_svc.store.get_chunks_by_indices.side_effect = neighbors
+        mock_svc.provider.chat.side_effect = [
+            ProviderError("overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            _text_result("fits now"),
+        ]
+        result = get_services().searcher.ask_raw("q")
+        assert mock_svc.provider.chat.call_count == 2
+        # The lower-ranked original b.pdf must survive; only a.pdf's expansion sheds.
+        assert {r.source for r in result.sources} == {"a.pdf", "b.pdf"}
+
+    def test_widened_prompt_still_fits_the_provider_ceiling(self, mock_svc):
+        """Widening runs after the budget fit, so it must budget against the same
+        provider ceiling: the assembled widened prompt must not exceed
+        prompt_token_budget, and expansion must actually happen (non-vacuous)."""
+        from lilbee.providers.base import prompt_token_budget
+
+        ctx = 4096
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = ctx
+        mock_svc.provider.served_chat_ctx.return_value = None
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="b" * 3000, chunk_index=1, page_start=2, page_end=2),
+            _make_result(chunk="a" * 3000, chunk_index=3, page_start=4, page_end=4),
+        ]
+        system, question = "sys " * 40, "q " * 20
+        base = [_make_result(chunk="c" * 1500, chunk_index=2, page_start=3, page_end=3)]
+
+        searcher = get_services().searcher
+        budget = searcher._context_budget(system, question, None, 1.0)
+        fitted, used = searcher._fit_to_budget(base, budget)
+        widened = searcher._widen_with_neighbors(fitted, max(0, budget - used))
+
+        # Non-vacuous: at least one neighbor was actually merged in.
+        assert widened[0].chunk != "c" * 1500
+        assembled = (
+            searcher._budget_tokens(system)
+            + searcher._budget_tokens(question)
+            + sum(searcher._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in widened)
+            + _CONTEXT_TEMPLATE_TOKENS
+        )
+        assert assembled <= prompt_token_budget(ctx), (
+            f"widened prompt {assembled} tokens exceeds provider ceiling {prompt_token_budget(ctx)}"
+        )
 
 
 class TestAskRaw:
@@ -935,6 +1159,21 @@ class TestAskRaw:
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
+
+    def test_a_source_only_named_in_the_models_own_block_is_not_cited(self, mock_svc):
+        """cited_sources is the grounding signal JSON callers read, so it must
+        reflect what the answer used, not what the model echoed back. A model
+        that ends with its own Sources list naming every retrieved file would
+        otherwise mark all of them cited."""
+        mock_svc.store.search.return_value = [
+            _make_result(source="used.pdf", chunk="oil is 5 quarts"),
+            _make_result(source="never-used.pdf", chunk="unrelated"),
+        ]
+        mock_svc.provider.chat.return_value = _text_result(
+            "The engine holds 5 quarts, see used.pdf.\n\nSources:\n- used.pdf\n- never-used.pdf"
+        )
+        result = get_services().searcher.ask_raw("oil capacity?")
+        assert [s.source for s in result.cited_sources] == ["used.pdf"]
 
     def test_no_results_returns_grounded_refusal(self, mock_svc):
         """Zero RAG hits in RAG mode return a grounded refusal instead of
@@ -1552,6 +1791,17 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         mock_svc.embedder.embed_query.assert_called_once_with("hypothetical passage")
 
+    def test_spends_its_own_token_budget(self, mock_svc):
+        """A generated answer passage and a list of query variants are not the
+        same length of output, so they must not share one cap: retuning either
+        one through a shared constant silently retunes the other."""
+        from lilbee.retrieval.query.expansion import HYDE_MAX_TOKENS
+
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["num_predict"] == HYDE_MAX_TOKENS
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
         assert get_services().searcher._hyde_search("test", top_k=5) == []
@@ -1965,16 +2215,27 @@ class TestKnownItemTitleRoute:
     chunk from another book). A known-item shape plus a token-exact stem
     match routes; anything else stays topical."""
 
-    def _source(self, filename):
-        return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
+    def _source(self, filename, title=None):
+        return {
+            "filename": filename,
+            "file_hash": "h",
+            "ingested_at": "",
+            "chunk_count": 2,
+            "title": title,
+        }
 
-    def _index(self, mock_svc, filenames):
-        sources = [self._source(f) for f in filenames]
+    def _index(self, mock_svc, filenames, titles=None):
+        sources = [self._source(f, (titles or {}).get(f)) for f in filenames]
 
         def get_sources(search=None, limit=None, offset=0):
             if not search:
                 return sources[:limit]
-            return [s for s in sources if search.lower() in s["filename"].lower()][:limit]
+            return [
+                s
+                for s in sources
+                if search.lower() in s["filename"].lower()
+                or search.lower() in (s["title"] or "").lower()
+            ][:limit]
 
         mock_svc.store.get_sources.side_effect = get_sources
         mock_svc.store.get_chunks_by_source.return_value = [
@@ -2025,6 +2286,28 @@ class TestKnownItemTitleRoute:
         self._index(mock_svc, ["Notes.txt", "notes.md"])
         mock_svc.store.search.return_value = [_make_result()]
         get_services().searcher.search("summarize notes")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+    def test_stored_title_resolves_when_filename_differs(self, mock_svc):
+        """A note whose ingested H1 title differs from its filename routes by
+        that title: the flagship summarize-by-title case."""
+        self._index(
+            mock_svc,
+            ["notes-2024.md", "The Prince.txt"],
+            titles={"notes-2024.md": "Frankenstein Analysis"},
+        )
+        results = get_services().searcher.search("summarize Frankenstein Analysis")
+        assert [r.chunk for r in results] == ["opening", "ending"]
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("notes-2024.md")
+
+    def test_stored_title_shared_by_two_sources_stays_topical(self, mock_svc):
+        self._index(
+            mock_svc,
+            ["a.md", "b.md"],
+            titles={"a.md": "Weekly Sync", "b.md": "Weekly Sync"},
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("summarize Weekly Sync")
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
 
@@ -2090,7 +2373,7 @@ class TestKnownItemRoute:
         ]
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        results, _ = rag
+        results = rag.results
         assert [r.chunk for r in results] == ["first", "second"]
         assert all(r.score == 1.0 for r in results)
         mock_svc.store.search.assert_not_called()
@@ -2137,7 +2420,7 @@ class TestKnownItemRoute:
         cfg.num_ctx = None
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         prompt_tokens = sum(len(m["content"]) // 4 for m in messages)
         assert prompt_tokens <= 8192
         # Document order preserved after trimming: the head survives.
@@ -2157,7 +2440,7 @@ class TestKnownItemRoute:
         cfg.num_ctx = None
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         # At 2.56 chars/token the real prompt cost must still fit the window.
         real_tokens = sum(len(m["content"]) / 2.56 for m in messages)
         assert real_tokens <= 24576 * 1.05
@@ -2197,7 +2480,7 @@ class TestKnownItemRoute:
         finally:
             cfg.num_ctx = None
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         assert sum(len(m["content"]) // 4 for m in messages) <= 4096
 
     def test_docket_reference_resolves_by_content_concentration(self, mock_svc):
@@ -2468,7 +2751,7 @@ class TestHistoryCondensation:
         finally:
             cfg.query_expansion_count = 3
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         assert mock_svc.store.search.call_args[1]["query_text"] == rewritten
         assert "and when was it written?" in messages[-1]["content"]
         assert rewritten not in messages[-1]["content"]
@@ -2867,12 +3150,14 @@ class TestChunkTypeScope:
 
     def test_build_rag_context_default_is_mixed_pool(self, mock_svc):
         """No ``chunk_type`` arg means no filter. Both sides survive."""
-        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
-        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
+        wiki_chunk = _make_result(
+            source="wiki/summaries/doc.md", chunk_type="wiki", chunk="wiki text"
+        )
+        raw_chunk = _make_result(source="doc.md", chunk_type="raw", chunk="raw text")
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
-        chunks, _ = result
+        chunks = result.results
         assert len(chunks) == 2
 
     def test_build_rag_context_forwards_chunk_type_to_store(self, mock_svc):
@@ -3284,6 +3569,30 @@ class TestCitedSubsetByName:
         answer = "The witness notes that the repair happened in March."
         assert cited_subset(answer, sources) == []
 
+    def test_stem_embedded_in_a_longer_identifier_is_not_cited(self):
+        """Substring containment marks 'log-1' cited by an answer that only
+        discusses 'catalog-10'. cited_sources is the grounding signal JSON
+        consumers read, so a false positive inflates grounding."""
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="log-1.md", chunk_index=0)]
+        answer = "The catalog-10.pdf entry lists the part."
+        assert cited_subset(answer, sources) == []
+
+    def test_name_embedded_in_a_longer_filename_is_not_cited(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="notes.md", chunk_index=0)]
+        answer = "See footnotes.md for the caveats."
+        assert cited_subset(answer, sources) == []
+
+    def test_name_mention_still_counts_next_to_punctuation(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="log-1.md", chunk_index=0)]
+        for answer in ("As log-1.md shows,", "(log-1.md)", "see log-1.md."):
+            assert len(cited_subset(answer, sources)) == 1, answer
+
     def test_marker_and_name_citations_combine(self):
         from lilbee.retrieval.query.formatting import cited_subset
 
@@ -3333,9 +3642,49 @@ class TestStripLlmCitations:
         text = "The paper has three parts.\n\nReferences:\nIt lists 40 works."
         assert strip_llm_citations(text) == text
 
+    def test_removes_a_block_that_starts_the_answer(self):
+        """An answer that is nothing but a fabricated citation block must not
+        stream through: lilbee stacks its authoritative list underneath, which
+        is the double-list shape the filter exists to prevent."""
+        text = "Sources:\n- fake.pdf\n- other.pdf"
+        assert strip_llm_citations(text) == ""
+
+    def test_removes_a_bare_heading_that_starts_the_answer(self):
+        assert strip_llm_citations("Sources:") == ""
+
+    def test_keeps_prose_that_follows_a_mid_answer_block(self):
+        """The block is removed, not everything after it: a model that emits a
+        citation list and then keeps answering must not lose the continuation."""
+        text = "Answer.\n\nSources:\n- a.pdf\n\nAdditionally, more prose here."
+        assert strip_llm_citations(text) == "Answer.\n\nAdditionally, more prose here."
+
     def test_removes_dangling_heading(self):
         text = "The answer is 42.\n\nSources:\n"
         assert strip_llm_citations(text) == "The answer is 42."
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "Sources:\n- made-up.pdf\n\n- also-fake.pdf\n\nThe engine holds 5 quarts.",
+                "The engine holds 5 quarts.",
+            ),
+            (
+                "Answer.\n\nSources:\n1. a.pdf\n\n2. b.pdf\n\nMore prose.",
+                "Answer.\n\nMore prose.",
+            ),
+        ],
+        ids=["bulleted", "numbered"],
+    )
+    def test_removes_a_block_whose_items_are_blank_line_separated(self, text, expected):
+        """Markdown routinely spaces list items apart. Ending the block at the
+        first blank line leaves the remaining fabricated names in the answer,
+        with lilbee's own authoritative sources block stacked underneath."""
+        assert strip_llm_citations(text).strip() == expected
+
+    def test_removes_an_indented_block(self):
+        """The heading may be indented even when the list items are not."""
+        assert strip_llm_citations("Answer.\n   Sources:\n   - a.pdf") == "Answer."
 
 
 class TestExtractCitedIndices:
@@ -3413,7 +3762,7 @@ class TestBuildRagContextFilters:
         mock_svc.store.search.return_value = [close, far]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
-        results, _ = result
+        results = result.results
         sources = [r.source for r in results]
         assert "close.pdf" in sources
         assert "far.pdf" not in sources
@@ -3423,3 +3772,22 @@ class TestBuildRagContextFilters:
         mock_svc.store.search.return_value = [far]
         result = get_services().searcher.build_rag_context("question")
         assert result is None
+
+
+class TestNearDuplicateSuppression:
+    """prepare_results drops identical passages that the per-source cap misses."""
+
+    def test_same_text_under_two_paths_keeps_the_better_copy(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="notes/copy.md", chunk="the same boilerplate text", score=0.9)
+        b = _make_result(source="archive/copy.md", chunk="the same  boilerplate\ntext", score=0.4)
+        out = prepare_results([b, a])
+        assert [r.source for r in out] == ["notes/copy.md"]
+
+    def test_distinct_texts_are_kept(self):
+        from lilbee.retrieval.query.dedup import prepare_results
+
+        a = _make_result(source="a.md", chunk="first passage", score=0.9)
+        b = _make_result(source="b.md", chunk="second passage", score=0.8)
+        assert len(prepare_results([a, b])) == 2

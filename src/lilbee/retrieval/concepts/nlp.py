@@ -18,6 +18,12 @@ def concepts_available() -> bool:
     Fixed for the process lifetime (cached), like :func:`gpu_device_count`.
     Python caches only *successful* imports, so an absent extra re-walks
     ``sys.path`` on every call, and ingest calls this once per file.
+
+    Deliberately checks the *packages* only, not whether the ``en_core_web_sm``
+    model is downloaded: a missing model is a fixable user situation, so
+    :func:`load_spacy_pipeline` raises with the download command rather than
+    being silently reported unavailable here. Callers therefore still handle
+    ``ImportError`` from the load even when this returns True.
     """
     try:
         import graspologic_native  # noqa: F401
@@ -42,10 +48,12 @@ def _ensure_spacy_model() -> Any:
 
 
 def load_spacy_pipeline() -> Any:
-    """Public wrapper around the shared spaCy NER + noun-chunk pipeline.
+    """Public entry point for the shared spaCy NER + noun-chunk pipeline.
 
-    Raises ``ImportError`` if spaCy or the ``en_core_web_sm`` model cannot
-    be installed.
+    Raises ``ImportError`` if spaCy or the ``en_core_web_sm`` model is not
+    installed; the message carries the download command. This is the seam
+    other packages import -- ``_ensure_spacy_model`` stays private to this
+    module and its own package.
     """
     return _ensure_spacy_model()
 

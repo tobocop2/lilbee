@@ -64,8 +64,13 @@ def _apply_data_root(root: Path) -> None:
     """Point cfg paths at *root*, export ``LILBEE_DATA``, overlay config.toml.
 
     Exporting the env var keeps spawn-context worker subprocesses on the
-    same data root after their fresh ``import lilbee``.
+    same data root after their fresh ``import lilbee``. The root is
+    canonicalized so a symlinked or relative ``--data-dir`` keys the same lock
+    as another process on the same directory.
     """
+    from lilbee.core.system import canonical_data_root
+
+    root = canonical_data_root(root)
     cfg.data_root = root
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
