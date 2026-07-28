@@ -614,6 +614,55 @@ class TestPendingKindDetection:
         assert d.drift_ratio is None
 
 
+_QUOTED_DRIFT_MARKER = (
+    "<!-- DRIFT: 42% content changed; origin: concepts - flagged for human review -->"
+)
+_QUOTED_MARKERS = [
+    _QUOTED_DRIFT_MARKER,
+    f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt -->",
+    f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt -->",
+]
+
+
+def _quoting_body(marker: str) -> str:
+    return f"The page under review quotes {marker} verbatim.\n"
+
+
+class TestMarkersQuotedInADraftBody:
+    """A marker is the leading line only; one quoted in the body is content.
+
+    A wiki page that documents the wiki's own markers is the realistic case.
+    """
+
+    def test_a_quoted_drift_marker_reports_no_ratio_and_no_kind(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            _draft_content(_quoting_body(_QUOTED_DRIFT_MARKER)),
+        )
+        [d] = list_drafts(wiki_root)
+        assert (d.drift_ratio, d.pending_kind) == (None, None)
+
+    @pytest.mark.parametrize("marker", _QUOTED_MARKERS)
+    def test_a_quoted_marker_survives_the_accept(self, tmp_path: Path, marker: str) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content(_quoting_body(marker)))
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("x", wiki_root, MagicMock())
+        assert marker in result.moved_to.read_text(encoding="utf-8")
+
+    def test_a_quoted_origin_does_not_route_the_accept(self, tmp_path: Path) -> None:
+        """Origin is read off the leading marker, so the summaries fallback holds."""
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            _draft_content(_quoting_body(_QUOTED_DRIFT_MARKER)),
+        )
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("x", wiki_root, MagicMock())
+        assert WikiSubdir.SUMMARIES in result.moved_to.parts
+
+
 class TestBaseSlugForCollision:
     """Collision suffix stripping so accept lands on the winning slug."""
 

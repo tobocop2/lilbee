@@ -202,7 +202,12 @@ def persist_and_finalize(
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
-        stats.record_drafted()
+        # A drafts-target collision writes a PENDING marker, not review content;
+        # count it the same way the batch collision branch does.
+        if _is_pending_marker_text(_read_draft(page_path) or ""):
+            stats.record_pending_marker()
+        else:
+            stats.record_drafted()
         append_wiki_log(
             WikiLogAction.GENERATED,
             f"{target.page_type} page for {target.label} diverted to draft "

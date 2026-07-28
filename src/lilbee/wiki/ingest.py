@@ -6,12 +6,12 @@ import asyncio
 import logging
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg
 
 log = logging.getLogger(__name__)
 
 
-async def incremental_update(changed_sources: set[str]) -> None:
+async def incremental_update(changed_sources: set[str], config: Config | None = None) -> None:
     """Regenerate only the wiki pages touched by *changed_sources*.
 
     Builds a fresh ``ExtractedEntity`` set from the current corpus and
@@ -22,7 +22,9 @@ async def incremental_update(changed_sources: set[str]) -> None:
     review content. Above ``cfg.wiki_ingest_update_cap`` touched pages
     the auto-update bails out and logs a manual-update hint instead.
     """
-    if not cfg.wiki or not changed_sources:
+    if config is None:
+        config = cfg
+    if not config.wiki or not changed_sources:
         return
     from lilbee.data.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
@@ -31,7 +33,7 @@ async def incremental_update(changed_sources: set[str]) -> None:
     from lilbee.wiki.stats import BuildStats
 
     svc = get_services()
-    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
 
     chunks: list[SearchChunk] = []
     for record in svc.store.get_sources():
@@ -47,7 +49,7 @@ async def incremental_update(changed_sources: set[str]) -> None:
     if not touched:
         return
 
-    if len(touched) > cfg.wiki_ingest_update_cap:
+    if len(touched) > config.wiki_ingest_update_cap:
         # warning, not info: the default LILBEE_LOG_LEVEL is WARNING, so
         # log.info would silently drop the manual-update hint and the user
         # would see no signal at all during `lilbee sync` when the cap trips.
@@ -55,11 +57,12 @@ async def incremental_update(changed_sources: set[str]) -> None:
             "Wiki auto-update skipped: %d pages touched (cap %d). "
             "Run 'lilbee wiki update' for a full rebuild.",
             len(touched),
-            cfg.wiki_ingest_update_cap,
+            config.wiki_ingest_update_cap,
         )
         append_wiki_log(
             WikiLogAction.INGEST,
-            f"skipped: {len(touched)} pages exceeds cap {cfg.wiki_ingest_update_cap}",
+            f"skipped: {len(touched)} pages exceeds cap {config.wiki_ingest_update_cap}",
+            config,
         )
         return
 
@@ -70,13 +73,14 @@ async def incremental_update(changed_sources: set[str]) -> None:
         stats = BuildStats()
         with WIKI_BUILD_LOCK:
             pages = build_wiki(
-                touched, svc.provider, svc.store, cfg, extract_concepts=False, stats=stats
+                touched, svc.provider, svc.store, config, extract_concepts=False, stats=stats
             )
-            update_wiki_index()
+            update_wiki_index(config)
             append_wiki_log(
                 WikiLogAction.INGEST,
                 f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}; "
                 f"{stats.summary_line()}",
+                config,
             )
 
     # The mutex is taken in the worker thread: acquiring it here would block the

@@ -2084,6 +2084,30 @@ class TestPersistAndFinalizeDrafts:
         store.delete_by_source.assert_not_called()
         assert "pending review" in (target.wiki_root / "log.md").read_text()
 
+    def test_a_collision_off_a_drafts_target_counts_a_marker_not_a_draft(self):
+        """The artifact is a PENDING-COLLISION marker, so it counts the way the
+        batch collision branch counts the identical file."""
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        target = TestWikiIndexing._target(subdir=WikiSubdir.DRAFTS)
+        held = target.wiki_root / WikiSubdir.DRAFTS / f"{target.slug}.md"
+        held.parent.mkdir(parents=True, exist_ok=True)
+        held.write_text("---\nsources:\n- other.md\n---\n\nAnother source's proposal.\n")
+
+        stats = BuildStats()
+        page_path = persist_and_finalize(
+            "# Brakes\n\nThis source's proposal.\n",
+            target,
+            [],
+            ["doc.md"],
+            MagicMock(spec=Store),
+            cfg,
+            stats=stats,
+        )
+
+        assert "-collision-" in page_path.name
+        assert (stats.pending_markers, stats.pages_drafted) == (1, 0)
+
 
 class TestWritePendingMarker:
     def test_writes_the_marker_when_no_draft_exists(self, tmp_path: Path):

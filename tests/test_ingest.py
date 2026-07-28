@@ -393,6 +393,23 @@ class TestSync:
 
         assert hook.called is auto_update
 
+    async def test_wiki_hook_receives_the_config_the_gate_read(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The auto-update gate and the regeneration must consult one config."""
+        from lilbee.core.config import active_config, cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", True)
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+
+        await sync(quiet=True)
+
+        assert hook.call_args.args[1] is active_config()
+
     async def test_wiki_failure_does_not_skip_post_ingest_verification(
         self, mock_extract_file, isolated_env, monkeypatch, caplog
     ):

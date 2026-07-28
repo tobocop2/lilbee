@@ -146,7 +146,8 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
     _require_wiki()
     slug = slug.lstrip("/")
     try:
-        reject_draft(slug, _wiki_root())
+        # reject takes the wiki build mutex, so it runs off the event loop.
+        await asyncio.to_thread(reject_draft, slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:

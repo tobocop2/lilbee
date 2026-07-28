@@ -564,7 +564,7 @@ log.md       append-only audit trail (## [YYYY-MM-DD HH:MM] op | details)
 
 **Slugs** are lowercase, hyphen-separated filenames that also double as
 the `[[link]]` target (`braking-systems`, not `Braking Systems`). The
-slug generator lives at `wiki/shared.py:make_slug`.
+slug generator lives at `core/text.py:make_slug`.
 
 **Page lifecycle**. `lilbee wiki build` runs the Phase D migration once
 (archives pre-Phase-D noun-chunk concept pages and unwraps stale
@@ -601,13 +601,13 @@ with zero inbound `[[links]]`.
 
 **Adding a new entity-extraction strategy**. Implement
 `EntityExtractor` from `wiki/entity_extractor/base.py`, add a new
-`WikiEntityMode` enum value in `config.py`, wire it into
+`WikiEntityMode` enum value in `core/config/enums.py`, wire it into
 `wiki/entity_extractor/factory.py:_EXTRACTOR_BY_MODE`, and extend the
-`wiki_entity_mode` entry in `cli/settings_map.py` (its `choices` field
+`wiki_entity_mode` entry in `app/settings_map.py` (its `choices` field
 reads from the enum, so no update needed there).
 
 **Adding a new config knob**. All wiki settings live under the `Wiki`
-group in `config.py` and `cli/settings_map.py`. Prefix with `wiki_`
+group in `core/config/model.py` and `app/settings_map.py`. Prefix with `wiki_`
 (for module-level behaviour) or `wiki_concept_` / `wiki_entity_`
 (for strategy-scoped knobs). Use `ConfigField(writable=True)` so the
 setting appears in `/settings`, the HTTP `/set` route, and

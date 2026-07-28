@@ -255,6 +255,10 @@ def finalize_section(
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, clean_body, citation_block)
 
+    # Recorded before the collision return: the section's footnotes were parsed and
+    # verified either way, and the verify rate counts every outcome that got that far.
+    stats.record_citations(len(verified), dropped)
+
     # Concept collision: the second source proposing a slug loses and writes to a
     # drafts collision marker; the winning source's page stays untouched. This
     # applies whether the section publishes or is routed to drafts -- a below-
@@ -273,8 +277,6 @@ def finalize_section(
             )
             return None
         written_concept_slugs.setdefault(slug, source)
-
-    stats.record_citations(len(verified), dropped)
 
     # Successful regen of a previously-PENDING slug: remove the old
     # marker so the drafts surface no longer lists it.

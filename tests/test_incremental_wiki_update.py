@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import WikiEntityMode
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
@@ -220,3 +221,64 @@ class TestIncrementalWikiUpdate:
             await incremental_update({"changed.txt"})
         build.assert_called_once()
         assert build.call_args.kwargs.get("extract_concepts") is False
+
+
+class TestIncrementalUpdateHonorsThePassedConfig:
+    """An embedded instance's scoped config governs the update its sync triggered.
+
+    Falling back to the global ``cfg`` for the gate or the cap would regenerate
+    one config's wiki tree from another config's corpus.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_gate_reads_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki = True
+        scoped = cfg.model_copy(update={"wiki": False})
+        # Stubs a passing gate would regenerate from, so the gate is what is measured.
+        _install_service_stubs(monkeypatch, [_entity("braking", EntityKind.CONCEPT, ["a.txt"])])
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"a.txt"}, scoped)
+        build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_reads_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki_ingest_update_cap = 10
+        scoped = cfg.model_copy(update={"wiki_ingest_update_cap": 1})
+        _install_service_stubs(
+            monkeypatch,
+            [
+                _entity("a", EntityKind.CONCEPT, ["changed.txt"]),
+                _entity("b", EntityKind.CONCEPT, ["changed.txt"]),
+            ],
+        )
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"changed.txt"}, scoped)
+        build.assert_not_called()
+        assert "exceeds cap 1" in (_isolated_wiki / "wiki" / "log.md").read_text()
+
+    @pytest.mark.asyncio
+    async def test_the_extractor_and_the_build_read_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki_ingest_update_cap = 10
+        extractor, _services = _install_service_stubs(
+            monkeypatch, [_entity("braking", EntityKind.ENTITY, ["changed.txt"])]
+        )
+        built: dict[str, object] = {}
+
+        def _capture(mode: object, provider: object, config: object) -> MagicMock:
+            built["mode"] = mode
+            built["config"] = config
+            return extractor
+
+        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", _capture)
+        scoped = cfg.model_copy(update={"wiki_entity_mode": WikiEntityMode.LLM_TAGGED})
+        with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
+            await incremental_update({"changed.txt"}, scoped)
+        assert built["mode"] is WikiEntityMode.LLM_TAGGED
+        assert built["config"] is scoped
+        assert build.call_args.args[3] is scoped

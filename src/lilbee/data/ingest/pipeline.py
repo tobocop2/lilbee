@@ -904,7 +904,7 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
     from lilbee.wiki.ingest import incremental_update
 
     try:
-        await incremental_update(changed_sources)
+        await incremental_update(changed_sources, config)
     except Exception:
         log.warning("Wiki auto-update failed after sync", exc_info=True)
 

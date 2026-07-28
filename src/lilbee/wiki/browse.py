@@ -159,7 +159,7 @@ def _list_md_files_recursive(directory: Path) -> list[Path]:
 
 
 def list_pages(wiki_root: Path) -> list[WikiPageInfo]:
-    """List all wiki pages under summaries/ and synthesis/ at any nesting depth."""
+    """List all wiki pages under the content subdirs at any nesting depth."""
     pages: list[WikiPageInfo] = []
     for subdir in WIKI_CONTENT_SUBDIRS:
         for path in _list_md_files_recursive(wiki_root / subdir):

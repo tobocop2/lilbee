@@ -189,6 +189,14 @@ class TestSplitBatchedOutput:
         assert set(parsed) == {"Assembly Line"}
         assert "Intro prose" not in parsed["Assembly Line"][1]
 
+    def test_a_body_line_starting_with_concepts_stays_in_its_section(self):
+        """The declaration lives in the preamble. A section line that opens with
+        "Concepts:" is prose, and deleting it would drop the claim it cites."""
+        prose = "Concepts: combustion, compression and timing all interact here.[^src1]"
+        text = _declare("Assembly Line") + _section("Assembly Line", f"{prose}\n")
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Assembly Line"})
+        assert prose in parsed["Assembly Line"][1]
+
     def test_no_headers_returns_empty_dict(self):
         """A response that contains no H1/H2 headers recovers nothing."""
         text = "just a paragraph with no headings at all.\n\n> some body text\n"
@@ -227,6 +235,12 @@ class TestParseDeclaredConcepts:
 
     def test_absent_declaration_curates_nothing(self):
         assert _parse_declared_concepts(_section("Brake System")) == set()
+
+    def test_a_body_line_starting_with_concepts_is_not_a_declaration(self):
+        """Adopting section prose as the declaration makes any noise header that
+        substring-matches the sentence publish as a concept page named after it."""
+        text = _section("Henry Ford", "Concepts: combustion, compression and timing.\n")
+        assert _parse_declared_concepts(text) == set()
 
     def test_blank_entries_are_dropped(self):
         assert _parse_declared_concepts("CONCEPTS: Brakes; ;  \n") == {"Brakes"}
@@ -695,9 +709,9 @@ class TestBuildStatsForABatch:
         assert stats.citation_verify_rate == 0.0
         assert stats.pending_markers == 1
 
-    def test_a_section_lost_to_a_slug_collision_counts_no_citations(self, stub_embedder):
-        """The losing section becomes a collision marker, not a page, so its
-        citations were never rendered."""
+    def test_a_section_lost_to_a_slug_collision_still_counts_its_citations(self, stub_embedder):
+        """The losing section becomes a collision marker, but its verified
+        citations still enter the counts so the verify rate covers them."""
         text = (
             _declare("Brake System")
             + _section("Brake System", f"> {_EXCERPT}[^src1]\n")
@@ -717,7 +731,7 @@ class TestBuildStatsForABatch:
         )
         assert pages == []
         assert stats.pending_markers == 1
-        assert stats.citations_rendered == 0
+        assert stats.citations_rendered == 1
         assert stats.citations_dropped_unverified == 0
 
     def test_a_marker_withheld_by_a_draft_under_review_is_not_counted(self, stub_embedder):

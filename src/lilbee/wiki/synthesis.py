@@ -148,8 +148,10 @@ def _split_batched_output(
     loops over the expected sets to write their PENDING markers.
     """
     # A ``## CONCEPTS: a; b`` declaration parses as an H2 header, and its text
-    # substring-matches the labels it declares.
-    text = _CONCEPT_DECLARATION_RE.sub("", text)
+    # substring-matches the labels it declares. Excised from the preamble only:
+    # a body line starting with "concepts:" is section prose, not a declaration.
+    preamble_end = _declaration_scope_end(text)
+    text = _CONCEPT_DECLARATION_RE.sub("", text[:preamble_end]) + text[preamble_end:]
     concepts = expected_concept_labels or set()
     recovered: dict[str, tuple[EntityKind, str]] = {}
     matches = list(_SECTION_HEADER_RE.finditer(text))
@@ -175,13 +177,28 @@ def _split_batched_output(
     return recovered
 
 
+def _declaration_scope_end(text: str) -> int:
+    """End of the preamble a CONCEPTS declaration may occupy.
+
+    The prompt requires the declaration before any section, so the scope ends
+    at the first section header. A declaration rendered as a header is itself
+    part of the preamble and does not end the scope.
+    """
+    for match in _SECTION_HEADER_RE.finditer(text):
+        if not _CONCEPT_DECLARATION_RE.search(match.group(0)):
+            return match.start()
+    return len(text)
+
+
 def _parse_declared_concepts(text: str) -> set[str]:
     """Read the ``CONCEPTS: a; b; c`` line the batched prompt requires.
 
     An absent declaration means the response curated no concepts, so every
-    non-entity header in it is noise.
+    non-entity header in it is noise. Only the preamble before the first
+    section header is searched, per the prompt contract that the declaration
+    comes before any section; body prose starting with "concepts:" is content.
     """
-    match = _CONCEPT_DECLARATION_RE.search(text)
+    match = _CONCEPT_DECLARATION_RE.search(text[: _declaration_scope_end(text)])
     if match is None:
         return set()
     parts = match.group("labels").split(_CONCEPT_DECLARATION_SEPARATOR)
