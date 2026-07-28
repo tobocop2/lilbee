@@ -107,6 +107,7 @@ class WikiLogAction(StrEnum):
 
     GENERATED = "generated"
     BUILD = "build"
+    SYNTHESIZE = "synthesize"
     INGEST = "ingest"
     LINT = "lint"
     PRUNE = "prune"

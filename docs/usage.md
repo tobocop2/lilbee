@@ -227,7 +227,7 @@ Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
-| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+| `log.md` | Append-only audit trail of every build, synthesize, ingest, lint, and prune, with a per-run line reporting what the quality gates did |
 
 Every section is citation-verified against the source chunks and scored for
 embedding faithfulness; low-confidence output routes to `drafts/`. Plain-text

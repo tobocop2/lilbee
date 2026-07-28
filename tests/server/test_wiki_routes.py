@@ -445,6 +445,32 @@ class TestWikiEnabled:
         assert events[1][1]["label"] == "doc.txt"
         assert events[2][1] == {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
 
+    async def test_done_frame_carries_the_gate_stats(self, monkeypatch):
+        """The terminal SSE frame is the summary dict, so stats reach the client."""
+        from lilbee.wiki.stats import BuildStats
+
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/x.md", 2)
+        stats.record_drafted()
+        stats.record_citations(rendered=2, dropped=1)
+        monkeypatch.setattr(
+            "lilbee.server.handlers.wiki.run_full_build",
+            lambda config, on_progress: {
+                "paths": ["wiki/concepts/x.md"],
+                "entities": 3,
+                "count": 1,
+                "stats": stats.as_dict(),
+            },
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        name, payload = _sse_events(resp.text)[-1]
+        assert name == "done"
+        assert payload["stats"]["pages_published"] == 1
+        assert payload["stats"]["pages_drafted"] == 1
+        assert payload["stats"]["citation_verify_rate"] == 2 / 3
+
     async def test_build_dry_run_returns_candidates_as_json(self, monkeypatch):
         """dry_run answers with the entity candidates, not an SSE stream."""
 

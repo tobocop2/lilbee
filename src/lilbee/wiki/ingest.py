@@ -28,6 +28,7 @@ async def incremental_update(changed_sources: set[str]) -> None:
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import get_entity_extractor
     from lilbee.wiki.shared import WIKI_BUILD_LOCK, WikiLogAction
+    from lilbee.wiki.stats import BuildStats
 
     svc = get_services()
     extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
@@ -66,12 +67,16 @@ async def incremental_update(changed_sources: set[str]) -> None:
     # concept slugs. Concept curation is a deliberate, user-invoked
     # refresh (full `lilbee wiki build`).
     def _regenerate() -> None:
+        stats = BuildStats()
         with WIKI_BUILD_LOCK:
-            pages = build_wiki(touched, svc.provider, svc.store, cfg, extract_concepts=False)
+            pages = build_wiki(
+                touched, svc.provider, svc.store, cfg, extract_concepts=False, stats=stats
+            )
             update_wiki_index()
             append_wiki_log(
                 WikiLogAction.INGEST,
-                f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
+                f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}; "
+                f"{stats.summary_line()}",
             )
 
     # The mutex is taken in the worker thread: acquiring it here would block the

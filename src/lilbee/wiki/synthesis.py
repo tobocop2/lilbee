@@ -52,6 +52,7 @@ from lilbee.wiki.shared import (
     PendingKind,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ def generate_synthesis_page(
     provider: LLMProvider,
     store: Store,
     config: Config,
+    stats: BuildStats | None = None,
 ) -> Path | None:
     """Generate a single synthesis page for a concept cluster.
     Returns the path to the generated page, or None on failure.
@@ -114,6 +116,7 @@ def generate_synthesis_page(
         provider=provider,
         store=store,
         config=config,
+        stats=stats,
     )
 
 
@@ -273,6 +276,7 @@ def generate_source_batch(
     *,
     extract_concepts: bool,
     written_concept_slugs: dict[str, str],
+    stats: BuildStats | None = None,
 ) -> list[Path]:
     """Issue one LLM call for *source* and finalize every recovered section.
 
@@ -289,6 +293,7 @@ def generate_source_batch(
     loop. The second source to propose a slug is the one that gets
     diverted to a collision marker.
     """
+    stats = BuildStats.ensure(stats)
     if not chunks:
         return []
     wiki_root = config.data_root / config.wiki_dir
@@ -299,7 +304,7 @@ def generate_source_batch(
     )
     text = _request_batch_sections(source, prompt, provider, config)
     if text is None:
-        _write_pending_markers(entities, set(), source, drafts_dir)
+        _write_pending_markers(entities, set(), source, drafts_dir, stats)
         return []
 
     declared_concepts = _parse_declared_concepts(text) if extract_concepts else set()
@@ -326,9 +331,10 @@ def generate_source_batch(
         # section, so pages other than the last still resolve their footnotes.
         shared_parsed_citations=parse_wiki_citations(text),
         scoring_chunks_by_label=_entity_scoring_chunks(entities, budgeted),
+        stats=stats,
     )
     pages, written_labels = _finalize_sections(parsed, finalize)
-    _write_pending_markers(entities, written_labels, source, drafts_dir)
+    _write_pending_markers(entities, written_labels, source, drafts_dir, stats)
     return pages
 
 
@@ -398,11 +404,13 @@ def _write_pending_markers(
     written_labels: set[str],
     source: str,
     drafts_dir: Path,
+    stats: BuildStats,
 ) -> None:
     """Write a PENDING-PARSE marker for every expected entity that produced no page."""
     for entity in entities:
         if entity.label in written_labels:
             continue
+        stats.record_pending_marker()
         marker = (
             f"{_PENDING_PARSE_MARKER_PREFIX} for source {source}, "
             f"entity/concept {entity.label} - "

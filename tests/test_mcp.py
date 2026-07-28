@@ -1098,13 +1098,24 @@ class TestWikiBuildTool:
         assert wiki_build() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
+        from lilbee.wiki.stats import BuildStats
+
         cfg.wiki = True
-        result_dict = {"paths": [str(tmp_path / "p.md")], "entities": 7, "count": 1}
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/p.md", 2)
+        result_dict = {
+            "paths": [str(tmp_path / "p.md")],
+            "entities": 7,
+            "count": 1,
+            "stats": stats.as_dict(),
+        }
         monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: result_dict)
         result = wiki_build()
         assert result["command"] == "wiki_build"
         assert result["count"] == 1
         assert result["entities"] == 7
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["verified_by_page"] == {"wiki/concepts/p.md": 2}
 
     def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
         cfg.wiki = True
@@ -1153,6 +1164,7 @@ class TestWikiSynthesizeTool:
         assert result["command"] == "wiki_synthesize"
         assert result["count"] == 1
         assert result["paths"] == [str(paths[0])]
+        assert result["stats"]["pages_generated"] == 0
 
     def test_no_clusters_returns_empty(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True

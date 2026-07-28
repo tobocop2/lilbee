@@ -25,12 +25,14 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
+from lilbee.wiki.stats import format_summary_line
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.data.store import CitationRecord
     from lilbee.wiki.generation import WikiEntityCandidate
+    from lilbee.wiki.stats import BuildStatsDict
 
 
 wiki_app = typer.Typer(
@@ -53,6 +55,11 @@ def _count_md_files(directory: Path) -> int:
     if not directory.exists():
         return 0
     return len(list(directory.rglob("*.md")))
+
+
+def _print_build_stats(stats: BuildStatsDict) -> None:
+    """Print what a build or synthesize run's quality gates did."""
+    console.print(f"  Gates: {format_summary_line(stats)}")
 
 
 def _fail_wiki_disabled() -> NoReturn:
@@ -338,13 +345,15 @@ def wiki_synthesize(
         return
 
     paths = result["paths"]
-    if not paths:
+    if paths:
+        console.print(
+            f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:"
+        )
+        for path in paths:
+            console.print(f"  {path}")
+    else:
         console.print("No synthesis pages generated (need 3+ sources per cluster).")
-        return
-
-    console.print(f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:")
-    for path in paths:
-        console.print(f"  {path}")
+    _print_build_stats(result["stats"])
 
 
 @wiki_app.command(name="prune")
@@ -420,16 +429,16 @@ def wiki_build(
         return
 
     pages = result["paths"]
-    if not pages:
+    if pages:
+        console.print(
+            f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] "
+            f"wiki pages from {result['entities']} extracted records:"
+        )
+        for path in pages:
+            console.print(f"  {path}")
+    else:
         console.print("No concept or entity pages generated.")
-        return
-
-    console.print(
-        f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] "
-        f"wiki pages from {result['entities']} extracted records:"
-    )
-    for path in pages:
-        console.print(f"  {path}")
+    _print_build_stats(result["stats"])
 
 
 def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
