@@ -18,9 +18,8 @@ class CitationStatus(Enum):
     """Result of verifying a citation against its source."""
 
     VALID = "valid"
-    STALE_HASH = "stale_hash"
-    SOURCE_DELETED = "source_deleted"
     EXCERPT_MISSING = "excerpt_missing"
+    UNVERIFIABLE = "unverifiable"
 
 
 @dataclass(frozen=True)
@@ -41,10 +40,10 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     That pattern unambiguously identifies a citation footnote and only
     appears at the block level.
     """
-    block_start = _find_citation_block_start(markdown)
+    lines = markdown.splitlines()
+    block_start = _find_citation_block_start(lines)
     start = block_start if block_start is not None else 0
 
-    lines = markdown.splitlines()
     citations: list[ParsedCitation] = []
     for line_idx in range(start, len(lines)):
         match = FOOTNOTE_RE.match(lines[line_idx])
@@ -72,17 +71,28 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatus:
-    """Check whether a citation's excerpt exists in the source text.
-    Does not check hash staleness or source existence: caller handles those
-    by comparing ``citation.source_hash`` against the current file hash and
-    checking file presence.
+def excerpt_in_chunks(excerpt: str, chunk_texts: list[str]) -> bool:
+    """Single rule for excerpt presence, shared by generation and lint.
+
+    The excerpt must be present in ONE chunk: a quote stitched across a chunk
+    boundary belongs to no source passage. An empty excerpt is never present.
     """
     from xberg import verify_excerpt
 
-    if not citation["excerpt"]:
-        return CitationStatus.EXCERPT_MISSING
-    if verify_excerpt(citation["excerpt"], source_text):
+    return bool(excerpt) and any(verify_excerpt(excerpt, text) for text in chunk_texts)
+
+
+def verify_citation(citation: CitationRecord, chunk_texts: list[str]) -> CitationStatus:
+    """Check whether a citation's excerpt exists in the source's extracted chunks.
+
+    Returns ``UNVERIFIABLE`` when the source has no extracted text to check
+    against. Does not check hash staleness or source existence: caller handles
+    those by comparing ``citation.source_hash`` against the current file hash
+    and checking file presence.
+    """
+    if not chunk_texts:
+        return CitationStatus.UNVERIFIABLE
+    if excerpt_in_chunks(citation["excerpt"], chunk_texts):
         return CitationStatus.VALID
     return CitationStatus.EXCERPT_MISSING
 
@@ -99,40 +109,64 @@ def find_unmarked_claims(markdown: str) -> list[str]:
 
 
 def strip_citation_block(markdown: str) -> str:
-    """Remove the auto-generated citation block (separator + comment + footnotes) from markdown."""
-    block_start = _find_citation_block_start(markdown)
-    if block_start is None:
-        return markdown
+    """Remove the citation block (separator + comment + footnotes) from markdown."""
     lines = markdown.splitlines()
-    body_end = _body_end_before_citations(lines, block_start)
+    body_end = _body_end(lines)
+    if body_end == len(lines):
+        return markdown
     return "\n".join(lines[:body_end]).rstrip() + "\n"
 
 
-def _find_citation_block_start(markdown: str) -> int | None:
+def _find_citation_block_start(lines: list[str]) -> int | None:
     """Return the 0-based line index where the citation block begins, or None."""
-    lines = markdown.splitlines()
     for i, line in enumerate(lines):
         if line.strip() == CITATION_BLOCK_COMMENT:
             return i
     return None
 
 
-def _body_end_before_citations(lines: list[str], block_start: int) -> int:
-    """Return the line index to truncate at, stripping the --- separator if present."""
-    body_end = block_start
-    if body_end > 0 and lines[body_end - 1].strip() == CITATION_BLOCK_SEP:
+def _body_end(lines: list[str]) -> int:
+    """Return the line index the body ends at, before any citation block.
+
+    Footnote definitions without the auto-generated comment are a citation
+    block too: ``parse_wiki_citations`` reads them, so stripping removes them.
+    """
+    block_start = _find_citation_block_start(lines)
+    if block_start is None:
+        return _body_end_before_trailing_footnotes(lines)
+    return _drop_separator(lines, block_start)
+
+
+def _body_end_before_trailing_footnotes(lines: list[str]) -> int:
+    """Return the line index before the document's trailing run of ``[^srcN]:`` definitions."""
+    body_end = len(lines)
+    found = False
+    while body_end > 0:
+        line = lines[body_end - 1]
+        if FOOTNOTE_RE.match(line):
+            found = True
+        elif line.strip():
+            break
         body_end -= 1
+    if not found:
+        return len(lines)
+    return _drop_separator(lines, body_end)
+
+
+def _drop_separator(lines: list[str], body_end: int) -> int:
+    """Return *body_end* less a preceding ``---`` separator line, if there is one."""
+    if body_end > 0 and lines[body_end - 1].strip() == CITATION_BLOCK_SEP:
+        return body_end - 1
     return body_end
 
 
 def extract_body(markdown: str) -> str:
     """Return markdown body: strip YAML frontmatter and citation block."""
     text = _strip_frontmatter(markdown)
-    block_start = _find_citation_block_start(text)
-    if block_start is None:
-        return text
     lines = text.splitlines()
-    body_end = _body_end_before_citations(lines, block_start)
+    body_end = _body_end(lines)
+    if body_end == len(lines):
+        return text
     return "\n".join(lines[:body_end])
 
 

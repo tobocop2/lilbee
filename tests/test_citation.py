@@ -186,27 +186,42 @@ class TestRenderCitationBlock:
 class TestVerifyCitation:
     def test_valid_when_excerpt_found(self):
         rec = _citation_record(excerpt="gradual typing")
-        assert verify_citation(rec, "Python supports gradual typing.") == CitationStatus.VALID
+        assert verify_citation(rec, ["Python supports gradual typing."]) == CitationStatus.VALID
+
+    def test_valid_when_excerpt_found_in_a_later_chunk(self):
+        rec = _citation_record(excerpt="gradual typing")
+        chunks = ["Unrelated opening.", "Python supports gradual typing."]
+        assert verify_citation(rec, chunks) == CitationStatus.VALID
 
     def test_excerpt_missing_when_not_found(self):
         rec = _citation_record(excerpt="something completely different")
-        status = verify_citation(rec, "Python supports gradual typing.")
+        status = verify_citation(rec, ["Python supports gradual typing."])
         assert status == CitationStatus.EXCERPT_MISSING
 
     def test_excerpt_missing_when_empty_excerpt(self):
         rec = _citation_record(excerpt="")
-        assert verify_citation(rec, "any text") == CitationStatus.EXCERPT_MISSING
+        assert verify_citation(rec, ["any text"]) == CitationStatus.EXCERPT_MISSING
+
+    def test_excerpt_spanning_two_chunks_is_missing(self):
+        """A quote stitched across a chunk boundary exists in no single chunk."""
+        rec = _citation_record(excerpt="chunk one end start chunk two")
+        chunks = ["chunk one end", "start chunk two"]
+        assert verify_citation(rec, chunks) == CitationStatus.EXCERPT_MISSING
+
+    def test_unverifiable_when_source_has_no_chunks(self):
+        rec = _citation_record(excerpt="gradual typing")
+        assert verify_citation(rec, []) == CitationStatus.UNVERIFIABLE
 
     def test_whitespace_normalized_for_matching(self):
         rec = _citation_record(excerpt="gradual\n  typing")
-        assert verify_citation(rec, "supports gradual typing here") == CitationStatus.VALID
+        assert verify_citation(rec, ["supports gradual typing here"]) == CitationStatus.VALID
 
     def test_case_sensitive_matching(self):
         # Verification is case-sensitive (xberg.verify_excerpt, adopted via bb-548):
         # a case mismatch fails, an exact-case (whitespace-normalized) match passes.
         rec = _citation_record(excerpt="Gradual Typing")
-        assert verify_citation(rec, "gradual typing module") == CitationStatus.EXCERPT_MISSING
-        assert verify_citation(rec, "uses Gradual Typing here") == CitationStatus.VALID
+        assert verify_citation(rec, ["gradual typing module"]) == CitationStatus.EXCERPT_MISSING
+        assert verify_citation(rec, ["uses Gradual Typing here"]) == CitationStatus.VALID
 
 
 class TestFindUnmarkedClaims:
@@ -322,6 +337,29 @@ class TestStripCitationBlock:
         assert "# Heading" in result
         assert "<!-- citations" not in result
 
+    def test_strips_footnotes_when_model_omits_the_comment(self):
+        """parse_wiki_citations reads these definitions, so stripping must remove them."""
+        md = (
+            "# Heading\n\n"
+            "> Cited fact.[^src1]\n\n"
+            "---\n"
+            "[^src1]: doc.md, lines 1-5\n"
+            "[^src2]: doc.md, lines 6-9\n"
+        )
+        result = strip_citation_block(md)
+        assert "> Cited fact.[^src1]" in result
+        assert "[^src1]: doc.md" not in result
+        assert "[^src2]: doc.md" not in result
+        assert not result.rstrip().endswith("---")
+
+    def test_keeps_trailing_blank_lines_when_there_are_no_footnotes(self):
+        assert strip_citation_block("Some text.\n\n\n") == "Some text.\n\n\n"
+
+    def test_body_footnote_definitions_are_kept(self):
+        """Only the trailing run is a citation block; a definition mid-body stays."""
+        md = "[^src1]: doc.md, lines 1-5\n\n# Heading\n\nBody text.\n"
+        assert strip_citation_block(md) == md
+
     def test_strips_from_full_wiki_page(self):
         result = strip_citation_block(SAMPLE_WIKI_PAGE)
         assert "<!-- citations" not in result
@@ -333,9 +371,8 @@ class TestStripCitationBlock:
 class TestCitationStatusEnum:
     def test_values(self):
         assert CitationStatus.VALID.value == "valid"
-        assert CitationStatus.STALE_HASH.value == "stale_hash"
-        assert CitationStatus.SOURCE_DELETED.value == "source_deleted"
         assert CitationStatus.EXCERPT_MISSING.value == "excerpt_missing"
+        assert CitationStatus.UNVERIFIABLE.value == "unverifiable"
 
 
 class TestParsedCitationDataclass:

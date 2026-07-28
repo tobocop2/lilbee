@@ -2,9 +2,9 @@
 
 Builds :class:`CitationRecord` rows from parsed ``[^srcN]`` markers,
 matches citation excerpts back to the source chunks they came from
-(single-source and multi-source variants), verifies the excerpts are
-substring-present in the chunk pool, and renders the YAML provenance
-block written into a wiki page's frontmatter.
+(single-source and multi-source variants), verifies each excerpt is
+present in one of those chunks, and renders the YAML provenance block
+written into a wiki page's frontmatter.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ import yaml
 
 from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk
-from lilbee.wiki.cache import normalize_whitespace
-from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.citation import ParsedCitation, excerpt_in_chunks
 from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 
 log = logging.getLogger(__name__)
@@ -73,15 +72,12 @@ def _find_excerpt_location(
 ) -> tuple[int, int, int, int]:
     """Find page/line location of an excerpt within chunks.
 
-    Matches on whitespace-normalized text, the same way ``verify_citations``
-    does, so a citation that verifies doesn't then lose its location to a
-    raw-vs-normalized whitespace mismatch.
+    Matches with the verification rule, so a citation that verifies keeps
+    its location.
     """
-    if excerpt:
-        needle = normalize_whitespace(excerpt)
-        for chunk in chunks:
-            if needle in normalize_whitespace(chunk.chunk):
-                return chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end
+    for chunk in chunks:
+        if excerpt_in_chunks(excerpt, [chunk.chunk]):
+            return chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end
     return 0, 0, 0, 0
 
 
@@ -101,7 +97,8 @@ def _build_citation_record(
         wiki_source="",  # filled by caller
         wiki_chunk_index=0,
         citation_key=citation_key,
-        claim_type="fact" if excerpt else "inference",
+        # A footnote definition is always a fact claim; an inference carries none.
+        claim_type="fact",
         source_filename=source_filename,
         source_hash=source_hash,
         page_start=page_start,
@@ -151,20 +148,18 @@ def verify_citations(
     label: str,
     config: Config,
 ) -> list[CitationRecord]:
-    """Filter citation records, keeping only those whose excerpts are in the chunks."""
-    from xberg import verify_excerpt
+    """Filter citation records, keeping only those whose excerpts are in the chunks.
 
+    A footnote left without a quotable excerpt is unverified and dropped.
+    """
     wiki_prefix = config.wiki_dir + "/"
-    all_chunk_text = " ".join(c.chunk for c in chunks)
+    chunk_texts = [c.chunk for c in chunks]
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if rec["source_filename"].startswith(wiki_prefix):
             log.debug("Skipping wiki-sourced citation %s", rec["citation_key"])
             continue
-        if rec["claim_type"] == "inference" or not rec["excerpt"]:
-            verified.append(rec)
-            continue
-        if verify_excerpt(rec["excerpt"], all_chunk_text):
+        if excerpt_in_chunks(rec["excerpt"], chunk_texts):
             verified.append(rec)
         else:
             log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)
@@ -196,29 +191,30 @@ def resolve_multi_source_citations(
     chunks_by_source: dict[str, list[SearchChunk]],
 ) -> list[CitationRecord]:
     """Resolve citations from a synthesis page that cites multiple sources.
-    Each citation's source_ref is matched against the source list to
-    determine which source document it references.
+
+    Each citation's source_ref is matched against the source list to determine
+    which source document it references. A citation that names no listed source
+    and whose excerpt is in none of them is dropped, not attributed to an
+    arbitrary source.
     """
     records: list[CitationRecord] = []
     now = datetime.now(UTC).isoformat()
 
-    all_chunks = [c for cs in chunks_by_source.values() for c in cs]
-
     for parsed in parsed_citations:
         excerpt = _extract_excerpt(parsed.source_ref)
 
-        matched_source = _match_citation_source(parsed.source_ref, source_names)
+        matched_source = _match_citation_source(
+            parsed.source_ref, source_names
+        ) or _find_excerpt_source(excerpt, chunks_by_source)
         if not matched_source:
-            matched_source = _find_excerpt_source(excerpt, chunks_by_source)
-        if not matched_source and source_names:
-            # No citation match found; default to first listed source
             log.warning(
-                "No citation match for chunk: defaulting to first source: %s",
-                source_names[0],
+                "Dropping citation %s: no source matches %r",
+                parsed.citation_key,
+                parsed.source_ref,
             )
-            matched_source = source_names[0]
+            continue
 
-        search_chunks = chunks_by_source.get(matched_source, all_chunks)
+        search_chunks = chunks_by_source.get(matched_source, [])
         page_start, page_end, line_start, line_end = _find_excerpt_location(excerpt, search_chunks)
         records.append(
             _build_citation_record(
@@ -249,11 +245,8 @@ def _match_citation_source(source_ref: str, source_names: list[str]) -> str:
 
 
 def _find_excerpt_source(excerpt: str, chunks_by_source: dict[str, list[SearchChunk]]) -> str:
-    """Find which source contains a given excerpt by searching chunks."""
-    if not excerpt:
-        return ""
+    """Find which source contains a given excerpt, matching as verification does."""
     for source, chunks in chunks_by_source.items():
-        for chunk in chunks:
-            if excerpt in chunk.chunk:
-                return source
+        if excerpt_in_chunks(excerpt, [c.chunk for c in chunks]):
+            return source
     return ""
