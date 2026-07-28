@@ -99,13 +99,14 @@ def error_reason(error: BaseException) -> str:
 def resolve_process_count(file_count: int) -> int:
     """Worker processes for a plan of *file_count* files; 1 keeps ingest in-process.
 
-    Auto (the default) opts a run in only when the plan is big enough to amortise
-    worker startup and the box has cores to spare, so an interactive sync of a
-    vault never pays for a pool, and it stops at ``_MAX_AUTO_PROCESSES``, which is
-    the top of the plateau measured on one fleet (4xA40, 0.6B embedder). Whether
-    the plateau sits there on other card counts or model sizes is unmeasured, so
-    the cap is a conservative default rather than a known optimum: an explicit
-    ``ingest_processes`` always wins, including past it.
+    The default is 1 (off): multiprocess only helps a small/fast embedder that one
+    process cannot use to saturate a multi-GPU fleet, and ties single-process on a
+    large/GPU-bound one (see ``ingest_processes`` and docs/architecture.md). Auto
+    (``ingest_processes = 0``) opts a run in only when the plan is big enough to
+    amortise worker startup and the box has cores to spare, and stops at
+    ``_MAX_AUTO_PROCESSES``, the top of the plateau measured on one fleet (4xA40,
+    0.6B embedder). The cap is a conservative default, not a known optimum for other
+    card counts or model sizes: an explicit ``ingest_processes`` always wins, past it.
     """
     configured = active_config().ingest_processes
     if configured:

@@ -45,6 +45,17 @@ class TestResolveProcessCount:
         monkeypatch.setattr(workers, "cpu_quota", lambda: 16)
         assert resolve_process_count(files) == 1
 
+    def test_default_is_off_even_for_a_large_plan(self, monkeypatch):
+        """Default ingest_processes=1 keeps ingest single-process no matter the plan
+        size. Multiprocess is opt-in (0=auto, N=explicit): it only helps a small/fast
+        embedder that one process cannot use to saturate a multi-GPU fleet, and ties
+        single-process on a large/GPU-bound one, so it does not auto-engage."""
+        monkeypatch.setattr(
+            workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=1)
+        )
+        monkeypatch.setattr(workers, "cpu_quota", lambda: 48)
+        assert resolve_process_count(100_000) == 1
+
     def test_large_plan_uses_the_cpu_quota_up_to_the_cap(self, monkeypatch):
         monkeypatch.setattr(
             workers, "active_config", lambda: types.SimpleNamespace(ingest_processes=0)
