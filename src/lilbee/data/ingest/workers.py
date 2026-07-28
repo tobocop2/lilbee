@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         ConceptRecords,
         FileToProcess,
         PageTextRecord,
+        SourceMeta,
     )
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,9 @@ class WorkerOutcome:
     page_texts: list[PageTextRecord] | None = None
     concept_records: ConceptRecords | None = None
     entity_rows: list[dict] | None = None
+    # Carried back so a worker-produced file stamps its source row's title the
+    # same way an in-process one does.
+    meta: SourceMeta | None = None
     error: WorkerIngestError | None = None
 
 
@@ -209,13 +213,14 @@ async def _produce_one(entry: FileToProcess) -> WorkerOutcome:
 
     page_texts: list[PageTextRecord] = []
     try:
-        records = await produce_records(
+        records, meta = await produce_records(
             entry.path, entry.name, entry.content_type, page_texts_out=page_texts
         )
         return WorkerOutcome(
             name=entry.name,
             records=records,
             page_texts=page_texts,
+            meta=meta,
             concept_records=await build_concept_records(records, entry.name),
             entity_rows=await build_entity_records(records, entry.name),
         )

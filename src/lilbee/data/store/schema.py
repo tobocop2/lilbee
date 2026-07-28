@@ -38,6 +38,9 @@ def _sources_schema() -> pa.Schema:
             pa.field("size_bytes", pa.int64()),
             pa.field("mtime_ns", pa.int64()),
             pa.field("stat_captured_ns", pa.int64()),
+            pa.field("title", pa.utf8()),
+            pa.field("authors", pa.utf8()),
+            pa.field("created_at", pa.utf8()),
         ]
     )
 

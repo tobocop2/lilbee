@@ -305,9 +305,11 @@ class TestStreamKeepsTheLoopFree:
         released = False
 
         def _slow_context_signalling(question, top_k=0, history=None, chunk_type=None):
+            from lilbee.retrieval.query.searcher import RagContext
+
             loop.call_soon_threadsafe(entered.set)
             time.sleep(0.3)  # stands in for embed + search + rerank
-            return ([], [{"role": "user", "content": "q"}])
+            return RagContext([], [{"role": "user", "content": "q"}])
 
         mock_svc.searcher.build_rag_context.side_effect = _slow_context_signalling
         loop = asyncio.get_running_loop()

@@ -24,7 +24,11 @@ from lilbee.retrieval.query.compaction import (
     history_budget,
     prompt_history,
 )
-from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
+from lilbee.retrieval.query.formatting import (
+    StreamingCitationFilter,
+    cited_subset,
+    strip_llm_citations,
+)
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -523,7 +527,7 @@ async def chat(
             return AskResponse(
                 answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
             )
-        sources, messages = rag
+        sources, messages = rag.results, rag.messages
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -540,7 +544,10 @@ async def chat(
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
-        cited_sources=[CleanedChunk(**clean_result(s)) for s in cited_subset(answer, sources)],
+        cited_sources=[
+            CleanedChunk(**clean_result(s))
+            for s in cited_subset(strip_llm_citations(answer), sources)
+        ],
         compaction=compaction,
     )
 
@@ -645,7 +652,7 @@ async def _stream_chat_response(
         yield frame
     if ctx is None:
         return
-    sources, messages = ctx
+    sources, messages = ctx.results, ctx.messages
 
     req = _build_canonical_request(messages, options)
     answer_parts: list[str] = []
@@ -866,7 +873,7 @@ def _resolve_stream_context(
         return _StreamResolution([], None, [frame])
     if rag is None:
         return _StreamResolution([], None, [sse_error("No relevant documents found.")])
-    results, messages = rag
+    results, messages = rag.results, rag.messages
     return _StreamResolution(results, messages, [])
 
 

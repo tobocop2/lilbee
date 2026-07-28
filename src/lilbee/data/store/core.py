@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -25,12 +24,15 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.vectors import Vector
-from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
+from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
 
-from .fusion import fuse_arms, normalized_bm25, vector_similarity
+from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
+    _CHUNK_COLUMN,
     _chunk_type_predicate,
     _has_fts_index,
+    _has_scalar_index,
     _has_vector_index,
     _safe_delete_unlocked,
     _sources_search_filter,
@@ -63,6 +65,7 @@ from .types import (
     PageTextRecord,
     RemoveResult,
     SearchChunk,
+    SourceMeta,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -73,6 +76,7 @@ from .types import (
 if TYPE_CHECKING:
     import lancedb
     import lancedb.table
+    from lancedb.index import FTS
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +85,9 @@ log = logging.getLogger(__name__)
 # flush replans and re-embeds the whole batch. Give the batch path more
 # patience than interactive writes before it gives up.
 BATCH_LOCK_TIMEOUT = 120.0
+# Lock budget for index builds reached from the read path: a query must not
+# stall behind a long ingest, so it skips the build and retries next search.
+_READ_LOCK_TIMEOUT = 2.0
 
 
 def _drop_unsupported_far_rows(
@@ -104,6 +111,41 @@ def _drop_unsupported_far_rows(
 _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
+
+def _is_fts_position_overflow(exc: Exception) -> bool:
+    """True when *exc* is LanceDB's positional-FTS list-encoding overflow.
+
+    A positional index (built by an intermediate dev commit) raises e.g.
+    "Max offset N exceeds length of values M" on optimize(); a positionless
+    rebuild is the remediation. Matched on message because LanceDB raises it
+    as a generic error type.
+    """
+    msg = str(exc).lower()
+    return "offset" in msg and "exceeds" in msg
+
+
+def _lexical_rows(
+    table: lancedb.table.Table,
+    query_text: str,
+    limit: int,
+    chunk_type: ChunkType | None,
+    column: str = _CHUNK_COLUMN,
+) -> list[SearchChunk]:
+    """BM25 rows for *query_text* over a single FTS *column*.
+
+    ``MatchQuery`` pins the column and matches plain terms, so an unpinned search
+    cannot widen to the title index and a quoted span cannot reach LanceDB as a
+    phrase (which the positionless index rejects). This is the one place FTS
+    queries are built; every arm goes through it.
+    """
+    from lancedb.query import MatchQuery
+
+    query = table.search(MatchQuery(query_text, column), query_type="fts").limit(limit)
+    if chunk_type:
+        query = query.where(_chunk_type_predicate(chunk_type))
+    return [SearchChunk(**r) for r in query.to_list()]
+
+
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 # The index type is carried by the lancedb IvfPq config at build time.
@@ -116,6 +158,14 @@ _ANN_REFINE_FACTOR = 10
 # and ``types.SourceRecord``. Legacy tables that predate these columns are migrated
 # in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
+
+# Extraction-metadata columns of ``_sources``; nullable strings, so legacy
+# tables migrate in place with NULL (meaning "extractor reported nothing").
+_SOURCE_META_COLUMNS = ("title", "authors", "created_at")
+
+# Document-title column of the chunks table; nullable so pre-title rows and
+# writers that carry no title (wiki pages) read as NULL.
+_TITLE_COLUMN = "title"
 
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
@@ -132,6 +182,9 @@ _PER_SOURCE_TABLES = (
 # source_filename so citations keep pointing at the source after a move.
 _RELOCATABLE_TABLES = (*_PER_SOURCE_TABLES, (CITATIONS_TABLE, "source_filename"))
 
+# Sentinel: relocation must leave the stored title untouched (extraction-derived).
+_KEEP_TITLE = "\x00keep"
+
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
@@ -140,6 +193,13 @@ _SOURCE_STAT_BATCH_ROWS = 2000
 # Rows per Arrow batch when the aggregate scan walks the whole chunks table;
 # bounds the decoded-text working set while the scan stays columnar.
 _TERM_SCAN_BATCH_ROWS = 20_000
+
+# The title arm collapses each matched document to one row, so it over-fetches
+# to gather enough distinct documents before deduping. Bounded so a title that
+# hits a huge document can't scan the whole corpus.
+_TITLE_FETCH_FACTOR = 20
+_TITLE_MIN_FETCH = 200
+_TITLE_FETCH_CEILING = 4096
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -178,10 +238,27 @@ class Store:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._fts_ready: bool = False
+        self._title_fts_ready: bool = False
+        self._doc_prefix_warned: bool = False
+        # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
+        # store builds them lazily from the search path.
+        self._scalar_ready: bool = False
         self._db: lancedb.DBConnection | None = None
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
+
+    def _fts_config(self) -> FTS:
+        """Shared FTS index config: positionless (with_position=True overflows
+        LanceDB's list encoding on optimize()) and stemmed for the configured
+        corpus language."""
+        from lancedb.index import FTS
+
+        return FTS(with_position=False, language=self._config.fts_language)
+
+    def _index_build_lock(self, blocking: bool) -> AbstractContextManager[None]:
+        """Write lock for index builds: full budget from ingest, short from the read path."""
+        return self._write_lock() if blocking else self._write_lock(_READ_LOCK_TIMEOUT)
 
     def _write_lock(self, timeout: float = LOCK_TIMEOUT) -> AbstractContextManager[None]:
         """Acquire the write lock keyed on *this* store's data directory.
@@ -222,9 +299,50 @@ class Store:
                 pa.field("line_end", pa.int32()),
                 pa.field("chunk", pa.utf8()),
                 pa.field("chunk_index", pa.int32()),
+                pa.field(_TITLE_COLUMN, pa.utf8()),
                 pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
             ]
         )
+
+    def _chunks_table(self) -> lancedb.table.Table:
+        """Open/create the chunks table, adding the title column to pre-title tables."""
+        table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
+        if _TITLE_COLUMN not in table.schema.names:
+            table.add_columns({_TITLE_COLUMN: "CAST(NULL AS STRING)"})
+            self._backfill_stem_titles_unlocked(table)
+        return table
+
+    def _backfill_stem_titles_unlocked(self, table: lancedb.table.Table) -> None:
+        """Backfill filename-stem titles for pre-upgrade rows. Caller holds ``write_lock()``.
+
+        Without this the title arm only matches documents ingested after the
+        upgrade. Extracted (H1/EXIF) titles still need ``lilbee rebuild``;
+        failure leaves NULLs, the pre-backfill behavior.
+        """
+        from lilbee.data.ingest.title import derive_title  # circular at module scope
+
+        try:
+            rows = table.search().select(["source"]).limit(None).to_list()
+            sources = sorted({r["source"] for r in rows})
+            filled = 0
+            for source in sources:
+                title = derive_title(source)
+                if not title:
+                    continue
+                escaped = source.replace("'", "''")
+                table.update(where=f"source = '{escaped}'", values={_TITLE_COLUMN: title})
+                filled += 1
+            log.info(
+                "Backfilled filename titles for %d of %d existing sources; run "
+                "`lilbee rebuild` to derive titles from document content",
+                filled,
+                len(sources),
+            )
+        except Exception:
+            log.warning(
+                "Title backfill failed; pre-upgrade rows keep NULL titles until `lilbee rebuild`",
+                exc_info=True,
+            )
 
     def get_meta(self) -> StoreMeta | None:
         """Return the persisted store metadata row, or ``None`` if unset."""
@@ -332,6 +450,26 @@ class Store:
             current_dim=current_dim,
         )
 
+    def _warn_stale_doc_prefix(self) -> None:
+        """Warn once when the embedding family's document prefix postdates this store.
+
+        Queries would carry the family prefix while stored documents do not;
+        the mismatch degrades quality silently until a rebuild re-embeds.
+        """
+        if self._doc_prefix_warned:
+            return
+        self._doc_prefix_warned = True
+        meta = self.get_meta()
+        if meta is None:
+            return
+        profile = resolve_embedding_profile(self._config.embedding_model)
+        if profile.doc_prefix and meta["schema_version"] < profile.doc_prefix_since:
+            log.warning(
+                "This index predates '%s' document prefixes: queries are prefixed "
+                "but stored documents are not. Run `lilbee rebuild` to re-embed.",
+                self._config.embedding_model,
+            )
+
     def assert_embedding_compatible(self) -> None:
         """Run the full embedding-identity gate (legacy init, canonicalize, check).
 
@@ -399,7 +537,7 @@ class Store:
             return None
         return db.open_table(name)
 
-    def ensure_fts_index(self) -> None:
+    def ensure_fts_index(self, *, blocking: bool = True) -> None:
         """Create the chunks FTS index, or run ``optimize()`` once it exists.
 
         ``optimize()`` folds newly added rows into the FTS index and also
@@ -407,23 +545,190 @@ class Store:
         window: 7 days). Work scales with recent deltas rather than total
         chunk count, so large corpora no longer pay the full
         ``create_index(config=FTS(), replace=True)`` rebuild cost on every sync.
-        """
-        with self._write_lock():
-            table = self.open_table(CHUNKS_TABLE)
-            if table is None:
-                return
-            from lancedb.index import FTS
 
-            try:
-                if _has_fts_index(table):
+        ``blocking=False`` (the search path) marks an existing index ready
+        without the lock and skips maintenance when another process holds it,
+        so a long concurrent ingest cannot stall or fail a query.
+        """
+        probe = self.open_table(CHUNKS_TABLE)
+        if probe is None:
+            return
+        if _has_fts_index(probe):
+            self._fts_ready = True
+        try:
+            with self._index_build_lock(blocking):
+                self._ensure_fts_index_unlocked()
+        except LockTimeoutError:
+            if blocking:
+                raise
+            log.debug("Skipped FTS index maintenance; another process holds the write lock")
+
+    def _ensure_fts_index_unlocked(self) -> None:
+        """Body of ``ensure_fts_index``. Caller holds ``write_lock()``."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return
+        try:
+            if _has_fts_index(table):
+                self._fts_ready = True
+                try:
+                    # One optimize folds new rows into every index on the table.
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
-                else:
-                    table.create_index("chunk", config=FTS(), replace=False)
-                    log.debug("FTS index created on '%s'", CHUNKS_TABLE)
+                except Exception as exc:
+                    if _is_fts_position_overflow(exc):
+                        # Positional indexes overflow on optimize(); rebuild
+                        # positionless once.
+                        self._rebuild_fts_positionless(table)
+                    else:
+                        log.warning(
+                            "FTS optimize() failed; the existing index still serves hybrid search",
+                            exc_info=True,
+                        )
+            else:
+                # Positionless: with_position=True overflows LanceDB's list
+                # encoding on optimize(), and nothing issues phrase queries.
+                table.create_index(_CHUNK_COLUMN, config=self._fts_config(), replace=False)
                 self._fts_ready = True
+                log.debug("FTS index created on '%s'", CHUNKS_TABLE)
+            # Only the opt-in title arm needs the title index.
+            if self._config.title_search:
+                self._ensure_title_fts_unlocked(table)
+        except Exception:
+            log.debug("FTS index ensure failed (empty table?)", exc_info=True)
+
+    def _ensure_title_fts_unlocked(self, table: lancedb.table.Table) -> None:
+        """Create the title FTS index when the column exists. Caller holds ``write_lock()``.
+
+        Failure never blocks the chunk index: the title arm feature-detects the
+        index per query, so a store without it simply searches without titles.
+        """
+        if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
+            self._title_fts_ready = _has_fts_index(table, _TITLE_COLUMN)
+            return
+        try:
+            # Positionless for the same reason as the chunk index.
+            table.create_index(_TITLE_COLUMN, config=self._fts_config(), replace=False)
+            self._title_fts_ready = True
+            log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
+        except Exception:
+            # Only reached with title_search enabled, so a silent failure means
+            # the user's opted-in title arm quietly does nothing. Warn, don't hide.
+            log.warning(
+                "Title FTS index creation failed; the title-search arm will "
+                "contribute nothing until it can be built",
+                exc_info=True,
+            )
+
+    def ensure_title_fts_index(self, *, blocking: bool = True) -> None:
+        """Build the title FTS index for a title_search toggle after startup.
+
+        Without this, a process that latched ``_fts_ready`` before the toggle
+        never builds the index and the title arm stays silently dead until the
+        next ingest or restart.
+        """
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return
+        if _has_fts_index(table, _TITLE_COLUMN):
+            self._title_fts_ready = True
+            return
+        try:
+            with self._index_build_lock(blocking):
+                self._ensure_title_fts_unlocked(table)
+        except LockTimeoutError:
+            if blocking:
+                raise
+            log.debug("Skipped title FTS build; another process holds the write lock")
+
+    def _rebuild_fts_positionless(self, table: lancedb.table.Table) -> None:
+        """Replace positional FTS indexes with positionless ones. Caller holds the lock.
+
+        The one-shot remediation for a store whose index was built
+        ``with_position=True`` and now overflows on every ``optimize()``. The
+        title index is rebuilt too when the title arm is enabled.
+        """
+        try:
+            table.create_index(_CHUNK_COLUMN, config=self._fts_config(), replace=True)
+            if self._config.title_search and _TITLE_COLUMN in table.schema.names:
+                table.create_index(_TITLE_COLUMN, config=self._fts_config(), replace=True)
+            log.warning("Rebuilt the FTS index positionless after a positional-index overflow")
+        except Exception:
+            log.warning(
+                "Positionless FTS rebuild failed; the existing index still serves",
+                exc_info=True,
+            )
+
+    # Tables and (column, index_type) pairs the query path filters by.
+    # chunk_concepts serves the concept boost (ConceptGraph._chunk_concepts_from);
+    # without its index every boosted query full-scans the table.
+    _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        (CHUNKS_TABLE, (("source", "BTREE"), ("chunk_type", "BITMAP"))),
+        (CHUNK_CONCEPTS_TABLE, (("chunk_source", "BTREE"),)),
+    )
+
+    def ensure_scalar_indexes(self, *, blocking: bool = True) -> None:
+        """Build scalar indexes on the columns lilbee filters by.
+
+        ``source`` and ``chunk_type`` predicates run as prefilters (LanceDB's
+        default), but without an index each is a full-table scan. Readiness
+        latches only when every target table exists and is covered, so a table
+        created later (chunk_concepts under serve ordering) still gets its
+        index on a following call. The lock is taken only when there is
+        something to build; ``blocking=False`` (the search path) skips the
+        build when another process holds it instead of stalling the query.
+        """
+        pending = []
+        complete = True
+        for name, columns in self._SCALAR_TARGETS:
+            table = self.open_table(name)
+            if table is None:
+                complete = False
+                continue
+            names = table.schema.names
+            if any(c in names and not _has_scalar_index(table, c) for c, _ in columns):
+                pending.append((name, columns))
+        if not pending:
+            self._scalar_ready = complete
+            return
+        try:
+            with self._index_build_lock(blocking):
+                for name, columns in pending:
+                    self._ensure_scalar_index_on(name, columns)
+            self._scalar_ready = complete
+        except LockTimeoutError:
+            if blocking:
+                raise
+            log.debug("Skipped scalar index build; another process holds the write lock")
+
+    def _ensure_scalar_index_on(
+        self, table_name: str, columns: tuple[tuple[str, str], ...]
+    ) -> None:
+        """Build the given (column, index_type) scalar indexes on *table_name*.
+
+        Caller holds ``write_lock()``. Each column gets its own try so one
+        failure does not skip the rest; a failure on a populated table warns
+        (the prefilter speedup is silently lost) while an empty table's is debug.
+        """
+        table = self.open_table(table_name)
+        if table is None:
+            return
+        names = table.schema.names
+        fail_level = logging.WARNING if table.count_rows() > 0 else logging.DEBUG
+        for column, index_type in columns:
+            if column not in names or _has_scalar_index(table, column):
+                continue
+            try:
+                table.create_scalar_index(column, index_type=index_type, replace=False)
+                log.debug("Scalar (%s) index created on '%s.%s'", index_type, table_name, column)
             except Exception:
-                log.debug("FTS index ensure failed (empty table?)", exc_info=True)
+                log.log(
+                    fail_level,
+                    "Scalar index create failed on '%s.%s'",
+                    table_name,
+                    column,
+                    exc_info=True,
+                )
 
     def ensure_vector_index(self, *, force: bool = False) -> bool:
         """Build or refresh the ANN vector index when the corpus is large enough.
@@ -478,11 +783,11 @@ class Store:
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             self._fts_ready = False
+            self._scalar_ready = False
             if not records:
                 return 0
             _check_vector_dims(records, embedding_dim)
-            db = self.get_db()
-            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+            table = self._chunks_table()
             table.add(records)
             if self.get_meta() is None:
                 self._write_meta_unlocked(
@@ -501,15 +806,11 @@ class Store:
         if table is None:
             return []
         if not self._fts_ready:
-            self.ensure_fts_index()
+            self.ensure_fts_index(blocking=False)
         if not self._fts_ready:
             return []
         try:
-            query = table.search(query_text, query_type="fts")
-            if chunk_type:
-                query = query.where(_chunk_type_predicate(chunk_type))
-            rows = query.limit(top_k).to_list()
-            results = [SearchChunk(**r) for r in rows]
+            results = _lexical_rows(table, query_text, top_k, chunk_type)
             norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
             return [
                 r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
@@ -545,9 +846,17 @@ class Store:
         self.initialize_meta_if_legacy()
         self.canonicalize_meta_if_legacy()
         self._ensure_embedding_compat()
+        self._warn_stale_doc_prefix()
+
+        if not self._scalar_ready:
+            # A serve-only store never ran ingest, where scalar indexes are
+            # built; without them the source/chunk_type prefilters full-scan.
+            self.ensure_scalar_indexes(blocking=False)
 
         if query_text and not self._fts_ready:
-            self.ensure_fts_index()
+            self.ensure_fts_index(blocking=False)
+        if query_text and self._config.title_search and not self._title_fts_ready:
+            self.ensure_title_fts_index(blocking=False)
 
         if query_text and self._fts_ready:
             try:
@@ -608,11 +917,53 @@ class Store:
         limit: int,
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
-        """BM25-arm candidates."""
-        query = table.search(query_text, query_type="fts").limit(limit)
-        if chunk_type:
-            query = query.where(_chunk_type_predicate(chunk_type))
-        return [SearchChunk(**r) for r in query.to_list()]
+        """BM25-arm candidates over the chunk text."""
+        return _lexical_rows(table, query_text, limit, chunk_type)
+
+    def _title_arm(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """One BM25 row per document whose title matches, in title-relevance order.
+
+        Every chunk of a document carries the same title, so all of its chunks
+        tie on BM25 and a plain ``limit`` would return an arbitrary tie-ordered
+        subset of a single document. Instead this over-fetches, collapses each
+        source to one deterministic representative (its first chunk), and returns
+        the top *limit* documents ordered by title score -- so "a query naming a
+        document by title surfaces its chunks" holds as one stable row per doc.
+
+        Empty when the store predates the title column or its FTS index (old
+        indexes keep working) and empty on any query-time failure: the optional
+        title arm must never take down the healthy chunk arm, so its failure
+        degrades to no-titles, mirroring ``bm25_probe``.
+        """
+        if not _has_fts_index(table, _TITLE_COLUMN):
+            return []
+        # Every chunk of one document ties on title BM25, so a fixed window can
+        # fill up with a single long document's chunks and starve every other
+        # title-matching document. Widen the fetch until enough distinct
+        # documents surface, the matches run out, or the ceiling is hit.
+        fetch = max(limit * _TITLE_FETCH_FACTOR, _TITLE_MIN_FETCH)
+        while True:
+            try:
+                rows = _lexical_rows(table, query_text, fetch, chunk_type, column=_TITLE_COLUMN)
+            except Exception:
+                log.debug("Title arm search failed; contributing no title rows", exc_info=True)
+                return []
+            best: dict[str, SearchChunk] = {}
+            for row in rows:
+                seen = best.get(row.source)
+                if seen is None or row.chunk_index < seen.chunk_index:
+                    best[row.source] = row
+            if len(best) >= limit or len(rows) < fetch or fetch >= _TITLE_FETCH_CEILING:
+                break
+            fetch = min(fetch * 4, _TITLE_FETCH_CEILING)
+        ordered = sorted(best.values(), key=lambda r: (-(r.bm25_score or 0.0), r.source))
+        return ordered[:limit]
 
     def _hybrid_search(
         self,
@@ -623,23 +974,45 @@ class Store:
         max_distance: float,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        """Dual-arm retrieval fused by reciprocal rank; the fused ordering is final.
+        """Multi-arm retrieval fused by weighted reciprocal rank; the fused ordering is final.
+
+        A vector arm and a chunk-BM25 arm always run; a title-BM25 arm joins
+        when ``cfg.title_search`` is on. Each row's fused score is the
+        weight-normalized sum of its arm contributions: the vector arm has
+        weight 1.0, the lexical arm ``cfg.lexical_fusion_weight`` (scaled per
+        query when ``cfg.adaptive_fusion`` is on), the title arm
+        ``cfg.title_search_weight``. So a row a single peaked arm is certain
+        about scores that arm's share of the total weight, not a fixed 0.5.
 
         Each arm fetches exactly ``top_k`` rows. Deeper pools measurably hurt
-        rank fusion: rows a single arm is certain about score a fixed 0.5,
-        while rows both arms rank mid-pool accumulate two contributions, so
-        widening the arms floods the fused top-k with both-arm mediocrity and
-        buries single-arm certainty (lexical identifier hits above all).
+        rank fusion by flooding the fused top-k with both-arm mediocrity and
+        burying single-arm certainty (lexical identifier hits above all). No
+        MMR runs here: lexical passages are often mutually similar, which MMR
+        penalizes, trading relevant hits for off-topic neighbors.
 
-        No diversity selection runs here either. For lexical queries the
-        relevant passages are often mutually similar (they quote the same
-        identifiers), which is exactly what MMR penalizes: selecting the
-        fused pool through MMR measurably traded relevant lexical hits for
-        diverse off-topic neighbors on graded evaluation.
+        Title rows carry ``bm25_score``, so a title match counts as lexical
+        support for the distance exemption like any other lexical hit.
         """
+        title_rows: list[SearchChunk] = []
+        if self._config.title_search:
+            title_rows = self._title_arm(table, query_text, top_k, chunk_type)
+        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
+        base_lexical_weight = self._config.lexical_fusion_weight
+        base_title_weight = self._config.title_search_weight
+        lexical_weight = base_lexical_weight
+        title_weight = base_title_weight
+        if self._config.adaptive_fusion:
+            # Quiet the lexical arms per query by vector confidence. The title
+            # arm is lexical too, so the same factor scales it.
+            scale = adaptive_weight_scale(vector_rows, self._config.adaptive_fusion_margin)
+            lexical_weight = base_lexical_weight * scale
+            title_weight = base_title_weight * scale
         fused = fuse_arms(
-            self._vector_arm(table, query_vector, top_k, chunk_type),
+            vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
+            title_rows,
+            lexical_weight=lexical_weight,
+            title_weight=title_weight,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
         return fused[:top_k]
@@ -849,23 +1222,39 @@ class Store:
         return table.count_rows() if table is not None else 0
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return every chunk whose ``source`` equals *source*."""
+        """Return every chunk whose ``source`` equals *source*.
+
+        The database does the filtering, so only the matching rows are read.
+        A query failure raises rather than falling back to a whole-table scan:
+        a document's chunks are a bounded read, and the scan that would rescue
+        it costs the entire index, vectors included, in memory.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
         escaped = escape_sql_string(source)
-        try:
-            rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
-        except Exception:
-            # FTS-enabled tables return a query builder that cannot
-            # handle .where() on arbitrary columns; fall through to a
-            # pyarrow.compute filter on the Arrow table so the source
-            # match runs in C++ without materializing non-matching rows.
-            log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
-            arrow_tbl = table.to_arrow()
-            filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
-            rows = filtered.to_pylist()
+        rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         return [SearchChunk(**r) for r in rows]
+
+    def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
+        """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
+
+        Rows come back in ``chunk_index`` order; indices past either end of
+        the document are simply absent from the result. Filtering happens in
+        the database for the same reason as :meth:`get_chunks_by_source`:
+        neighbor expansion runs once per hit source per query, so a
+        whole-table rescue would spike memory on the hottest path there is.
+        """
+        if not indices:
+            return []
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source)
+        wanted = ", ".join(str(int(i)) for i in indices)
+        predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
+        rows = table.search().where(predicate).limit(None).to_list()
+        return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
 
     def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
         """Delete the sources' chunks, page texts, and chunk-concept rows.
@@ -947,7 +1336,7 @@ class Store:
         if table is None:
             return []
         query = table.search()
-        where = _sources_search_filter(search)
+        where = _sources_search_filter(search, include_title="title" in table.schema.names)
         if where is not None:
             query = query.where(where)
         if offset:
@@ -961,7 +1350,7 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return 0
-        where = _sources_search_filter(search)
+        where = _sources_search_filter(search, include_title="title" in table.schema.names)
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 
@@ -972,8 +1361,14 @@ class Store:
         chunk_count: int,
         source_type: str,
         stat: SourceStat | None,
+        meta: SourceMeta | None = None,
     ) -> dict:
-        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel."""
+        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel.
+
+        Absent extraction metadata persists as NULL, matching rows written
+        before the metadata columns existed.
+        """
+        meta = meta or SourceMeta()
         return {
             "filename": filename,
             "file_hash": file_hash,
@@ -983,14 +1378,19 @@ class Store:
             "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
             "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
             "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
+            "title": meta.title or None,
+            "authors": meta.authors or None,
+            "created_at": meta.created_at or None,
         }
 
     def _sources_table(self) -> lancedb.table.Table:
-        """Open/create ``_sources``, adding the stat columns to pre-stat tables."""
+        """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
-        missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
+        defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
+        defaults |= {name: "CAST(NULL AS STRING)" for name in _SOURCE_META_COLUMNS}
+        missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
         if missing:
-            table.add_columns({name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing})
+            table.add_columns(missing)
         return table
 
     def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
@@ -1015,9 +1415,10 @@ class Store:
         chunk_count: int,
         source_type: SourceType = SourceType.DOCUMENT,
         stat: SourceStat | None = None,
+        meta: SourceMeta | None = None,
     ) -> None:
         """Add or update a source tracking record."""
-        row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
+        row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
         with self._write_lock():
             self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
@@ -1070,12 +1471,13 @@ class Store:
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             self._fts_ready = False
+            self._scalar_ready = False
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
             self._cleanup_batch_unlocked(items)
             self._add_page_texts_unlocked(db, items)
-            self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
+            self._add_chunk_records_unlocked(all_records, embedding_model, embedding_dim)
             self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
@@ -1094,7 +1496,6 @@ class Store:
 
     def _add_chunk_records_unlocked(
         self,
-        db: lancedb.DBConnection,
         all_records: list[dict],
         embedding_model: str,
         embedding_dim: int,
@@ -1102,14 +1503,16 @@ class Store:
         """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
         if not all_records:
             return
-        ensure_table(db, CHUNKS_TABLE, self._chunks_schema()).add(all_records)
+        self._chunks_table().add(all_records)
         if self.get_meta() is None:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
 
     def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
         """One ``_sources`` row per batched document."""
         return [
-            self._source_row(it.source, it.file_hash, len(it.records), it.source_type, it.stat)
+            self._source_row(
+                it.source, it.file_hash, len(it.records), it.source_type, it.stat, it.meta
+            )
             for it in items
         ]
 
@@ -1154,22 +1557,65 @@ class Store:
         """
         if not moves:
             return
+        from lilbee.data.ingest.title import derive_title  # circular at module scope
+
         with self._write_lock():
             tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
             sources = self.open_table(SOURCES_TABLE)
             for old, new, stat in moves:
                 where_old = f"= '{escape_sql_string(old)}'"
+                new_title = self._relocated_title(sources, old, new, derive_title)
                 for table, column in tables:
-                    if table is not None:
-                        table.update(where=f"{column} {where_old}", values={column: new})
+                    if table is None:
+                        continue
+                    values: dict[str, object] = {column: new}
+                    # Stem titles track the filename; re-derive them on the same
+                    # handle and statement as the re-key.
+                    if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
+                        values[_TITLE_COLUMN] = new_title
+                    table.update(where=f"{column} {where_old}", values=values)
                 if sources is not None:
-                    values: dict[str, object] = {"filename": new}
+                    row_values: dict[str, object] = {"filename": new}
+                    if new_title is not _KEEP_TITLE:
+                        row_values["title"] = new_title
                     if stat is not None:
-                        values["size_bytes"] = stat.size_bytes
-                        values["mtime_ns"] = stat.mtime_ns
-                        values["stat_captured_ns"] = stat.captured_ns
-                    sources.update(where=f"filename {where_old}", values=values)
+                        row_values["size_bytes"] = stat.size_bytes
+                        row_values["mtime_ns"] = stat.mtime_ns
+                        row_values["stat_captured_ns"] = stat.captured_ns
+                    sources.update(where=f"filename {where_old}", values=row_values)
         self._invalidate_source_cache()
+
+    def _relocated_title(
+        self,
+        sources: lancedb.table.Table | None,
+        old: str,
+        new: str,
+        derive: Callable[[str], str],
+    ) -> str | None:
+        """New title for a moved source, or ``_KEEP_TITLE`` when it must not change.
+
+        Extraction-derived titles survive a move (the content is unchanged);
+        a stem-derived title tracks the filename it was derived from, so it is
+        re-derived from the new name instead of matching the old one forever.
+        """
+        if sources is None:
+            return _KEEP_TITLE
+        try:
+            rows = (
+                sources.search()
+                .where(f"filename = '{escape_sql_string(old)}'")
+                .select(["title"])
+                .limit(1)
+                .to_list()
+            )
+        except Exception:
+            return _KEEP_TITLE
+        if not rows or "title" not in rows[0]:
+            return _KEEP_TITLE
+        stored = rows[0]["title"] or ""
+        if stored != (derive(old) or ""):
+            return _KEEP_TITLE
+        return derive(new) or None
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
@@ -1443,6 +1889,8 @@ class Store:
         """Release the database connection and reset state."""
         self._db = None
         self._fts_ready = False
+        self._title_fts_ready = False
+        self._scalar_ready = False
 
     def drop_all(self) -> None:
         """Drop every table except ``_memories`` -- used by rebuild.
@@ -1453,6 +1901,8 @@ class Store:
         """
         with self._write_lock():
             self._fts_ready = False
+            self._title_fts_ready = False
+            self._scalar_ready = False
             db = self.get_db()
             for name in _table_names(db):
                 if name == MEMORIES_TABLE:

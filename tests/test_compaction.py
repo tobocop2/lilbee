@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from lilbee.retrieval.query.compaction import (
+    COMPACT_KEEP_RECENT,
     COMPACT_MAX_TOKENS,
     SUMMARY_REQUEST,
     batch_overflow,
+    foldable,
     overflow,
     prompt_history,
     summary_cap,
@@ -89,7 +91,7 @@ def test_batches_each_fit_the_current_model_window() -> None:
     """
     dropped = _msgs(200)  # ~20k tokens, i.e. a large conversation
     ctx = 2048
-    batches = batch_overflow(dropped, "", ctx_target=ctx)
+    batches = batch_overflow(dropped, ctx_target=ctx)
     assert len(batches) > 1, "a 20k backlog must not be summarized in one 2k call"
     # `estimate < ctx` is the invariant that shipped a live failure: a batch
     # estimated at 1728 tokens reached a 2048-token server as ~2666 real tokens
@@ -108,25 +110,17 @@ def test_batches_each_fit_the_current_model_window() -> None:
     assert sum(len(b) for b in batches) == len(dropped)
 
 
-def test_batches_leave_room_for_the_previous_summary() -> None:
-    """The previous notes ride in every batch prompt, so they must be budgeted."""
-    dropped = _msgs(60)
-    lean = batch_overflow(dropped, "", ctx_target=4096)
-    fat = batch_overflow(dropped, "s" * 6000, ctx_target=4096)
-    assert len(fat) >= len(lean), "a long previous summary must shrink the batches"
-
-
 def test_a_single_oversized_turn_is_clipped_rather_than_sent_to_fail() -> None:
     """One turn bigger than the window would fail every call and lose the lot."""
     huge = [{"role": "user", "content": "y" * 200_000}]
-    batches = batch_overflow(huge, "", ctx_target=2048)
+    batches = batch_overflow(huge, ctx_target=2048)
     assert len(batches) == 1
     assert estimate_tokens(batches[0][0]) < 2048
     assert batches[0][0]["content"].endswith("[…clipped]")
 
 
 def test_no_overflow_yields_no_batches() -> None:
-    assert batch_overflow([], "", ctx_target=2048) == []
+    assert batch_overflow([], ctx_target=2048) == []
 
 
 def test_an_oversized_turn_flushes_the_batch_being_built() -> None:
@@ -137,7 +131,7 @@ def test_an_oversized_turn_flushes_the_batch_being_built() -> None:
         {"role": "user", "content": "y" * 200_000},  # bigger than any batch
         {"role": "assistant", "content": "small three"},
     ]
-    batches = batch_overflow(dropped, "", ctx_target=2048)
+    batches = batch_overflow(dropped, ctx_target=2048)
     # the two small turns batch together, the giant one stands alone (clipped)
     assert [len(b) for b in batches] == [2, 1, 1]
     assert batches[0][0]["content"] == "small one"
@@ -172,3 +166,42 @@ def test_a_summary_that_cannot_fit_is_dropped_not_stacked() -> None:
     without = prompt_history(history, "", max_tokens=budget)
     assert all(m["content"] != SUMMARY_REQUEST for m in with_summary), "the summary was dropped"
     assert with_summary == without, "and the prompt is exactly what it would be without one"
+
+
+class TestFoldableAlignment:
+    """The fold boundary must leave the kept window opening on a user turn."""
+
+    def test_odd_history_keeps_alternation_intact(self):
+        """An interrupted turn persists an unpaired user message, so a history
+        can be odd-length. Cutting a fixed count then leaves the kept window
+        starting on an assistant reply, and the assembled prompt runs
+        user, assistant, assistant -- the shape strict chat templates reject."""
+        history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        dropped = foldable(history)
+        kept = history[len(dropped) :]
+        assert kept, "folding must not consume the whole history"
+        assert kept[0]["role"] == "user"
+
+    def test_even_history_is_unchanged(self):
+        history = _msgs(10)
+        dropped = foldable(history)
+        assert len(dropped) == len(history) - COMPACT_KEEP_RECENT
+        assert history[len(dropped)]["role"] == "user"
+
+    def test_short_history_folds_nothing(self):
+        assert foldable(_msgs(COMPACT_KEEP_RECENT)) == []
+
+    def test_a_tail_with_no_user_turn_keeps_the_plain_boundary(self):
+        """Nothing to align to: scanning past the end and folding everything
+        away would throw the whole conversation out to fix its shape."""
+        history = [
+            {"role": "assistant", "content": f"a{i}"} for i in range(COMPACT_KEEP_RECENT + 4)
+        ]
+        dropped = foldable(history)
+        assert len(dropped) == len(history) - COMPACT_KEEP_RECENT
