@@ -43,6 +43,31 @@ log = logging.getLogger(__name__)
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
 
+# Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping);
+# hardcoded so config validation does not import lancedb.
+FTS_LANGUAGES = frozenset(
+    {
+        "Arabic",
+        "Danish",
+        "Dutch",
+        "English",
+        "Finnish",
+        "French",
+        "German",
+        "Greek",
+        "Hungarian",
+        "Italian",
+        "Norwegian",
+        "Portuguese",
+        "Romanian",
+        "Russian",
+        "Spanish",
+        "Swedish",
+        "Tamil",
+        "Turkish",
+    }
+)
+
 
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
@@ -124,10 +149,11 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
-    # Abstention floor against the canonical [0, 1] relevance score
-    # (0.0 = no filtering). When every retrieved chunk falls below it, ask
-    # refuses instead of feeding noise as context. On the fused reciprocal-rank
-    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
+    # Abstention floor against the [0, 1] fused relevance score (0.0 = no
+    # filtering). When every retrieved chunk falls below it, ask refuses instead
+    # of feeding noise as context. The fused score normalizes against the
+    # configured weight budget (a constant), so an arm's top hit scores a stable
+    # share of it; useful floors start around 0.4. Tune against your own corpus.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
@@ -231,6 +257,67 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 gives the two arms equal voice; lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
+    # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
+    # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
+    # lexical, a flat one keeps it). OFF by default, pending a benchmark run to
+    # confirm it beats the fixed weight. lexical_fusion_weight is the ceiling the
+    # rule scales down from. Set adaptive_fusion=true to enable it.
+    adaptive_fusion: bool = ConfigField(default=False, writable=True)
+
+    # Vector-similarity margin at which the lexical arm is fully silenced; smaller
+    # = more aggressive downweighting. 0 disables adaptation entirely (the lexical
+    # arm keeps its full fixed weight).
+    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+
+    # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
+    # name ("English", "German", "French", ...). Applied when an index is
+    # (re)built, so changing it needs `lilbee rebuild` on an existing store.
+    # Validated against FTS_LANGUAGES: a bad name would otherwise fail index
+    # creation quietly and hybrid search would degrade to vector-only.
+    fts_language: str = ConfigField(default="English", min_length=1, writable=True, reindex=True)
+
+    @field_validator("fts_language", mode="after")
+    @classmethod
+    def _validate_fts_language(cls, value: str) -> str:
+        normalized = value.strip().title()
+        if normalized not in FTS_LANGUAGES:
+            raise ValueError(f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}")
+        return normalized
+
+    # Prefix each chunk's document title to its embedding input (the stored
+    # chunk text is unchanged). Changes the embedding space: toggling it needs
+    # `lilbee rebuild`, so it ships off.
+    embed_titles: bool = ConfigField(default=False, writable=True, reindex=True)
+
+    # Contextual retrieval: prepend one LLM-written sentence situating each
+    # chunk in its document to the embedding input. One generation per chunk,
+    # so ingest slows substantially; stored text and citations stay verbatim.
+    # Toggling needs `lilbee rebuild`.
+    contextual_enrichment: bool = ConfigField(default=False, writable=True, reindex=True)
+
+    # Drop tables-of-contents and classification-banner cover/title pages from
+    # search results. OFF by default; validate per corpus, since the cover-page
+    # heuristic can also fire on short banner-carrying body pages. A query-matched
+    # or top-ranked page is never dropped, so removal is limited to structural
+    # chunks the query did not hit.
+    filter_structural_chunks: bool = ConfigField(default=False, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
@@ -279,6 +366,15 @@ class Config(BaseSettings):
 
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
+
+    # Adjacent chunks pulled from the same source on each side of every
+    # selected chunk and merged into one contiguous passage, so a hit that
+    # lands mid-argument regains the text before and after it. 0 disables.
+    # Capped: it is a small chunk radius (useful values are single digits), and
+    # the merged text is token-budget-bounded anyway, so a large value only
+    # inflates per-query fetch cost -- and a misread as a token count (e.g.
+    # 50000) would build a megabyte-long IN-predicate per source.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, le=100, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
@@ -336,6 +432,11 @@ class Config(BaseSettings):
     # Off = the cross-encoder's own ordering stands unblended, which isolates
     # the reranker's effect when measuring it.
     rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
+
+    # Drop candidates whose RAW reranker score falls below this; unset = off.
+    # The scale is provider/model specific (bge logits can be negative, hosted
+    # rerankers use 0..1), so set it against observed scores.
+    rerank_min_score: float | None = ConfigField(default=None, writable=True, public=True)
 
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
@@ -1033,11 +1134,20 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import (
+            canonical_data_root,
+            canonical_models_dir,
+            default_data_dir,
+            find_local_root,
+        )
 
         if not isinstance(data, dict):
             return data
 
+        # An empty LILBEE_DATA_ROOT (delivered as "") must fall through to default
+        # resolution like an unset one, not become Path(".") = the process cwd.
+        if isinstance(data.get("data_root"), str) and not data["data_root"].strip():
+            data["data_root"] = None
         if data.get("data_root") in (None, _UNSET_PATH):
             data_env = os.environ.get("LILBEE_DATA", "").strip()
             if data_env:
@@ -1045,7 +1155,11 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # Every child path below derives from this, and the server lock keys on
+        # those, so canonicalizing here is what makes one directory key one lock.
+        # Also coerces a raw string (LILBEE_DATA_ROOT) to Path.
+        root = canonical_data_root(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):
@@ -1066,15 +1180,19 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import default_data_dir, find_local_root
+        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-        data_env = os.environ.get("LILBEE_DATA", "")
+        # .strip() to match _resolve_defaults; a padded value would otherwise
+        # send the root and its config.toml to different directories.
+        data_env = os.environ.get("LILBEE_DATA", "").strip()
         if data_env:
             toml_dir = Path(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
-        toml_path = toml_dir / "config.toml"
+        # Same call as the root itself, so this looks where the root resolves to;
+        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+        toml_path = canonical_data_root(toml_dir) / "config.toml"
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]

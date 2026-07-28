@@ -20,11 +20,16 @@ import numpy as np
 from lilbee.core.config import CHUNKS_TABLE
 from lilbee.data.store import Store
 from lilbee.retrieval.clustering import SourceCluster
-from lilbee.retrieval.clustering_embedding.types import ChunkRecord
+from lilbee.retrieval.clustering_embedding.types import ClusterChunk
 
 # Block size for the similarity kernel. With N=10000 and D=768 this caps
 # peak float32 memory at block * N * 4 bytes ~= 40 MB.
 _BLOCK_SIZE = 1024
+
+# Rows boxed into Python objects per batch when scanning the chunks table.
+# Caps the transient working set at ~25 MB (1024 rows x 768 dims), whatever
+# the corpus size.
+_SCAN_BATCH_ROWS = 1024
 
 # Label Propagation hard iteration cap. Convergence is typically reached
 # in well under 10 passes on real corpora.
@@ -33,10 +38,10 @@ _MAX_LPA_ITERATIONS = 30
 # Minimum non-zero L2 norm for a row vector to be kept.
 _MIN_VECTOR_NORM = 1e-12
 
-# Source-membership thresholds. A source joins a chunk community when it
-# contributes at least `min(_MIN_SOURCE_CHUNKS, ceil(total * _MIN_SOURCE_FRACTION))`
-# of its chunks. The stricter (smaller) side wins, so a single stray chunk
-# from a long document never pulls the whole source into an unrelated cluster.
+# A source joins a chunk community on at least
+# `min(_MIN_SOURCE_CHUNKS, ceil(total * _MIN_SOURCE_FRACTION))` of its chunks.
+# min() is the lenient cutoff: it caps the requirement at _MIN_SOURCE_CHUNKS so
+# a long document needs a foothold, not a proportional chunk count.
 _MIN_SOURCE_CHUNKS = 3
 _MIN_SOURCE_FRACTION = 0.2
 
@@ -52,29 +57,6 @@ _SHORT_CHUNK_TOKEN_CAP = 20
 _MIN_K = 5
 _MAX_K = 20
 
-# Minimum token length for TF-IDF labeling. Shorter tokens are mostly
-# articles, prepositions, and single letters: noise that inflates term
-# counts without adding topic signal. Three characters keeps useful
-# acronyms (api, xml, sql).
-_MIN_TF_TOKEN_LEN = 3
-
-
-def _tokenize_for_tf(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens for TF-IDF scoring.
-
-    Deliberately has NO stopword list: common words like "the" or "and"
-    get an IDF near zero (they appear in almost every chunk) so TF-IDF
-    filters them automatically. A hand-curated English stoplist would
-    add maintenance burden and break on non-English corpora for no
-    additional quality.
-    """
-    result: list[str] = []
-    for raw in text.lower().split():
-        word = "".join(ch for ch in raw if ch.isalnum())
-        if len(word) >= _MIN_TF_TOKEN_LEN:
-            result.append(word)
-    return result
-
 
 def auto_k(n: int) -> int:
     """Pick a neighborhood size from corpus size via ``clamp(log2(N)+2)``."""
@@ -86,7 +68,7 @@ def auto_k(n: int) -> int:
 
 def _parse_chunk_row(
     row: dict[str, object],
-) -> tuple[ChunkRecord, list[float] | tuple[float, ...]] | None:
+) -> tuple[ClusterChunk, list[float] | tuple[float, ...]] | None:
     """Extract a chunk record + vector from a raw Arrow row, or None on invalid."""
     vector = row.get("vector")
     if not isinstance(vector, (list, tuple)):
@@ -98,44 +80,50 @@ def _parse_chunk_row(
     chunk_text = raw_text if isinstance(raw_text, str) else ""
     raw_index = row.get("chunk_index")
     chunk_index = raw_index if isinstance(raw_index, int) else 0
-    record = ChunkRecord(
-        source=source,
-        chunk_index=chunk_index,
-        text=chunk_text,
-        tokens=_tokenize_for_tf(chunk_text),
-    )
+    # tokens derive from text in ClusterChunk.__post_init__.
+    record = ClusterChunk(source=source, chunk_index=chunk_index, text=chunk_text)
     return record, vector
 
 
 def _load_chunk_records(
     store: Store,
-) -> tuple[list[ChunkRecord], np.ndarray]:
+) -> tuple[list[ClusterChunk], np.ndarray]:
     """Scan the chunks table once and return records plus a float32 matrix.
 
     Rows with an unparseable vector are skipped. Records are sorted by
     ``(source, chunk_index)`` so downstream cluster IDs are stable
     regardless of LanceDB's row return order. Records are tokenized once
-    here so TF-IDF labeling does not re-tokenize. The vector matrix is
-    preallocated and populated via numpy row-assignment, which pushes
-    the Python-level float cast into numpy's C loop and avoids building
-    a transient ``list[list[float]]``.
+    here so TF-IDF labeling does not re-tokenize.
+
+    The scan consumes the table in bounded row batches (``_SCAN_BATCH_ROWS``):
+    each batch's rows are parsed and its vectors immediately compacted into a
+    float32 block, so the boxed Python working set (row dicts plus vector
+    float lists) is one batch, not the whole table. Only the compact matrix
+    and the text records scale with corpus size.
     """
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    parsed = [pair for pair in map(_parse_chunk_row, table.to_arrow().to_pylist()) if pair]
-    if not parsed:
+    records: list[ClusterChunk] = []
+    blocks: list[np.ndarray] = []
+    for batch in table.to_arrow().to_batches(max_chunksize=_SCAN_BATCH_ROWS):
+        batch_vectors: list[list[float] | tuple[float, ...]] = []
+        for row in batch.to_pylist():
+            pair = _parse_chunk_row(row)
+            if pair is None:
+                continue
+            record, vector = pair
+            records.append(record)
+            batch_vectors.append(vector)
+        if batch_vectors:
+            blocks.append(np.asarray(batch_vectors, dtype=np.float32))
+    if not records:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    parsed.sort(key=lambda pair: (pair[0].source, pair[0].chunk_index))
-    dim = len(parsed[0][1])
-    matrix = np.empty((len(parsed), dim), dtype=np.float32)
-    records: list[ChunkRecord] = []
-    for row_idx, (record, vector) in enumerate(parsed):
-        records.append(record)
-        matrix[row_idx] = vector
-    return records, matrix
+    matrix = np.vstack(blocks)
+    order = sorted(range(len(records)), key=lambda i: (records[i].source, records[i].chunk_index))
+    return [records[i] for i in order], matrix[order]
 
 
 def normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -231,7 +219,7 @@ def communities_by_label(labels: list[int]) -> dict[int, list[int]]:
     return communities
 
 
-def _source_totals(records: list[ChunkRecord]) -> dict[str, int]:
+def _source_totals(records: list[ClusterChunk]) -> dict[str, int]:
     """Return the total chunk count per source across the whole corpus."""
     totals: dict[str, int] = {}
     for record in records:
@@ -241,7 +229,7 @@ def _source_totals(records: list[ChunkRecord]) -> dict[str, int]:
 
 def _filter_sources(
     member_indices: list[int],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     source_totals: dict[str, int],
 ) -> frozenset[str]:
     """Apply the source-membership threshold to a community's members."""
@@ -259,7 +247,7 @@ def _filter_sources(
     return frozenset(kept)
 
 
-def _corpus_document_frequency(records: list[ChunkRecord]) -> dict[str, int]:
+def _corpus_document_frequency(records: list[ClusterChunk]) -> dict[str, int]:
     """Compute document frequency (chunk count containing term) for every term."""
     df: dict[str, int] = {}
     for record in records:
@@ -270,7 +258,7 @@ def _corpus_document_frequency(records: list[ChunkRecord]) -> dict[str, int]:
 
 def _label_community(
     member_indices: list[int],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     df: dict[str, int],
     total_chunks: int,
     fallback: str,
@@ -305,7 +293,7 @@ def _label_community(
 
 def _build_clusters(
     communities: dict[int, list[int]],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     source_totals: dict[str, int],
     df: dict[str, int],
     min_sources: int,

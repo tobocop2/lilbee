@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.services import build_services, services_scope
 from lilbee.core.config import Config, cfg, config_scope
+from lilbee.core.system import canonical_data_root
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ class Lilbee:
         if config is not None:
             self._config = config
         elif documents_dir is not None:
-            root = Path(documents_dir).resolve()
+            root = canonical_data_root(documents_dir)
             self._config = cfg.model_copy(
                 update={
                     "data_root": root,

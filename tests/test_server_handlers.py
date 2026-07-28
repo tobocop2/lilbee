@@ -13,6 +13,7 @@ from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.retrieval.query.searcher import RagContext
 from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
@@ -42,9 +43,11 @@ _SAMPLE_CHUNK = SearchChunk(
 
 def _rag_return(chunks: list[SearchChunk] | None = None):
     """Build a mock build_rag_context return value."""
+    from lilbee.retrieval.query.searcher import RagContext
+
     results = chunks or [_SAMPLE_CHUNK]
     messages = [{"role": "system", "content": "test"}, {"role": "user", "content": "q"}]
-    return results, messages
+    return RagContext(results, messages)
 
 
 @pytest.fixture(autouse=True)
@@ -498,7 +501,7 @@ class TestAskStream:
         retrieved set, mirroring Searcher.ask_stream's ``used if used else results``."""
         a = _SAMPLE_CHUNK.model_copy(update={"source": "a.md", "chunk_index": 0})
         b = _SAMPLE_CHUNK.model_copy(update={"source": "b.md", "chunk_index": 1})
-        mock_svc.searcher.build_rag_context.return_value = ([a, b], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([a, b], [])
         mock_svc.provider.chat.return_value = iter(["an answer with no citation markers"])
         events = [e async for e in handlers.ask_stream("question")]
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
@@ -523,7 +526,7 @@ class TestAskStream:
         matching the non-stream cited_sources contract, not the full retrieved list."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "cited.md", "chunk_index": 0})
         other = _SAMPLE_CHUNK.model_copy(update={"source": "other.md", "chunk_index": 1})
-        mock_svc.searcher.build_rag_context.return_value = ([cited, other], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited, other], [])
         mock_svc.provider.chat.return_value = iter(["see [1] for details"])
         events = [e async for e in handlers.ask_stream("question")]
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
@@ -534,7 +537,7 @@ class TestAskStream:
         """A model that appends its own Sources block must not double up with the
         authoritative SOURCES event: no token frame carries the model's list."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
-        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
         mock_svc.provider.chat.return_value = iter(
             ["Grounded answer [1].", "\n\nSources:\n- invented.md"]
         )
@@ -555,7 +558,7 @@ class TestAskStream:
         """The citation filter holds the last line until the stream ends; the
         flushed tail must still be emitted as a token before SOURCES."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
-        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
         mock_svc.provider.chat.return_value = iter(["First line [1].\n", "Held final line."])
         events = [e async for e in handlers.ask_stream("question")]
         token_text = "".join(
@@ -570,7 +573,7 @@ class TestAskStream:
         channel and stays out of the answer (and the citation filter)."""
         monkeypatch.setattr(cfg, "show_reasoning", True)
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
-        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
         mock_svc.provider.chat.return_value = iter(["<think>pondering</think>", "answer [1]"])
         events = [e async for e in handlers.ask_stream("question")]
         reasoning_text = "".join(
@@ -1028,7 +1031,7 @@ class TestChatStream:
         matching the non-stream cited_sources contract, not the full retrieved list."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "cited.md", "chunk_index": 0})
         other = _SAMPLE_CHUNK.model_copy(update={"source": "other.md", "chunk_index": 1})
-        mock_svc.searcher.build_rag_context.return_value = ([cited, other], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited, other], [])
         monkeypatch.setattr(
             _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["see [1] here"])
         )
@@ -1042,7 +1045,7 @@ class TestChatStream:
         retrieved set, mirroring Searcher.ask_stream's ``used if used else results``."""
         a = _SAMPLE_CHUNK.model_copy(update={"source": "a.md", "chunk_index": 0})
         b = _SAMPLE_CHUNK.model_copy(update={"source": "b.md", "chunk_index": 1})
-        mock_svc.searcher.build_rag_context.return_value = ([a, b], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([a, b], [])
         monkeypatch.setattr(
             _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["no markers here"])
         )
@@ -1055,7 +1058,7 @@ class TestChatStream:
         """A model Sources block in chat streaming is dropped so it doesn't double
         up with the authoritative SOURCES event."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
-        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
         monkeypatch.setattr(
             _rag_h,
             "dispatch_chat_stream",
@@ -1077,7 +1080,7 @@ class TestChatStream:
     async def test_chat_stream_releases_held_back_final_line(self, mock_svc, monkeypatch):
         """The chat SSE path also flushes the filter's held-back tail as a token."""
         cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
-        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
         monkeypatch.setattr(
             _rag_h,
             "dispatch_chat_stream",

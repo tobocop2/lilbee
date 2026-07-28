@@ -6,7 +6,10 @@ co-occurrence graph (Church & Hanks 1990), and clusters with Leiden
 concept overlap and expand queries via graph traversal.
 
 Requires optional ``graph`` extra: ``pip install lilbee[graph]``.
-When dependencies are missing, all public functions degrade gracefully.
+When dependencies are missing everything here degrades gracefully -- empty
+results, ``concepts_available()`` False -- except ``load_spacy_pipeline``,
+which raises ``ImportError`` by design so the caller can surface the model
+download command.
 """
 
 from __future__ import annotations

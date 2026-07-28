@@ -20,7 +20,7 @@ from tree_sitter_language_pack import (
 )
 
 from lilbee.core.config import cfg
-from lilbee.data.chunk import chunk_text
+from lilbee.data.chunk import CHARS_PER_TOKEN, chunk_text
 
 log = logging.getLogger(__name__)
 
@@ -176,7 +176,9 @@ def chunk_code(file_path: Path, source_name: str | None = None) -> list[CodeChun
             structure=True,
             symbols=True,
             docstrings=True,
-            chunk_max_size=cfg.chunk_size,
+            # tree-sitter's chunk_max_size is bytes; cfg.chunk_size is tokens,
+            # so convert with the same char budget the text path uses.
+            chunk_max_size=cfg.chunk_size * CHARS_PER_TOKEN,
         )
         result = process(source_text, config)  # type: ignore[arg-type]  # tslp 1.8.0 typing bug, see init() above
     except Exception:

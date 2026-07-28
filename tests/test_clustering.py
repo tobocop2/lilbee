@@ -16,14 +16,13 @@ from lilbee.retrieval.clustering import (
 )
 from lilbee.retrieval.clustering_embedding import EmbeddingClusterer
 from lilbee.retrieval.clustering_embedding.helpers import (
-    _tokenize_for_tf,
     auto_k,
     communities_by_label,
     label_propagation,
     mutual_knn,
     normalize_rows,
 )
-from lilbee.retrieval.clustering_embedding.types import ChunkRecord
+from lilbee.retrieval.clustering_embedding.types import ClusterChunk, _tokenize_for_tf
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +34,8 @@ def isolated_cfg():
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _record(source: str, chunk_index: int = 0, text: str = "") -> ChunkRecord:
-    return ChunkRecord(
-        source=source,
-        chunk_index=chunk_index,
-        text=text,
-        tokens=_tokenize_for_tf(text),
-    )
+def _record(source: str, chunk_index: int = 0, text: str = "") -> ClusterChunk:
+    return ClusterChunk(source=source, chunk_index=chunk_index, text=text)
 
 
 def _row(
@@ -58,12 +52,18 @@ def _row(
     }
 
 
-def _mock_table(rows: list[dict[str, object]]) -> MagicMock:
+def _mock_table(*row_batches: list[dict[str, object]]) -> MagicMock:
+    """A chunks table serving *row_batches* through the batched Arrow scan."""
     table = MagicMock()
     arrow = MagicMock()
-    arrow.to_pylist.return_value = rows
+    batches = []
+    for rows in row_batches:
+        batch = MagicMock()
+        batch.to_pylist.return_value = rows
+        batches.append(batch)
+    arrow.to_batches.return_value = batches
     table.to_arrow.return_value = arrow
-    table.count_rows.return_value = len(rows)
+    table.count_rows.return_value = sum(len(rows) for rows in row_batches)
     return table
 
 
@@ -220,12 +220,40 @@ class TestCommunitiesByLabel:
         assert communities[2] == [5]
 
 
-class TestChunkRecord:
+class TestTokenizeForTf:
+    def test_lowercases_and_strips_non_alphanumerics(self):
+        assert _tokenize_for_tf("Python, TYPING; rules!") == ["python", "typing", "rules"]
+
+    def test_drops_tokens_below_the_minimum_length(self):
+        """Short tokens are articles and single letters: noise for TF-IDF.
+        Three characters keeps useful acronyms."""
+        assert _tokenize_for_tf("a an the sql api") == ["the", "sql", "api"]
+
+    def test_keeps_common_words_for_idf_to_handle(self):
+        """No stopword list by design: a term in nearly every chunk gets an
+        IDF at or below zero and is filtered by the scoring, not a list."""
+        assert "and" in _tokenize_for_tf("indexing and retrieval")
+
+
+class TestClusterChunk:
     def test_holds_cached_tokens(self):
         record = _record("doc.md", 0, "python typing")
         assert record.source == "doc.md"
         assert record.chunk_index == 0
         assert record.tokens == ["python", "typing"]
+
+    def test_tokens_derive_from_text_without_the_caller_supplying_them(self):
+        """The invariant is structural, not caller discipline: TF-IDF labeling
+        silently falls back to the cluster id when a record carries no tokens,
+        so a construction site that forgets to tokenize must not be possible."""
+        record = ClusterChunk(source="doc.md", chunk_index=0, text="python typing rules")
+        assert record.tokens == ["python", "typing", "rules"]
+
+    def test_explicit_tokens_are_respected(self):
+        record = ClusterChunk(
+            source="doc.md", chunk_index=0, text="ignored text", tokens=["preset"]
+        )
+        assert record.tokens == ["preset"]
 
 
 class TestEmbeddingClustererAvailable:
@@ -304,6 +332,34 @@ class TestEmbeddingClustererLoad:
         rows = [_row(f"d{i}.md", [0.0, 0.0], chunk="content") for i in range(3)]
         store = _store_with_rows(rows)
         assert EmbeddingClusterer(cfg, store).get_clusters() == []
+
+    def test_scans_in_bounded_row_batches(self):
+        """The chunks table is consumed batch by batch, never materialized as
+        one full to_pylist -- peak Python-object memory must stay bounded by
+        the batch size regardless of corpus size."""
+        from lilbee.retrieval.clustering_embedding.helpers import (
+            _SCAN_BATCH_ROWS,
+            _load_chunk_records,
+        )
+
+        first = [_row("b.md", [0.0, 1.0], chunk="beta", chunk_index=1)]
+        second = [
+            _row("a.md", [1.0, 0.0], chunk="alpha", chunk_index=0),
+            {"source": None, "vector": [9.0, 9.0], "chunk": "bad", "chunk_index": 0},
+        ]
+        table = _mock_table(first, second)
+        store = MagicMock()
+        store.open_table.return_value = table
+
+        records, matrix = _load_chunk_records(store)
+        table.to_arrow.return_value.to_batches.assert_called_once_with(
+            max_chunksize=_SCAN_BATCH_ROWS
+        )
+        # Records from both batches, invalid row skipped, sorted with the
+        # matrix rows kept aligned across the batch boundary.
+        assert [(r.source, r.chunk_index) for r in records] == [("a.md", 0), ("b.md", 1)]
+        assert matrix.tolist() == [[1.0, 0.0], [0.0, 1.0]]
+        assert matrix.dtype == np.float32
 
 
 class TestEmbeddingClustererGetClusters:
@@ -516,10 +572,27 @@ class TestClustererFacade:
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
+        clusterer = Clusterer(cfg, MagicMock())
         with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering"):
-            clusterer = Clusterer(cfg, MagicMock())
-        assert isinstance(clusterer.backend, EmbeddingClusterer)
+            backend = clusterer.backend
+        assert isinstance(backend, EmbeddingClusterer)
         assert any("falling back" in rec.message.lower() for rec in caplog.records)
+
+    def test_backend_selection_is_live_not_pinned_at_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The services container caches the facade for the process lifetime,
+        so a concept graph built later in the same process must be picked up
+        without a restart."""
+        from lilbee.retrieval.concepts import ConceptGraphClusterer
+
+        cfg.wiki_clusterer = ClustererBackend.CONCEPTS
+        graph_built = {"value": False}
+        monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: graph_built["value"])
+        clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, EmbeddingClusterer)
+        graph_built["value"] = True
+        assert isinstance(clusterer.backend, ConceptGraphClusterer)
 
     def test_facade_forwards_available_and_get_clusters(self, monkeypatch: pytest.MonkeyPatch):
         # Swap _select_backend out for a stub backend so the test only
