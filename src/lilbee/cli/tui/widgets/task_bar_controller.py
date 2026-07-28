@@ -185,6 +185,8 @@ class TaskBarController:
         """
         if task_type == TaskType.DOWNLOAD.value:
             self._notify_model_installed()
+        elif task_type in (TaskType.SYNC.value, TaskType.WIKI.value):
+            self._reload_wiki_screens()
 
     def _task_type_of(self, task_id: str) -> str | None:
         task = self.queue.get_task(task_id)
@@ -418,6 +420,25 @@ class TaskBarController:
                     screen.refresh_model_bar()
                 except QueryError:
                     log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
+                break
+
+    def _reload_wiki_screens(self) -> None:
+        """Rescan an open WikiScreen after work that rewrote pages on disk.
+
+        A sync runs the wiki incremental update inside the ingest pipeline and
+        a wikify run rewrites pages directly; the screen only rescans on show,
+        so without this a wiki view left open keeps showing the old tree.
+        """
+        from textual.css.query import QueryError
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
+        for screen in self.app.screen_stack:
+            if isinstance(screen, WikiScreen):
+                try:
+                    screen.reload()
+                except QueryError:
+                    log.debug("Wiki screen not mounted yet; skipping reload", exc_info=True)
                 break
 
     def start_download(
