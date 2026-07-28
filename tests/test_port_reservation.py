@@ -122,6 +122,11 @@ class TestTheSubEphemeralSearch:
         # on the next, failing the coverage gate rather than the test.
         import socket
 
+        # The reserved set is a module global, so whatever ran earlier in this
+        # worker decides whether the first candidate is already reserved. If it
+        # is, the loop short-circuits before the bind and this branch never runs,
+        # which leaves it covered alone and uncovered in a parallel suite.
+        monkeypatch.setattr(sm, "_reserved_ports", set())
         monkeypatch.setattr(sm, "_ephemeral_range", lambda: (32768, 60999))
         first_candidate = sm._search_start((32768, 60999))
         real_bind = socket.socket.bind

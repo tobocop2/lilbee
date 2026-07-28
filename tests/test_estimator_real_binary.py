@@ -15,7 +15,11 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 
-pytestmark = pytest.mark.slow
+# Opts out of the engine-binary seal on purpose: this is the one test whose
+# subject is the real parser, so blocking host resolution would leave it
+# asserting against a stub, which is what every other estimator test already
+# does. It skips cleanly where no parser is installed.
+pytestmark = [pytest.mark.slow, pytest.mark.real_engine_resolution]
 
 
 @pytest.fixture(scope="module")
