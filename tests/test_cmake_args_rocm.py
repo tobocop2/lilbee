@@ -42,13 +42,26 @@ _CURRENT_ISAS = (
 )
 
 
-def _rocm_tree(root: pathlib.Path, isas: tuple[str, ...]) -> pathlib.Path:
-    """A ROCm install whose device bitcode covers *isas*."""
+def _rocm_tree(
+    root: pathlib.Path,
+    isas: tuple[str, ...],
+    *,
+    kernel_isas: tuple[str, ...] | None = None,
+) -> pathlib.Path:
+    """A ROCm install with device bitcode for *isas* and rocBLAS kernels for *kernel_isas*.
+
+    *kernel_isas* defaults to *isas*; pass a subset to model a ROCm whose compiler
+    still targets an architecture rocBLAS no longer ships GEMM kernels for.
+    """
     bitcode = root / "amdgcn/bitcode"
     bitcode.mkdir(parents=True)
     (root / "lib/llvm/bin").mkdir(parents=True)
+    kernels = root / "lib/rocblas/library"
+    kernels.mkdir(parents=True)
     for isa in isas:
         (bitcode / f"oclc_isa_version_{isa}.bc").write_text("")
+    for isa in isas if kernel_isas is None else kernel_isas:
+        (kernels / f"TensileLibrary_lazy_gfx{isa}.dat").write_text("")
     return root
 
 
@@ -74,7 +87,8 @@ def test_builds_every_target_a_current_rocm_supports(tmp_path):
     """Nothing is dropped when the toolchain knows every card we ship for."""
     targets, stderr = _targets(_rocm_tree(tmp_path / "rocm", _CURRENT_ISAS))
     assert targets.split(";") == [f"gfx{isa}" for isa in _CURRENT_ISAS]
-    assert "cannot build" not in stderr
+    assert "no device bitcode for" not in stderr
+    assert "no GEMM kernels for" not in stderr
 
 
 def test_never_asks_for_the_target_rocm_7_removed(tmp_path):
@@ -100,6 +114,44 @@ def test_falls_back_loudly_when_there_is_no_bitcode_to_read(tmp_path):
     targets, stderr = _targets(root)
     assert "gfx942" in targets
     assert "no device bitcode" in stderr
+
+
+def test_drops_targets_rocblas_ships_no_kernels_for(tmp_path):
+    """Bitcode alone is not support: ROCm 7.2 still compiles gfx906 but ships zero
+    rocBLAS kernels for it, and the built engine aborts on the first batched GEMM."""
+    kernel_isas = tuple(i for i in _CURRENT_ISAS if i != "906")
+    targets, stderr = _targets(
+        _rocm_tree(tmp_path / "rocm", _CURRENT_ISAS, kernel_isas=kernel_isas)
+    )
+    assert "gfx906" not in targets
+    assert targets.split(";") == [f"gfx{isa}" for isa in kernel_isas]
+    assert "gfx906" in stderr and "GEMM kernels" in stderr
+
+
+def test_a_target_returns_when_rocblas_restores_its_kernels(tmp_path):
+    """The wanted list is intent: nothing needs editing when AMD brings kernels back."""
+    without, _ = _targets(_rocm_tree(tmp_path / "a", _CURRENT_ISAS, kernel_isas=("908", "90a")))
+    restored, _ = _targets(_rocm_tree(tmp_path / "b", _CURRENT_ISAS))
+    assert "gfx906" not in without
+    assert "gfx906" in restored
+
+
+def test_missing_kernel_library_keeps_the_bitcode_filter_alone(tmp_path):
+    """A ROCm tree without rocBLAS kernels at all is filtered on bitcode only,
+    loudly, rather than dropping every target."""
+    root = _rocm_tree(tmp_path / "rocm", _CURRENT_ISAS, kernel_isas=())
+    (root / "lib/rocblas/library").rmdir()
+    targets, stderr = _targets(root)
+    assert targets.split(";") == [f"gfx{isa}" for isa in _CURRENT_ISAS]
+    assert "bitcode alone" in stderr
+
+
+def test_no_surviving_target_falls_back_to_everything_loudly(tmp_path):
+    """A kernel library that covers nothing we want is an install this script does
+    not understand; build everything rather than emit a wheel for no card."""
+    targets, stderr = _targets(_rocm_tree(tmp_path / "rocm", _CURRENT_ISAS, kernel_isas=()))
+    assert targets.split(";") == [f"gfx{isa}" for isa in _CURRENT_ISAS]
+    assert "unfiltered" in stderr
 
 
 @pytest.mark.parametrize("isas", [_CURRENT_ISAS, ("942", "1030")])

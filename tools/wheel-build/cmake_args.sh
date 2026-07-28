@@ -63,36 +63,48 @@ esac
 common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
 common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
-# Every AMD target ROCm supports that lilbee ships for: gfx906 (MI50), gfx908 (MI100),
+# Every AMD target lilbee wants to ship for: gfx906 (MI50), gfx908 (MI100),
 # gfx90a (MI200), gfx942 (MI300), gfx950 (MI350), gfx1030 (RDNA2), gfx1100/1101/1102
-# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). Anything the installed
-# ROCm cannot build is filtered below rather than dropped from this list.
+# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). Intent, not support:
+# targets the installed ROCm cannot serve are filtered below, not removed here.
 rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 
-# The subset of those the ROCm at $1 can build, as a cmake list.
-#
-# One unsupported target fails the whole configure rather than being skipped, and
-# AMD drops targets between releases (7.0 removed gfx940). The device bitcode is the
-# toolchain's own list of ISAs it knows, and reading it needs no GPU.
+# The subset of those the ROCm at $1 actually supports, as a cmake list: the
+# intersection of the device bitcode (what clang can compile; one unsupported
+# target fails the whole configure) and the rocBLAS lazy Tensile masters (what
+# the runtime can execute; a target with bitcode but no masters builds fine and
+# aborts inside rocBLAS at the first batched GEMM, as 7.2's gfx906 does).
 rocm_buildable_targets() {
-  local root="$1" arch targets="" dropped=""
+  local root="$1" arch targets="" no_bitcode="" no_kernels=""
+  local kernels_dir="${root}/lib/rocblas/library" check_kernels="1"
+  if [ ! -d "${kernels_dir}" ]; then
+    check_kernels=""
+    echo "cmake_args.sh: no rocBLAS kernel library under ${kernels_dir}," \
+      "filtering on device bitcode alone" >&2
+  fi
   for arch in ${rocm_wanted_targets}; do
-    if [ -e "${root}/amdgcn/bitcode/oclc_isa_version_${arch#gfx}.bc" ]; then
-      targets="${targets}${targets:+;}${arch}"
-    else
-      dropped="${dropped} ${arch}"
+    if [ ! -e "${root}/amdgcn/bitcode/oclc_isa_version_${arch#gfx}.bc" ]; then
+      no_bitcode="${no_bitcode} ${arch}"
+      continue
     fi
+    if [ -n "${check_kernels}" ] && [ ! -e "${kernels_dir}/TensileLibrary_lazy_${arch}.dat" ]; then
+      no_kernels="${no_kernels} ${arch}"
+      continue
+    fi
+    targets="${targets}${targets:+;}${arch}"
   done
+
+  [ -z "${no_bitcode}" ] || echo "cmake_args.sh: ROCm at ${root} has no device bitcode for:${no_bitcode}" >&2
+  [ -z "${no_kernels}" ] || echo "cmake_args.sh: rocBLAS at ${root} has no GEMM kernels for:${no_kernels}" >&2
 
   # An install this script does not understand. Build everything rather than
   # silently emitting a wheel for no card at all.
   if [ -z "${targets}" ]; then
-    echo "cmake_args.sh: no device bitcode under ${root}/amdgcn/bitcode," \
+    echo "cmake_args.sh: no wanted target survives the filter," \
       "building every wanted target unfiltered" >&2
     echo "${rocm_wanted_targets}" | tr ' ' ';'
     return
   fi
-  [ -z "${dropped}" ] || echo "cmake_args.sh: ROCm at ${root} cannot build:${dropped}" >&2
   printf '%s' "${targets}"
 }
 
