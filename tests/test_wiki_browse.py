@@ -270,7 +270,7 @@ class TestReadPage:
         assert result is not None
         assert result.title == "Frontmatter Wins"
 
-    def test_frontmatter_with_date_object(self, tmp_path: Path):
+    def test_frontmatter_date_normalizes_to_iso_string(self, tmp_path: Path):
         content = (
             "---\n"
             "title: Dated Page\n"
@@ -283,9 +283,7 @@ class TestReadPage:
         result = read_page(tmp_path, "summaries/dated")
         assert result is not None
         assert result.frontmatter["title"] == "Dated Page"
-        import datetime
-
-        assert isinstance(result.frontmatter["generated_at"], datetime.date)
+        assert result.frontmatter["generated_at"] == "2026-02-01"
 
 
 class TestExtractH1Title:

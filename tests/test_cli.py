@@ -2938,7 +2938,7 @@ class TestWikiLint:
                     wiki_source="wiki/concepts/brakes.md",
                     severity=IssueSeverity.ERROR,
                     message="cited source is gone",
-                    issue_type=IssueType.UNVERIFIABLE,
+                    issue_type=IssueType.SOURCE_MISSING,
                 )
             ]
         )
@@ -2947,7 +2947,7 @@ class TestWikiLint:
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["errors"] == 1
-        assert data["issues"][0]["issue_type"] == "unverifiable"
+        assert data["issues"][0]["issue_type"] == "source_missing"
 
     def test_lint_runs_with_the_wiki_disabled(self, mock_svc, isolated_env):
         """Reads stay available on a disabled wiki; only writers are gated."""
@@ -3267,7 +3267,8 @@ class TestWikiBrowseCommands:
         page_dir = root / "wiki" / "entities"
         page_dir.mkdir(parents=True)
         (page_dir / "chevrolet.md").write_text(
-            "---\ntitle: Chevrolet\nsource_count: 2\n---\n\n# Chevrolet\n\nBody text.\n"
+            "---\ntitle: Chevrolet\nsource_count: 2\n"
+            "generated_at: 2026-01-02T03:04:05+00:00\n---\n\n# Chevrolet\n\nBody text.\n"
         )
 
     def test_list_empty(self, mock_svc, isolated_env):
@@ -3311,6 +3312,8 @@ class TestWikiBrowseCommands:
         assert data["command"] == "wiki_read"
         assert data["title"] == "Chevrolet"
         assert data["frontmatter"]["source_count"] == 2
+        # Unquoted timestamps parse as datetime objects, which json.dumps cannot encode.
+        assert data["frontmatter"]["generated_at"] == "2026-01-02T03:04:05+00:00"
 
     def test_read_missing_page_exits_nonzero(self, mock_svc, isolated_env):
         cfg.wiki_dir = "wiki"
@@ -3398,6 +3401,8 @@ class TestWikiStatus:
         result = runner.invoke(app, ["wiki", "status"])
         assert result.exit_code == 0
         assert "does not exist" in result.output
+        # Sync only generates under wiki_auto_update, so point at the explicit build.
+        assert "wiki build" in result.output
 
     def test_status_with_pages(self, mock_svc, isolated_env):
         cfg.wiki = True

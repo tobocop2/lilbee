@@ -987,6 +987,9 @@ class TestWikiLint:
         result = wiki_lint()
         assert result["command"] == "wiki_lint"
         assert result["total"] >= 1
+        # An unmarked claim is a warning, so an agent can gate on errors == 0.
+        assert result["errors"] == 0
+        assert result["warnings"] == result["total"]
 
     def test_lint_single_page(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
@@ -1003,6 +1006,8 @@ class TestWikiLint:
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_lint(wiki_source="wiki/summaries/doc.md")
         assert result["total"] == 0
+        assert result["errors"] == 0
+        assert result["warnings"] == 0
 
     def test_lint_no_wiki_dir(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path

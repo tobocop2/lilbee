@@ -82,16 +82,14 @@ def wiki_lint(
     Exits 1 when any issue is an error, so a script can gate on the result.
     """
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.wiki.lint import IssueSeverity, lint_wiki_page
+    from lilbee.wiki.lint import IssueSeverity, LintReport, lint_wiki_page
     from lilbee.wiki.lint import lint_all as _lint_all
 
     store = get_services().store
-    if wiki_source:
-        issues = lint_wiki_page(wiki_source, store)
-    else:
-        report = _lint_all(store)
-        issues = report.issues
-    error_count = sum(1 for i in issues if i.severity is IssueSeverity.ERROR)
+    report = (
+        LintReport(issues=lint_wiki_page(wiki_source, store)) if wiki_source else _lint_all(store)
+    )
+    issues = report.issues
 
     if cfg.json_mode:
         json_output(
@@ -99,7 +97,8 @@ def wiki_lint(
                 "command": "wiki_lint",
                 "issues": [i.to_dict() for i in issues],
                 "total": len(issues),
-                "errors": error_count,
+                "errors": report.error_count,
+                "warnings": report.warning_count,
             }
         )
     elif not issues:
@@ -115,7 +114,7 @@ def wiki_lint(
             table.add_row(issue.wiki_source, sev_text, issue.message)
         console.print(table)
 
-    if error_count:
+    if report.error_count:
         raise typer.Exit(1)
 
 
@@ -289,7 +288,7 @@ def wiki_status(
         if cfg.json_mode:
             json_output({"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0})
             return
-        console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
+        console.print("Wiki directory does not exist yet. Run `lilbee wiki build`.")
         return
 
     summaries = _count_md_files(wiki_root / WikiSubdir.SUMMARIES)

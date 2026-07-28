@@ -54,7 +54,6 @@ class IssueType(Enum):
     SOURCE_MISSING = "source_missing"
     STALE_HASH = "stale_hash"
     EXCERPT_MISSING = "excerpt_missing"
-    UNVERIFIABLE = "unverifiable"
     MODEL_CHANGED = "model_changed"
     UNMARKED_CLAIM = "unmarked_claim"
     ORPHAN = "orphan"
