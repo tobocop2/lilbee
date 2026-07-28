@@ -40,7 +40,9 @@ from lilbee.wiki.citations import (
 )
 from lilbee.wiki.persistence import (
     delete_drift_draft_if_present,
+    divert_concept_collision,
     divert_to_drafts,
+    draft_source_names,
     persist_and_finalize,
     subdir_from_wiki_source,
 )
@@ -106,34 +108,43 @@ def wiki_generation_options(config: Config) -> dict[str, Any]:
     )
 
 
-def prompt_overhead_tokens(config: Config) -> int:
-    """Token cost of the longest wiki prompt template plus the ``/no_think`` prefix.
+def prompt_overhead_tokens(config: Config, prompt_chars: int | None = None) -> int:
+    """Token cost of the non-chunk prompt text plus the ``/no_think`` prefix.
 
-    Measured from the templates themselves rather than assumed, so overriding a
-    prompt from settings moves the chunk budget with it.
+    ``prompt_chars`` is the rendered length of everything the prompt carries
+    besides the chunks, so per-call substitutions (concept instruction, entity
+    list, source list) are charged against the budget. Without it the longest
+    raw template stands in, measured rather than assumed so overriding a prompt
+    from settings moves the chunk budget with it.
     """
     longest = max(
         len(config.wiki_synthesis_prompt),
         len(config.wiki_entity_batch_prompt),
     )
-    return -(-(longest + len(_NO_THINK_DIRECTIVE)) // _CHARS_PER_TOKEN)
+    chars = longest if prompt_chars is None else prompt_chars
+    return -(-(chars + len(_NO_THINK_DIRECTIVE)) // _CHARS_PER_TOKEN)
 
 
 def truncate_chunks_to_budget(
     chunks: list[SearchChunk],
     config: Config,
+    prompt_chars: int | None = None,
 ) -> list[SearchChunk]:
     """Drop trailing chunks so the prompt plus its generation fits the context window.
 
     The budget is ``num_ctx`` less the output cap (``wiki_summary_max_tokens``)
-    less the prompt-template overhead, floored at a quarter of the window for
-    configurations whose cap alone exceeds it. Chunks are measured as
-    :func:`chunks_to_text` formats them, numbering and separators included.
-    Uses a chars/4 heuristic for token estimation.
+    less the prompt overhead. The quarter-window floor applies only when that
+    leaves nothing: a positive budget is used as-is, so the floor can never
+    raise the budget past what the window actually has room for. Chunks are
+    measured as :func:`chunks_to_text` formats them, numbering and separators
+    included. Uses a chars/4 heuristic for token estimation.
     """
     context_window = config.num_ctx or DEFAULT_NUM_CTX
-    available = context_window - config.wiki_summary_max_tokens - prompt_overhead_tokens(config)
-    budget_tokens = max(available, int(context_window * _MIN_CONTEXT_BUDGET_FRACTION))
+    overhead = prompt_overhead_tokens(config, prompt_chars)
+    available = context_window - config.wiki_summary_max_tokens - overhead
+    budget_tokens = (
+        available if available > 0 else int(context_window * _MIN_CONTEXT_BUDGET_FRACTION)
+    )
     budget_chars = budget_tokens * _CHARS_PER_TOKEN
 
     total_chars = 0
@@ -211,10 +222,13 @@ def write_page(
     ``slug`` may contain forward slashes (e.g. ``cv-manual/page-0042``);
     any intermediate directories are created before writing. Publishing
     retires any drift draft still pending for the slug: that proposal
-    predates this body and accepting it would undo the regen.
+    predates this body and accepting it would undo the regen. A ``drafts/``
+    target skips drift entirely and routes through :func:`_write_draft_page`.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
+    if subdir == WikiSubdir.DRAFTS:
+        return _write_draft_page(page_path, drafts_dir, slug, full_content, source_names)
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -228,9 +242,35 @@ def write_page(
             )
 
     atomic_write_text(page_path, full_content)
-    if subdir != WikiSubdir.DRAFTS:
-        delete_drift_draft_if_present(drafts_dir, slug)
+    delete_drift_draft_if_present(drafts_dir, slug)
     return page_path
+
+
+def _write_draft_page(
+    draft_path: Path,
+    drafts_dir: Path,
+    slug: str,
+    full_content: str,
+    source_names: list[str],
+) -> Path:
+    """Land a below-threshold page in ``drafts/``, keeping another source's draft.
+
+    A newer proposal from the same sources supersedes the draft in place; one
+    from different sources lands at a collision draft rather than overwriting a
+    page awaiting review. No drift ratio is computed: a drafts target is a
+    proposal, not a published body it could be drifting from.
+    """
+    owner = draft_source_names(draft_path)
+    if owner is not None and owner != sorted(source_names):
+        return divert_concept_collision(
+            slug=slug,
+            source=", ".join(sorted(source_names)),
+            first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
+            content=full_content,
+            drafts_dir=drafts_dir,
+        )
+    atomic_write_text(draft_path, full_content)
+    return draft_path
 
 
 def assemble_content(

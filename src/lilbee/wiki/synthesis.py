@@ -65,12 +65,24 @@ _SECTION_HEADER_RE = re.compile(r"^##?\s+(?P<name>[^\n]+)\s*$", re.MULTILINE)
 
 # Machine-readable concept declaration the batched prompt requires when
 # concept curation is on. Only a declared name may open a concept section.
-_CONCEPT_DECLARATION_PREFIX = "CONCEPTS:"
+_CONCEPT_DECLARATION_LABEL = "CONCEPTS"
+_CONCEPT_DECLARATION_PREFIX = f"{_CONCEPT_DECLARATION_LABEL}:"
 _CONCEPT_DECLARATION_SEPARATOR = ";"
+
+# Markdown decoration models wrap the declaration line in: blockquote and
+# heading markers, bold/italic runs, inline code. Stripped from the line and
+# from each parsed label. The labels stay on one line, so only spaces and tabs
+# are tolerated around the colon.
 _CONCEPT_DECLARATION_RE = re.compile(
-    rf"^\s*{_CONCEPT_DECLARATION_PREFIX}\s*(?P<labels>[^\n]+)$",
+    rf"^[ \t>#*_`]*{_CONCEPT_DECLARATION_LABEL}[*_`]*[ \t]*:[ \t]*(?P<labels>[^\n]+)$",
     re.MULTILINE | re.IGNORECASE,
 )
+_CONCEPT_LABEL_DECORATION = " \t*_`"
+
+# Cap on the published concept names fed back into the batch prompt for reuse.
+# The list is a nudge toward established names, not a complete index, and an
+# uncapped one eats the whole chunk budget on a large wiki.
+_MAX_REUSE_CONCEPT_LABELS = 50
 
 _PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
 
@@ -92,12 +104,14 @@ def generate_synthesis_page(
         log.warning("No chunks for synthesis topic %r, skipping", topic)
         return None
 
-    all_chunks = truncate_chunks_to_budget(all_chunks, config)
-    chunks_text = chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
     template = config.wiki_synthesis_prompt
     display_topic = clean_label_for_display(topic)
-    prompt = template.format(topic=display_topic, source_list=source_list, chunks_text=chunks_text)
+    render = functools.partial(template.format, topic=display_topic, source_list=source_list)
+    # Budget against the prompt as it renders: the source list is a per-call
+    # substitution the raw template does not carry.
+    all_chunks = truncate_chunks_to_budget(all_chunks, config, len(render(chunks_text="")))
+    prompt = render(chunks_text=chunks_to_text(all_chunks))
     slug = make_slug(topic)
 
     source_hashes = hash_existing_sources(source_names)
@@ -165,7 +179,8 @@ def _parse_declared_concepts(text: str) -> set[str]:
     if match is None:
         return set()
     parts = match.group("labels").split(_CONCEPT_DECLARATION_SEPARATOR)
-    return {part.strip() for part in parts if part.strip()}
+    stripped = (part.strip(_CONCEPT_LABEL_DECORATION) for part in parts)
+    return {part for part in stripped if part}
 
 
 def _prefix_heading(label: str, body: str) -> str:
@@ -180,11 +195,16 @@ def _prefix_heading(label: str, body: str) -> str:
 
 
 def _existing_concept_labels(wiki_root: Path) -> list[str]:
-    """Published concept slugs as spaced names, so rebuilds reuse established names."""
+    """Published concept slugs as spaced names, so rebuilds reuse established names.
+
+    Capped at :data:`_MAX_REUSE_CONCEPT_LABELS`, taken in slug order so the same
+    wiki renders the same prompt on every run.
+    """
     concepts_dir = wiki_root / WikiSubdir.CONCEPTS
     if not concepts_dir.is_dir():
         return []
-    return sorted({path.stem.replace("-", " ") for path in concepts_dir.rglob("*.md")})
+    labels = sorted({path.stem.replace("-", " ") for path in concepts_dir.rglob("*.md")})
+    return labels[:_MAX_REUSE_CONCEPT_LABELS]
 
 
 def _concept_instruction(existing_concepts: list[str]) -> str:
@@ -219,23 +239,16 @@ def _build_batch_prompt(
     source: str,
     entities: list[ExtractedEntity],
     chunks_text: str,
-    extract_concepts: bool,
-    wiki_root: Path,
+    concept_instruction: str,
     config: Config,
 ) -> str:
     """Render :attr:`Config.wiki_entity_batch_prompt` for one source call.
 
-    ``extract_concepts`` controls whether the concept-curation
-    paragraph is injected: True adds the "identify 3-5 concepts" block
-    and its declaration-line contract; False leaves
-    ``{concept_instruction}`` empty so the LLM writes entity sections
-    only. Keeps the per-source batched call the single entry point
-    whether or not concepts are requested.
+    An empty ``concept_instruction`` (the incremental-ingest hook) leaves the
+    LLM writing entity sections only. Keeps the per-source batched call the
+    single entry point whether or not concepts are requested.
     """
     entity_labels = ", ".join(clean_label_for_display(e.label) for e in entities) or "(none)"
-    concept_instruction = (
-        _concept_instruction(_existing_concept_labels(wiki_root)) if extract_concepts else ""
-    )
     return config.wiki_entity_batch_prompt.format(
         source=source,
         entity_list=entity_labels,
@@ -298,10 +311,20 @@ def generate_source_batch(
         return []
     wiki_root = config.data_root / config.wiki_dir
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
-    budgeted = truncate_chunks_to_budget(chunks, config)
-    prompt = _build_batch_prompt(
-        source, entities, chunks_to_text(budgeted), extract_concepts, wiki_root, config
+    concept_instruction = (
+        _concept_instruction(_existing_concept_labels(wiki_root)) if extract_concepts else ""
     )
+    render = functools.partial(
+        _build_batch_prompt,
+        source,
+        entities,
+        concept_instruction=concept_instruction,
+        config=config,
+    )
+    # Budget against the prompt as it renders: the concept instruction and the
+    # entity list are per-call substitutions the raw template does not carry.
+    budgeted = truncate_chunks_to_budget(chunks, config, len(render("")))
+    prompt = render(chunks_to_text(budgeted))
     text = _request_batch_sections(source, prompt, provider, config)
     if text is None:
         _write_pending_markers(entities, set(), source, drafts_dir, stats)
@@ -406,11 +429,14 @@ def _write_pending_markers(
     drafts_dir: Path,
     stats: BuildStats,
 ) -> None:
-    """Write a PENDING-PARSE marker for every expected entity that produced no page."""
+    """Write a PENDING-PARSE marker for every expected entity that produced no page.
+
+    An entity whose slug is occupied by a draft awaiting review keeps that
+    draft, so no marker is written and none is counted.
+    """
     for entity in entities:
         if entity.label in written_labels:
             continue
-        stats.record_pending_marker()
         marker = (
             f"{_PENDING_PARSE_MARKER_PREFIX} for source {source}, "
             f"entity/concept {entity.label} - "
@@ -430,4 +456,7 @@ def _write_pending_markers(
         path = write_pending_marker(
             drafts_dir, entity.slug, marker, f"---\n{frontmatter_body}---\n"
         )
+        if path is None:
+            continue
+        stats.record_pending_marker()
         log.info("Wrote PENDING-PARSE marker for %s -> %s", entity.slug, path)

@@ -1361,6 +1361,14 @@ class Store:
         )
         return {row["source"] for row in rows}
 
+    def wiki_citation_sources(self) -> set[str]:
+        """Return the distinct wiki_source values present in the citations table."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return set()
+        rows = table.search().select(["wiki_source"]).limit(None).to_list()
+        return {row["wiki_source"] for row in rows}
+
     def get_sources(
         self,
         *,

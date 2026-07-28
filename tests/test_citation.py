@@ -6,6 +6,7 @@ from lilbee.data.store import CitationRecord
 from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
+    _extract_excerpt,
     find_unmarked_claims,
     parse_wiki_citations,
     render_citation_block,
@@ -181,6 +182,39 @@ class TestRenderCitationBlock:
         assert '[^src1]: doc.txt, excerpt: "text"' in result
         assert "page" not in result
         assert "lines" not in result
+
+
+class TestExcerptRenderParseRoundTrip:
+    """A rendered block must re-parse to the excerpt it was rendered from.
+
+    Accepting a draft re-parses its rendered citation block, so anything render
+    loses is lost from the stored citation with no signal.
+    """
+
+    @pytest.mark.parametrize(
+        "excerpt",
+        [
+            "line one\nline two",
+            "col one\tcol two",
+            'he said "hello" once',
+            "a path C:\\docs",
+            "plain unremarkable text",
+        ],
+    )
+    def test_excerpt_survives_render_then_parse(self, excerpt: str):
+        block = render_citation_block([_citation_record(source_filename="doc.md", excerpt=excerpt)])
+        parsed = parse_wiki_citations(block)
+        assert len(parsed) == 1
+        assert _extract_excerpt(parsed[0].source_ref) == excerpt
+
+    def test_a_multiline_excerpt_stays_on_one_footnote_line(self):
+        """A raw newline would split the definition and break the footnote grammar."""
+        block = render_citation_block(
+            [_citation_record(source_filename="doc.md", excerpt="line one\nline two")]
+        )
+        definitions = [line for line in block.splitlines() if line.startswith("[^src1]:")]
+        assert len(definitions) == 1
+        assert block.splitlines()[-1] == definitions[0]
 
 
 class TestVerifyCitation:

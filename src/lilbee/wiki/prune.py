@@ -86,7 +86,7 @@ def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
         store.delete_citations_for_wiki(wiki_source)
     except Exception:
         log.warning(
-            "Failed to delete store rows for %s; leaving the page in place for the next prune pass",
+            "Failed to delete store rows for %s; the next prune pass retries them",
             wiki_source,
             exc_info=True,
         )
@@ -99,16 +99,15 @@ def _archive_page(
     wiki_root: Path,
     store: Store,
     config: Config,
-) -> bool:
-    """Clean up a wiki page's store data, then move the file to wiki/archive/.
+) -> None:
+    """Move a wiki page to wiki/archive/, then delete its store rows.
 
-    Store cleanup runs first so a crash or a failed delete leaves the page on
-    disk, where the next prune pass finds it and retries. Moving first would
-    strand rows that serve archived content under a source no disk scan reaches.
+    The file moves first so a crash or a failed delete leaves rows without a
+    page, which :func:`_reconcile_orphan_rows` deletes on the next pass.
+    Deleting rows first would leave a page on disk with no citations, and every
+    archival check reads an uncited page as "nothing to do", so nothing would
+    ever retry it.
     """
-    if not _delete_wiki_rows(wiki_source, store):
-        return False
-
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
@@ -122,7 +121,7 @@ def _archive_page(
         log.info("Archived wiki page %s -> %s", source_path, archive_path)
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
-    return True
+    _delete_wiki_rows(wiki_source, store)
 
 
 def _check_all_sources_deleted(
@@ -179,10 +178,9 @@ def _archive_and_record(
     store: Store,
     config: Config,
     reason: str,
-) -> PruneRecord | None:
-    """Archive a wiki page and return a PruneRecord, or None when it stays put."""
-    if not _archive_page(wiki_source, wiki_root, store, config):
-        return None
+) -> PruneRecord:
+    """Archive a wiki page and return its PruneRecord."""
+    _archive_page(wiki_source, wiki_root, store, config)
     return PruneRecord(wiki_source=wiki_source, action=PruneAction.ARCHIVED, reason=reason)
 
 
@@ -220,7 +218,7 @@ def _reconcile_orphan_rows(store: Store, wiki_root: Path, config: Config) -> lis
     """
     prefix = config.wiki_dir + "/"
     records: list[PruneRecord] = []
-    for wiki_source in sorted(store.wiki_chunk_sources()):
+    for wiki_source in sorted(store.wiki_chunk_sources() | store.wiki_citation_sources()):
         subdir = subdir_from_wiki_source(wiki_source, config.wiki_dir)
         page_path = wiki_root / wiki_source.removeprefix(prefix)
         if subdir in WIKI_CONTENT_SUBDIRS and page_path.is_file():

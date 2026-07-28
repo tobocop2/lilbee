@@ -41,6 +41,7 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
+    atomic_write_text,
 )
 from lilbee.wiki.stats import BuildStats, BuildStatsDict
 from lilbee.wiki.synthesis import (
@@ -217,7 +218,7 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
             original = md_path.read_text(encoding="utf-8")
             rewritten = apply_rewriter(original, rewriter, skip_slug=owning_slug)
             if rewritten != original:
-                md_path.write_text(rewritten, encoding="utf-8")
+                atomic_write_text(md_path, rewritten)
 
 
 def build_wiki(

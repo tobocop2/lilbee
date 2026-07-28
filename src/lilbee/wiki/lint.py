@@ -140,17 +140,20 @@ def _lint_excerpt(rec: CitationRecord, store: Store) -> LintIssue | None:
     """Verify a citation's excerpt against the source's extracted chunks.
 
     Excerpts are quoted from extracted text, not from the raw file: a PDF's
-    bytes contain none of it.
+    bytes contain none of it. The caller has already established that the file
+    is present and its hash current, so a source left with no chunks is one
+    ``wiki_prune_raw`` cleared at publish time: the citation was verified at
+    build and is not re-flagged.
     """
     chunk_texts = [c.chunk for c in store.get_chunks_by_source(rec["source_filename"])]
     status = verify_citation(rec, chunk_texts)
     if status is CitationStatus.UNVERIFIABLE:
-        return LintIssue(
-            wiki_source=rec["wiki_source"],
-            severity=IssueSeverity.WARNING,
-            message=f"No extracted text to verify {rec['citation_key']} against",
-            issue_type=IssueType.UNVERIFIABLE,
+        log.debug(
+            "No extracted text for %s; %s stands as verified at build time",
+            rec["source_filename"],
+            rec["citation_key"],
         )
+        return None
     if status is CitationStatus.EXCERPT_MISSING:
         return LintIssue(
             wiki_source=rec["wiki_source"],

@@ -23,6 +23,7 @@ from lilbee.wiki.shared import (
     WikiLogAction,
     WikiSubdir,
     atomic_write_text,
+    parse_frontmatter,
 )
 from lilbee.wiki.stats import BuildStats
 
@@ -48,6 +49,9 @@ _WIKI_SOURCE_MIN_PARTS = 2
 # later divert can tell its own draft from another source's.
 _DRIFT_SOURCE_FIELD = "source: "
 
+# Frontmatter field listing the sources a generated page was written from.
+_DRAFT_SOURCES_FIELD = "sources"
+
 
 def _is_pending_marker_text(text: str) -> bool:
     """Return whether *text* starts with a PENDING marker line."""
@@ -65,6 +69,22 @@ def _read_draft(draft_path: Path) -> str | None:
         return draft_path.read_text(encoding="utf-8")
     except OSError:
         return None
+
+
+def draft_source_names(draft_path: Path) -> list[str] | None:
+    """Sorted source names in an existing draft's frontmatter, or None when it has none.
+
+    Reads past a leading marker comment so a drift draft and a quality-gate
+    draft answer the same way. A PENDING marker carries no ``sources`` field and
+    so reads as unowned: it is a placeholder, not review content.
+    """
+    text = _read_draft(draft_path)
+    if text is None:
+        return None
+    body = text.split("\n", 1)[-1].lstrip("\n") if text.startswith("<!--") else text
+    sources = parse_frontmatter(body).get(_DRAFT_SOURCES_FIELD)
+    # Frontmatter is untyped YAML: a hand-edited draft can hold anything.
+    return sorted(sources) if isinstance(sources, list) else None
 
 
 def _draft_belongs_to_other_source(draft_path: Path, source_key: str) -> bool:
@@ -179,7 +199,7 @@ def persist_and_finalize(
         stats.record_drafted()
         append_wiki_log(
             WikiLogAction.GENERATED,
-            f"{target.page_type} page for {target.label} drifted; diverted to draft "
+            f"{target.page_type} page for {target.label} diverted to draft "
             f"{page_path.name} (published page unchanged)",
             config,
         )
@@ -225,8 +245,8 @@ def write_pending_marker(
     slug: str,
     marker_line: str,
     frontmatter: str = "",
-) -> Path:
-    """Write a PENDING marker page under ``drafts/<slug>.md``.
+) -> Path | None:
+    """Write a PENDING marker page under ``drafts/<slug>.md``. None when withheld.
 
     ``marker_line`` is the leading HTML comment that both identifies
     the marker kind and carries the context (source, label). The
@@ -234,7 +254,8 @@ def write_pending_marker(
     drafts surface to round-trip (e.g. ``bad_title``-style fields).
 
     An existing draft that is not itself a marker is generated content
-    awaiting review and is kept: the marker is not written over it.
+    awaiting review and is kept: the marker is not written over it, and
+    the caller gets None so it does not count a marker that never landed.
     """
     draft_path = drafts_dir / f"{slug}.md"
     existing = _read_draft(draft_path)
@@ -243,7 +264,7 @@ def write_pending_marker(
             "Keeping the draft at %s: it holds content pending review, not a marker",
             draft_path,
         )
-        return draft_path
+        return None
     body = marker_line + "\n"
     if frontmatter:
         body += "\n" + frontmatter
