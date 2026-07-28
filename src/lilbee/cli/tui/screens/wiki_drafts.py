@@ -28,7 +28,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
-from lilbee.wiki.drafts import StaleDraftError, accept_draft, diff_draft, list_drafts, reject_draft
+from lilbee.wiki.drafts import DraftAcceptError, accept_draft, diff_draft, list_drafts, reject_draft
 from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ def _format_published(exists: bool) -> str:
 
 def _draft_failure(exc: Exception, slug: str) -> tuple[str, SeverityLevel]:
     """Map a failed draft mutation to its user-facing text and toast severity."""
-    if isinstance(exc, StaleDraftError):
+    if isinstance(exc, DraftAcceptError):
         return str(exc), "warning"
     if isinstance(exc, FileNotFoundError):
         return msg.WIKI_DRAFTS_MISSING.format(slug=slug), "error"

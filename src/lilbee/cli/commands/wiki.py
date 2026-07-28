@@ -597,12 +597,12 @@ def wiki_drafts_accept(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if not cfg.wiki:
         _fail_wiki_disabled()
-    from lilbee.wiki.drafts import StaleDraftError, accept_draft
+    from lilbee.wiki.drafts import DraftAcceptError, accept_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     try:
         result = accept_draft(slug, wiki_root, get_services().store)
-    except (FileNotFoundError, StaleDraftError) as exc:
+    except (FileNotFoundError, DraftAcceptError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:

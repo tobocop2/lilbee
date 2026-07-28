@@ -173,6 +173,21 @@ class TestSplitBatchedOutput:
         assert "Ford Motor" in parsed
         assert "Henry Ford" not in parsed
 
+    def test_a_declaration_rendered_as_a_heading_opens_no_section(self):
+        """``## CONCEPTS: a; b`` is the declaration line, not a section header:
+        its text substring-matches the labels it declares."""
+        text = "## CONCEPTS: Assembly Line; Model T\n\nIntro prose about the plant.\n"
+        parsed = _split_batched_output(
+            text, set(), expected_concept_labels={"Assembly Line", "Model T"}
+        )
+        assert parsed == {}
+
+    def test_a_real_section_after_the_declaration_still_parses(self):
+        text = "## CONCEPTS: Assembly Line\n\nIntro prose.\n\n" + _section("Assembly Line")
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Assembly Line"})
+        assert set(parsed) == {"Assembly Line"}
+        assert "Intro prose" not in parsed["Assembly Line"][1]
+
     def test_no_headers_returns_empty_dict(self):
         """A response that contains no H1/H2 headers recovers nothing."""
         text = "just a paragraph with no headings at all.\n\n> some body text\n"
@@ -506,6 +521,33 @@ class TestFinalizeSectionGuards:
         assert any("sending to drafts" in r.message for r in caplog.records)
 
 
+class TestBatchSectionCitationRendering:
+    """A section publishes only the footnotes that verified."""
+
+    def test_a_dropped_citation_leaves_no_marker_in_the_body(self, stub_embedder):
+        text = _section(
+            "Henry Ford", f"> {_EXCERPT}[^src1]\n\n> Ford built a monorail.[^src2]\n"
+        ) + (
+            "\n\n---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: s.txt, excerpt: "{_EXCERPT}"\n'
+            '[^src2]: s.txt, excerpt: "Ford built a monorail."\n'
+        )
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        body = pages[0].read_text()
+        assert "[^src1]" in body
+        assert "[^src2]" not in body
+
+
 class TestBuildStatsForABatch:
     """A batch run reports what its gates did, so a regression is measurable."""
 
@@ -628,6 +670,31 @@ class TestBuildStatsForABatch:
         assert stats.citation_verify_rate == 0.0
         assert stats.pending_markers == 1
 
+    def test_a_section_lost_to_a_slug_collision_counts_no_citations(self, stub_embedder):
+        """The losing section becomes a collision marker, not a page, so its
+        citations were never rendered."""
+        text = (
+            _declare("Brake System")
+            + _section("Brake System", f"> {_EXCERPT}[^src1]\n")
+            + _valid_citation_block("second.txt")
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="second.txt",
+            entities=[],
+            chunks=[_chunk("second.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={"brake-system": "first.txt"},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pending_markers == 1
+        assert stats.citations_rendered == 0
+        assert stats.citations_dropped_unverified == 0
+
     def test_a_marker_withheld_by_a_draft_under_review_is_not_counted(self, stub_embedder):
         """The draft holding review content is kept, so no marker landed to count."""
         drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
@@ -732,7 +799,6 @@ class TestAllSourcesInScope:
         store = MagicMock()
         grouped = {"a.md": []}
         result = _all_sources_in_scope(
-            entities=[],
             grouped=grouped,
             store=store,
             config=cfg,
@@ -748,7 +814,6 @@ class TestAllSourcesInScope:
         grouped = {"a.md": []}
         caplog.set_level("WARNING", logger="lilbee.wiki.generation")
         result = _all_sources_in_scope(
-            entities=[],
             grouped=grouped,
             store=store,
             config=cfg,
@@ -766,7 +831,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 1
         result = _all_sources_in_scope(
-            entities=[],
             grouped={},
             store=store,
             config=cfg,
@@ -781,7 +845,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 1
         result = _all_sources_in_scope(
-            entities=[],
             grouped={"a.md": []},
             store=store,
             config=cfg,
@@ -798,7 +861,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 5
         result = _all_sources_in_scope(
-            entities=[],
             grouped={},
             store=store,
             config=cfg,

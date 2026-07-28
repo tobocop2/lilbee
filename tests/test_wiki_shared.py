@@ -325,7 +325,6 @@ class TestWikiBuildMutex:
             return 1
 
         monkeypatch.setattr("lilbee.wiki.drafts.index_wiki_page", fake_index)
-        monkeypatch.setattr("lilbee.wiki.drafts._persist_accepted_citations", lambda *a, **kw: None)
 
         accept_draft("x", wiki_root, MagicMock())
         assert held == [True]

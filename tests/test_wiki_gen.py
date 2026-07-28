@@ -23,6 +23,7 @@ from lilbee.wiki.citations import (
     _find_excerpt_source,
     _match_citation_source,
     _resolve_citations,
+    find_unmarked_claims,
     resolve_multi_source_citations,
     verify_citations,
 )
@@ -478,6 +479,85 @@ class TestVerifyCitations:
         ]
         verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
+
+
+class TestDroppedCitationMarkers:
+    """A dropped citation must leave no bare ``[^srcN]`` in the published body."""
+
+    @staticmethod
+    def _provider(response: str) -> MagicMock:
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = []
+        provider.chat.return_value = ChatResult(
+            text=response, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        return provider
+
+    _RESPONSE = (
+        "# Brakes\n\n"
+        "> Disc brakes use friction pads.[^src1]\n\n"
+        "> Brakes were invented in 1902.[^src2]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: a.txt, excerpt: "Disc brakes use friction pads."\n'
+        '[^src2]: a.txt, excerpt: "Brakes were invented in 1902."\n'
+    )
+
+    def _generate(self, resolver, stats: BuildStats) -> Path | None:
+        from lilbee.wiki.page import generate_page
+
+        return generate_page(
+            label="Brakes",
+            prompt="p",
+            chunks=[_make_chunk("Disc brakes use friction pads.", "a.txt")],
+            citation_resolver=resolver,
+            page_type=WikiSubdir.CONCEPTS,
+            slug="brakes",
+            source_names=["a.txt"],
+            provider=self._provider(self._RESPONSE),
+            store=MagicMock(spec=Store),
+            config=cfg,
+            stats=stats,
+        )
+
+    def test_the_unverified_marker_is_scrubbed_and_counted_as_dropped(self):
+        chunks = [_make_chunk("Disc brakes use friction pads.", "a.txt")]
+        stats = BuildStats()
+        page = self._generate(
+            lambda parsed: _resolve_citations(parsed, "a.txt", "hash", chunks), stats
+        )
+        assert page is not None
+        body = page.read_text(encoding="utf-8")
+        assert "[^src1]" in body
+        assert "[^src2]" not in body
+        assert (stats.citations_rendered, stats.citations_dropped_unverified) == (1, 1)
+
+    def test_a_scrubbed_claim_is_visible_to_the_unmarked_gate(self):
+        chunks = [_make_chunk("Disc brakes use friction pads.", "a.txt")]
+        page = self._generate(
+            lambda parsed: _resolve_citations(parsed, "a.txt", "hash", chunks), BuildStats()
+        )
+        assert page is not None
+        unmarked = find_unmarked_claims(page.read_text(encoding="utf-8"))
+        assert any("invented in 1902" in claim for claim in unmarked)
+
+    def test_a_wiki_sourced_citation_is_skipped_not_dropped(self):
+        """Skipping a citation that names a wiki page must not skew the verify rate."""
+        resolved = [
+            make_citation(
+                source_filename="a.txt", excerpt="Disc brakes use friction pads.", source_hash="h"
+            ),
+            make_citation(
+                citation_key="src2",
+                source_filename=f"{cfg.wiki_dir}/{WikiSubdir.SUMMARIES}/other.md",
+                excerpt="Brakes were invented in 1902.",
+            ),
+        ]
+        stats = BuildStats()
+        assert self._generate(lambda _parsed: resolved, stats) is not None
+        assert (stats.citations_rendered, stats.citations_dropped_unverified) == (1, 0)
 
 
 class TestBuildWikiMessages:
@@ -1198,6 +1278,30 @@ class TestWritePageDrift:
         )
         assert not stale.exists()
 
+    def test_publishing_keeps_another_source_drift_draft_on_the_same_slug(self, tmp_path: Path):
+        """The drafts namespace is flat, so a concept and an entity can share a
+        slug; publishing one must not unlink the other's pending proposal."""
+        wiki_root = tmp_path / "wiki"
+        other = divert_to_drafts(
+            "# Ford the concept\n",
+            wiki_root / WikiSubdir.DRAFTS,
+            "ford",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        write_page(
+            wiki_root,
+            WikiSubdir.ENTITIES,
+            "ford",
+            self._page("# Ford\n\nentity body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["b.md"],
+        )
+        assert other.is_file()
+        assert "Ford the concept" in other.read_text()
+
     def test_a_page_routed_to_drafts_survives_its_own_write(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         result = write_page(
@@ -1280,20 +1384,27 @@ class TestWritePageToDrafts:
 
 class TestDeleteDriftDraftIfPresent:
     def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
-        assert delete_drift_draft_if_present(tmp_path, "missing") is False
+        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"]) is False
 
     def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
         draft = tmp_path / "x.md"
         draft.write_text("---\nfaithfulness_score: 0.2\n---\n\nbody\n")
-        assert delete_drift_draft_if_present(tmp_path, "x") is False
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is False
         assert draft.is_file()
 
     def test_removes_a_drift_draft(self, tmp_path: Path):
         draft = divert_to_drafts(
             "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
         )
-        assert delete_drift_draft_if_present(tmp_path, "x") is True
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is True
         assert not draft.exists()
+
+    def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
+        draft = divert_to_drafts(
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+        )
+        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"]) is False
+        assert draft.is_file()
 
 
 class TestSynthesisDriftDetection:
@@ -1762,6 +1873,39 @@ class TestRunFullBuild:
         assert result["entities"] == 0
         assert result["count"] == 0
         assert result["stats"] == BuildStats().as_dict()
+
+
+class TestRunFullBuildConfigThreading:
+    """Pages, index and log must land in the same tree as the config names."""
+
+    def test_index_and_log_are_written_against_the_given_config(self, monkeypatch, tmp_path: Path):
+        from lilbee.wiki.generation import run_full_build
+
+        config = cfg.model_copy(update={"data_root": tmp_path, "wiki_dir": "notes/wiki"})
+        seen: dict[str, object] = {}
+
+        def fake_extractor(*a, **kw):
+            ext = MagicMock()
+            ext.extract.return_value = []
+            return ext
+
+        services = MagicMock()
+        services.store.get_sources.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.update_wiki_index",
+            lambda passed: seen.__setitem__("index", passed),
+        )
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.append_wiki_log",
+            lambda action, details, passed: seen.__setitem__("log", passed),
+        )
+
+        run_full_build(config)
+        assert seen["index"] is config
+        assert seen["log"] is config
 
 
 class TestRunFullSynthesize:
