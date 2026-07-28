@@ -40,6 +40,20 @@ _LINKS_CUDA = "\tlibcudart.so.12 => /usr/lib/libcudart.so.12 (0x00007f00)\n"
 _NO_CUDA = "\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x00007f00)\n"
 
 
+def _root_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *prefixes: str) -> None:
+    """Reroute cuda_runtime's absolute /dev and /sys lookups under *tmp_path*."""
+    real_path = cuda_runtime.Path
+
+    class _RootedPath(type(real_path())):  # type: ignore[misc]
+        def __new__(cls, *args):
+            first = str(args[0]) if args else ""
+            if first.startswith(prefixes):
+                return real_path(str(tmp_path) + first)
+            return real_path(*args)
+
+    monkeypatch.setattr(cuda_runtime, "Path", _RootedPath)
+
+
 def test_links_cuda_runtime_true_when_soname_present(monkeypatch: pytest.MonkeyPatch) -> None:
     _ldd_returns(monkeypatch, _LINKS_CUDA)
     assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is True
@@ -294,8 +308,6 @@ class TestAmdPresenceReadsTheKernelNotRocmTooling:
     tests what the function does and not how it is written."""
 
     def _fake_sysfs(self, monkeypatch, tmp_path, *, kfd: bool, vendors: list[str]) -> None:
-        from lilbee.providers.fleet import cuda_runtime
-
         drm = tmp_path / "sys/class/drm"
         for i, vendor in enumerate(vendors):
             device = drm / f"card{i}" / "device"
@@ -304,17 +316,7 @@ class TestAmdPresenceReadsTheKernelNotRocmTooling:
         (tmp_path / "dev").mkdir(exist_ok=True)
         if kfd:
             (tmp_path / "dev/kfd").write_text("")
-
-        real_path = cuda_runtime.Path
-
-        class _RootedPath(type(real_path())):  # type: ignore[misc]
-            def __new__(cls, *args):
-                first = str(args[0]) if args else ""
-                if first.startswith(("/dev/kfd", "/sys/class/drm")):
-                    return real_path(str(tmp_path) + first)
-                return real_path(*args)
-
-        monkeypatch.setattr(cuda_runtime, "Path", _RootedPath)
+        _root_paths(monkeypatch, tmp_path, "/dev/kfd", "/sys/class/drm")
 
     def test_an_amd_card_is_found_with_no_rocm_installed(self, monkeypatch, tmp_path) -> None:
         from lilbee.providers.fleet import cuda_runtime
@@ -442,19 +444,210 @@ def test_an_unreadable_sysfs_vendor_entry_is_skipped(monkeypatch, tmp_path) -> N
     (unreadable / "vendor").mkdir()  # a directory where a file is expected -> OSError
     (tmp_path / "dev").mkdir()
     (tmp_path / "dev/kfd").write_text("")
-
-    real_path = cuda_runtime.Path
-
-    class _RootedPath(type(real_path())):  # type: ignore[misc]
-        def __new__(cls, *args):
-            first = str(args[0]) if args else ""
-            if first.startswith(("/dev/kfd", "/sys/class/drm")):
-                return real_path(str(tmp_path) + first)
-            return real_path(*args)
-
-    monkeypatch.setattr(cuda_runtime, "Path", _RootedPath)
+    _root_paths(monkeypatch, tmp_path, "/dev/kfd", "/sys/class/drm")
 
     assert cuda_runtime._amd_gpu_present() is False
+
+
+def _bundled_engine(tmp_path, shipped: tuple[str, ...]):
+    """A bundled engine dir shaped like bundle_rocm_runtime.sh output: the binary
+    with rocBLAS lazy Tensile masters for *shipped* beside it."""
+    library = tmp_path / "rocblas" / "library"
+    library.mkdir(parents=True)
+    for gfx in shipped:
+        (library / f"TensileLibrary_lazy_{gfx}.dat").write_text("")
+    return tmp_path / "llama-server"
+
+
+def _rocm_device(name: str = "AMD Instinct MI50/MI60"):
+    from lilbee.providers.fleet.devices import FleetDevice
+
+    return FleetDevice("ROCm", 0, name, 32 * 1024**3, 32 * 1024**3)
+
+
+class TestEnumeratedCardWithoutShippedKernelsIsRefused:
+    """A card the engine enumerates but the bundle has no rocBLAS kernels for does
+    not fall back to CPU: rocBLAS aborts the engine at the first batched GEMM. The
+    supported set is read from the shipped Tensile masters, not a constant, so it
+    cannot drift from what is actually in the wheel."""
+
+    def _linux(self, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising=False)
+
+    def test_an_mi50_against_a_gfx906_less_bundle_fails_loud(self, monkeypatch, tmp_path) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx908", "gfx90a", "gfx1030"))
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx906"})
+
+        with pytest.raises(ProviderError) as err:
+            cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device()], "")
+        message = str(err.value)
+        assert "gfx906" in message
+        assert "gfx1030" in message
+        assert "HSA_OVERRIDE_GFX_VERSION" in message
+
+    def test_a_covered_card_passes(self, monkeypatch, tmp_path) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1030",))
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx1030"})
+
+        cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device("Radeon RX 6800")], "")
+
+    def test_a_mixed_host_warns_about_the_uncovered_card_only(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """One supported card beside an unsupported iGPU must not stop the engine."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1100",))
+        monkeypatch.setattr(
+            cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx1100", "gfx1036"}
+        )
+
+        with caplog.at_level("WARNING", logger=cuda_runtime.__name__):
+            cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device()], "")
+        assert "gfx1036" in caplog.text
+
+    def test_an_engine_without_a_bundle_makes_no_claim(self, monkeypatch, tmp_path) -> None:
+        """A system-ROCm engine has no shipped kernel list to check against."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx906"})
+
+        cuda_runtime.assert_gpu_devices_usable(tmp_path / "llama-server", [_rocm_device()], "")
+
+    def test_an_unreadable_kfd_topology_makes_no_claim(self, monkeypatch, tmp_path) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1030",))
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: set())
+
+        cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device()], "")
+
+    def test_a_covering_hsa_override_is_respected(self, monkeypatch, tmp_path) -> None:
+        """gfx1031 with HSA_OVERRIDE_GFX_VERSION=10.3.0 runs the gfx1030 kernels."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1030",))
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx1031"})
+
+        cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device()], "")
+
+    def test_an_override_naming_an_unshipped_target_warns_not_raises(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """The user overrode explicitly; respect it, but say what will happen."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1030",))
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "9.0.6")
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx906"})
+
+        with caplog.at_level("WARNING", logger=cuda_runtime.__name__):
+            cuda_runtime.assert_gpu_devices_usable(binary, [_rocm_device()], "")
+        assert "gfx906" in caplog.text
+
+    def test_a_non_amd_device_list_is_left_alone(self, monkeypatch, tmp_path) -> None:
+        from lilbee.providers.fleet import cuda_runtime, devices
+
+        self._linux(monkeypatch)
+        binary = _bundled_engine(tmp_path, ("gfx1030",))
+        monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx906"})
+        vulkan = devices.FleetDevice("Vulkan", 0, "RX 6800", 16 * 1024**3, 16 * 1024**3)
+
+        cuda_runtime.assert_gpu_devices_usable(binary, [vulkan], "")
+
+
+class TestGfxTargetsAreReadFromTheDriverAndTheBundle:
+    def test_gfx_names_format_minor_and_step_as_hex(self) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        assert cuda_runtime._gfx_name(90006) == "gfx906"
+        assert cuda_runtime._gfx_name(90010) == "gfx90a"
+        assert cuda_runtime._gfx_name(90012) == "gfx90c"
+        assert cuda_runtime._gfx_name(100300) == "gfx1030"
+        assert cuda_runtime._gfx_name(110001) == "gfx1101"
+
+    def test_bundled_targets_come_from_the_lazy_tensile_masters(self, tmp_path) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        binary = _bundled_engine(tmp_path, ("gfx906", "gfx1030"))
+        (tmp_path / "rocblas/library/TensileLibrary_gfx942.dat").write_text("")
+
+        assert cuda_runtime._bundled_rocblas_gfx_targets(binary) == {"gfx906", "gfx1030"}
+
+    def test_no_bundle_directory_is_none_not_empty(self, tmp_path) -> None:
+        """None is "no claim"; an empty set would read as "supports nothing"."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        assert cuda_runtime._bundled_rocblas_gfx_targets(tmp_path / "llama-server") is None
+
+    def test_host_targets_come_from_kfd_topology_skipping_cpu_nodes(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        nodes = tmp_path / "sys/class/kfd/kfd/topology/nodes"
+        (nodes / "0").mkdir(parents=True)
+        (nodes / "0/properties").write_text("cpu_cores_count 16\ngfx_target_version 0\n")
+        (nodes / "1").mkdir()
+        (nodes / "1/properties").write_text("simd_count 240\ngfx_target_version 90006\n")
+        _root_paths(monkeypatch, tmp_path, "/sys/class/kfd")
+
+        assert cuda_runtime._host_amd_gfx_targets() == {"gfx906"}
+
+    def test_a_missing_kfd_topology_is_an_empty_set(self, monkeypatch, tmp_path) -> None:
+        from lilbee.providers.fleet import cuda_runtime
+
+        _root_paths(monkeypatch, tmp_path, "/sys/class/kfd")
+
+        assert cuda_runtime._host_amd_gfx_targets() == set()
+
+    def test_an_unreadable_node_is_skipped_not_fatal(self, monkeypatch, tmp_path) -> None:
+        """Topology entries come and go as devices bind and unbind."""
+        from lilbee.providers.fleet import cuda_runtime
+
+        nodes = tmp_path / "sys/class/kfd/kfd/topology/nodes"
+        (nodes / "0/properties").mkdir(parents=True)  # a directory where a file is expected
+        (nodes / "1").mkdir()
+        (nodes / "1/properties").write_text("gfx_target_version 90006\n")
+        _root_paths(monkeypatch, tmp_path, "/sys/class/kfd")
+
+        assert cuda_runtime._host_amd_gfx_targets() == {"gfx906"}
+
+
+def test_the_apu_warning_names_the_shipped_targets_when_known(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """The empty-device APU path used to guess at an unsupported gfx target; with a
+    bundled engine the shipped set is a readable fact and the message states it."""
+    from lilbee.providers.fleet import cuda_runtime
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: False)
+    monkeypatch.setattr(cuda_runtime, "_links_hip_runtime", lambda *_a: True)
+    monkeypatch.setattr(cuda_runtime, "_amd_gpu_present", lambda: True)
+    monkeypatch.setattr(cuda_runtime, "_amd_discrete_gpu_proven", lambda: False)
+    monkeypatch.setattr(cuda_runtime, "_host_amd_gfx_targets", lambda: {"gfx1103"})
+    binary = _bundled_engine(tmp_path, ("gfx1030", "gfx1100"))
+
+    with caplog.at_level("WARNING", logger=cuda_runtime.__name__):
+        cuda_runtime.assert_gpu_devices_usable(binary, [], "rocBLAS error\n")
+
+    assert "gfx1030" in caplog.text
+    assert "gfx1103" in caplog.text
 
 
 def test_hip_link_check_reads_the_sonames_the_binary_lists(monkeypatch, tmp_path) -> None:

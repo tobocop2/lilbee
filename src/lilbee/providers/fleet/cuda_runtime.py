@@ -52,6 +52,12 @@ log = logging.getLogger(__name__)
 _AMD_PCI_VENDOR_ID = "0x1002"
 # How much of the probe output to quote when no specific error line is found.
 _DIAGNOSTIC_TAIL_CHARS = 300
+# Backends whose devices run rocBLAS; ggml prints either name depending on version.
+_AMD_BACKENDS = ("ROCm", "HIP")
+# AMD's own escape hatch: makes the runtime treat every device as the given
+# gfx version, which is how a near-miss card (gfx1031) runs a shipped
+# architecture's kernels (gfx1030).
+_HSA_OVERRIDE_VAR = "HSA_OVERRIDE_GFX_VERSION"
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
@@ -182,6 +188,127 @@ def _amd_discrete_gpu_proven() -> bool:
     return discrete_gpu_from_vendor(PCIVendorID.AMD) is True
 
 
+def _gfx_name(target_version: int) -> str:
+    """The gfx name for a KFD ``gfx_target_version`` (90010 is gfx90a: minor and
+    step print as hex)."""
+    major, rest = divmod(target_version, 10000)
+    minor, step = divmod(rest, 100)
+    return f"gfx{major}{minor:x}{step:x}"
+
+
+def _host_amd_gfx_targets() -> set[str]:
+    """The gfx targets of this host's AMD GPUs, from the kernel driver's KFD topology.
+
+    Read from sysfs for the same reason as :func:`_amd_gpu_present`: ROCm tooling
+    is part of what can be broken. CPU nodes report a target version of 0. Empty
+    when the topology is absent or unreadable, which is "no claim".
+    """
+    targets: set[str] = set()
+    for props in Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties"):
+        try:
+            text = props.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            name, _, value = line.partition(" ")
+            if name == "gfx_target_version" and value.strip().isdigit() and int(value.strip()):
+                targets.add(_gfx_name(int(value.strip())))
+    return targets
+
+
+def _bundled_rocblas_gfx_targets(binary: Path) -> set[str] | None:
+    """The gfx targets the rocBLAS kernels bundled beside *binary* cover.
+
+    rocBLAS loads a ``TensileLibrary_lazy_<gfx>.dat`` for the running card and
+    aborts the process when there is none, so the shipped masters are the ground
+    truth for which cards this build can run a GEMM on. ``None`` when no bundle
+    sits beside the binary (a system-ROCm engine): that is "no claim", where an
+    empty set would mean "supports nothing".
+    """
+    library = binary.parent / "rocblas" / "library"
+    if not library.is_dir():
+        return None
+    return {
+        f.name.removeprefix("TensileLibrary_lazy_").removesuffix(".dat")
+        for f in library.glob("TensileLibrary_lazy_gfx*.dat")
+    }
+
+
+def _hsa_override_gfx() -> str | None:
+    """The gfx target a user-set ``HSA_OVERRIDE_GFX_VERSION`` maps every device to."""
+    raw = os.environ.get(_HSA_OVERRIDE_VAR, "")
+    try:
+        major, minor, step = (int(part) for part in raw.split("."))
+    except ValueError:
+        return None
+    return _gfx_name(major * 10000 + minor * 100 + step)
+
+
+def _rocm_support_facts(binary: Path) -> str:
+    """What is known about shipped kernels and host gfx targets, as message text."""
+    shipped = _bundled_rocblas_gfx_targets(binary)
+    parts = []
+    if shipped:
+        parts.append(f"This build ships GPU kernels for: {', '.join(sorted(shipped))}.")
+    if host := _host_amd_gfx_targets():
+        parts.append(f"This host's AMD GPU targets: {', '.join(sorted(host))}.")
+    return " " + " ".join(parts) if parts else ""
+
+
+def _assert_rocblas_covers_enumerated_devices(binary: Path, devices: list[FleetDevice]) -> None:
+    """Refuse a card the bundle ships no rocBLAS kernels for, before rocBLAS aborts.
+
+    An enumerated device is no proof of support: the engine's device code and
+    rocBLAS's kernels are built from different lists, and a card covered by the
+    first but not the second initializes fine and then aborts the whole engine at
+    the first batched matrix multiply. Support is read from the bundled Tensile
+    masters rather than kept as a constant, so it cannot drift from what shipped.
+    """
+    if not any(d.backend in _AMD_BACKENDS for d in devices):
+        return
+    shipped = _bundled_rocblas_gfx_targets(binary)
+    if shipped is None:
+        return
+    if (override := _hsa_override_gfx()) is not None:
+        if override not in shipped:
+            log.warning(
+                "%s maps every AMD device to %s, but this build ships GPU kernels only "
+                "for: %s. The engine will abort at the first matrix multiplication if a "
+                "model runs on the GPU.",
+                _HSA_OVERRIDE_VAR,
+                override,
+                ", ".join(sorted(shipped)),
+            )
+        return
+    host = _host_amd_gfx_targets()
+    if not host:
+        return
+    missing = host - shipped
+    if not missing:
+        return
+    if host & shipped:
+        log.warning(
+            "This host has AMD GPU(s) with target %s, which this build ships no GPU "
+            "kernels for; the engine will abort if a model is placed on one. Restrict "
+            "HIP_VISIBLE_DEVICES to the supported cards, or set %s if the card is a "
+            "near miss of a shipped target (gfx1031 runs gfx1030 kernels with "
+            "%s=10.3.0).",
+            ", ".join(sorted(missing)),
+            _HSA_OVERRIDE_VAR,
+            _HSA_OVERRIDE_VAR,
+        )
+        return
+    raise ProviderError(
+        f"This host's AMD GPU is {', '.join(sorted(host))}, but this engine build ships "
+        f"GPU kernels only for: {', '.join(sorted(shipped))}. The engine would start and "
+        "then abort at the first matrix multiplication, so it is refused up front.\n"
+        f"If the card is a near miss of a shipped target, set {_HSA_OVERRIDE_VAR} to that "
+        f"target's version (a gfx1031 card runs the gfx1030 kernels with "
+        f"{_HSA_OVERRIDE_VAR}=10.3.0). Otherwise install lilbee's Vulkan build, which "
+        "supports AMD cards ROCm does not."
+    )
+
+
 def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
     """Fail loud when a GPU build cannot initialize any device on a host that has one.
 
@@ -192,7 +319,10 @@ def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_ou
     fall back to CPU.
     """
     assert_cuda_devices_usable(binary, devices, probe_output)
-    if not sys.platform.startswith("linux") or devices:
+    if not sys.platform.startswith("linux"):
+        return
+    _assert_rocblas_covers_enumerated_devices(binary, devices)
+    if devices:
         return
     env = {**os.environ, **cuda_runtime_env()}
     if not (_links_hip_runtime(binary, env) and _amd_gpu_present()):
@@ -209,7 +339,8 @@ def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_ou
             "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
             "enumerated no device, so GPU work will fall back to CPU. No discrete AMD card "
             "was found, so this is most likely an APU whose gfx target this ROCm build does "
-            "not support (check with 'rocminfo'). The engine reported: %s",
+            "not support (check with 'rocminfo').%s The engine reported: %s",
+            _rocm_support_facts(binary),
             _device_probe_diagnostic(probe_output),
         )
         return
@@ -221,7 +352,7 @@ def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_ou
         "driver; the GPU's gfx target is not supported by this ROCm build (check with "
         "'rocminfo'); no read/write permission on /dev/kfd (the user is usually added "
         "to the 'render' and 'video' groups); or a restrictive ROCR_VISIBLE_DEVICES or "
-        "HIP_VISIBLE_DEVICES."
+        f"HIP_VISIBLE_DEVICES.{_rocm_support_facts(binary)}"
     )
 
 
