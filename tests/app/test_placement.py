@@ -135,7 +135,7 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
     monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
     monkeypatch.setattr(
         planning,

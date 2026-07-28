@@ -60,7 +60,7 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
 
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(planning, "resolve_devices", counting)
     monkeypatch.setattr(
         planning,
@@ -190,7 +190,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     planning.clear_read_device_cache()
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
     monkeypatch.setattr(
         planning,
@@ -217,7 +217,7 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     planning.clear_read_device_cache()
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
     monkeypatch.setattr(
         planning,
@@ -251,3 +251,26 @@ def test_no_spec_uses_auto_planner(monkeypatch):
     )
     planning._resolve_placement(None, [], {}, devices, unified_budget=None)
     assert called.get("auto") is True
+
+
+def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
+    """The planner has always known a role does not fit and only logged it.
+
+    A surface reading ResolvedPlacement saw it as comfortably placed, so the one
+    number that predicts a failed load never left the log.
+    """
+    from lilbee.app.placement import _view
+    from lilbee.providers.fleet.devices import FleetDevice
+    from lilbee.providers.fleet.placement import InstancePlan
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+    from lilbee.providers.roles import WorkerRole
+
+    resolved = ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "gpu", 24 * 1024**3, 24 * 1024**3),),
+        instances=(InstancePlan(role=WorkerRole.CHAT, devices=(0,)),),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.CHAT: "org/chat.gguf"},
+        tight_roles={WorkerRole.CHAT: 3 * 1024**3},
+    )
+    view = _view(resolved, manual=False, spec_json=None)
+    assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]

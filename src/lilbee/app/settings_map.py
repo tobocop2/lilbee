@@ -894,6 +894,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
     ),
+    "usable_vram_fraction": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Share of a GPU placement may fill, leaving room for fragmentation and driver "
+            "overhead (0.5-1.0). Raise it if a model that should fit is being refused; "
+            "lower it if loads fail near the top of the card."
+        ),
+    ),
+    "system_memory_reserve_gb": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "RAM held back for the OS in GiB when serving from system memory (no discrete "
+            "GPU). Capped at a quarter of total RAM either way."
+        ),
+    ),
     "embed_replicas": SettingDef(
         int,
         nullable=False,

@@ -227,7 +227,7 @@ def test_the_probe_itself_returns_deduplicated_devices(monkeypatch) -> None:
         gpu_select, "_list_devices_with_instance", lambda _lib: [_device(0, uuid), _device(1, uuid)]
     )
 
-    devices = gpu_select._enumerate_vulkan_devices()
+    devices = gpu_select.enumerate_in_process()
 
     assert devices is not None
     assert [d.index for d in devices] == [0]
@@ -249,7 +249,7 @@ def test_a_device_the_engine_would_refuse_is_not_enumerated(monkeypatch) -> None
         gpu_select, "_list_devices_with_instance", lambda _lib: [supported, refused]
     )
 
-    devices = gpu_select._enumerate_vulkan_devices()
+    devices = gpu_select.enumerate_in_process()
 
     assert devices is not None
     assert [d.index for d in devices] == [0]
@@ -264,7 +264,7 @@ def test_a_loader_that_cannot_report_features_drops_nothing(monkeypatch) -> None
         gpu_select, "_list_devices_with_instance", lambda _lib: [_device(0, b""), _device(1, b"")]
     )
 
-    devices = gpu_select._enumerate_vulkan_devices()
+    devices = gpu_select.enumerate_in_process()
 
     assert devices is not None
     assert [d.index for d in devices] == [0, 1]

@@ -27,6 +27,9 @@ _LIST_DEVICES_TIMEOUT_S = 60.0
 # How long to wait for a killed probe to be reaped before abandoning it: a child
 # wedged in uninterruptible GPU-driver I/O ignores even SIGKILL.
 _PROBE_KILL_WAIT_S = 5.0
+# How much of the probe's own output to quote in a diagnostic. Enough to carry
+# the driver's error line, short enough to stay a readable message.
+_PROBE_TAIL_CHARS = 400
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # llama-server prints this before the device loop, so a run that lists no GPUs
@@ -46,6 +49,8 @@ _CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
 _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
 _ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
 _HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
+# ROCm's third numeric visibility variable, filtering exactly as the other two do.
+_GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
 _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
@@ -61,6 +66,12 @@ _BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2
 # Backends whose memory is always the host's: Apple Silicon reports a working-set
 # slice of system RAM, never a dedicated pool.
 _UNIFIED_BACKENDS = frozenset({"MTL", "Metal"})
+# Below this, a reported total is a BIOS carveout rather than a card's own pool.
+# An APU hands out a fixed slice of system RAM as "VRAM", often a few hundred
+# MiB, and planned as a dedicated device that size it refuses every role while
+# the machine has the whole system's memory to share. No real discrete GPU worth
+# serving from ships with less.
+_DEDICATED_VRAM_FLOOR = 2 * 1024 * MIB
 
 
 @dataclass(frozen=True)
@@ -181,13 +192,37 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     """
     try:
         output, returncode = _run_list_devices(binary, timeout_s)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Silently returning an empty probe here made an unrunnable binary look
+        # exactly like a host with no GPU, and the fleet planned for CPU with
+        # nothing said. The reason is the whole diagnosis: a wrong architecture,
+        # a missing loader, a permission denial.
+        log.warning(
+            "Could not run the GPU device probe (%s --list-devices): %s. Continuing "
+            "as though this host has no GPU; check that the engine binary is "
+            "executable and built for this machine.",
+            binary.name,
+            exc,
+        )
         return DeviceProbe([], "")
     parsed = _parse_devices(output)
     selected = _select_backend(parsed)
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
-    spoke = returncode == 0 and _DEVICE_LIST_HEADER in output
-    if not spoke:
+    answered = _DEVICE_LIST_HEADER in output
+    spoke = returncode == 0 and answered
+    if not spoke and answered:
+        # It knew the flag and started answering, then died. Blaming the flag
+        # here sent the reader looking for the wrong engine build, when what
+        # they have is a crash partway through enumeration.
+        log.warning(
+            "%s --list-devices printed its device header then crashed (exit %d), so the "
+            "device list may be incomplete. This is usually a GPU driver or ICD fault "
+            "during enumeration. The probe reported: %s",
+            binary.name,
+            returncode,
+            _probe_tail(output),
+        )
+    elif not spoke:
         log.warning(
             "%s --list-devices exited %d without printing its device header, so it "
             "does not appear to support the flag. Falling back to the host's Vulkan "
@@ -223,15 +258,32 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             label=f"{binary.name} --list-devices",
             bind_lifetime=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        # Whatever the probe managed to print before it wedged says more than any
+        # fixed advice can, and the fixed advice named one vendor's tool at a host
+        # that may have neither that vendor nor that tool.
         raise ProviderError(
             f"The GPU device probe ({binary.name} --list-devices) did not respond "
-            f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver "
-            "may be in a bad state: check that 'nvidia-smi' responds, and reboot "
-            "the host if it hangs.",
+            f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver is "
+            "most likely wedged; check that your vendor's tool responds (nvidia-smi, "
+            "rocm-smi, xpu-smi) and reboot the host if it hangs.\n"
+            f"The probe reported: {_probe_tail(_decoded_output(exc.output))}",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from None
+
+
+def _decoded_output(output: object) -> str:
+    """Partial child output from a timeout, which arrives as bytes even under text mode."""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output if isinstance(output, str) else ""
+
+
+def _probe_tail(output: str) -> str:
+    """The tail of what the probe printed, for a message that has to stay readable."""
+    text = output.strip()
+    return text[-_PROBE_TAIL_CHARS:] if text else "(nothing)"
 
 
 def _parse_devices(text: str) -> list[FleetDevice]:
@@ -246,6 +298,20 @@ def _parse_devices(text: str) -> list[FleetDevice]:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
         total = int(total_mib) * MIB
+        if total == 0:
+            # No memory is not a small GPU, it is one that cannot hold a model:
+            # a driver listing an adapter before its memory is queryable. Kept, it
+            # is the smallest card in the fleet and collapses every budget sized
+            # against the smallest, while the non-empty list switches off the
+            # shared-memory budget a host with no usable GPU depends on.
+            log.warning(
+                "Ignoring GPU %s%s (%s): it reports no memory, so nothing can be "
+                "placed on it. Check the GPU driver if this device should be usable.",
+                backend,
+                index,
+                name.strip(),
+            )
+            continue
         if free_mib:
             free = int(free_mib) * MIB
         else:
@@ -259,7 +325,7 @@ def _parse_devices(text: str) -> list[FleetDevice]:
                 name.strip(),
                 total,
                 free,
-                unified=_is_unified(backend, name.strip()),
+                unified=_is_unified(backend, name.strip()) or total < _DEDICATED_VRAM_FLOOR,
             )
         )
     return devices
@@ -330,11 +396,22 @@ def _is_unusable_vulkan(device: FleetDevice) -> bool:
     compute-incomplete or fails at allocation. Planning a fleet onto one costs
     more than planning no GPU at all, since a non-empty device list also turns
     off the shared-RAM budget.
+
+    Only a positive claim counts. VIRTUAL_GPU and CPU are the loader naming what
+    the adapter is; OTHER is it declining to, and refusing on a shrug took the
+    GPU away from real hardware whose driver simply does not classify itself.
     """
     if device.backend != VULKAN_BACKEND:
         return False
     device_type = _vulkan_device_type(device.name)
-    return device_type is not None and device_type not in USABLE_VULKAN_TYPES
+    if device_type is None or device_type in USABLE_VULKAN_TYPES:
+        return False
+    # OTHER is the loader shrugging, not an accusation. The spec's own wording is
+    # "does not match any other available types", which a driver reaches for when
+    # it cannot classify itself, and some real adapters do. Refusing on it took a
+    # working GPU away from a machine the engine had already listed one for.
+    # VIRTUAL_GPU and CPU are positive claims and keep their veto.
+    return device_type is not VkDeviceType.OTHER
 
 
 def _is_unified(backend: str, name: str) -> bool:
@@ -403,9 +480,18 @@ def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     return chosen
 
 
-def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, str]:
+def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, int, str]:
+    """Sort key for choosing one backend's devices: rank, dedicated bytes, size.
+
+    Dedicated bytes come before raw size because the discrete backends all tie at
+    the same rank, and a shared-heap carveout reports a total that is host RAM
+    the host budget already counts. Left on raw size, an APU advertising a large
+    carveout beat a discrete card, which was then discarded and left idle while
+    the plan double-promised memory it did not have.
+    """
     backend, group = item
-    return _BACKEND_RANK[backend], sum(d.total_bytes for d in group), backend
+    dedicated = sum(d.total_bytes for d in group if not d.unified)
+    return _BACKEND_RANK[backend], dedicated, sum(d.total_bytes for d in group), backend
 
 
 def _compose_visible(indices: list[int], parent_value: str | None) -> str:
@@ -475,18 +561,21 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
 def amd_visible_var() -> str:
     """The one AMD visibility var an index list may be written to.
 
-    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
-    by the runtime: ROCr filters first, then HIP re-indexes within the survivors.
-    Writing the same indices to both therefore double-filters and selects the
-    wrong cards, or none at all: ``1`` on a two-GPU box exposes physical GPU 1 as
-    index 0 through ROCr, and HIP then asks for index 1 of a one-device list.
+    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially:
+    ROCr filters first, then HIP re-indexes within the survivors. Writing the same
+    indices to both double-filters and selects the wrong cards, or none at all.
+    ``GPU_DEVICE_ORDINAL`` is the third and filters the same way, so writing HIP
+    over an ordinal mask both overrides it and re-exposes cards it had hidden.
 
-    So exactly one is ever written: the one the environment already restricts,
-    or HIP when it restricts neither. Every caller writing an AMD pin asks here,
-    since two callers each picking their own would put the pair back.
+    So exactly one is ever written: whichever the environment already restricts,
+    in the runtime's precedence (HIP, then the ordinal, then ROCr), or HIP when
+    nothing restricts. An empty value means "no devices" rather than "this is the
+    variable in use", so it does not claim precedence. Every caller writing an AMD
+    pin asks here; two callers each picking their own would put the pair back.
     """
-    if _ROCR_VISIBLE_VAR in os.environ and _HIP_VISIBLE_VAR not in os.environ:
-        return _ROCR_VISIBLE_VAR
+    for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
+        if os.environ.get(name, "").strip():
+            return name
     return _HIP_VISIBLE_VAR
 
 
