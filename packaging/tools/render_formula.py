@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update version + per-platform sha256 in the Homebrew formula in place."""
+"""Update version, license and per-platform sha256 in the Homebrew formula in place."""
 
 from __future__ import annotations
 
@@ -25,6 +25,19 @@ def _replace_sha_for_asset(content: str, asset_name: str, new_sha: str, *, requi
     return new_content
 
 
+# The tap is the published artifact and nothing else rewrites it, so a formula already
+# there keeps whatever it says: the seeds in packaging/homebrew are only used when a
+# formula is absent. Every flavor carries the project license, so the renderer owns it.
+LICENSE = "MIT"
+
+
+def _replace_license(content: str) -> str:
+    new_content, count = re.subn(r'  license "[^"]*"', f'  license "{LICENSE}"', content)
+    if count != 1:
+        raise SystemExit(f"expected exactly one license line, found {count}")
+    return new_content
+
+
 Renderer = Callable[[str, argparse.Namespace], str]
 
 
@@ -32,7 +45,7 @@ def _replace_version(content: str, version: str) -> str:
     new_content, count = re.subn(r'  version "[^"]*"', f'  version "{version}"', content)
     if count != 1:
         sys.exit("expected exactly one version line")
-    return new_content
+    return _replace_license(new_content)
 
 
 def _render_default(content: str, args: argparse.Namespace) -> str:
