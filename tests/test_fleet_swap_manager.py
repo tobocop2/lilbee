@@ -8,7 +8,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -193,6 +193,94 @@ class TestStart:
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError, match="did not start in time"):
             SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+
+
+class TestBootFailureLog:
+    """A boot failure's error carries the tail of the captured llama-swap output."""
+
+    def _spawn_writing(
+        self, monkeypatch: pytest.MonkeyPatch, proc: _FakeProc, output: bytes
+    ) -> None:
+        """Patch the spawn so the fake child writes *output* to its stdout handle,
+        as llama-swap would before dying."""
+
+        def _spawn(*_args: object, **kwargs: Any) -> _FakeProc:
+            kwargs["stdout"].write(output)
+            kwargs["stdout"].flush()
+            return proc
+
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        monkeypatch.setattr(sm, "spawn_bound_child", _spawn)
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+
+    def test_exit_before_ready_carries_the_boot_log_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spawn_writing(
+            monkeypatch, _FakeProc(poll_result=1), b"bind: address already in use\n"
+        )
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        message = str(excinfo.value)
+        assert "exited before it was ready" in message
+        assert "bind: address already in use" in message
+        assert str(tmp_path / "logs" / "llama-swap-chat.log") in message
+
+    def test_tail_covers_only_the_current_boot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log_path = tmp_path / "logs" / "llama-swap-chat.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"old boot noise\n")
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), b"fresh boot output\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert "fresh boot output" in str(excinfo.value)
+        assert "old boot noise" not in str(excinfo.value)
+
+    def test_tail_is_capped_to_the_most_recent_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = b"EARLIEST-LINE\n" + b"x" * 3000 + b"\nFINAL-LINE\n"
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), output)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert "FINAL-LINE" in str(excinfo.value)
+        assert "EARLIEST-LINE" not in str(excinfo.value)
+
+    def test_empty_log_keeps_the_plain_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=1))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert str(excinfo.value) == "The local model engine exited before it was ready."
+
+    def test_timeout_failure_also_carries_the_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=None), b"still loading the model\n")
+
+        def _refuse(_url: str) -> object:
+            raise httpx.ConnectError("refused")
+
+        _patch_http(monkeypatch, _refuse)
+        monkeypatch.setattr(sm.time, "sleep", lambda _s: None)
+        clock = itertools.count(0.0, 10.4)
+        monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        message = str(excinfo.value)
+        assert "did not start in time" in message
+        assert "still loading the model" in message
+
+    def test_unreadable_log_reads_as_empty(self, tmp_path: Path) -> None:
+        # No start() ran, so the log file does not exist.
+        assert SwapManager(tmp_path, _GROUP)._boot_log_tail() == ""
 
 
 class TestEndpoint:
