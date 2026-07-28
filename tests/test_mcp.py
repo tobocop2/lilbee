@@ -1007,12 +1007,14 @@ class TestWikiLint:
     def test_lint_no_wiki_dir(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
+        cfg.wiki = True
         result = wiki_lint()
         assert result["total"] == 0
 
 
 class TestWikiCitations:
     def test_returns_citations(self, mock_svc):
+        cfg.wiki = True
         mock_svc.store.get_citations_for_wiki.return_value = [
             {
                 "wiki_source": "wiki/summaries/doc.md",
@@ -1035,6 +1037,7 @@ class TestWikiCitations:
         assert result["citations"][0]["citation_key"] == "src1"
 
     def test_no_citations(self, mock_svc):
+        cfg.wiki = True
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_citations("wiki/summaries/missing.md")
         assert result["total"] == 0
@@ -1131,7 +1134,27 @@ class TestWikiPrune:
         assert result["command"] == "wiki_prune"
         assert result["archived"] == 0
         assert result["flagged"] == 0
+        assert result["reconciled"] == 0
         assert result["records"] == []
+
+    def test_prune_reports_reconciled_rows(self, mock_svc, tmp_path, monkeypatch):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+        cfg.wiki_dir = "wiki"
+        cfg.wiki = True
+        report = PruneReport(
+            records=[
+                PruneRecord(
+                    wiki_source="wiki/concepts/gone.md",
+                    action=PruneAction.RECONCILED,
+                    reason="indexed rows without a page on disk",
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.prune.prune_wiki", lambda *a, **kw: report)
+        result = wiki_prune()
+        assert result["reconciled"] == 1
+        assert result["archived"] == 0
 
 
 class TestWikiList:
@@ -1270,6 +1293,54 @@ class TestWikiDraftsMcp:
         result = wiki_drafts_diff("../../secret")
         assert result == {"error": "invalid draft slug"}
         assert str(isolated_env) not in str(result)
+
+
+class TestWikiRuntimeGate:
+    """Every wiki tool re-reads cfg.wiki per call. The build-time gate alone left
+    a live daemon executing stale tools (including the mutating wiki_prune)
+    after the setting was turned off."""
+
+    @pytest.mark.parametrize(
+        ("handler", "args"),
+        [
+            (wiki_lint, ()),
+            (wiki_citations, ("wiki/summaries/doc.md",)),
+            (wiki_list, ()),
+            (wiki_read, ("summaries/doc",)),
+            (wiki_build, ()),
+            (wiki_update, ()),
+            (wiki_synthesize, ()),
+            (wiki_prune, ()),
+            (wiki_drafts_list, ()),
+            (wiki_drafts_diff, ("x",)),
+        ],
+    )
+    def test_handler_refuses_once_the_wiki_is_turned_off(
+        self, mock_svc, isolated_env, handler, args
+    ):
+        cfg.wiki = False
+        cfg.data_root = isolated_env
+        assert handler(*args) == {"error": WIKI_DISABLED_ERROR}
+
+    def test_status_still_answers_while_disabled(self, mock_svc, isolated_env):
+        """Matches the HTTP status route: report the disabled state, don't lint."""
+        cfg.wiki = False
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "leftover.md").write_text("content")
+        with mock.patch("lilbee.wiki.lint.lint_all") as lint_all:
+            result = wiki_status()
+        assert result == {"wiki_enabled": False, "pages": 0, "issues": 0}
+        lint_all.assert_not_called()
+
+    def test_drafts_list_names_the_real_promotion_policy(self):
+        """The docstring claimed accept/reject were CLI-only while HTTP and the
+        TUI both promote drafts."""
+        doc = wiki_drafts_list.__doc__ or ""
+        assert "CLI-only" not in doc
+        assert "CLI, TUI" in doc
+        assert "HTTP" in doc
 
 
 class TestSettingsMcp:
@@ -1805,8 +1876,12 @@ class TestToolsSchemaSize:
         with pytest.raises(TypeError, match="zero-arg callable"):
             _tool_if(True)  # type: ignore[arg-type]
 
-    async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
-        """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
+    async def test_only_wiki_status_is_registered_when_wiki_disabled(self) -> None:
+        """``cfg.wiki=False`` (the default) keeps the wiki tools off the wire.
+
+        wiki_status is the exception, matching the HTTP status route: a client
+        needs a way to read the disabled state rather than finding no tool.
+        """
         from lilbee.core.config import cfg as _cfg
         from lilbee.mcp_server import build_mcp_server
 
@@ -1815,7 +1890,7 @@ class TestToolsSchemaSize:
         assert _cfg.wiki is False
         tools = await _mcp.list_tools()
         wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
-        assert wiki_tool_names == []
+        assert wiki_tool_names == ["wiki_status"]
 
     async def test_default_install_registers_exactly_the_pinned_tools(self) -> None:
         """The unconditionally-registered surface is exactly ``_DEFAULT_TOOL_NAMES``.

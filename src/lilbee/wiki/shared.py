@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -12,6 +13,12 @@ from typing import Any
 import yaml
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
+
+# Held by every mutating wiki entry point (build, synthesize, prune, draft
+# accept, post-ingest update) while it writes. Pages, index.md and log.md are
+# shared files that CLI, TUI, MCP and HTTP all reach inside one process, so the
+# serialization lives with the writers rather than on any one surface.
+WIKI_BUILD_LOCK = threading.Lock()
 
 
 class WikiSubdir(StrEnum):

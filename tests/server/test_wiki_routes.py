@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
@@ -16,6 +19,19 @@ from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 def _h() -> dict[str, str]:
     """Auth headers."""
     return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
+
+
+def _sse_events(body: str) -> list[tuple[str, Any]]:
+    """Parse an SSE body into (event name, decoded data) pairs."""
+    events: list[tuple[str, Any]] = []
+    for frame in body.strip().split("\n\n"):
+        lines = frame.splitlines()
+        if len(lines) != 2:
+            continue
+        events.append(
+            (lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: ")))
+        )
+    return events
 
 
 @pytest.fixture(autouse=True)
@@ -341,6 +357,28 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+        assert body["reconciled"] == 0
+
+    async def test_prune_reports_reconciled_rows(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+        report = PruneReport(
+            records=[
+                PruneRecord(
+                    wiki_source="wiki/concepts/gone.md",
+                    action=PruneAction.RECONCILED,
+                    reason="indexed rows without a page on disk",
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.server.wiki.prune_mod.prune_wiki", lambda store: report)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/prune", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["reconciled"] == 1
+        assert body["archived"] == 0
+        assert body["records"][0]["action"] == "reconciled"
 
     async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
         """prune_wiki walks the whole tree + store; it runs in a worker thread, not
@@ -388,105 +426,88 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         assert seen and seen[0] != loop_tid
 
-    async def test_build_returns_summary(self, monkeypatch):
-        monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            lambda *a, **kw: {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1},
-        )
+    async def test_build_streams_progress_then_a_done_summary(self, monkeypatch):
+        def fake_build(config, on_progress):
+            on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="doc.txt", pages=1, current=1, total=1),
+            )
+            return {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
+
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/build", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["count"] == 1
-        assert body["entities"] == 3
-        assert body["paths"] == ["wiki/concepts/x.md"]
+        events = _sse_events(resp.text)
+        assert [name for name, _payload in events] == ["wiki_phase", "wiki_page", "done"]
+        assert events[0][1]["phase"] == "extract"
+        assert events[1][1]["label"] == "doc.txt"
+        assert events[2][1] == {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
 
-    async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent builds serialize on the lock, off the event loop.
-
-        Drives the handlers directly: AsyncTestClient serializes gathered
-        requests itself, so through it the spans never overlap whether or not
-        the lock exists, and this test stayed green without it.
-        """
-        import asyncio
+    async def test_build_runs_off_the_event_loop(self, monkeypatch):
+        """The build is CPU- and IO-bound, so it runs in a worker thread."""
         import threading
-        import time
 
-        from lilbee.server import wiki as _wiki_mod
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
 
-        # Reset both before the test (so a leftover lock from a previous run
-        # doesn't share state) and after via finalizer (so this test's lock
-        # doesn't leak into the next).
-        _wiki_mod._reset_wiki_build_lock()
-        monkeypatch.setattr("lilbee.server.wiki._WIKI_BUILD_LOCK", None, raising=False)
-
-        loop_thread_id = threading.get_ident()
-        invocations: list[tuple[int, float, float]] = []
-        # Hold the worker for ~0.1s and tolerate ~0.01s skew so heavily-loaded
-        # CI doesn't false-trigger the serialization check.
-        sleep_s = 0.1
-        skew_s = 0.01
-
-        def fake_build(*args, **kwargs):
-            # One append after the sleep, with start held locally: the earlier
-            # version appended a placeholder first and then rewrote
-            # invocations[-1], so with two threads actually overlapping the
-            # second one rewrote the first one's entry and the spans came out
-            # looking serialized either way.
-            start = time.monotonic()
-            time.sleep(sleep_s)
-            invocations.append((threading.get_ident(), start, time.monotonic()))
+        def fake_build(config, on_progress):
+            seen.append(threading.get_ident())
             return {"paths": [], "entities": 0, "count": 0}
 
-        monkeypatch.setattr("lilbee.server.wiki.run_full_build", fake_build)
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
 
-        try:
-            await asyncio.gather(
-                _wiki_mod.wiki_build_route.fn(),
-                _wiki_mod.wiki_build_route.fn(),
-            )
-            assert len(invocations) == 2
-            # Worker thread is not the event-loop thread.
-            for tid, _start, _end in invocations:
-                assert tid != loop_thread_id
-            # Lock serialized: second invocation starts at or after first ends.
-            first, second = sorted(invocations, key=lambda i: i[1])
-            assert second[1] >= first[2] - skew_s, f"builds overlapped: {invocations}"
-        finally:
-            _wiki_mod._reset_wiki_build_lock()
+    async def test_build_stream_reports_a_failed_run_as_an_error_event(self, monkeypatch):
+        def fake_build(config, on_progress):
+            raise RuntimeError("provider unreachable")
 
-    async def test_update_returns_summary(self, monkeypatch):
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        events = _sse_events(resp.text)
+        assert events == [("error", {"message": "provider unreachable"})]
+
+    async def test_update_streams_the_same_build(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+            "lilbee.server.handlers.wiki.run_full_build",
+            lambda config, on_progress: {"paths": [], "entities": 0, "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.patch("/api/wiki/update", headers=_h())
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["count"] == 0
+        assert _sse_events(resp.text) == [("done", {"paths": [], "entities": 0, "count": 0})]
 
-    async def test_synthesize_returns_summary(self, monkeypatch):
+    async def test_synthesize_streams_progress_then_a_done_summary(self, monkeypatch):
+        def fake_synthesize(config, on_progress):
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="typing", pages=1, current=1, total=1),
+            )
+            return {"paths": ["wiki/synthesis/typing.md"], "count": 1}
+
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_synthesize", fake_synthesize)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/synthesize", headers=_h())
+        assert resp.status_code == 201
+        events = _sse_events(resp.text)
+        assert [name for name, _payload in events] == ["wiki_page", "done"]
+        assert events[1][1] == {"paths": ["wiki/synthesis/typing.md"], "count": 1}
+
+    async def test_synthesize_no_clusters_still_ends_with_done(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_synthesize",
-            lambda *a, **kw: {"paths": ["wiki/synthesis/typing.md"], "count": 1},
+            "lilbee.server.handlers.wiki.run_full_synthesize",
+            lambda config, on_progress: {"paths": [], "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/synthesize", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["count"] == 1
-        assert body["paths"] == ["wiki/synthesis/typing.md"]
-
-    async def test_synthesize_no_clusters_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_synthesize",
-            lambda *a, **kw: {"paths": [], "count": 0},
-        )
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/synthesize", headers=_h())
-        assert resp.status_code == 201
-        assert resp.json()["count"] == 0
+        assert _sse_events(resp.text) == [("done", {"paths": [], "count": 0})]
 
     async def test_status_empty_wiki(self, monkeypatch, tmp_path):
         from lilbee.wiki import lint as lint_mod
@@ -711,6 +732,19 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 201
         assert seen and seen[0] != loop_tid
 
+    async def test_accept_stale_draft_returns_409(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import StaleDraftError
+
+        def _fake_accept(slug: str, root: Path, store: object) -> None:
+            raise StaleDraftError(f"published page for {slug} is newer than the draft")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 409
+        assert "newer than the draft" in resp.json()["detail"]
+
     async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
 
@@ -924,60 +958,3 @@ class TestWikiDisabledStatusIsCheap:
         assert resp.status_code == 200
         assert resp.json()["wiki_enabled"] is False
         lint_all.assert_not_called()
-
-
-class TestEveryWikiWriterSharesTheBuildMutex:
-    """The mutex exists because concurrent writers corrupt the tree and index.
-
-    Build, update and synthesize took it; prune and draft-accept did not, even
-    though prune archives pages and both refresh index.md, which is the file the
-    lock's own comment names.
-
-    Drives the handlers directly rather than through AsyncTestClient, which
-    serializes requests and so cannot tell a held lock from an absent one.
-    """
-
-    @pytest.fixture(autouse=True)
-    def enable_wiki(self):
-        cfg.wiki = True
-
-    async def test_prune_serializes_against_a_build(self, monkeypatch, isolated_env: Path):
-        import asyncio
-        import time
-        from unittest import mock
-
-        from lilbee.server import wiki as _wiki_mod
-
-        _wiki_mod._reset_wiki_build_lock()
-        spans: list[tuple[str, float, float]] = []
-        hold_s = 0.1
-        skew_s = 0.01
-
-        def _record(label, result):
-            def _run(*_args, **_kwargs):
-                start = time.monotonic()
-                time.sleep(hold_s)
-                spans.append((label, start, time.monotonic()))
-                return result
-
-            return _run
-
-        monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            _record("build", {"paths": [], "entities": 0, "count": 0}),
-        )
-        monkeypatch.setattr(
-            "lilbee.server.wiki.prune_mod.prune_wiki",
-            _record("prune", mock.MagicMock(records=[], archived_count=0, flagged_count=0)),
-        )
-
-        try:
-            await asyncio.gather(
-                _wiki_mod.wiki_build_route.fn(),
-                _wiki_mod.wiki_prune_route.fn(),
-            )
-            assert len(spans) == 2
-            first, second = sorted(spans, key=lambda s: s[1])
-            assert second[1] >= first[2] - skew_s, f"prune and build overlapped: {spans}"
-        finally:
-            _wiki_mod._reset_wiki_build_lock()

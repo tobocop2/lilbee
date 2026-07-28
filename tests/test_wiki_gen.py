@@ -1646,7 +1646,7 @@ class TestRunFullBuild:
             ext.extract.return_value = []
             return ext
 
-        def fake_build_wiki(entities, provider, store, config, *, extract_concepts):
+        def fake_build_wiki(entities, provider, store, config, *, extract_concepts, on_progress):
             captured["config"] = config
             return []
 
@@ -1671,7 +1671,7 @@ class TestRunFullSynthesize:
         def fake_get_services():
             return MagicMock()
 
-        def fake_generate(provider, store, clusterer, config):
+        def fake_generate(provider, store, clusterer, config, on_progress):
             captured["config"] = config
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
 
