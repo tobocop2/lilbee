@@ -185,7 +185,7 @@ jobs:
     # and have no internal lint gate of their own.
     needs: [resolve, create-prerelease, checks]
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.checks.result == 'success' && needs.create-prerelease.result != 'failure' }}
-    uses: ./.github/workflows/build-cuda-executables.yml
+    uses: ./.github/workflows/build-gpu-executables.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       skip_tests: ${{ inputs.skip_tests || false }}
@@ -240,6 +240,9 @@ jobs:
         with:
           name: wheel-default
           path: wheels/
+      # Absent when that cell failed its own backend/size gate, which uploads on
+      # success only. "artifact not found" here means read the build-multigpu cpu
+      # cell, not this job.
       - name: Download the cpu engine wheel
         uses: actions/download-artifact@v8
         with:
@@ -314,6 +317,22 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           REPO: ${{ github.repository }}
         run: gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
+
+  # Auto-dispatch the ROCm packaging fan-out once the rocm executable is on the
+  # release. Without this the snap it produces never exists, and verify-release
+  # waits its full 180 minutes for it before refusing to promote the tag.
+  dispatch-rocm:
+    needs: [resolve, attach-prerelease]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run publish-rocm-packages.yml --repo "${REPO}" -f tag="${TAG}"
 
   # Auto-dispatch the compat packaging fan-out once the compat executables are
   # on the release. Fire-and-forget: a compat failure never blocks the release.

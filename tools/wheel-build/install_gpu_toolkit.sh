@@ -11,6 +11,9 @@ set -euxo pipefail
 
 backend="${BACKEND:?BACKEND is required}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${script_dir}/../../engine-versions.env"
 
 linux_install_vulkan() {
   # spirv-headers provides <spirv/unified1/spirv.hpp> (the `spv` namespace);
@@ -75,19 +78,55 @@ linux_install_cuda() {
   fi
 }
 
+linux_add_rocm_repo() {
+  local series="$1" codename="$2"
+  sudo mkdir -p --mode=0755 /etc/apt/keyrings
+  wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${series} ${codename} main" \
+    | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
+  sudo apt-get update
+}
+
 linux_install_rocm() {
-  # ROCm 6.x repo. AMD's apt repo + key. Versions advance fast; pinning to
-  # 6.1 as a current-stable target.
-  if ! dpkg -s rocm-dev >/dev/null 2>&1; then
-    wget -q https://repo.radeon.com/amdgpu-install/6.1.2/ubuntu/jammy/amdgpu-install_6.1.60102-1_all.deb \
-      -O /tmp/amdgpu-install.deb
-    sudo dpkg -i /tmp/amdgpu-install.deb
-    sudo apt-get update
-    sudo apt-get install -y rocm-dev hip-dev rocblas-dev
+  # Version comes from engine-versions.env; see its note on why it is pinned.
+  local version="${ENGINE_ROCM_VERSION:?ENGINE_ROCM_VERSION is required}"
+  local series="${version%.*}"
+  local root="/opt/rocm-${version}"
+  local codename
+  codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+
+  if [ ! -d "${root}" ]; then
+    linux_add_rocm_repo "${series}" "${codename}"
+    # Versioned names: an unversioned rocm-hip-sdk resolves its compiler
+    # dependency against any other ROCm on the image and installs no clang.
+    # patchelf repoints the bundled libraries' runpaths at the wheel.
+    sudo apt-get install -y \
+      "rocm-hip-sdk${version}" "rocm-llvm${version}" "hipcc${version}" patchelf
   fi
-  echo "/opt/rocm/bin" >> "$GITHUB_PATH"
-  echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
-  echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
+
+  # ROCm 7 moved the toolchain to lib/llvm; $ROCM_PATH/llvm/bin no longer exists.
+  if [ -n "${GITHUB_PATH:-}" ]; then
+    echo "${root}/bin" >> "$GITHUB_PATH"
+    echo "${root}/lib/llvm/bin" >> "$GITHUB_PATH"
+  fi
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "ROCM_PATH=${root}"
+      echo "HIP_PATH=${root}"
+      echo "CMAKE_PREFIX_PATH=${root}"
+    } >> "$GITHUB_ENV"
+  fi
+  # Same as CUDA above: outside GitHub Actions there is no $GITHUB_ENV to carry the
+  # toolkit location, and a QA pod is where an AMD card actually is.
+  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
+    {
+      echo "export PATH=\"${root}/bin:${root}/lib/llvm/bin:\$PATH\""
+      echo "export ROCM_PATH=\"${root}\""
+      echo "export HIP_PATH=\"${root}\""
+      echo "export CMAKE_PREFIX_PATH=\"${root}\""
+    } >> "$TOOLKIT_ENV_FILE"
+  fi
 }
 
 linux_install_sycl() {
@@ -103,11 +142,20 @@ linux_install_sycl() {
   fi
   # shellcheck disable=SC1091
   source /opt/intel/oneapi/setvars.sh
-  {
-    echo "PATH=$PATH"
-    echo "CMPLR_ROOT=${CMPLR_ROOT:-}"
-    echo "ONEAPI_ROOT=${ONEAPI_ROOT:-}"
-  } >> "$GITHUB_ENV"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "PATH=$PATH"
+      echo "CMPLR_ROOT=${CMPLR_ROOT:-}"
+      echo "ONEAPI_ROOT=${ONEAPI_ROOT:-}"
+    } >> "$GITHUB_ENV"
+  fi
+  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
+    {
+      echo "export PATH=\"$PATH\""
+      echo "export CMPLR_ROOT=\"${CMPLR_ROOT:-}\""
+      echo "export ONEAPI_ROOT=\"${ONEAPI_ROOT:-}\""
+    } >> "$TOOLKIT_ENV_FILE"
+  fi
 }
 
 case "${backend}_${runner_os}" in

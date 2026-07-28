@@ -1,0 +1,31 @@
+# ROCm (AMD GPU) variant of the snap. Rendered per release by
+# render_snapcraft.sh; CI stages lilbee-linux-x86_64-rocm into payload/
+# (gitignored) before building. Distinct name + app so it coexists with the
+# stock lilbee snap; the command is `lilbee-rocm`.
+name: lilbee-rocm
+base: core24
+version: "0.0.0"
+summary: The whole local AI stack in one executable (ROCm / AMD GPU build)
+description: |
+  lilbee is the whole local AI stack in one executable: it runs and manages
+  local AI models across every GPU you have, indexes your files and code,
+  crawls the web pages you point it at, and answers questions with citations
+  down to the file and line. One install covers the TUI, CLI, HTTP server, and
+  MCP server. You don't need Ollama or LM Studio, and it works with both.
+
+  This build offloads model inference to an AMD GPU via ROCm. The ROCm
+  userspace ships inside it, so it needs only the amdgpu kernel driver on the
+  host; with no usable GPU it falls back to CPU.
+grade: stable
+confinement: classic
+platforms:
+  amd64:
+parts:
+  lilbee:
+    plugin: dump
+    source: payload
+    organize:
+      lilbee-linux-x86_64-rocm: bin/lilbee
+apps:
+  lilbee-rocm:
+    command: bin/lilbee
