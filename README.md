@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Ftobocop2%2Flilbee.svg)](https://mcptoplist.com/server/glama%2Ftobocop2%2Flilbee)
+
 <p align="center">
   <a href="https://lilbee.sh/">
     <picture>
