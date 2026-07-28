@@ -36,7 +36,7 @@ class TestTheGuardFollowsTheRuntimeMajor:
     def test_a_cu13_build_is_recognised_as_a_cuda_build(self, monkeypatch) -> None:
         monkeypatch.setattr(
             cuda_runtime,
-            "_ldd_output",
+            "ldd_output",
             lambda _b, _e: "\tlibcudart.so.13 => /usr/lib/libcudart.so.13",
         )
         assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is True

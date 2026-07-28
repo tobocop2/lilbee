@@ -50,7 +50,7 @@ runs:
         pkgbuild: ${{ inputs.pkgbuild-dir }}/PKGBUILD
         assets: ${{ inputs.pkgbuild-dir }}/.SRCINFO
         commit_username: tobocop
-        commit_email: tobias.perelstein@gmail.com
+        commit_email: tobias@lilbee.sh
         ssh_private_key: ${{ inputs.aur-ssh-key }}
         commit_message: "${{ inputs.pkgname }} ${{ inputs.version }}"
         force_push: false

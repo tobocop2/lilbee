@@ -152,8 +152,14 @@ done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o
 #
 # Both platforms broke without this, in different ways. On Windows cudart is a hard
 # import of the process, so llama-server.exe died before binding its port with a
-# "cudart64_12.dll was not found" dialog. On Linux ggml dlopens libggml-cuda.so and
-# tolerates the failure, so the GPU silently disappeared and work fell back to CPU.
+# "cudart64_12.dll was not found" dialog. On Linux the backend is a DT_NEEDED of
+# libggml.so.0, since GGML_BACKEND_DL is off (see cmake_args.sh), so a missing runtime
+# is a loader failure at startup rather than a silent fall back to CPU.
+#
+# ROCm gets the same treatment further down, for the same reason and with the same
+# goal: an AMD user should need a driver and nothing else, exactly as an NVIDIA one
+# does. It is done separately because the closure has to be discovered rather than
+# listed -- see the rocm block after this one.
 case "${backend}_$(uname -s)" in
   cu12*_MINGW* | cu12*_MSYS* | cu12*_CYGWIN*) cuda_platform="windows" ;;
   cu12*_Linux)                                cuda_platform="linux" ;;
@@ -215,6 +221,16 @@ if [ -n "${cuda_platform}" ]; then
       exit 1
     }
   done
+fi
+
+# Same for ROCm: hip, hipblas and rocblas live in the ROCm install, not the build
+# output, and only the kernel driver comes from the host. Its own script because,
+# unlike the CUDA copy above, it can be exercised without a GPU.
+if [ "${backend}" = "rocm" ]; then
+  # The targets cmake was actually given, so the bundler can drop rocBLAS kernels for
+  # architectures this engine cannot run on.
+  rocm_targets="$(printf '%s\n' ${CMAKE_ARGS} | sed -n 's/^-DAMDGPU_TARGETS=//p')"
+  ROCM_TARGETS="${rocm_targets}" "${script_dir}/bundle_rocm_runtime.sh" "${pkg_bin_dir}"
 fi
 
 # The copied closure must actually resolve: exec the bundled binary from the

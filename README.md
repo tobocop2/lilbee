@@ -160,11 +160,14 @@ Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's ow
 |---|---|---|---|---|
 | **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 317 MB | 333 MB | 478 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
 | **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 666 MB | 1.25 GB | the same whole stack, with the faster CUDA runtime |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (ROCm, opt-in for AMD) | n/a | n/a | 854 MB* | the same whole stack, with the faster ROCm runtime |
 | [Ollama](https://github.com/ollama/ollama/releases) | 181 MB | 1.56 GB (CUDA bundled) | 1.42 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
 | [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
 | [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
 
 Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
+
+\* ROCm is the one figure not yet from a release: it is the binary CI builds today, measured, and lands here unchanged at the first release that carries it.
 
 </details>
 
@@ -351,7 +354,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 | Resource              | Minimum                        | Recommended                                                                                                                                               |
 | --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **RAM**               | 8 GB                           | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
-| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA driver (opt-in CUDA wheels, runtime bundled, see [Install](#install))                           |
+| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · faster vendor builds with the runtime bundled: CUDA on NVIDIA, ROCm on AMD (see [Install](#install))                           |
 | **Disk**              | 2 GB                           | 10+ GB for multiple models                                                                                                                                |
 
 </details>
@@ -363,17 +366,17 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Uses the Python and tooling you already have, picks the fastest CPU code path for your machine at runtime, and upgrades like any other package. Recommended if you have Python.
 - **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
 
-Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default Vulkan path. Skip to [On NVIDIA hardware](#on-nvidia-hardware).
+Have a discrete GPU? The default Vulkan build already uses it. There are faster vendor builds too: [NVIDIA (CUDA)](#on-nvidia-hardware) and [AMD (ROCm)](#on-amd-hardware).
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
 | How                   | Command                                                                                  | Notes                                                                                                                                                                                                                 |
 | --------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**               | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`             | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. The `engine` extra is the bundled llama-server, published on lilbee.sh rather than PyPI, which is why the index is needed. |
+| **pip**               | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`             | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. The `engine` extra is the bundled llama-server, published on lilbee.sh rather than PyPI, which is why the index is needed. Faster vendor builds: [CUDA](#on-nvidia-hardware), [ROCm](#on-amd-hardware). |
 | **uv**                | `uv tool install --prerelease=allow lilbee`                                              | Same wheel as pip; fetches a Python for you if you need one.                                                                                                                                                          |
 | **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you.                                                                                                                                  |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
-| **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there.                                                                                                                  |
+| **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. `:cuda` and `:rocm` tags carry the vendor builds.                                                                 |
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS.                                                                                 |
 | **Flatpak**           | `flatpak remote-add --if-not-exists lilbee https://tobocop2.github.io/flatpak-lilbee/lilbee.flatpakrepo && flatpak install lilbee io.github.tobocop2.lilbee` | Linux x86_64, any distro with flatpak. Needs the [Flathub remote](https://flathub.org/setup) for the runtime. Run with `flatpak run io.github.tobocop2.lilbee` (worth an alias); `flatpak update` picks up new releases. Data lives under `~/.var/app/io.github.tobocop2.lilbee/`. |
 | **Snap**              | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap && sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; rerun the same command to upgrade. |
@@ -399,6 +402,27 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 | **Binary**   | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 
 Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
+
+</details>
+
+### On AMD hardware
+
+The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn't set up. There's also a dedicated ROCm build that's faster. It bundles the ROCm userspace, so you need only the amdgpu kernel driver.
+
+<details>
+<summary>ROCm install commands</summary>
+
+|              | Command                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/`                                                 |
+| **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/`                                |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-rocm`                                                                           |
+| **AUR**      | `paru -S lilbee-rocm`                                                                                                |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-rocm`                                                                         |
+| **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
+| **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
+
+Same `lilbee` command after install. Linux only. Cards: MI100, MI200, MI300, MI350, RDNA2, RDNA3, RDNA3.5 APUs and RDNA4. ROCm 7 ships no GEMM kernels for the MI50, so it needs the Vulkan build. Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
 
 </details>
 
