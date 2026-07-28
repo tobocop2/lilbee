@@ -142,8 +142,9 @@ def _split_batched_output(
     """Parse the batched LLM response into per-label bodies.
 
     Splits on H1/H2 headers, then binds each header to an expected entity
-    label or to a concept the response declared, via :func:`match_label`.
-    A header matching neither is dropped as noise. Labels whose section
+    label or to a concept the response declared, via :func:`match_label`:
+    entities win ties, but an exact match in either set beats any substring
+    match. A header matching neither is dropped as noise. Labels whose section
     could not be recovered are simply absent from the result; the caller
     loops over the expected sets to write their PENDING markers.
     """
@@ -163,8 +164,9 @@ def _split_batched_output(
         if not body:
             continue
         lowered = name.lower()
-        kind_label = match_label(lowered, expected_entity_labels, EntityKind.ENTITY) or match_label(
-            lowered, concepts, EntityKind.CONCEPT
+        kind_label = match_label(
+            lowered,
+            [(expected_entity_labels, EntityKind.ENTITY), (concepts, EntityKind.CONCEPT)],
         )
         if kind_label is None:
             log.info("Dropping section %r: matches no expected entity or declared concept", name)

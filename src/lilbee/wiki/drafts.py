@@ -250,26 +250,42 @@ def _parse_pending_kind(text: str) -> str | None:
     return None
 
 
-def _split_marker_line(text: str) -> tuple[str, str]:
-    """Split *text* into its leading marker line and the untouched remainder.
-
-    Markers are always written as the first line; a marker comment quoted in
-    the body is content, so only the first line is ever parsed or stripped.
-    """
-    first_line, sep, rest = text.partition("\n")
-    if any(
-        pattern.search(first_line)
+def _is_marker_line(line: str) -> bool:
+    return any(
+        pattern.search(line)
         for pattern in (_PENDING_PARSE_MARKER_RE, _PENDING_COLLISION_MARKER_RE, _DRIFT_MARKER_RE)
-    ):
-        return first_line, rest
-    return "", first_line + sep + rest
+    )
+
+
+def _split_marker_line(text: str) -> tuple[str, str]:
+    """Split *text* into its leading run of marker lines and the untouched remainder.
+
+    A drift that also collides stacks a PENDING marker above the DRIFT note, so
+    the whole leading run is consumed: kind comes from the first marker line,
+    drift ratio and origin from any of them. The run stops at the first
+    non-marker content, so a marker comment quoted in the body is never parsed
+    or stripped.
+    """
+    lines = text.split("\n")
+    markers: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _is_marker_line(line):
+            markers.append(line)
+        elif line.strip() or not markers:
+            break
+        index += 1
+    if not markers:
+        return "", text
+    return "\n".join(markers), "\n".join(lines[index:])
 
 
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
     """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
 
-    Classification, drift ratio, and origin all come from the leading marker
-    line only, and stripping removes only that line, so a marker comment
+    Classification, drift ratio, and origin all come from the leading run of
+    marker lines, and stripping removes only that run, so a marker comment
     quoted in the body survives the accept untouched.
     """
     marker_line, remainder = _split_marker_line(text)

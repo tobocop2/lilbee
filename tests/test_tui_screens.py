@@ -9197,7 +9197,7 @@ class TestWikiDraftsCancellation:
         reporter.check_cancelled.side_effect = TaskCancelledError
         with (
             patch("lilbee.cli.tui.screens.wiki_drafts.reject_draft") as reject,
-            patch("lilbee.cli.tui.screens.wiki_drafts._post_outcome") as post,
+            patch("lilbee.cli.tui.screens.wiki_drafts._post_success") as post,
             pytest.raises(TaskCancelledError),
         ):
             target(reporter)
@@ -9231,11 +9231,39 @@ class TestWikiDraftsCancellation:
                 "lilbee.cli.tui.screens.wiki_drafts.reject_draft",
                 side_effect=TaskCancelledError,
             ),
-            patch("lilbee.cli.tui.screens.wiki_drafts._post_outcome") as post,
+            patch("lilbee.cli.tui.screens.wiki_drafts._post_failure") as post,
             pytest.raises(TaskCancelledError),
         ):
             target(MagicMock())
         post.assert_not_called()
+
+    def test_success_posts_a_toast_and_no_second_reload(self, tmp_path) -> None:
+        """The WIKI done hook already rescans every wiki screen; reloading here
+        too re-walked the tree and re-parsed every page's frontmatter twice."""
+        from lilbee.cli.tui import messages as msg
+
+        cfg.data_root = tmp_path
+        target, fake_app = self._capture_target("some-draft")
+        with (
+            patch("lilbee.cli.tui.screens.wiki_drafts.reject_draft"),
+            patch("lilbee.cli.tui.screens.wiki_drafts.call_from_thread") as posted,
+        ):
+            target(MagicMock())
+        posted.assert_called_once_with(
+            fake_app,
+            fake_app.notify,
+            msg.WIKI_DRAFTS_REJECTED.format(slug="some-draft"),
+            severity="information",
+        )
+
+    def test_a_failure_toasts_and_reloads_the_table_itself(self) -> None:
+        """No done hook fires for a failed task, so a partial mutation must show."""
+        from lilbee.cli.tui.screens.wiki_drafts import _apply_failure
+
+        app = MagicMock()
+        _apply_failure(app, "accept failed", "error")
+        app.notify.assert_called_once_with("accept failed", severity="error")
+        app.task_bar.reload_wiki_screens.assert_called_once_with()
 
 
 class TestWikiDraftsScreen:
@@ -10131,25 +10159,39 @@ class TestWikiDisplayPageMissing:
 
 
 class TestWikiCoverageEdgeCases:
-    async def test_on_show_reloads_pages_under_the_live_filter(self, tmp_path):
-        """Out-of-band wiki builds (`lilbee wiki build` from another shell) and
-        incremental wiki updates must surface without a restart, and the rescan
-        must honour whatever the search box still shows."""
+    async def test_switching_back_reloads_pages_under_the_live_filter(self, tmp_path):
+        """Out-of-band wiki builds (`lilbee wiki build` from another shell), and
+        builds that finish while the screen is out of view, must surface without a
+        restart, and the rescan must honour whatever the search box still shows.
+
+        Driven through the real screen switch: Show never re-fires on an installed
+        screen, so a handler bound to it would pass a direct call and still leave
+        the sidebar stale.
+        """
         cfg.wiki = True
         cfg.data_root = tmp_path
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            from textual.screen import Screen
             from textual.widgets import Input as TextualInput
 
             from lilbee.cli.tui.screens.wiki import WikiScreen
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
+            app.install_screen(screen, name="wiki")
+            app.install_screen(Screen(), name="elsewhere")
             screen.query_one("#wiki-search", TextualInput).value = "brakes"
-            with patch.object(screen, "_load_pages") as mock_load:
-                screen.on_show()
-                mock_load.assert_called_once_with(filter_text="brakes")
+            app.switch_screen("elsewhere")
             await pilot.pause()
+            # Drop the pending search debounce so the only repaint under the
+            # patch is the one the switch back triggers.
+            assert screen._search_filter_timer is not None
+            screen._search_filter_timer.stop()
+            with patch.object(screen, "_load_pages") as mock_load:
+                app.switch_screen("wiki")
+                await pilot.pause()
+                mock_load.assert_called_once_with(filter_text="brakes")
 
     async def test_load_pages_failure_surfaces_in_content_pane(self, tmp_path):
         """A failing list_pages renders an error, not the ordinary empty state."""

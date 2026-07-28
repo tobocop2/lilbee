@@ -25,6 +25,7 @@ from lilbee.wiki.grammar import (
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,
     CITE_RE,
+    CODE_FENCE_RE,
     FOOTNOTE_RE,
 )
 
@@ -59,19 +60,39 @@ class ParsedCitation:
     line_number: int  # 1-based line number in the markdown
 
 
+def _fence_flags(lines: list[str]) -> list[bool]:
+    """Per-line ``inside a code fence`` flags, fence delimiters included.
+
+    Footnote definitions and ``[^srcN]`` markers inside a fence are example
+    syntax on a page documenting the citation grammar, not citations.
+    """
+    flags: list[bool] = []
+    in_fence = False
+    for line in lines:
+        if CODE_FENCE_RE.match(line):
+            in_fence = not in_fence
+            flags.append(True)
+            continue
+        flags.append(in_fence)
+    return flags
+
+
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     """Extract citation footnote definitions from wiki markdown.
 
-    Scans the whole document: the ``[^srcN]: ...`` pattern unambiguously
-    identifies a citation footnote wherever a model put it, so a mid-body
-    definition is a citation too. A key is taken once: a mid-body definition
-    repeated in the trailing block is a single citation.
+    Scans the whole document outside code fences: the ``[^srcN]: ...`` pattern
+    unambiguously identifies a citation footnote wherever a model put it, so a
+    mid-body definition is a citation too, while a fenced one is example syntax.
+    A key is taken once: a mid-body definition repeated in the trailing block is
+    a single citation.
     """
     lines = markdown.splitlines()
 
     citations: list[ParsedCitation] = []
     seen: set[str] = set()
-    for line_idx in range(len(lines)):
+    for line_idx, fenced in enumerate(_fence_flags(lines)):
+        if fenced:
+            continue
         match = FOOTNOTE_RE.match(lines[line_idx])
         if match and match.group(1) not in seen:
             seen.add(match.group(1))
@@ -110,13 +131,19 @@ def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
     definition line still inside the body would either duplicate a verified
     definition or publish an unverified excerpt as prose. A marker whose
     definition was dropped renders as literal ``[^srcN]`` text and hides the
-    claim from ``find_unmarked_claims``.
+    claim from ``find_unmarked_claims``. Fenced lines are example syntax and
+    stay verbatim.
     """
+    keys = {rec["citation_key"] for rec in verified}
     # keepends so removing a definition line does not also rewrite the body's
     # own line endings or drop its trailing newline.
-    kept = [line for line in body.splitlines(keepends=True) if not FOOTNOTE_RE.match(line)]
-    keys = {rec["citation_key"] for rec in verified}
-    return CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", "".join(kept))
+    lines = body.splitlines(keepends=True)
+    kept = [
+        line if fenced else CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", line)
+        for line, fenced in zip(lines, _fence_flags(lines), strict=True)
+        if fenced or not FOOTNOTE_RE.match(line)
+    ]
+    return "".join(kept)
 
 
 def wiki_sourced_count(records: list[CitationRecord], config: Config) -> int:
@@ -366,38 +393,6 @@ def _build_citation_record(
         excerpt=excerpt,
         created_at=created_at,
     )
-
-
-def _resolve_citations(
-    parsed_citations: list[ParsedCitation],
-    source_name: str,
-    source_hash: str,
-    chunks: list[SearchChunk],
-) -> list[CitationRecord]:
-    """Resolve parsed citation refs to CitationRecord objects.
-    Searches for each citation's excerpt in the source chunks to find
-    the best matching location (page/line numbers).
-    """
-    records: list[CitationRecord] = []
-    now = datetime.now(UTC).isoformat()
-
-    for parsed in parsed_citations:
-        excerpt = _extract_excerpt(parsed.source_ref)
-        page_start, page_end, line_start, line_end = _find_excerpt_location(excerpt, chunks)
-        records.append(
-            _build_citation_record(
-                parsed.citation_key,
-                excerpt,
-                source_name,
-                source_hash,
-                page_start,
-                page_end,
-                line_start,
-                line_end,
-                now,
-            )
-        )
-    return records
 
 
 def verify_citations(

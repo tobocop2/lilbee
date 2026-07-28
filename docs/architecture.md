@@ -1117,7 +1117,7 @@ Under `$LILBEE_DATA/$wiki_dir/` (default `wiki/`):
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness output and PENDING markers for parse failures or slug collisions. Reviewed via `lilbee wiki drafts accept / reject`. |
-| `summaries/` | Landing spot for accepted drafts that have no published page to replace |
+| `summaries/` | Landing spot for accepted drafts with no published counterpart and no recorded origin type |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
@@ -1171,6 +1171,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
 - Crawl: `POST /api/crawl` (SSE progress)
+- Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build`, `PATCH /api/wiki/update`, `POST /api/wiki/synthesize` (these three are SSE streams), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
 - Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`

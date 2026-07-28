@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -243,21 +244,68 @@ class TestAtomicWriteText:
         assert list(tmp_path.iterdir()) == [path]
 
 
+def _wiki_lock_held() -> bool:
+    """Whether the wiki build mutex is held, probed from another thread.
+
+    The mutex is re-entrant, so it reads as free to the thread holding it and
+    carries no ``locked()`` on this Python; a non-blocking acquire off-thread
+    answers for both lock kinds.
+    """
+    from lilbee.wiki.shared import WIKI_BUILD_LOCK
+
+    free: list[bool] = []
+
+    def probe() -> None:
+        acquired = WIKI_BUILD_LOCK.acquire(blocking=False)
+        if acquired:
+            WIKI_BUILD_LOCK.release()
+        free.append(acquired)
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join()
+    return not free[0]
+
+
 class TestWikiBuildMutex:
     """Every mutating wiki entry point holds one process-wide lock while it
     writes, so an MCP build, an HTTP prune, a CLI synthesize and a TUI accept
     cannot interleave over the same pages, index.md, and log.md."""
 
+    def test_the_mutex_is_re_entrant(self):
+        """A writer holding it calls helpers that take it again (a lint that
+        records a log entry); a plain lock would deadlock the whole process."""
+        from lilbee.wiki.shared import WIKI_BUILD_LOCK
+
+        with WIKI_BUILD_LOCK:
+            assert WIKI_BUILD_LOCK.acquire(blocking=False)
+            WIKI_BUILD_LOCK.release()
+
+    def test_lint_holds_the_lock_while_appending_to_the_log(self, monkeypatch, tmp_path):
+        """`wiki lint` from CLI, HTTP and MCP all reach log.md unlocked, racing a
+        build's own append over a file whose first writer creates it."""
+        from lilbee.wiki import lint as lint_mod
+
+        held: list[bool] = []
+        monkeypatch.setattr(
+            lint_mod, "append_wiki_log", lambda *a, **kw: held.append(_wiki_lock_held())
+        )
+        config = cfg.model_copy(update={"data_root": tmp_path, "wiki_dir": "wiki"})
+        (tmp_path / "wiki").mkdir()
+
+        lint_mod.lint_all(MagicMock(), config)
+        assert held == [True]
+        assert not _wiki_lock_held()
+
     def test_run_full_build_holds_the_lock_while_generating(self, monkeypatch):
         from lilbee.wiki.generation import run_full_build
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         held: list[bool] = []
 
         def fake_build_wiki(
             entities, provider, store, config, *, extract_concepts, on_progress, stats
         ):
-            held.append(WIKI_BUILD_LOCK.locked())
+            held.append(_wiki_lock_held())
             return []
 
         def fake_extractor(*args, **kwargs):
@@ -275,16 +323,15 @@ class TestWikiBuildMutex:
 
         run_full_build(cfg)
         assert held == [True]
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
 
     def test_run_full_synthesize_holds_the_lock_while_generating(self, monkeypatch):
         from lilbee.wiki.generation import run_full_synthesize
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         held: list[bool] = []
 
         def fake_generate(provider, store, clusterer, config, on_progress, stats):
-            held.append(WIKI_BUILD_LOCK.locked())
+            held.append(_wiki_lock_held())
             return []
 
         monkeypatch.setattr("lilbee.wiki.generation.get_services", MagicMock())
@@ -292,16 +339,15 @@ class TestWikiBuildMutex:
 
         run_full_synthesize(cfg)
         assert held == [True]
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
 
     def test_prune_holds_the_lock_while_reconciling(self, monkeypatch, tmp_path):
         from lilbee.wiki.prune import prune_wiki
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         held: list[bool] = []
 
         def fake_reconcile(store, wiki_root, config):
-            held.append(WIKI_BUILD_LOCK.locked())
+            held.append(_wiki_lock_held())
             return []
 
         monkeypatch.setattr("lilbee.wiki.prune._reconcile_orphan_rows", fake_reconcile)
@@ -309,11 +355,10 @@ class TestWikiBuildMutex:
 
         prune_wiki(MagicMock(), config)
         assert held == [True]
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
 
     def test_accept_draft_holds_the_lock_while_publishing(self, monkeypatch, tmp_path):
         from lilbee.wiki.drafts import accept_draft
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         wiki_root = tmp_path / "wiki"
         (wiki_root / "drafts").mkdir(parents=True)
@@ -321,20 +366,19 @@ class TestWikiBuildMutex:
         held: list[bool] = []
 
         def fake_index(content, wiki_source, store, config):
-            held.append(WIKI_BUILD_LOCK.locked())
+            held.append(_wiki_lock_held())
             return 1
 
         monkeypatch.setattr("lilbee.wiki.drafts.index_wiki_page", fake_index)
 
         accept_draft("x", wiki_root, MagicMock())
         assert held == [True]
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
 
     def test_reject_draft_holds_the_lock_while_unlinking(self, monkeypatch, tmp_path):
         """Reject races accept over the same file: unlinking outside the lock can
         pull the draft out from under a publish that already landed the page."""
         from lilbee.wiki import drafts
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         wiki_root = tmp_path / "wiki"
         (wiki_root / "drafts").mkdir(parents=True)
@@ -343,24 +387,22 @@ class TestWikiBuildMutex:
         real_draft_path = drafts._draft_path
 
         def spy(root, slug):
-            held.append(WIKI_BUILD_LOCK.locked())
+            held.append(_wiki_lock_held())
             return real_draft_path(root, slug)
 
         monkeypatch.setattr("lilbee.wiki.drafts._draft_path", spy)
 
         drafts.reject_draft("x", wiki_root)
         assert held == [True]
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
         assert not (wiki_root / "drafts" / "x.md").exists()
 
     def test_the_ingest_hook_takes_the_lock_in_its_worker_thread(self, monkeypatch):
         """The hook runs on the event loop, so it must acquire off it: a blocking
         acquire on the loop would stall every other request for a whole build."""
         import asyncio
-        import threading
 
         from lilbee.wiki.ingest import incremental_update
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         entity = MagicMock()
         entity.chunk_refs = [MagicMock(source="a.txt")]
@@ -371,7 +413,7 @@ class TestWikiBuildMutex:
         observed: list[tuple[bool, int]] = []
 
         def fake_build_wiki(entities, provider, store, config, *, extract_concepts, stats):
-            observed.append((WIKI_BUILD_LOCK.locked(), threading.get_ident()))
+            observed.append((_wiki_lock_held(), threading.get_ident()))
             return []
 
         monkeypatch.setattr("lilbee.wiki.ingest.get_services", lambda: services)
@@ -388,4 +430,37 @@ class TestWikiBuildMutex:
         locked, tid = observed[0]
         assert locked
         assert tid != threading.get_ident()
-        assert not WIKI_BUILD_LOCK.locked()
+        assert not _wiki_lock_held()
+
+    def test_the_ingest_cap_skip_logs_under_the_lock_off_the_loop(self, monkeypatch):
+        """Above the cap the hook writes one log.md entry and stops; that append
+        is a shared-file write like any other, and it must not block the loop."""
+        import asyncio
+
+        from lilbee.wiki.ingest import incremental_update
+
+        entity = MagicMock()
+        entity.chunk_refs = [MagicMock(source="a.txt")]
+        extractor = MagicMock()
+        extractor.extract.return_value = [entity, entity]
+        services = MagicMock()
+        services.store.get_sources.return_value = []
+        observed: list[tuple[bool, int]] = []
+
+        monkeypatch.setattr("lilbee.wiki.ingest.get_services", lambda: services)
+        monkeypatch.setattr(
+            "lilbee.wiki.append_wiki_log",
+            lambda *a, **kw: observed.append((_wiki_lock_held(), threading.get_ident())),
+        )
+        monkeypatch.setattr(
+            "lilbee.wiki.entity_extractor.get_entity_extractor", lambda *a, **kw: extractor
+        )
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_ingest_update_cap", 1)
+
+        asyncio.run(incremental_update({"a.txt"}))
+        assert len(observed) == 1
+        locked, tid = observed[0]
+        assert locked
+        assert tid != threading.get_ident()
+        assert not _wiki_lock_held()

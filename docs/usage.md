@@ -183,7 +183,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/delete <name>` | | Remove a document from the index |
 | `/remove <name>` | | Remove an installed model |
-| `/wiki` | | Open the auto-generated wiki |
+| `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
 | `/memories` | | Browse, delete, or share saved memories |
 | `/setup` | | Run the first-time setup wizard |
@@ -212,9 +212,10 @@ vision) runs in its own subprocess so a stuck model doesn't lock the chat.
 
 lilbee analyzes the documents you've indexed and writes a wiki about them,
 inspired by Andrej Karpathy's [LLM Wiki](https://karpathy.ai/llmwiki/). Pages
-compound across sources instead of being one-per-document, so concepts and
-entities that show up repeatedly in your library get their own page with
-citations from every source that mentions them.
+are per concept or entity rather than per document, so something that shows up
+repeatedly in your library gets its own page, written and cited from the source
+that mentions it most. Coverage across sources comes from synthesis pages
+(`lilbee wiki synthesize`) and the `[[wiki link]]` graph.
 
 Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 
@@ -526,7 +527,7 @@ lilbee --json wiki citations <page>            # citations a page makes
 lilbee --json wiki citations --source <doc>    # pages citing a source document
 lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
 lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
-lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, or summaries/)
+lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee --json wiki drafts reject <slug>        # discard a draft
 lilbee --json wiki prune                       # archive stale pages
 ```
