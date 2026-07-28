@@ -21,6 +21,11 @@ def _h() -> dict[str, str]:
     return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
 
 
+def _fail_on_lint_all(store: Any, config: Any = None) -> None:
+    """Stand-in for ``lint_all`` in tests that must take the single-page arm."""
+    raise AssertionError("a single-page lint must not scan the whole wiki")
+
+
 def _sse_events(body: str) -> list[tuple[str, Any]]:
     """Parse an SSE body into (event name, decoded data) pairs."""
     events: list[tuple[str, Any]] = []
@@ -319,6 +324,44 @@ class TestWikiEnabled:
         assert body["errors"] == 0
         assert body["warnings"] == 0
         assert body["issues"] == []
+        assert body["total"] == 0
+
+    async def test_lint_accepts_a_single_page(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``wiki_source`` lints one page, as ``lilbee wiki lint <page>`` and the
+        ``wiki_lint`` MCP tool do, and reports the same counts."""
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        linted: list[str] = []
+
+        def fake_lint_page(wiki_source, store, config=None):
+            linted.append(wiki_source)
+            return [
+                lint_mod.LintIssue(
+                    wiki_source=wiki_source,
+                    severity=lint_mod.IssueSeverity.ERROR,
+                    message="stale citation",
+                )
+            ]
+
+        monkeypatch.setattr(lint_mod, "lint_wiki_page", fake_lint_page)
+        monkeypatch.setattr(lint_mod, "lint_all", _fail_on_lint_all)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post(
+                "/api/wiki/lint",
+                params={"wiki_source": "wiki/summaries/doc.md"},
+                headers=_h(),
+            )
+        assert resp.status_code == 201
+        assert linted == ["wiki/summaries/doc.md"]
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["errors"] == 1
+        assert body["warnings"] == 0
+        assert body["issues"][0]["message"] == "stale citation"
 
     async def test_lint_runs_off_the_event_loop(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch

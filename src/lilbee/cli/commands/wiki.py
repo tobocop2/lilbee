@@ -431,12 +431,17 @@ def wiki_build(
         _wiki_build_dry_run_output(preview_build_entities(cfg))
         return
 
+    _run_wiki_build("wiki_build")
+
+
+def _run_wiki_build(command_name: str) -> None:
+    """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
     result = run_full_build(cfg)
 
     if cfg.json_mode:
-        json_output({"command": "wiki_build", **result})
+        json_output({"command": command_name, **result})
         return
 
     pages = result["paths"]
@@ -513,7 +518,10 @@ def wiki_update(
     A full rebuild: every source is re-extracted and regenerated. The capped
     touched-slug regeneration only runs from the ingest hook.
     """
-    wiki_build(data_dir=data_dir, use_global=use_global, dry_run=False)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+    _run_wiki_build("wiki_update")
 
 
 drafts_app = typer.Typer(help="Review wiki drafts: list, diff, accept, reject.")

@@ -31,6 +31,7 @@ from lilbee.wiki.citations import (
     strip_citation_block,
     verify_citation,
 )
+from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
@@ -237,14 +238,14 @@ def _parse_origin_subdir(text: str) -> WikiSubdir | None:
 def _parse_pending_kind(text: str) -> str | None:
     """Classify *text* as a PENDING-PARSE, PENDING-COLLISION, or neither.
 
-    Returns ``None`` when the leading marker is absent or is the
-    drift marker. Only inspects the first marker encountered so a
-    draft body that quotes the HTML comment (unlikely but possible)
-    does not get mis-classified.
+    Returns ``None`` when the leading line is not a PENDING marker. Markers
+    are always written as the first line, so a draft body that quotes a
+    marker comment further down does not get mis-classified.
     """
-    if _PENDING_PARSE_MARKER_RE.search(text):
+    first_line = text.splitlines()[0] if text else ""
+    if _PENDING_PARSE_MARKER_RE.search(first_line):
         return PendingKind.PARSE
-    if _PENDING_COLLISION_MARKER_RE.search(text):
+    if _PENDING_COLLISION_MARKER_RE.search(first_line):
         return PendingKind.COLLISION
     return None
 
@@ -404,6 +405,7 @@ def accept_draft(
         atomic_write_text(target, content)
         store.replace_citations_for_wiki(wiki_source, records)
         reindexed = index_wiki_page(content, wiki_source, store, config)
+        update_wiki_index(config)
         draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(
@@ -505,10 +507,11 @@ def _frontmatter_sources(content: str) -> list[str]:
 
 def reject_draft(slug: str, wiki_root: Path) -> None:
     """Delete the draft file without touching the published page or the index."""
-    draft = _draft_path(wiki_root, slug)
-    if not draft.is_file():
-        raise FileNotFoundError(f"draft not found: {slug}")
-    draft.unlink()
+    with WIKI_BUILD_LOCK:
+        draft = _draft_path(wiki_root, slug)
+        if not draft.is_file():
+            raise FileNotFoundError(f"draft not found: {slug}")
+        draft.unlink()
     log.info("Rejected draft %s", slug)
 
 

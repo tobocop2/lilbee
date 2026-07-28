@@ -66,6 +66,30 @@ class TestParseWikiCitations:
         result = parse_wiki_citations(md)
         assert [c.citation_key for c in result] == ["src1"]
 
+    def test_a_mid_body_definition_parses_alongside_the_block(self):
+        """The scan used to start at the block comment, so a definition the model
+        left above it was never resolved and its claim lost its citation."""
+        md = (
+            'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\n'
+            "More prose.[^src2]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src2]: doc.md, excerpt: "quote two"\n'
+        )
+        result = parse_wiki_citations(md)
+        assert [c.citation_key for c in result] == ["src1", "src2"]
+        assert result[0].line_number == 3
+
+    def test_a_definition_repeated_in_the_block_keeps_its_body_position(self):
+        md = (
+            'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\n'
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "quote one"\n'
+        )
+        [citation] = parse_wiki_citations(md)
+        assert citation.line_number == 3
+
     def test_returns_empty_for_no_citation_block(self):
         assert parse_wiki_citations("# Just a heading\n\nSome text.") == []
 
@@ -475,6 +499,23 @@ class TestScrubUnverifiedMarkers:
         body = "Dropped claim.[^src2]\n"
         assert find_unmarked_claims(body) == []
         assert find_unmarked_claims(scrub_unverified_markers(body, [])) == ["Dropped claim."]
+
+    def test_an_in_body_definition_for_a_verified_key_is_removed(self):
+        """The block is re-rendered from the verified records, so a definition left
+        in the body would publish a second, possibly divergent, reference."""
+        body = 'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\nMore prose.\n'
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert "Claim one.[^src1]" in result
+        assert "More prose.\n" in result
+        assert "quote one" not in result
+
+    def test_an_in_body_definition_for_a_dropped_key_leaves_no_remainder(self):
+        """Scrubbing the marker alone used to leave the excerpt text as prose."""
+        body = 'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\nMore prose.\n'
+        result = scrub_unverified_markers(body, [])
+        assert result.startswith("Claim one.\n")
+        assert "doc.md" not in result
+        assert "quote one" not in result
 
 
 class TestFootnoteMarkerKeys:

@@ -3117,6 +3117,24 @@ class TestWikiBuild:
         assert result.exit_code == 0
         assert "No concept or entity pages" in result.output
 
+    def test_update_json_names_its_own_command(self, mock_svc, isolated_env, monkeypatch):
+        """A script keying on the command field has to be able to tell the two
+        apart, and the MCP tool already reports wiki_update."""
+        cfg.json_mode = True
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: _stub_build_summary([], 0),
+        )
+        result = runner.invoke(app, ["--json", "wiki", "update"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["command"] == "wiki_update"
+
+    def test_update_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        result = runner.invoke(app, ["wiki", "update"])
+        assert result.exit_code == 1
+        assert msg.CMD_WIKI_DISABLED in result.output
+
     def test_collects_chunks_from_every_source(self, mock_svc, isolated_env, monkeypatch):
         """wiki_build pulls chunks for every tracked source, not just the first."""
         mock_svc.store.get_sources.return_value = [

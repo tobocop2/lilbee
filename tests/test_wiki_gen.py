@@ -1226,6 +1226,40 @@ class TestDivertToDrafts:
         assert result == marker_path
         assert "# Regenerated" in result.read_text()
 
+    @pytest.mark.parametrize("existing", ["", "   \n\n"])
+    def test_an_empty_draft_file_is_written_over(self, tmp_path: Path, existing: str):
+        """A file truncated by a crash mid-write holds nothing to review."""
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        empty = drafts_dir / "my-page.md"
+        empty.write_text(existing)
+        result = self._divert(drafts_dir, "# Regenerated\n", ["a.md"])
+        assert result == empty
+        assert "# Regenerated" in empty.read_text()
+
+    def test_a_same_source_quality_draft_is_superseded_in_place(self, tmp_path: Path):
+        """A quality-gate draft records its sources in frontmatter, not a drift
+        marker, so a later drift of those sources supersedes it rather than
+        filing a collision against itself."""
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        quality = drafts_dir / "my-page.md"
+        quality.write_text('---\nsources: ["a.md"]\nfaithfulness_score: 0.1\n---\n\n# Low score\n')
+        result = self._divert(drafts_dir, "# Regenerated\n", ["a.md"])
+        assert result == quality
+        assert "# Regenerated" in quality.read_text()
+        assert not list(drafts_dir.glob("my-page-collision-*.md"))
+
+    def test_a_different_source_quality_draft_still_collides(self, tmp_path: Path):
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        quality = drafts_dir / "my-page.md"
+        quality.write_text('---\nsources: ["b.md"]\nfaithfulness_score: 0.1\n---\n\n# From b\n')
+        result = self._divert(drafts_dir, "# From a\n", ["a.md"])
+        assert result != quality
+        assert result.name.startswith("my-page-collision-")
+        assert "# From b" in quality.read_text()
+
 
 class TestWritePageDrift:
     """Rebuilds converge: only body prose counts as drift, and a published

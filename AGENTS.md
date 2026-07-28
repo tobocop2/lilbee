@@ -578,7 +578,7 @@ per section against the shared chunk pool, embedding-faithfulness scored
 threshold `cfg.wiki_embedding_faithfulness_threshold`), and written to
 `concepts/` or `entities/`. Sections that fail to parse become PENDING
 markers in `drafts/` that the user resolves via `wiki drafts accept/reject`.
-`lilbee sync` runs `_incremental_wiki_update` afterward only when
+`lilbee sync` runs `lilbee.wiki.ingest.incremental_update` afterward only when
 `cfg.wiki_auto_update` is on, with `extract_concepts=False` so incremental
 re-ingest never churns concept slugs; the cap is
 `cfg.wiki_ingest_update_cap` (default 20 touched wiki pages).
@@ -614,8 +614,8 @@ setting appears in `/settings`, the HTTP `/set` route, and
 `LILBEE_*` env vars.
 
 **Writing to log.md**. Use `append_wiki_log(action, details)` from
-`wiki/index.py` with one of the `WIKI_LOG_ACTION_*` constants in
-`wiki/shared.py` (`BUILD`, `INGEST`, `LINT`, `GENERATED`).
+`wiki/index.py` with a `WikiLogAction` member from `wiki/shared.py`
+(`GENERATED`, `BUILD`, `SYNTHESIZE`, `INGEST`, `LINT`, `PRUNE`).
 Don't hand-roll timestamps; the helper writes
 `## [YYYY-MM-DD HH:MM] action | details` so `grep '## \['` still
 surfaces every entry.

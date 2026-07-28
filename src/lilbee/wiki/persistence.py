@@ -87,18 +87,24 @@ def draft_source_names(draft_path: Path) -> list[str] | None:
     return sorted(sources) if isinstance(sources, list) else None
 
 
-def _draft_belongs_to_other_source(draft_path: Path, source_key: str) -> bool:
+def _draft_belongs_to_other_source(
+    draft_path: Path, source_key: str, source_names: list[str]
+) -> bool:
     """Return whether an existing draft holds reviewable content from another source.
 
-    A PENDING marker is a placeholder, not review content, so it does not block
-    the write. A drift draft carries its source key in the marker; one without a
-    key predates the field and counts as another source's.
+    A PENDING marker or an empty file is a placeholder, not review content, so
+    neither blocks the write. A drift draft carries its source key in the
+    marker; a quality-gate draft carries its sources in frontmatter, so a
+    same-source draft of either kind is superseded in place rather than
+    treated as a collision.
     """
     text = _read_draft(draft_path)
-    if text is None or _is_pending_marker_text(text):
+    if text is None or not text.strip() or _is_pending_marker_text(text):
         return False
     first_line = text.splitlines()[0]
-    return f"{_DRIFT_SOURCE_FIELD}{source_key}" not in first_line
+    if f"{_DRIFT_SOURCE_FIELD}{source_key}" in first_line:
+        return False
+    return draft_source_names(draft_path) != sorted(source_names)
 
 
 def divert_to_drafts(
@@ -137,7 +143,7 @@ def divert_to_drafts(
         diff_text,
     )
     draft_path = drafts_dir / f"{slug}.md"
-    if _draft_belongs_to_other_source(draft_path, source_key):
+    if _draft_belongs_to_other_source(draft_path, source_key, source_names):
         return divert_concept_collision(
             slug=slug,
             source=sources_label,
@@ -307,7 +313,7 @@ def delete_drift_draft_if_present(drafts_dir: Path, slug: str, source_names: lis
     if text is None or not text.lstrip().startswith(_DRIFT_MARKER_PREFIX):
         return False
     source_key = short_source_hash(", ".join(sorted(source_names)))
-    if _draft_belongs_to_other_source(draft_path, source_key):
+    if _draft_belongs_to_other_source(draft_path, source_key, source_names):
         log.info("Keeping drift draft %s: it holds another source's proposal", draft_path)
         return False
     draft_path.unlink()

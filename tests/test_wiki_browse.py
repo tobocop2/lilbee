@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lilbee.wiki.browse import (
@@ -284,6 +285,25 @@ class TestReadPage:
         assert result is not None
         assert result.frontmatter["title"] == "Dated Page"
         assert result.frontmatter["generated_at"] == "2026-02-01"
+
+    def test_nested_frontmatter_dates_normalize_to_iso_strings(self, tmp_path: Path):
+        """A hand-edited vault page can nest dates in lists and maps; the whole
+        frontmatter has to survive ``json.dumps`` for --json and MCP reads."""
+        content = (
+            "---\n"
+            "title: Nested\n"
+            "dates: [2024-01-01, 2024-03-02]\n"
+            "provenance:\n"
+            "  captured: 2024-02-01\n"
+            "---\n"
+            "Content here.\n"
+        )
+        _write_page(tmp_path, "summaries", "nested", content)
+        result = read_page(tmp_path, "summaries/nested")
+        assert result is not None
+        assert result.frontmatter["dates"] == ["2024-01-01", "2024-03-02"]
+        assert result.frontmatter["provenance"] == {"captured": "2024-02-01"}
+        json.dumps(result.frontmatter)
 
 
 class TestExtractH1Title:

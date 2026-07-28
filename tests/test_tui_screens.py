@@ -8850,6 +8850,32 @@ class TestWikify:
             notify.assert_called_once_with(msg.WIKI_ALREADY_ACTIVE, severity="warning")
             assert len(app.task_bar.queue.queued_tasks) == 1
 
+    async def test_a_cancelled_build_does_not_toast_success(self, tmp_path):
+        """A cancel landing after the last checkpoint finalizes the row CANCELLED,
+        so the toast must not announce the build finished."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        summary = {"paths": ["a.md"], "entities": 1, "count": 1}
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui.screens.wiki import start_wikify
+
+            with patch.object(app.task_bar, "start_task") as start:
+                start_wikify(app)
+            target = start.call_args.args[2]
+            reporter = MagicMock()
+            reporter.check_cancelled.side_effect = TaskCancelledError
+            with (
+                patch("lilbee.wiki.generation.run_full_build", return_value=summary),
+                patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+                pytest.raises(TaskCancelledError),
+            ):
+                target(reporter)
+            posted.assert_not_called()
+
     async def test_wikify_is_refused_while_the_wiki_is_off(self, tmp_path):
         cfg.wiki = False
         cfg.data_root = tmp_path
@@ -9129,7 +9155,7 @@ class TestWikiDraftsCancellation:
 
     @staticmethod
     def _capture_target(slug: str):
-        """Start a reject task against a mock app and return the task target."""
+        """Start a reject task against a mock app; return the task target and that app."""
         from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
 
         screen = WikiDraftsScreen()
@@ -9138,13 +9164,13 @@ class TestWikiDraftsCancellation:
             WikiDraftsScreen, "app", new_callable=PropertyMock, return_value=fake_app
         ):
             screen._do_reject(slug)
-        return fake_app.task_bar.start_task.call_args.args[2]
+        return fake_app.task_bar.start_task.call_args.args[2], fake_app
 
     def test_cancel_during_the_work_suppresses_the_success_toast(self, tmp_path) -> None:
         from lilbee.runtime.cancellation import TaskCancelledError
 
         cfg.data_root = tmp_path
-        target = self._capture_target("some-draft")
+        target, _app = self._capture_target("some-draft")
         reporter = MagicMock()
         reporter.check_cancelled.side_effect = TaskCancelledError
         with (
@@ -9156,11 +9182,28 @@ class TestWikiDraftsCancellation:
         reject.assert_called_once()
         post.assert_not_called()
 
+    def test_cancel_during_the_work_still_reloads_the_table(self, tmp_path) -> None:
+        """The mutation lands on disk before the cancel is seen, so the drafts
+        table would keep listing a draft that no longer exists."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        cfg.data_root = tmp_path
+        target, fake_app = self._capture_target("some-draft")
+        reporter = MagicMock()
+        reporter.check_cancelled.side_effect = TaskCancelledError
+        with (
+            patch("lilbee.cli.tui.screens.wiki_drafts.reject_draft"),
+            patch("lilbee.cli.tui.screens.wiki_drafts.call_from_thread") as posted,
+            pytest.raises(TaskCancelledError),
+        ):
+            target(reporter)
+        posted.assert_called_once_with(fake_app, fake_app.task_bar.reload_wiki_screens)
+
     def test_cancel_raised_by_the_work_is_not_toasted_as_a_failure(self, tmp_path) -> None:
         from lilbee.runtime.cancellation import TaskCancelledError
 
         cfg.data_root = tmp_path
-        target = self._capture_target("some-draft")
+        target, _app = self._capture_target("some-draft")
         with (
             patch(
                 "lilbee.cli.tui.screens.wiki_drafts.reject_draft",

@@ -17,7 +17,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
-from tests._lilbee_app_test_host import await_chat, ready_services
+from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
 
 @pytest.fixture(autouse=True)
@@ -64,12 +64,16 @@ async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixtur
             raise RuntimeError("boom")
 
         task_id = controller.start_task("demo", TaskType.SYNC, lambda r: None, on_success=_oops)
-        for _ in range(20):
-            await pilot.pause()
+
+        def _finalized() -> bool:
             task = controller.queue.get_task(task_id)
-            swallowed = any("on_success" in r.message for r in caplog.records)
-            if task is not None and task.status == TaskStatus.DONE and swallowed:
-                break
+            return (
+                task is not None
+                and task.status == TaskStatus.DONE
+                and any("on_success" in r.message for r in caplog.records)
+            )
+
+        assert await pump_until(pilot, _finalized), "the task never finalized"
 
     task = controller.queue.get_task(task_id)
     assert task is not None

@@ -390,13 +390,16 @@ class WikiDraftsScreen(Screen[None]):
             reporter.update(0, slug, indeterminate=True)
             try:
                 work()
+                reporter.check_cancelled()
             except TaskCancelledError:
+                # The mutation may have landed before the cancel; the table
+                # must show the disk state either way.
+                call_from_thread(app, app.task_bar.reload_wiki_screens)
                 raise
             except Exception as exc:
                 error, severity = _draft_failure(exc, slug)
                 _post_outcome(app, failure_template.format(error=error), severity)
                 raise RuntimeError(error) from exc
-            reporter.check_cancelled()
             _post_outcome(app, success_message, "information")
 
         app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)

@@ -330,6 +330,29 @@ class TestWikiBuildMutex:
         assert held == [True]
         assert not WIKI_BUILD_LOCK.locked()
 
+    def test_reject_draft_holds_the_lock_while_unlinking(self, monkeypatch, tmp_path):
+        """Reject races accept over the same file: unlinking outside the lock can
+        pull the draft out from under a publish that already landed the page."""
+        from lilbee.wiki import drafts
+        from lilbee.wiki.shared import WIKI_BUILD_LOCK
+
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "x.md").write_text("---\nsources: [a.txt]\n---\n\nbody\n")
+        held: list[bool] = []
+        real_draft_path = drafts._draft_path
+
+        def spy(root, slug):
+            held.append(WIKI_BUILD_LOCK.locked())
+            return real_draft_path(root, slug)
+
+        monkeypatch.setattr("lilbee.wiki.drafts._draft_path", spy)
+
+        drafts.reject_draft("x", wiki_root)
+        assert held == [True]
+        assert not WIKI_BUILD_LOCK.locked()
+        assert not (wiki_root / "drafts" / "x.md").exists()
+
     def test_the_ingest_hook_takes_the_lock_in_its_worker_thread(self, monkeypatch):
         """The hook runs on the event loop, so it must acquire off it: a blocking
         acquire on the loop would stall every other request for a whole build."""

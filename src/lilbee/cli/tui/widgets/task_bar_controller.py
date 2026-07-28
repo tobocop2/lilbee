@@ -423,13 +423,7 @@ class TaskBarController:
                 break
 
     def reload_wiki_screens(self) -> None:
-        """Rescan open wiki views after work that rewrote pages or drafts on disk.
-
-        A sync runs the wiki incremental update inside the ingest pipeline and
-        a wikify run rewrites pages and diverts drafts directly. Without this
-        a wiki view left open keeps showing the old tree, and a drafts queue
-        left open never shows what the run just sent for review.
-        """
+        """Rescan open wiki and drafts screens after a task rewrote pages or drafts on disk."""
         from textual.css.query import QueryError
 
         from lilbee.cli.tui.screens.wiki import WikiScreen

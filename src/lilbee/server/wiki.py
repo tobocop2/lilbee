@@ -20,6 +20,7 @@ from litestar.status_codes import HTTP_409_CONFLICT
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.data.store import Store
 from lilbee.server import handlers
 from lilbee.server.models import (
     DraftInfoResponse,
@@ -198,16 +199,32 @@ async def _citations_for_slug(slug: str) -> WikiCitationsResult:
 
 
 @post("/api/wiki/lint")
-async def wiki_lint_route() -> WikiLintResult:
-    """Trigger a full wiki lint."""
+async def wiki_lint_route(
+    wiki_source: str = Parameter(query="wiki_source", default=""),
+) -> WikiLintResult:
+    """Lint the wiki; an empty ``wiki_source`` lints every page.
+
+    Same single-page argument as ``lilbee wiki lint <page>`` and the
+    ``wiki_lint`` MCP tool, and the same issue counts.
+    """
     _require_wiki()
-    # lint_all scans every page and embeds; offload so it doesn't block the loop.
-    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
+    store = svc_mod.get_services().store
+    # Either arm reads every cited source and embeds; offload so a lint of a
+    # large wiki does not block the loop.
+    report = await asyncio.to_thread(_lint_report, wiki_source, store)
     return WikiLintResult(
         issues=[WikiLintIssueItem(**i.to_dict()) for i in report.issues],
+        total=len(report.issues),
         errors=report.error_count,
         warnings=report.warning_count,
     )
+
+
+def _lint_report(wiki_source: str, store: Store) -> lint_mod.LintReport:
+    """Lint one page or the whole wiki, as the CLI and MCP surfaces do."""
+    if wiki_source:
+        return lint_mod.LintReport(issues=lint_mod.lint_wiki_page(wiki_source, store))
+    return lint_mod.lint_all(store)
 
 
 @post("/api/wiki/prune")
