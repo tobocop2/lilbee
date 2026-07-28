@@ -2,8 +2,9 @@
 
 Pruning rules:
 1. All cited sources deleted -> archive the page
-2. Concept cluster shrinks below 3 sources -> archive synthesis page
-3. >50% of citations are stale (stale_hash or excerpt_missing) -> flag for regeneration
+2. Synthesis cluster shrinks below MIN_CLUSTER_SOURCES live sources -> archive the page
+3. Stale citations (stale_hash or excerpt_missing) exceed
+   ``wiki_stale_citation_threshold`` -> flag the page in the prune report
 
 Archived pages are moved to wiki/archive/ and removed from the vector store.
 """
@@ -161,7 +162,7 @@ def _check_stale_majority(
     store: Store,
     config: Config,
 ) -> bool:
-    """Return True if >50% of citations are stale (stale_hash or excerpt_missing)."""
+    """Return True if the stale citation fraction exceeds ``wiki_stale_citation_threshold``."""
     issues = lint_wiki_page(wiki_source, store, config)
     if not issues:
         return False
@@ -199,7 +200,7 @@ def _evaluate_page(
             wiki_root,
             store,
             config,
-            f"concept cluster below {MIN_CLUSTER_SOURCES} live sources",
+            f"synthesis cluster below {MIN_CLUSTER_SOURCES} live sources",
         )
     if _check_stale_majority(wiki_source, store, config):
         return PruneRecord(

@@ -223,6 +223,7 @@ Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness or parse-failure pages awaiting your accept/reject |
+| `summaries/` | Where an accepted draft lands when there is no published page for it to replace |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
@@ -234,10 +235,24 @@ concept slugs inside page bodies are rewritten to Obsidian `[[wiki links]]` so
 the graph view shows how ideas connect. The directory is Obsidian-compatible
 out of the box.
 
-The wiki is built incrementally during sync (default cap of 20 changed sources
-per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
-from scratch, lint, drafts review, and prune are also available as CLI
-commands (see [Wiki commands](#wiki-1)) and as MCP tools.
+Turning the wiki on does not generate anything by itself. You wikify
+explicitly: run `lilbee wiki build` (`wiki update` is the same full rebuild),
+press `b` on the wiki screen in the TUI, pick **Wikify** from the command
+palette, or call the build endpoints over HTTP or MCP. In the TUI the run
+happens in the background with progress in the Task Center; over HTTP the
+build, update, and synthesize routes stream per-phase and per-page progress as
+server-sent events.
+
+If you would rather the wiki keep itself current, set `wiki_auto_update` (or
+`LILBEE_WIKI_AUTO_UPDATE=1`). Every sync then regenerates the pages its changed
+documents touched, without proposing new concepts, so day-to-day re-ingest
+never churns existing concept slugs. A sync that touches more than
+`LILBEE_WIKI_INGEST_UPDATE_CAP` pages (default 20) skips the regeneration and
+tells you to run `lilbee wiki update` yourself, so a bulk import cannot fire
+hundreds of LLM calls behind your back.
+
+Lint, drafts review, and prune are available as CLI commands (see
+[Wiki commands](#wiki-1)) and as MCP tools.
 
 ## Sessions
 
@@ -510,7 +525,7 @@ lilbee --json wiki lint                        # orphans, stale citations, pendi
 lilbee --json wiki citations <source>          # per-section citation coverage for one source
 lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
 lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
-lilbee --json wiki drafts accept <slug>        # promote a draft to concepts/ or entities/
+lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, or summaries/)
 lilbee --json wiki drafts reject <slug>        # discard a draft
 lilbee --json wiki prune                       # archive stale pages
 ```
@@ -659,14 +674,16 @@ lilbee wiki build                      # build the wiki from the current index
 lilbee wiki lint                       # find orphan pages, stale links, pending drafts
 lilbee wiki synthesize                 # generate cross-source synthesis pages
 lilbee wiki drafts list                # list pending drafts
-lilbee wiki drafts accept <slug>       # promote a draft to concepts/ or entities/
+lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, or summaries/)
 lilbee wiki drafts reject <slug>       # discard a draft
 lilbee wiki prune                      # move stale pages to archive/
 ```
 
-MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_synthesize`,
-`wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`,
-`wiki_prune`.
+MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_status`,
+`wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`,
+`wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting and rejecting
+drafts is left off on purpose: deciding whether a low-confidence page is good
+enough to publish is your call, so it stays on the CLI and the TUI.
 
 ### Memory
 
@@ -895,8 +912,6 @@ something feels off.
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
 | `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
 | `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
-| `LILBEE_WIKI_CLUSTERER` | `embedding` | Wiki topic clusterer backend (`embedding` or `graph`) |
-| `LILBEE_WIKI_CLUSTERER_K` | `0` | Fixed wiki cluster count (`0` = choose automatically) |
 | `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 
 ### Ingestion and chunking
@@ -958,12 +973,28 @@ Only relevant when running the HTTP server.
 
 ### Wiki tuning (experimental)
 
-Only relevant if you run `lilbee wiki build`.
+Only relevant once the wiki is on and you have wikified at least once.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Max changed sources processed by incremental wiki updates during `lilbee sync`. Prevents a big re-ingest from churning concepts |
-| `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` | `25` | Top-K chunks behind each wiki page section |
+| `LILBEE_WIKI` | `false` | Enable the wiki layer. On its own this only shows the Wiki tab and the chat scope picker; nothing is generated until you wikify |
+| `LILBEE_WIKI_AUTO_UPDATE` | `false` | Regenerate touched wiki pages after every sync. Off means you wikify explicitly (`lilbee wiki build` / `wiki update`, `b` on the TUI wiki screen, or the HTTP and MCP build endpoints) |
+| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Touched-page cap for auto-update. A sync that touches more pages than this skips regeneration and tells you to run `lilbee wiki update` |
+| `LILBEE_WIKI_DIR` | `wiki` | Directory under the data root where pages live. Set it before the first build; changing it later strands the pages already written |
+| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy: `ner_entities` (typed spaCy NER), `plus_llm_types` (NER plus an LLM-proposed schema), or `llm_tagged` (the LLM tags every chunk, the most expensive) |
+| `LILBEE_WIKI_ENTITY_MIN_MENTIONS` | `3` | Distinct chunk mentions an entity or concept needs before it earns its own page |
+| `LILBEE_WIKI_EXTRACT_CONCEPTS` | `true` | Ask the batched call to curate concept pages alongside the extracted entities. `false` writes entity sections only |
+| `LILBEE_WIKI_BATCH_MIN_CHUNKS` | `3` | Chunks a source must contribute before it is eligible for concept curation. Keeps tables of contents and appendices from burning a call to invent concepts |
+| `LILBEE_WIKI_TEMPERATURE` | `0.1` | Sampling temperature for wiki generation. Low on purpose: the model has to reproduce the section format and quote sources verbatim |
+| `LILBEE_WIKI_SUMMARY_MAX_TOKENS` | `2048` | Output token cap per wiki call. Also sets how much of the context window is left for chunks |
+| `LILBEE_WIKI_EMBEDDING_FAITHFULNESS_THRESHOLD` | `0.5` | Minimum cosine similarity between a page body and the mean of its source chunk vectors before the page publishes. Below it, the page routes to `drafts/` |
+| `LILBEE_WIKI_DRIFT_THRESHOLD` | `0.3` | Fraction of a page's content a rebuild may change before the new version goes to `drafts/` for review instead of overwriting |
+| `LILBEE_WIKI_STALE_CITATION_THRESHOLD` | `0.5` | Fraction of stale citations before `lilbee wiki prune` flags a page |
+| `LILBEE_WIKI_PRUNE_RAW` | `false` | Delete a source's raw chunks once it has been summarized into the wiki |
+| `LILBEE_WIKI_CLUSTERER` | `embedding` | Clusterer behind `lilbee wiki synthesize`: `embedding` or `concepts`. `concepts` needs the `[graph]` extra and falls back to `embedding` without it |
+| `LILBEE_WIKI_CLUSTERER_K` | `0` | Neighborhood size for the synthesis graph. `0` scales it from the corpus size |
+| `LILBEE_WIKI_SYNTHESIS_PROMPT` | *(built in)* | Prompt template for cross-source synthesis pages. Must keep the `{topic}`, `{source_list}`, and `{chunks_text}` placeholders |
+| `LILBEE_WIKI_ENTITY_BATCH_PROMPT` | *(built in)* | Prompt template for the per-source batched call. Must keep the `{source}`, `{entity_list}`, `{chunks_text}`, and `{concept_instruction}` placeholders |
 
 ### Advanced
 

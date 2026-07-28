@@ -1117,6 +1117,7 @@ Under `$LILBEE_DATA/$wiki_dir/` (default `wiki/`):
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness output and PENDING markers for parse failures or slug collisions. Reviewed via `lilbee wiki drafts accept / reject`. |
+| `summaries/` | Landing spot for accepted drafts that have no published page to replace |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
@@ -1126,15 +1127,15 @@ Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` tar
 
 ### Build
 
-`lilbee wiki build` runs a one-time Phase D migration (archives pre-Phase-D noun-chunk concept pages, unwraps stale `[[concept-slug]]` links), then extracts NER entities from the chunk store via `cfg.wiki_entity_mode` (default `ner_entities`, spaCy NER only). Per source, a single batched LLM call identifies 3-5 concepts worth their own page and drafts a section for each concept plus each extracted entity. Sections are split, citation-verified against the source chunk pool, embedding-faithfulness-scored (`wiki/gen.py::_check_faithfulness`, cosine of body vs mean source-chunk vector), and written to `concepts/` or `entities/`. Sections that fail to parse become PENDING markers in `drafts/`.
+`lilbee wiki build` runs a one-time Phase D migration (archives pre-Phase-D noun-chunk concept pages, unwraps stale `[[concept-slug]]` links), then extracts NER entities from the chunk store via `cfg.wiki_entity_mode` (default `ner_entities`, spaCy NER only). Per source, a single batched LLM call identifies 3-5 concepts worth their own page and drafts a section for each concept plus each extracted entity. Sections are split, citation-verified against the source chunk pool, embedding-faithfulness-scored (`wiki/quality.py::check_faithfulness`, cosine of body vs mean source-chunk vector), and written to `concepts/` or `entities/`. Sections that fail to parse become PENDING markers in `drafts/`.
 
-### Incremental update
+### Wikification and incremental update
 
-`lilbee sync` runs `_incremental_wiki_update` after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 changed sources per sync). Full rebuild is always available via `lilbee wiki build`.
+Enabling the wiki never starts generation on its own. A sync regenerates touched pages only when `LILBEE_WIKI_AUTO_UPDATE` is on, in which case `_incremental_wiki_update` runs after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 touched wiki pages per sync); past it the sync logs a warning and leaves the rebuild to you. Otherwise wikification is explicit: `lilbee wiki build` / `wiki update`, the `b` (Wikify) binding on the TUI wiki screen, or the HTTP and MCP build endpoints.
 
-### Retrieval inside wiki generation
+### Chunk selection inside wiki generation
 
-Each page is built from the top `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` chunks returned by the same hybrid search the main pipeline uses, optionally reordered by the reranker when `LILBEE_RERANKER_MODEL` is set. Every path respects `LILBEE_DIVERSITY_MAX_PER_SOURCE` so one loud document can't monopolize a topic page.
+Wiki generation does not search. NER assigns each extracted entity to the source that mentions it most (its `chunk_refs`), and the batched call for that source is handed that source's own chunks straight from `store.get_chunks_by_source`. Synthesis pages take the chunks of every source in the cluster. In both paths `wiki/page.py::truncate_chunks_to_budget` drops trailing chunks until the prompt plus the output cap (`LILBEE_WIKI_SUMMARY_MAX_TOKENS`) fits the context window, floored at a quarter of the window. Hybrid search, the reranker, and the per-source diversity cap play no part in what a page is built from.
 
 ### `[[wiki links]]`
 
@@ -1191,7 +1192,7 @@ The tradeoff is that the token is all-or-nothing: a client trusted with retrieva
 ### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
-- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`
+- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting or rejecting a draft is deliberately absent: that call is a human review decision, so it stays on the CLI and the TUI.
 
 #### Transports
 

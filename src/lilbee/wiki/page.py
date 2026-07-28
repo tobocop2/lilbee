@@ -114,7 +114,6 @@ def prompt_overhead_tokens(config: Config) -> int:
     prompt from settings moves the chunk budget with it.
     """
     longest = max(
-        len(config.wiki_summary_prompt),
         len(config.wiki_synthesis_prompt),
         len(config.wiki_entity_batch_prompt),
     )

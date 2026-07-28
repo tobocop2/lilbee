@@ -573,20 +573,23 @@ and then per source issues one batched LLM call that both identifies
 3–5 concepts worth a wiki page AND writes a section for each identified
 concept plus each extracted entity. Sections are split, citation-verified
 per section against the shared chunk pool, embedding-faithfulness scored
-(`wiki/gen.py:_check_faithfulness`, cosine of body vs mean chunk vector,
+(`wiki/quality.py:check_faithfulness`, cosine of body vs mean chunk vector,
 threshold `cfg.wiki_embedding_faithfulness_threshold`), and written to
 `concepts/` or `entities/`. Sections that fail to parse become PENDING
 markers in `drafts/` that the user resolves via `wiki drafts accept/reject`.
-`lilbee sync` runs `_incremental_wiki_update` afterward with
-`extract_concepts=False` so incremental re-ingest never churns concept
-slugs; the cap is `cfg.wiki_ingest_update_cap` (default 20).
+`lilbee sync` runs `_incremental_wiki_update` afterward only when
+`cfg.wiki_auto_update` is on, with `extract_concepts=False` so incremental
+re-ingest never churns concept slugs; the cap is
+`cfg.wiki_ingest_update_cap` (default 20 touched wiki pages).
 
-**Retrieval inside wiki/gen.py**. Each page is grounded in the top
-`cfg.wiki_concept_max_chunks_per_page` chunks returned by the store's
-hybrid search, optionally reordered by the native GGUF reranker when
-`cfg.reranker_model` is set. Every path respects
-`cfg.diversity_max_per_source` so one loud document can't monopolize a
-topic page.
+**Retrieval inside wiki generation**. There is none: nothing in the wiki
+path calls search. Extracted entities are assigned to the source that
+mentions them most (their `chunk_refs`), and the batched call for that
+source receives the source's own chunks from
+`store.get_chunks_by_source`. Synthesis pages take the chunks of every
+source in the cluster. Either way `wiki/page.py:truncate_chunks_to_budget`
+drops trailing chunks so the prompt plus its output cap fits the context
+window. No hybrid search, reranker, or diversity cap is involved.
 
 **`[[wiki links]]`**. After each build, `wiki/links.py:rewrite_wiki_links`
 rewrites plain-text slug surface forms to Obsidian `[[slug]]` links

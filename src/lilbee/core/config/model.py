@@ -751,33 +751,12 @@ class Config(BaseSettings):
     # Fraction of content changed that triggers human-review drift guard.
     wiki_drift_threshold: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
 
-    # LLM prompt templates for wiki page generation. Writable so advanced
-    # users can override them from /settings, config.toml, or
-    # ``LILBEE_WIKI_*_PROMPT`` env vars. Templates must keep the expected
-    # ``{placeholders}``. If you remove one the generator will crash on
-    # first use. The defaults below are the only reason the pipeline
-    # works out of the box.
-    wiki_summary_prompt: str = ConfigField(
-        writable=True,
-        default=(
-            "You are a knowledge compiler. Given the source chunks below from a single "
-            "document, write a concise wiki summary page in markdown.\n\n"
-            "Rules:\n"
-            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
-            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
-            "3. For interpretations or connections not directly stated in the source, "
-            "mark with [*inference*].\n"
-            "4. Use blockquotes (>) for directly cited facts.\n"
-            "5. End with a citation block in this format:\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
-            '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
-            "Source document: {source_name}\n\n"
-            "Chunks:\n{chunks_text}\n\n"
-            "Write the wiki summary page now. Start with a heading."
-        ),
-    )
+    # LLM prompt templates for wiki page generation: wiki_synthesis_prompt
+    # for cross-source synthesis pages, wiki_entity_batch_prompt (below)
+    # for the per-source batched call. Writable so advanced users can
+    # override them from /settings, config.toml, or ``LILBEE_WIKI_*_PROMPT``
+    # env vars. Templates must keep the expected ``{placeholders}``. If you
+    # remove one the generator will crash on first use.
     wiki_synthesis_prompt: str = ConfigField(
         writable=True,
         default=(
@@ -841,15 +820,6 @@ class Config(BaseSettings):
     # Minimum distinct chunk mentions before an entity or concept earns
     # its own wiki page. Filters one-off noise.
     wiki_entity_min_mentions: int = ConfigField(default=3, ge=1, writable=True)
-
-    # Maximum chunks passed into each concept or entity page generation
-    # call. Caps context size so one page does not blow the context
-    # window on a prolific topic.
-    wiki_concept_max_chunks_per_page: int = ConfigField(default=25, ge=1, writable=True)
-
-    # Maximum number of related concepts the model is asked to list in
-    # the `## Related` section of each page.
-    wiki_related_max: int = ConfigField(default=8, ge=0, writable=True)
 
     # Auto-update cap: if a single sync touches more than this many
     # concept or entity pages, skip the per-slug regeneration and tell
