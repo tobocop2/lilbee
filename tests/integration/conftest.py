@@ -48,6 +48,12 @@ def pytest_collection_modifyitems(items):
 
 
 @pytest.fixture(autouse=True)
+def _sealed_engine_resolution():
+    """Unseal engine resolution: integration tests run the engine CI puts on PATH."""
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _preserve_models_dir():
     """Ensure models_dir stays at canonical location for integration tests."""
     cfg.models_dir = canonical_models_dir()
