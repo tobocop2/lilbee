@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any
 
@@ -10,8 +11,13 @@ from lilbee.core.text import is_valid_label
 log = logging.getLogger(__name__)
 
 
+@functools.cache
 def concepts_available() -> bool:
-    """Check if concept graph dependencies (spacy, graspologic) are installed.
+    """Whether the concept-graph dependencies (spacy, graspologic) are installed.
+
+    Fixed for the process lifetime (cached), like :func:`gpu_device_count`.
+    Python caches only *successful* imports, so an absent extra re-walks
+    ``sys.path`` on every call, and ingest calls this once per file.
 
     Deliberately checks the *packages* only, not whether the ``en_core_web_sm``
     model is downloaded: a missing model is a fixable user situation, so

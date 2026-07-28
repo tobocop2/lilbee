@@ -8,7 +8,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.data.ingest.pipeline import _build_entity_records, _flush_entity_rows
+from lilbee.data.ingest.pipeline import _flush_entity_rows, build_entity_records
 from lilbee.data.ingest.types import _IngestResult
 from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind
 
@@ -69,16 +69,16 @@ def _part_schema():
 
 class TestBuildEntityRecords:
     def test_gate_off_is_none(self, mock_svc):
-        assert asyncio.run(_build_entity_records(_records(), "a.txt")) is None
+        assert asyncio.run(build_entity_records(_records(), "a.txt")) is None
 
     def test_no_schema_is_none(self, mock_svc):
         cfg.entity_extraction = True
-        assert asyncio.run(_build_entity_records(_records(), "a.txt")) is None
+        assert asyncio.run(build_entity_records(_records(), "a.txt")) is None
 
     def test_extracts_rows_with_persisted_schema(self, mock_svc):
         cfg.entity_extraction = True
         _persist_schema(mock_svc, _part_schema())
-        rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
+        rows = asyncio.run(build_entity_records(_records(), "a.txt"))
         assert rows is not None
         assert {r["normalized_value"] for r in rows} == {"px4471", "px9001"}
         assert all(r["source"] == "a.txt" for r in rows)
@@ -89,11 +89,11 @@ class TestBuildEntityRecords:
         with mock.patch(
             "lilbee.retrieval.entities.extract_entities", side_effect=RuntimeError("boom")
         ):
-            assert asyncio.run(_build_entity_records(_records(), "a.txt")) is None
+            assert asyncio.run(build_entity_records(_records(), "a.txt")) is None
 
     def test_empty_records_is_none(self, mock_svc):
         cfg.entity_extraction = True
-        assert asyncio.run(_build_entity_records([], "a.txt")) is None
+        assert asyncio.run(build_entity_records([], "a.txt")) is None
 
 
 class TestExtractorToolWiring:
@@ -114,7 +114,7 @@ class TestExtractorToolWiring:
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
             mock.patch("lilbee.retrieval.concepts.nlp.load_spacy_pipeline", return_value=fake_nlp),
         ):
-            rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
+            rows = asyncio.run(build_entity_records(_records(), "a.txt"))
         assert rows is not None
         fake_nlp.assert_called()
 
@@ -129,7 +129,7 @@ class TestExtractorToolWiring:
             ),
             caplog.at_level("WARNING"),
         ):
-            rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
+            rows = asyncio.run(build_entity_records(_records(), "a.txt"))
         assert rows is not None  # regex type still extracted
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
@@ -137,7 +137,7 @@ class TestExtractorToolWiring:
         cfg.entity_extraction = True
         _persist_schema(mock_svc, self._schema_with({"llm"}))
         mock_svc.provider.chat.return_value = mock.MagicMock(text="{}")
-        rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
+        rows = asyncio.run(build_entity_records(_records(), "a.txt"))
         assert rows is not None
         mock_svc.provider.chat.assert_called()
 

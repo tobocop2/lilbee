@@ -144,6 +144,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
     ),
+    "ingest_processes": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Worker processes for extracting and embedding a large corpus. 1 (default)"
+            " = off; 0 = auto-size; N = explicit. Only helps a small/fast embedder that"
+            " one process cannot use to fill a multi-GPU fleet"
+        ),
+    ),
     "mcp_tool_threads": SettingDef(
         int,
         nullable=False,

@@ -9,7 +9,8 @@ import threading
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Iterator, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
@@ -56,6 +57,14 @@ from lilbee.data.ingest.types import (
     FileToProcess,
     SyncResult,
     _IngestResult,
+)
+from lilbee.data.ingest.workers import (
+    BATCH_FILES,
+    BatchDispatcher,
+    build_pool,
+    error_reason,
+    resolve_process_count,
+    warm_parent_engine,
 )
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
@@ -137,7 +146,7 @@ async def _rebuild_concept_clusters() -> None:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
 
-async def _build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
+async def build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
     """Extract typed entities for ingested chunks. None when the mode is off.
 
     Gated twice: the ``entity_extraction`` config flag, and a schema already
@@ -178,7 +187,7 @@ async def _build_entity_records(records: list[ChunkRecord], source_name: str) ->
         return None
 
 
-async def _build_concept_records(
+async def build_concept_records(
     records: list[ChunkRecord], source_name: str
 ) -> ConceptRecords | None:
     """Extract concepts for ingested chunks and build their table rows. None if disabled.
@@ -204,7 +213,7 @@ async def _build_concept_records(
         return None
 
 
-async def _produce_records(
+async def produce_records(
     path: Path,
     source_name: str,
     content_type: str,
@@ -849,6 +858,36 @@ def _require_embedding_model() -> None:
         )
 
 
+async def _run_post_ingest_passes(
+    store: Any,
+    *,
+    indexed_anything: bool,
+    touched: set[str],
+    cancel: threading.Event | None,
+) -> None:
+    """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
+
+    The index and wiki passes only run when this sync indexed something. The
+    entity lifecycle runs every sync (a cheap no-op when off or already current)
+    so turning the setting on takes effect without a separate operation.
+    """
+    if indexed_anything:
+        store.ensure_fts_index()
+        store.ensure_scalar_indexes()
+        store.ensure_vector_index()
+        store.optimize_sources()
+        await _rebuild_concept_clusters()
+        # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
+        # post-ingest hook stays function-local at this boundary.
+        from lilbee.wiki.ingest import incremental_update
+
+        await incremental_update(touched)
+
+    from lilbee.retrieval.entities.lifecycle import ensure_entities
+
+    await to_ingest_thread(ensure_entities, cancel)
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -879,6 +918,9 @@ async def sync(
     disk_files = discover_files()
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
+    # What the worker-pool decision is sized on. A rebuild drops the store above,
+    # so its sources are already empty here and the whole corpus counts as new.
+    unindexed = sum(1 for name in disk_files if name not in existing_sources)
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
@@ -928,6 +970,7 @@ async def sync(
                     cancel=cancel,
                     flush_failed=flush_failed,
                     reasons=reasons,
+                    unindexed_files=unindexed,
                 )
             if cancel is not None and cancel.is_set():
                 # The stream stops feeding on cancel, so ingest can drain its
@@ -950,24 +993,12 @@ async def sync(
     # so a transient flush failure doesn't leave a stale reason behind.
     write_skip_reasons(config.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
 
-    if state.planned or relocated:
-        _store.ensure_fts_index()
-        _store.ensure_scalar_indexes()
-        _store.ensure_vector_index()
-        _store.optimize_sources()
-        await _rebuild_concept_clusters()
-        # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
-        # post-ingest hook stays function-local at this boundary.
-        from lilbee.wiki.ingest import incremental_update
-
-        await incremental_update(set(added) | set(updated) | set(relocated))
-
-    # Entity lifecycle: induce-once, extract, and re-apply edited schemas.
-    # Runs every sync (cheap no-op when off or up to date) so flipping the
-    # setting on takes effect without any separate operation.
-    from lilbee.retrieval.entities.lifecycle import ensure_entities
-
-    await to_ingest_thread(ensure_entities, cancel)
+    await _run_post_ingest_passes(
+        _store,
+        indexed_anything=bool(state.planned or relocated),
+        touched=set(added) | set(updated) | set(relocated),
+        cancel=cancel,
+    )
 
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor the failed/skipped lists was dropped without
@@ -1068,6 +1099,174 @@ def _build_admission(
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task
 
 
+def _admission_for(
+    processes: int, pages_done: list[int]
+) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
+    """The compute gate, task window, and adaptive controller for this run.
+
+    With workers, the pool size bounds concurrency and each worker admits its
+    own batch, so the gate is left wide and the controller is not started: it
+    would be hill-climbing a semaphore nothing blocks on. Two batches per worker
+    keep the pool fed while one is being collected.
+    """
+    if processes > 1:
+        window = processes * BATCH_FILES * 2
+        return asyncio.Semaphore(window), window, None
+    return _build_admission(_max_concurrent(), pages_done)
+
+
+async def _collect_from_worker(
+    entry: FileToProcess,
+    file_index: int,
+    dispatcher: BatchDispatcher,
+    *,
+    planned: Callable[[], int],
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+    cancel: threading.Event | None,
+    fallback: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+    fallback_gate: asyncio.Semaphore,
+) -> _IngestResult:
+    """Collect one file's records from a worker, or run it via *fallback* if the pool died.
+
+    Production happened in another process, so there is no compute to admit and
+    no per-page progress to relay; the file-level events still fire in plan
+    order because the parent consumes outcomes in that order.
+    """
+    name = entry.name
+    if cancel and cancel.is_set():
+        raise asyncio.CancelledError
+    try:
+        on_progress(
+            EventType.FILE_START,
+            FileStartEvent(file=name, total_files=planned(), current_file=file_index),
+        )
+    except TaskCancelledError as exc:
+        raise asyncio.CancelledError from exc
+    try:
+        outcome = await dispatcher.outcome_for(file_index - 1)
+    except BrokenProcessPool:
+        # A worker died (typically OOM). The pool cannot be reused, so finish this
+        # file and the rest of the run in-process rather than failing every
+        # remaining file.
+        log.warning("Ingest worker pool broke; falling back to in-process ingest")
+        # Under the in-process ceiling, not the wide worker-mode gate: the pool
+        # usually breaks on memory pressure, and that is the worst moment to let
+        # the parent run a worker-sized fan-out itself.
+        async with fallback_gate:
+            return await fallback(entry, file_index)
+    if outcome.error is not None:
+        with contextlib.suppress(TaskCancelledError):
+            on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="error", chunks=0))
+        pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
+        return _IngestResult(name, entry.path, 0, error=outcome.error)
+    records = outcome.records or []
+    page_texts = outcome.page_texts or []
+    on_progress(EventType.FILE_DONE, FileDoneEvent(file=name, status="ok", chunks=len(records)))
+    pages_done[0] += max(1, len(page_texts))
+    return _IngestResult(
+        name,
+        entry.path,
+        len(records),
+        error=None,
+        file_hash=entry.file_hash,
+        records=records,
+        needs_cleanup=entry.needs_cleanup,
+        page_texts=page_texts,
+        stat=entry.stat,
+        concept_records=outcome.concept_records,
+        entity_rows=outcome.entity_rows,
+        meta=outcome.meta,
+    )
+
+
+async def _warm_engine_for_workers(processes: int) -> None:
+    """Start the embed engine here before any worker spawns; no-op in-process.
+
+    Workers may only attach to an engine, so one has to exist before the first
+    spawns, and the parent is the only process that can start it. At one process
+    the parent embeds anyway, so the lazy start still covers it.
+
+    Offloaded rather than called inline: a cold start spawns llama-swap and loads
+    the model, and blocking the event loop for that would freeze the TUI and every
+    progress callback until it finished.
+    """
+    if processes > 1:
+        await to_ingest_thread(warm_parent_engine)
+
+
+def _failed_result(
+    exc: Exception,
+    entry: FileToProcess,
+    *,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+    cancel: threading.Event | None,
+) -> _IngestResult:
+    """A file's failure as a result, or cancellation when the run is stopping.
+
+    During shutdown, worker pools raise RuntimeError from submit(). Those are
+    cancellation, not ingest failures: the cancel flag is the source of truth,
+    and the executor's shutdown message covers the race where cancel was set
+    after the submit.
+    """
+    if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
+        raise asyncio.CancelledError from exc
+    # Suppress TaskCancelledError on the FILE_DONE notice: the user already
+    # cancelled, and re-raising here would strand sibling tasks awaiting in
+    # _collect_results.
+    with contextlib.suppress(TaskCancelledError):
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="error", chunks=0))
+    pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
+    return _IngestResult(entry.name, entry.path, 0, error=exc)
+
+
+async def _stream_tasks(
+    shards: AsyncGenerator[list[FileToProcess]],
+    workers: _WorkerDispatch | None,
+    make_task: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
+) -> AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]:
+    """Each shard's per-file coroutines, slotted into worker batches as the shard lands.
+
+    Slotting happens before the shard's coroutines are handed out, so no file can
+    be demanded from a batch that was cut before it was planned.
+    """
+    index = count(1)
+    start = 0
+    async for shard in shards:
+        if workers is not None:
+            workers.dispatcher.add_shard(shard, start)
+        yield [make_task(entry, next(index)) for entry in shard]
+        start += len(shard)
+
+
+@dataclass(frozen=True)
+class _WorkerDispatch:
+    """The worker pool, the dispatcher over it, and the gate a fallback runs under."""
+
+    pool: ProcessPoolExecutor
+    dispatcher: BatchDispatcher
+    # Worker-mode admission is deliberately wide: the workers do the compute, so
+    # the gate only has to keep batches queued. A file that falls back in-process
+    # must not inherit that width, or a pool that broke on memory pressure is
+    # followed by the parent running hundreds of files at once. The fallback runs
+    # under the in-process ceiling instead.
+    fallback_gate: asyncio.Semaphore
+
+
+async def _open_worker_pool(processes: int) -> _WorkerDispatch | None:
+    """The worker dispatch for this run, or None when ingest stays in-process."""
+    await _warm_engine_for_workers(processes)
+    if processes <= 1:
+        return None
+    # One reading, shared by both: the fleet's fitted capacity is live, so two
+    # calls could size the pool and the fallback gate off different numbers.
+    inflight = _max_concurrent()
+    pool = build_pool(processes, active_config(), inflight)
+    log.warning("Ingesting across %d worker processes", processes)
+    return _WorkerDispatch(pool, BatchDispatcher(pool), asyncio.Semaphore(inflight))
+
+
 async def _chain_shards(
     first: list[FileToProcess], rest: AsyncGenerator[list[FileToProcess]]
 ) -> AsyncGenerator[list[FileToProcess]]:
@@ -1089,6 +1288,7 @@ async def ingest_stream(
     cancel: threading.Event | None = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
+    unindexed_files: int,
 ) -> None:
     """Ingest a stream of planned file shards, optionally showing a Rich progress bar.
 
@@ -1101,7 +1301,15 @@ async def ingest_stream(
     # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
     # unit of GPU-feeding work for the adaptive controller to hill-climb on.
     pages_done = [0]
-    admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
+    # Sized off the files with no source row yet, not the planned count: the plan
+    # streams in shards and its total is unknown until the stream drains, but the
+    # pool has to be decided before the first shard is dispatched. Unindexed files
+    # are the one part of the plan that is known without diffing, exact for a first
+    # ingest or a rebuild and near zero for an incremental sync, so a small sync
+    # over a large corpus stays in-process. Undercounting only keeps a run
+    # in-process, which is the safe direction.
+    processes = resolve_process_count(unindexed_files)
+    admission, window, controller_task = _admission_for(processes, pages_done)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
         name = entry.name
@@ -1123,7 +1331,7 @@ async def ingest_stream(
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
                 page_texts: list[PageTextRecord] = []
-                records, meta = await _produce_records(
+                records, meta = await produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -1131,8 +1339,8 @@ async def ingest_stream(
                     on_progress=on_progress,
                     page_texts_out=page_texts,
                 )
-                concept_records = await _build_concept_records(records, name)
-                entity_rows = await _build_entity_records(records, name)
+                concept_records = await build_concept_records(records, name)
+                entity_rows = await build_entity_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=len(records)),
@@ -1159,31 +1367,28 @@ async def ingest_stream(
                 # cleanly instead of orphaning their pending exceptions.
                 raise asyncio.CancelledError from exc
             except Exception as exc:
-                # During shutdown, worker pools raise RuntimeError from
-                # submit(). Prefer to treat these as cancellation rather than
-                # as ingest failures. Detect via the cancel flag (source of
-                # truth) or the executor's well-known shutdown message as a
-                # fallback when cancel was set after the submit race.
-                if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
-                    raise asyncio.CancelledError from exc
-                # Suppress TaskCancelledError on the FILE_DONE notice: the user
-                # already cancelled, and re-raising here would leak past
-                # _process_one and strand sibling tasks awaiting in
-                # _collect_results.
-                with contextlib.suppress(TaskCancelledError):
-                    on_progress(
-                        EventType.FILE_DONE,
-                        FileDoneEvent(file=name, status="error", chunks=0),
-                    )
-                pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
-                return _IngestResult(name, entry.path, 0, error=exc)
+                return _failed_result(
+                    exc, entry, pages_done=pages_done, on_progress=on_progress, cancel=cancel
+                )
 
-    async def _tasks() -> AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]:
-        index = count(1)
-        async for shard in shards:
-            yield [_process_one(entry, next(index)) for entry in shard]
+    workers = await _open_worker_pool(processes)
 
-    feed = _ResultFeed(_tasks())
+    def _make_task(entry: FileToProcess, file_index: int) -> Coroutine[Any, Any, _IngestResult]:
+        if workers is None:
+            return _process_one(entry, file_index)
+        return _collect_from_worker(
+            entry,
+            file_index,
+            workers.dispatcher,
+            planned=lambda: feed.planned,
+            pages_done=pages_done,
+            on_progress=on_progress,
+            cancel=cancel,
+            fallback=_process_one,
+            fallback_gate=workers.fallback_gate,
+        )
+
+    feed = _ResultFeed(_stream_tasks(shards, workers, _make_task))
     collect = _collect_results if quiet else _collect_under_bar
     try:
         await collect(
@@ -1204,6 +1409,10 @@ async def ingest_stream(
             controller_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await controller_task
+        if workers is not None:
+            # Drop queued batches on a cancel; in-flight ones are not
+            # interruptible, so their files finish rather than being lost.
+            workers.pool.shutdown(cancel_futures=True)
 
 
 # Accumulate roughly this many chunks across documents before one batched
@@ -1533,7 +1742,7 @@ def _classify_result(
         updated.pop(result.name, None)
         failed[result.name] = None
         if reasons is not None:
-            reasons[result.name] = f"{type(result.error).__name__}: {result.error}"
+            reasons[result.name] = error_reason(result.error)
         return BatchStatus.FAILED
     if result.chunk_count == 0:
         # No searchable chunks: never report it as added/updated. With no page

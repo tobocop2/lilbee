@@ -45,6 +45,7 @@ from lilbee.providers.fleet.client import (
 )
 from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.guest import NO_ENGINE_TO_ATTACH, bind_only_active
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -950,6 +951,14 @@ class FleetProvider:
             if wanted and self._bind_all_in_dir(engine_dir, states, pin, wanted):
                 self._hold_membership(engine_dir)
                 return True
+            if bind_only_active():
+                # An ingest worker: binding was the only permitted outcome, and
+                # building here would put a second fleet on the same GPUs.
+                raise ProviderError(
+                    NO_ENGINE_TO_ATTACH,
+                    provider=_PROVIDER_NAME,
+                    kind=ProviderErrorKind.SERVER,
+                )
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
                 states, pin, wanted
             )
