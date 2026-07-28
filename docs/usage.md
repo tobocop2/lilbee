@@ -905,7 +905,7 @@ effect on already-indexed material.
 | `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
 | `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
 | `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
-| `LILBEE_INGEST_PROCESSES` | `1` | Worker **processes** for extract/embed. Off by default. Turn it on (an explicit `N`, or `0` to auto-size) only when one process cannot keep a multi-GPU fleet busy: a large corpus with a small, fast embedder and GPUs to spare. A large or GPU-bound embedder (e.g. an 8B) ties single-process no matter the count, because the parent that writes the one index is serial, so leave it off there. See [architecture](architecture.md) |
+| `LILBEE_INGEST_PROCESSES` | `1` | Worker **processes** for extract/embed. Off by default. Turn it on (an explicit `N`, or `0` to auto-size) only when one process cannot keep a multi-GPU fleet busy: a large corpus with a small, fast embedder and GPUs to spare. A large or GPU-bound embedder (e.g. an 8B) ties single-process no matter the count, because the parent that writes the one index is serial, so leave it off there. For a one-off run, `lilbee sync --processes N` (also on `add` and `rebuild`) overrides the config value. See [architecture](architecture.md) |
 
 ### Generation
 

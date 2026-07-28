@@ -180,6 +180,19 @@ class TestSync:
         assert cfg.ingest_workers == 3
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_processes_sets_ingest_processes(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["sync", "--processes", "4"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 4
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_processes_zero_auto_sizes(self, mock_sync, isolated_env):
+        """--processes 0 is the valid auto-size value, unlike --max-cpus (min=1)."""
+        result = runner.invoke(app, ["sync", "--processes", "0"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 0
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_retry_skipped_flag(self, mock_sync):
         """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
         result = runner.invoke(app, ["sync", "--retry-skipped"])
@@ -197,6 +210,12 @@ class TestRebuild:
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["rebuild", "--processes", "2"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 2
 
 
 class TestAdd:
@@ -254,6 +273,15 @@ class TestAdd:
         result = runner.invoke(app, ["add", str(src), "--max-cpus", "2"])
         assert result.exit_code == 0
         assert cfg.ingest_workers == 2
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_processes_sets_ingest_processes(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src), "--processes", "2"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 2
 
     def test_add_warns_on_existing(self, isolated_env, tmp_path):
         """Re-adding a source that is already registered warns."""
