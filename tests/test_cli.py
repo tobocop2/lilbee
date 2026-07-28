@@ -3342,9 +3342,7 @@ class TestWikiCitations:
 
     def test_citations_long_excerpt_truncated(self, mock_svc):
         long_excerpt = "A" * 80
-        mock_svc.store.get_citations_for_wiki.return_value = [
-            _citation_row(excerpt=long_excerpt)
-        ]
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row(excerpt=long_excerpt)]
         result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
         # Full 80-char excerpt should not appear: truncated by code or Rich

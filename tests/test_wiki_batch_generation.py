@@ -549,9 +549,7 @@ class TestBuildStatsForABatch:
         assert stats.publish_rate == 0.0
         assert stats.verified_by_page == {}
 
-    def test_an_unverifiable_excerpt_counts_as_a_dropped_citation_and_a_marker(
-        self, stub_embedder
-    ):
+    def test_an_unverifiable_excerpt_counts_as_a_dropped_citation_and_a_marker(self, stub_embedder):
         """The citation gate rejecting a footnote is visible in the run's numbers."""
         text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
         stats = BuildStats()

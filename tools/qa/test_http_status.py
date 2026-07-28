@@ -41,9 +41,7 @@ def test_status_payload_zero_chunks_initially(
 
 
 @pytest.mark.http
-def test_status_config_lists_model_roles(
-    server_url: str, server_headers: dict[str, str]
-) -> None:
+def test_status_config_lists_model_roles(server_url: str, server_headers: dict[str, str]) -> None:
     response = httpx.get(
         f"{server_url}/api/status", timeout=HTTP_FAST_TIMEOUT, headers=server_headers
     )
