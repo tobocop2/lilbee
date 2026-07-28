@@ -126,6 +126,7 @@ class WikiScreen(Screen[None]):
         super().__init__()
         self._page_slugs: list[str] = []
         self._pages: list[WikiPageInfo] = []
+        self._load_error: str | None = None
         self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -182,16 +183,22 @@ class WikiScreen(Screen[None]):
         from lilbee.wiki.browse import list_pages
 
         self._pages = []
+        self._load_error = None
         if cfg.wiki:
             try:
                 self._pages = list_pages(_wiki_root())
             except Exception as exc:
                 log.warning("Failed to list wiki pages", exc_info=True)
-                tree = self._empty_tree()
-                tree.root.add_leaf(msg.WIKI_LOAD_FAILED_LEAF)
-                self._show_detail(msg.WIKI_LOAD_FAILED.format(error=exc))
+                self._load_error = msg.WIKI_LOAD_FAILED.format(error=exc)
+                self._show_load_failure(self._load_error)
                 return
         self._load_pages(filter_text=self.query_one("#wiki-search", Input).value.strip())
+
+    def _show_load_failure(self, detail: str) -> None:
+        """Render the listing failure in both panes."""
+        tree = self._empty_tree()
+        tree.root.add_leaf(msg.WIKI_LOAD_FAILED_LEAF)
+        self._show_detail(detail)
 
     def _empty_tree(self) -> Tree[str | None]:
         """Clear the sidebar tree and the slug list it indexes."""
@@ -202,6 +209,10 @@ class WikiScreen(Screen[None]):
 
     def _load_pages(self, filter_text: str = "") -> None:
         """Populate the sidebar tree from the cached page list, optionally filtered."""
+        if self._load_error is not None:
+            # The cache is empty because listing failed, not because the wiki is.
+            self._show_load_failure(self._load_error)
+            return
         tree = self._empty_tree()
         if not self._pages:
             tree.root.add_leaf(msg.wiki_empty_state_leaf())

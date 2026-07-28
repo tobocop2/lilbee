@@ -1754,7 +1754,7 @@ class TestRunFullBuild:
         monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
         monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
         monkeypatch.setattr("lilbee.wiki.generation.append_wiki_log", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
 
         result = run_full_build()
         assert captured["config"] is cfg
@@ -1812,7 +1812,7 @@ class TestRunSummaryStats:
         monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
         monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
         monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
 
         result = run_full_build(cfg)
         assert result["stats"]["pages_published"] == 1

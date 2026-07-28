@@ -271,7 +271,7 @@ class TestWikiBuildMutex:
         monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
         monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
         monkeypatch.setattr("lilbee.wiki.generation.append_wiki_log", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
 
         run_full_build(cfg)
         assert held == [True]
