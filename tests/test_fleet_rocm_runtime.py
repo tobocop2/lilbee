@@ -298,9 +298,7 @@ class TestEnumeratedCardWithoutShippedKernelsIsRefused:
             assert_rocm_devices_usable(binary, [_rocm_device()], "")
         assert "gfx906" in caplog.text
 
-    def test_a_malformed_override_does_not_disable_the_guard(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_a_malformed_override_does_not_disable_the_guard(self, monkeypatch, tmp_path) -> None:
         self._linux(monkeypatch)
         binary = _bundled_engine(tmp_path, ("gfx1030",))
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "not-a-version")

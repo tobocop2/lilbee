@@ -130,9 +130,7 @@ def test_drops_targets_rocblas_ships_no_kernels_for(tmp_path):
 
 def test_a_target_returns_when_rocblas_restores_its_kernels(tmp_path):
     """The wanted list is intent: nothing needs editing when AMD brings kernels back."""
-    without, _ = _targets(
-        _rocm_tree(tmp_path / "a", _CURRENT_ISAS, kernel_isas=("908", "90a"))
-    )
+    without, _ = _targets(_rocm_tree(tmp_path / "a", _CURRENT_ISAS, kernel_isas=("908", "90a")))
     restored, _ = _targets(_rocm_tree(tmp_path / "b", _CURRENT_ISAS))
     assert "gfx906" not in without
     assert "gfx906" in restored
