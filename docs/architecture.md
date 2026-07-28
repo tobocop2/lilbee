@@ -349,6 +349,20 @@ and convert once at the provider boundary. They are network-bound, so the conver
 does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
 to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
+#### Multiprocess extract/embed (`ingest_processes`), and why it is off by default
+
+Base64 raised the one-core decode ceiling; worker **processes** are the other lever for
+it, spreading decode across cores the GIL otherwise serializes. It is **off by default**
+(`ingest_processes = 1`) because it only pays when one process cannot saturate the fleet.
+A small, fast embedder on several GPUs leaves headroom a second process fills — 0.6B on
+4xA40 goes 174 → 220 docs/sec from 1 → 2 processes. A large or GPU-bound embedder does
+not: the single parent that collects worker records over IPC and writes the one index is
+itself serial, so throughput ties single-process no matter the process count — 8B on
+4xH100 measures ~168 docs/sec at both 1 and 4 processes, GPUs only ~67% (idle capacity
+the extra processes cannot reach). That parent drain, not the process count, is the
+binding ceiling for large models. Set `ingest_processes = 0` to auto-size, or an explicit
+N to opt in.
+
 ---
 
 ## Provider Abstraction

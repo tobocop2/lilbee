@@ -77,6 +77,16 @@ _max_cpus_option = typer.Option(
     min=1,
     help="Cap the workers used to discover and hash files. Unset = auto (all available cores).",
 )
+_processes_option = typer.Option(
+    None,
+    "--processes",
+    min=0,
+    help=(
+        "Worker processes for extract/embed: N explicit, 0 = auto-size, unset = off."
+        " Only helps a small/fast embedder filling a multi-GPU fleet; leave off for"
+        " a large/GPU-bound one."
+    ),
+)
 _crawl_option = typer.Option(
     False,
     "--crawl",
@@ -353,12 +363,15 @@ def sync_cmd(
     ocr_timeout: float | None = _ocr_timeout_option,
     retry_skipped: bool = _retry_skipped_option,
     max_cpus: int | None = _max_cpus_option,
+    processes: int | None = _processes_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
+    if processes is not None:
+        cfg.ingest_processes = processes
 
     try:
         result = _run_sync_with_signal_cancel(retry_skipped=retry_skipped)
@@ -380,12 +393,15 @@ def rebuild(
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     max_cpus: int | None = _max_cpus_option,
+    processes: int | None = _processes_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
+    if processes is not None:
+        cfg.ingest_processes = processes
     from lilbee.data.ingest import SyncResult
 
     try:
@@ -506,12 +522,15 @@ def add(
     max_pages: int | None = _max_pages_option,
     include_subdomains: bool = _include_subdomains_option,
     max_cpus: int | None = _max_cpus_option,
+    processes: int | None = _processes_option,
 ) -> None:
     """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
+    if processes is not None:
+        cfg.ingest_processes = processes
 
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)

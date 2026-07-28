@@ -116,6 +116,8 @@ def _make_result(
 
 
 class TestConceptsAvailable:
+    """The probe is cached, so each case clears it before injecting its module state."""
+
     def test_returns_true_when_installed(self):
         mock_spacy = MagicMock()
         mock_graspologic = MagicMock()
@@ -124,13 +126,26 @@ class TestConceptsAvailable:
         ):
             from lilbee.retrieval.concepts import concepts_available
 
+            concepts_available.cache_clear()
             assert concepts_available() is True
 
     def test_returns_false_when_not_installed(self):
         with inject_modules({"spacy": None}):
             from lilbee.retrieval.concepts import concepts_available
 
+            concepts_available.cache_clear()
             assert concepts_available() is False
+
+    def test_result_is_cached_across_calls(self):
+        """One sys.path walk per process: ingest calls this once per file."""
+        from lilbee.retrieval.concepts import concepts_available
+
+        concepts_available.cache_clear()
+        with inject_modules({"spacy": None}):
+            assert concepts_available() is False
+        # Same answer without the injected absence: the probe did not re-run.
+        assert concepts_available() is False
+        concepts_available.cache_clear()
 
 
 class TestExtractConcepts:

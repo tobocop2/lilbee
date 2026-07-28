@@ -55,6 +55,10 @@ class TestFromEnvDefaults:
             assert c.top_k == 12
             assert c.max_distance == 0.75
             assert c.json_mode is False
+            # Multiprocess ingest is opt-in: 1 = single-process. It only helps a
+            # small/fast embedder that one process cannot use to saturate a multi-GPU
+            # fleet; 0 auto-sizes, N is explicit.
+            assert c.ingest_processes == 1
             # Memory-budget defaults: q8_0 KV halves per-token cost vs f16,
             # 8K target keeps the working window inside chat-with-RAG needs,
             # and ``None`` num_ctx_max lets the model's training_ctx be the
