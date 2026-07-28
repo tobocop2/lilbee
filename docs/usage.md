@@ -680,7 +680,7 @@ lilbee wiki citations --source <doc>   # pages citing a source document
 lilbee wiki lint                       # find orphan pages, stale links, pending drafts
 lilbee wiki synthesize                 # generate cross-source synthesis pages
 lilbee wiki drafts list                # list pending drafts
-lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, or summaries/)
+lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee wiki drafts reject <slug>       # discard a draft
 lilbee wiki prune                      # move stale pages to archive/
 ```

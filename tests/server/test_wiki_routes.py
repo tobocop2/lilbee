@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,20 @@ def _create_app():
     from lilbee.server.app import create_app
 
     return create_app()
+
+
+def _on_the_event_loop() -> bool:
+    """Whether the caller is running on the event loop, for the off-loop route tests.
+
+    A loop running in the calling thread is the only reliable signal: the test
+    client serves the app from its own thread, so a thread id captured in the test
+    function differs from the loop's even when a route blocks it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _make_wiki_page(wiki_root: Path, subdir: str, name: str, content: str = "") -> Path:
@@ -367,25 +382,22 @@ class TestWikiEnabled:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """lint_all scans every page and embeds, so it runs in a worker thread, not
-        on the event loop that serves every other REST/MCP request (bb-ziks.44)."""
-        import threading
-
+        on the event loop that serves every other REST/MCP request."""
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_lint(store, config=None):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return lint_mod.LintReport()
 
         monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/lint", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_lint_status_route_removed(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -425,49 +437,43 @@ class TestWikiEnabled:
 
     async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
         """prune_wiki walks the whole tree + store; it runs in a worker thread, not
-        on the event loop (bb-ziks.44)."""
-        import threading
-
+        on the event loop."""
         from conftest import make_mock_services
         from lilbee.wiki import prune as prune_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_prune(store):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return prune_mod.PruneReport()
 
         monkeypatch.setattr(prune_mod, "prune_wiki", fake_prune)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_status_runs_lint_off_the_event_loop(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The status route's lint pass embeds; it runs off the event loop (bb-ziks.44)."""
-        import threading
-
+        """The status route's lint pass embeds; it runs off the event loop."""
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
         _make_wiki_page(isolated_env / "wiki", "summaries", "s1")  # so status reaches lint
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_lint(store, config=None, record_log=True):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return lint_mod.LintReport()
 
         monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
         assert resp.status_code == 200
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_build_streams_progress_then_a_done_summary(self, monkeypatch):
         def fake_build(config, on_progress):
@@ -545,20 +551,17 @@ class TestWikiEnabled:
 
     async def test_build_runs_off_the_event_loop(self, monkeypatch):
         """The build is CPU- and IO-bound, so it runs in a worker thread."""
-        import threading
-
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_build(config, on_progress):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return {"paths": [], "entities": 0, "count": 0}
 
         monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/build", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_build_stream_reports_a_failed_run_as_an_error_event(self, monkeypatch):
         def fake_build(config, on_progress):
@@ -804,19 +807,16 @@ class TestWikiDraftsEndpoints:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """accept_draft re-chunks + embeds; it runs in a worker thread, not on the
-        event loop that serves every other request (bb-ziks.44)."""
-        import threading
-
+        event loop that serves every other request."""
         from lilbee.server import wiki as server_wiki_mod
         from lilbee.wiki.drafts import AcceptResult
 
         wiki_root = isolated_env / "wiki"
         _make_draft(wiki_root, "cv-manual", drift_pct=20)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return AcceptResult(
                 slug=slug,
                 requested_slug=slug,
@@ -828,7 +828,7 @@ class TestWikiDraftsEndpoints:
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_accept_stale_draft_returns_409(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
@@ -865,6 +865,25 @@ class TestWikiDraftsEndpoints:
         body = resp.json()
         assert body["slug"] == "doomed"
         assert not draft_path.exists()
+
+    async def test_reject_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reject_draft takes the wiki build mutex, which a build holds for minutes;
+        waiting for it on the event loop stalls every other route and SSE stream."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        _make_draft(isolated_env / "wiki", "doomed", drift_pct=25)
+        on_loop: list[bool] = []
+
+        def _fake_reject(slug: str, root: Path) -> None:
+            on_loop.append(_on_the_event_loop())
+
+        monkeypatch.setattr(server_wiki_mod, "reject_draft", _fake_reject)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/doomed", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
 
     async def test_reject_missing_404(self):
         async with AsyncTestClient(_create_app()) as client:

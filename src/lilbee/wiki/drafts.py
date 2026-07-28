@@ -250,20 +250,32 @@ def _parse_pending_kind(text: str) -> str | None:
     return None
 
 
+def _split_marker_line(text: str) -> tuple[str, str]:
+    """Split *text* into its leading marker line and the untouched remainder.
+
+    Markers are always written as the first line; a marker comment quoted in
+    the body is content, so only the first line is ever parsed or stripped.
+    """
+    first_line, sep, rest = text.partition("\n")
+    if any(
+        pattern.search(first_line)
+        for pattern in (_PENDING_PARSE_MARKER_RE, _PENDING_COLLISION_MARKER_RE, _DRIFT_MARKER_RE)
+    ):
+        return first_line, rest
+    return "", first_line + sep + rest
+
+
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
     """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
 
-    Three ``.sub()`` passes (one per pending-parse, pending-collision, and
-    drift markers) plus three ``.search()`` scans needed to classify which
-    markers are present, returning kind, drift ratio, and stripped body
-    together so callers don't reparse the body once per attribute.
+    Classification, drift ratio, and origin all come from the leading marker
+    line only, and stripping removes only that line, so a marker comment
+    quoted in the body survives the accept untouched.
     """
-    pending_kind = _parse_pending_kind(text)
-    drift = _parse_drift_ratio(text)
-    stripped = _PENDING_PARSE_MARKER_RE.sub("", text, count=1)
-    stripped = _PENDING_COLLISION_MARKER_RE.sub("", stripped, count=1)
-    stripped = _DRIFT_MARKER_RE.sub("", stripped, count=1)
-    return pending_kind, drift, stripped.lstrip()
+    marker_line, remainder = _split_marker_line(text)
+    pending_kind = _parse_pending_kind(marker_line)
+    drift = _parse_drift_ratio(marker_line)
+    return pending_kind, drift, remainder.lstrip() if marker_line else remainder
 
 
 def list_drafts(wiki_root: Path) -> list[DraftInfo]:
@@ -421,7 +433,8 @@ def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str) -> Pa
     published = _find_published(wiki_root, target_slug)
     if published is not None:
         return published
-    fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
+    marker_line, _remainder = _split_marker_line(raw)
+    fallback_subdir = _parse_origin_subdir(marker_line) or WikiSubdir.SUMMARIES
     log.info("Draft %s has no published counterpart; accepting into %s", slug, fallback_subdir)
     return wiki_root / fallback_subdir / f"{target_slug}.md"
 

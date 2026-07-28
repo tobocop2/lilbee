@@ -47,6 +47,7 @@ from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
@@ -8850,22 +8851,25 @@ class TestWikify:
             notify.assert_called_once_with(msg.WIKI_ALREADY_ACTIVE, severity="warning")
             assert len(app.task_bar.queue.queued_tasks) == 1
 
+    @staticmethod
+    def _wikify_target(app):
+        """Start a wikify task against *app*; return the task target."""
+        from lilbee.cli.tui.screens.wiki import start_wikify
+
+        with patch.object(app.task_bar, "start_task") as start:
+            start_wikify(app)
+        return start.call_args.args[2]
+
     async def test_a_cancelled_build_does_not_toast_success(self, tmp_path):
         """A cancel landing after the last checkpoint finalizes the row CANCELLED,
         so the toast must not announce the build finished."""
-        from lilbee.runtime.cancellation import TaskCancelledError
-
         cfg.wiki = True
         cfg.data_root = tmp_path
         summary = {"paths": ["a.md"], "entities": 1, "count": 1}
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from lilbee.cli.tui.screens.wiki import start_wikify
-
-            with patch.object(app.task_bar, "start_task") as start:
-                start_wikify(app)
-            target = start.call_args.args[2]
+            target = self._wikify_target(app)
             reporter = MagicMock()
             reporter.check_cancelled.side_effect = TaskCancelledError
             with (
@@ -8874,7 +8878,25 @@ class TestWikify:
                 pytest.raises(TaskCancelledError),
             ):
                 target(reporter)
-            posted.assert_not_called()
+            posted.assert_called_once_with(app, app.task_bar.reload_wiki_screens)
+
+    @pytest.mark.parametrize("error", [RuntimeError, TaskCancelledError])
+    async def test_a_build_that_stops_early_still_reloads_the_wiki_screens(self, tmp_path, error):
+        """run_full_build writes pages as it goes, and the done hook only fires on
+        success, so an open wiki screen would keep showing the pre-build tree."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            target = self._wikify_target(app)
+            with (
+                patch("lilbee.wiki.generation.run_full_build", side_effect=error),
+                patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+                pytest.raises(error),
+            ):
+                target(MagicMock())
+            posted.assert_called_once_with(app, app.task_bar.reload_wiki_screens)
 
     async def test_wikify_is_refused_while_the_wiki_is_off(self, tmp_path):
         cfg.wiki = False

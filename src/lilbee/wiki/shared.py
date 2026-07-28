@@ -85,12 +85,11 @@ PENDING_MARKER_KEYWORD_COLLISION = "PENDING: concept slug collision"
 class PendingKind(StrEnum):
     """Reason a wiki draft is in ``drafts/`` instead of a published page.
 
-    The string value is what lands in the ``pending_kind`` YAML
-    frontmatter field and is surfaced verbatim through
-    ``DraftInfo.pending_kind`` to CLI / HTTP / MCP callers.
-    StrEnum members serialise as their string value, so the YAML/JSON
-    round-trip stays a plain string. ``DRIFT`` is display-only, never
-    written to disk, but exposed so consumers don't hard-code ``"drift"``.
+    Derived from a draft's leading marker line and surfaced through
+    ``DraftInfo.pending_kind`` to CLI / HTTP / MCP callers. StrEnum members
+    serialise as their string value, so the JSON payload stays a plain
+    string. ``DRIFT`` is display-only, never written to disk, but exposed so
+    consumers don't hard-code ``"drift"``.
     """
 
     PARSE = "parse"
