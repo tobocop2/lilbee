@@ -13,7 +13,7 @@ from unittest import mock
 import pytest
 
 from lilbee.data.ingest import pipeline, workers
-from lilbee.data.ingest.types import FileToProcess
+from lilbee.data.ingest.types import FileToProcess, SourceMeta
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
@@ -332,7 +332,7 @@ class TestRunBatch:
                 raise OSError("disk gone")
             if page_texts_out is not None:
                 page_texts_out.append({"source": name})
-            return [{"chunk": name}]
+            return [{"chunk": name}], SourceMeta(title=name)
 
         async def build_concept_records(records, name):
             return None
@@ -370,6 +370,16 @@ class TestRunBatch:
     def test_an_empty_batch_is_harmless(self, monkeypatch):
         self._patch_producers(monkeypatch)
         assert workers.run_batch([]) == []
+
+    def test_source_metadata_survives_the_worker_boundary(self, monkeypatch):
+        """A worker-produced file must stamp its source row's title exactly as an
+        in-process one does. The metadata is produced in the child, so dropping it
+        from the outcome loses every title on the multiprocess path only."""
+        self._patch_producers(monkeypatch)
+
+        outcomes = workers.run_batch([_entry("paper.pdf")])
+
+        assert outcomes[0].meta == SourceMeta(title="paper.pdf")
 
 
 class TestWorkerBootstrap:

@@ -28,10 +28,10 @@ def _compute_pmi(
     total_chunks: int,
 ) -> dict[tuple[str, str], float]:
     """Compute PPMI (Positive PMI) weights for concept co-occurrence pairs.
-    PPMI = max(0, log2(P(a,b) / (P(a) * P(b)))).
     Based on Church & Hanks 1990, "Word Association Norms, Mutual Information,
-    and Lexicography." Negative values are clamped to zero to discard
-    anti-correlated pairs.
+    and Lexicography." Pairs with non-positive PMI (co-occurring at or below
+    chance) are dropped entirely: a stored 0.0 would later be floored to a
+    positive Leiden weight, turning anti-correlation into attraction.
     """
     pmi: dict[tuple[str, str], float] = {}
     for (a, b), count in cooccurrences.items():
@@ -40,12 +40,18 @@ def _compute_pmi(
         if p_a == 0 or p_b == 0:
             continue
         p_ab = count / total_chunks
-        pmi[(a, b)] = max(0.0, math.log2(p_ab / (p_a * p_b)))
+        value = math.log2(p_ab / (p_a * p_b))
+        if value > 0:
+            pmi[(a, b)] = value
     return pmi
 
 
 class _LeidenResult(NamedTuple):
-    """Leiden output: node -> community id, and node -> weighted degree."""
+    """Leiden output: node -> community id, and node -> incident-edge count.
+
+    ``degrees`` is an unweighted count of edges incident to each node (edge
+    weights are not summed), which is what label ranking consumes.
+    """
 
     partition: dict[str, int]
     degrees: dict[str, int]

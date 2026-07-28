@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Never
 from unittest import mock
 
 import pytest
@@ -2768,15 +2768,21 @@ class TestGetCompletions:
         assert any("testfile.txt" in x for x in r)
 
     def test_path_exists_swallows_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A path the OS refuses to stat must read as missing, not raise."""
-        from pathlib import Path as P
+        """A path the OS refuses to stat reads as missing, not raise.
 
+        Patches this module's Path, not pathlib.Path.expanduser: a global patch
+        also hits the config validator and blows up in fixture teardown.
+        """
         from lilbee.cli.tui.widgets import autocomplete
 
-        def _boom(self: P) -> P:
-            raise OSError("bad path")
+        class _BoomPath:
+            def __init__(self, *_args: object) -> None:
+                pass
 
-        monkeypatch.setattr(P, "expanduser", _boom)
+            def expanduser(self) -> Never:
+                raise OSError("bad path")
+
+        monkeypatch.setattr(autocomplete, "Path", _BoomPath)
         assert autocomplete._path_exists("~oops") is False
 
     def test_add_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:

@@ -112,7 +112,7 @@ class TestExtractorToolWiring:
         fake_nlp = mock.MagicMock(return_value=mock.MagicMock(ents=[]))
         with (
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
-            mock.patch("lilbee.retrieval.concepts.nlp._ensure_spacy_model", return_value=fake_nlp),
+            mock.patch("lilbee.retrieval.concepts.nlp.load_spacy_pipeline", return_value=fake_nlp),
         ):
             rows = asyncio.run(build_entity_records(_records(), "a.txt"))
         assert rows is not None
@@ -124,7 +124,7 @@ class TestExtractorToolWiring:
         with (
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
             mock.patch(
-                "lilbee.retrieval.concepts.nlp._ensure_spacy_model",
+                "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
                 side_effect=ImportError("no model"),
             ),
             caplog.at_level("WARNING"),

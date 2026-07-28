@@ -46,7 +46,7 @@ def mock_svc():
     embedder = mock.MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    embedder.validate_model.return_value = None
+    embedder.validate_model.return_value = True
     services = make_mock_services(embedder=embedder)
     # /api/chat now goes through chat_dispatch, which validates the requested
     # model against the KnownModelCache. Pre-load both the registry and the
@@ -89,6 +89,7 @@ def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks:
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
+    result.metadata = {}
     return result
 
 

@@ -10,6 +10,7 @@ from lilbee.core.config import active_config
 if TYPE_CHECKING:
     from kreuzberg import ChunkingConfig
 
+# Char->token ratio for English.
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"

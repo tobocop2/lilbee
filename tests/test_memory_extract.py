@@ -29,6 +29,23 @@ class TestParseExtraction:
         raw = 'Here is what I found:\n[{"text": "uses a Crown Victoria", "kind": "fact"}]\nDone.'
         assert parse_extraction(raw) == [ExtractedMemory("uses a Crown Victoria", MemoryKind.FACT)]
 
+    def test_trailing_bracket_in_prose_does_not_swallow_the_array(self):
+        """A conforming array followed by prose containing any ']' must still
+        parse: a greedy first-'[' to last-']' span covers the prose too and
+        silently discards every memory."""
+        raw = (
+            'Here is what I found:\n[{"text": "uses a Crown Victoria", "kind": "fact"}]\n'
+            "See the manual [1] for details."
+        )
+        assert parse_extraction(raw) == [ExtractedMemory("uses a Crown Victoria", MemoryKind.FACT)]
+
+    def test_first_array_wins_when_a_second_follows(self):
+        raw = (
+            '[{"text": "the user prefers rust", "kind": "fact"}]\n'
+            'Ignore this one: [{"text": "not a memory", "kind": "fact"}]'
+        )
+        assert parse_extraction(raw) == [ExtractedMemory("the user prefers rust", MemoryKind.FACT)]
+
     def test_empty_array_yields_nothing(self):
         assert parse_extraction("[]") == []
 

@@ -62,7 +62,6 @@ class Embedder:
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config
         self._provider = provider
-        self.last_batch_truncated = 0
         self._truncated_total = 0
         self._truncated_lock = threading.Lock()
 
@@ -92,9 +91,13 @@ class Embedder:
         with self._truncated_lock:
             return self._truncated_total
 
-    def truncate(self, text: str) -> str:
-        """Truncate text to the embed char budget, counting any truncation."""
-        budget = self.embed_char_budget
+    def truncate(self, text: str, reserved: int = 0) -> str:
+        """Truncate text to the embed char budget, counting any truncation.
+
+        *reserved* is charged against the budget so an instruction prefix
+        prepended afterwards still leaves the sent text inside the guard.
+        """
+        budget = max(1, self.embed_char_budget - reserved)
         if len(text) <= budget:
             return text
         log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
@@ -116,8 +119,23 @@ class Embedder:
             raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
 
     def validate_model(self) -> bool:
-        """Check if the configured embedding model is available. No side effects."""
-        return self.embedding_available()
+        """Availability gate for the startup and ingest paths: warns when it fails.
+
+        Same probe as :meth:`embedding_available`, but this is the entry-point
+        check whose whole job is to not fail silently -- a missing model here
+        means every chunk of the run ahead will fail to embed, and the operator
+        needs to hear that once, up front, rather than as a per-file error much
+        later. Callers that can genuinely degrade (search falling back to
+        keyword) ask :meth:`embedding_available` and stay quiet.
+        """
+        if self.embedding_available():
+            return True
+        log.warning(
+            "Embedding model %r is not available; embedding will fail. "
+            "Pull it or set a different embedding_model.",
+            self._config.embedding_model,
+        )
+        return False
 
     def embedding_available(self) -> bool:
         """Return True if the embedding model can be resolved.
@@ -176,16 +194,17 @@ class Embedder:
         Fires ``embed`` progress events per batch when *on_progress* is provided.
         """
         if not texts:
-            self.last_batch_truncated = 0
             return []
-        truncated_before = self.truncated_total
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
         vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
-            truncated = prefix + self.truncate(text)
+            # The prefix is charged against the budget: it is part of what the
+            # embed model receives, so counting only the text would ship
+            # budget+len(prefix) chars and lose the tail the clamp protects.
+            truncated = prefix + self.truncate(text, reserved=len(prefix))
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._provider.embed(batch))
@@ -205,5 +224,4 @@ class Embedder:
             )
         for vec in vectors:
             self.validate_vector(vec)
-        self.last_batch_truncated = self.truncated_total - truncated_before
         return vectors
