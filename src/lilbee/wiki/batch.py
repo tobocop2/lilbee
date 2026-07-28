@@ -117,14 +117,19 @@ def _group_chunks_by_page(
     return sorted(grouped.items())
 
 
-def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
+def archive_legacy_concept_pages(
+    wiki_root: Path, data_dir: Path, store: Store, config: Config
+) -> None:
     """One-time migration: archive legacy concept pages.
 
     Runs idempotently, gated by ``{data_dir}/.phase-d-migrated``:
 
-    1. Move every ``wiki/concepts/*.md`` to ``wiki/archive/concepts/``
-       preserving relative subpaths. Older concept pages stay
-       readable but drop out of the active wiki browse surface.
+    1. Delete each ``wiki/concepts/*.md`` page's chunk and citation
+       rows, then move the file to ``wiki/archive/concepts/``
+       preserving relative subpaths. Store cleanup comes first so an
+       interrupted migration leaves the page on disk rather than rows
+       serving a page nothing scans. Older concept pages stay readable
+       but drop out of retrieval and the active browse surface.
     2. Unwrap stale ``[[archived-slug]]`` references across the
        remaining pages so a reader clicking a link does not hit a
        404. Archived slugs become plain text.
@@ -144,8 +149,12 @@ def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
             rel = src.relative_to(concepts_dir)
             dest = archive_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
+            slug = str(rel.with_suffix("")).replace("\\", "/")
+            wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/{slug}.md"
+            store.delete_by_source(wiki_source)
+            store.delete_citations_for_wiki(wiki_source)
             src.replace(dest)
-            archived_slugs.append(str(rel.with_suffix("")).replace("\\", "/"))
+            archived_slugs.append(slug)
 
     if archived_slugs:
         _unwrap_archived_links(wiki_root, archived_slugs)

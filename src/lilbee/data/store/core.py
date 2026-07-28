@@ -219,6 +219,11 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
             )
 
 
+def _citations_for_wiki_predicate(wiki_source: str) -> str:
+    """SQL predicate selecting every citation row belonging to *wiki_source*."""
+    return f"wiki_source = '{escape_sql_string(wiki_source)}'"
+
+
 def _get_distance(chunk: SearchChunk) -> float:
     """Extract distance as a sortable float (inf for None)."""
     return chunk.distance if chunk.distance is not None else float("inf")
@@ -767,6 +772,22 @@ class Store:
                 )
                 return False
 
+    def _add_chunks_unlocked(self, records: list[dict]) -> int:
+        """Add chunk records and return the count. Caller must hold ``write_lock()``."""
+        embedding_model = self._config.embedding_model
+        embedding_dim = self._config.embedding_dim
+        self._ensure_embedding_compat()
+        self._fts_ready = False
+        self._scalar_ready = False
+        if not records:
+            return 0
+        _check_vector_dims(records, embedding_dim)
+        table = self._chunks_table()
+        table.add(records)
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+        return len(records)
+
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added.
 
@@ -779,21 +800,23 @@ class Store:
         compatibility check.
         """
         with self._write_lock():
-            embedding_model = self._config.embedding_model
-            embedding_dim = self._config.embedding_dim
+            return self._add_chunks_unlocked(records)
+
+    def replace_chunks(self, records: list[dict], predicate: str) -> int:
+        """Replace the chunk rows matching *predicate* with *records* under one lock.
+
+        Same compatibility and dimension gates as :meth:`add_chunks`, both run
+        before the delete so a rejected write leaves the existing rows in place.
+        A reader never observes the predicate's rows missing mid-replace. Returns
+        the count added.
+        """
+        with self._write_lock():
             self._ensure_embedding_compat()
-            self._fts_ready = False
-            self._scalar_ready = False
-            if not records:
-                return 0
-            _check_vector_dims(records, embedding_dim)
+            _check_vector_dims(records, self._config.embedding_dim)
             table = self._chunks_table()
-            table.add(records)
-            if self.get_meta() is None:
-                self._write_meta_unlocked(
-                    embedding_model=embedding_model, embedding_dim=embedding_dim
-                )
-            return len(records)
+            if not _safe_delete_unlocked(table, predicate):
+                return 0
+            return self._add_chunks_unlocked(records)
 
     def bm25_probe(
         self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
@@ -1324,6 +1347,20 @@ class Store:
             return set()
         return {row["source"] for row in table.search().select(["source"]).limit(None).to_list()}
 
+    def wiki_chunk_sources(self) -> set[str]:
+        """Return the distinct sources of the chunk rows written by the wiki layer."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return set()
+        rows = (
+            table.search()
+            .where(f"chunk_type = '{ChunkType.WIKI}'")
+            .select(["source"])
+            .limit(None)
+            .to_list()
+        )
+        return {row["source"] for row in rows}
+
     def get_sources(
         self,
         *,
@@ -1695,9 +1732,19 @@ class Store:
 
     def delete_citations_for_wiki(self, wiki_source: str) -> None:
         """Delete all citations for a wiki page (used before regeneration)."""
-        self.clear_table(
+        self.clear_table(CITATIONS_TABLE, _citations_for_wiki_predicate(wiki_source))
+
+    def replace_citations_for_wiki(self, wiki_source: str, records: list[CitationRecord]) -> None:
+        """Swap a wiki page's citations for *records* under one write lock.
+
+        A page is never left with the old rows deleted and the new ones unwritten,
+        so provenance cannot silently vanish between two locked writes.
+        """
+        self.clear_and_add(
             CITATIONS_TABLE,
-            f"wiki_source = '{escape_sql_string(wiki_source)}'",
+            _citations_schema(),
+            [dict(rec) for rec in records],
+            _citations_for_wiki_predicate(wiki_source),
         )
 
     def _memories_schema(self) -> pa.Schema:

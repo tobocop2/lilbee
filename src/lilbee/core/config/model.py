@@ -710,6 +710,10 @@ class Config(BaseSettings):
     # Off by default; flip to True (or set LILBEE_WIKI=1) to enable. When off,
     # the Wiki view tab and the chat ModelBar's scope picker are both hidden.
     wiki: bool = ConfigField(default=False, writable=True)
+    # Whether a sync regenerates touched wiki pages on its own. Off by
+    # default: enabling the wiki never starts generating by itself, the
+    # user wikifies explicitly via `lilbee wiki build` / `wiki update`.
+    wiki_auto_update: bool = ConfigField(default=False, writable=True)
     # Read-only: changing the directory at runtime strands prior wiki pages
     # under the old path. Users who want a different location set it via
     # LILBEE_WIKI_DIR / config.toml before the first wiki_build.

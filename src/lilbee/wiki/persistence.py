@@ -21,6 +21,8 @@ from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_PARSE,
     PageTarget,
     WikiLogAction,
+    WikiSubdir,
+    atomic_write_text,
 )
 
 log = logging.getLogger(__name__)
@@ -37,6 +39,42 @@ _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 # parts. Anything shorter is a malformed wiki source and has no subdir.
 _WIKI_SOURCE_MIN_PARTS = 2
 
+# Drift-marker field carrying the hash of the diverting page's sources, so a
+# later divert can tell its own draft from another source's.
+_DRIFT_SOURCE_FIELD = "source: "
+
+
+def _is_pending_marker_text(text: str) -> bool:
+    """Return whether *text* starts with a PENDING marker line."""
+    first_line = text.splitlines()[0] if text else ""
+    return first_line.startswith(_PENDING_PARSE_MARKER_PREFIX) or first_line.startswith(
+        _PENDING_COLLISION_MARKER_PREFIX
+    )
+
+
+def _read_draft(draft_path: Path) -> str | None:
+    """Return the draft's text, or None when it is absent or unreadable."""
+    if not draft_path.is_file():
+        return None
+    try:
+        return draft_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _draft_belongs_to_other_source(draft_path: Path, source_key: str) -> bool:
+    """Return whether an existing draft holds reviewable content from another source.
+
+    A PENDING marker is a placeholder, not review content, so it does not block
+    the write. A drift draft carries its source key in the marker; one without a
+    key predates the field and counts as another source's.
+    """
+    text = _read_draft(draft_path)
+    if text is None or _is_pending_marker_text(text):
+        return False
+    first_line = text.splitlines()[0]
+    return f"{_DRIFT_SOURCE_FIELD}{source_key}" not in first_line
+
 
 def divert_to_drafts(
     new_content: str,
@@ -45,27 +83,44 @@ def divert_to_drafts(
     change_ratio: float,
     diff_text: str,
     origin_subdir: str,
+    source_names: list[str],
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting.
 
     ``origin_subdir`` is the published subdir the page would have landed in
     (``concepts``, ``entities``, ...); it rides the drift marker so that
     accepting an unpaired draft restores it to its own page type instead of
-    defaulting to ``summaries/``.
+    defaulting to ``summaries/``. The marker also carries a hash of
+    ``source_names``: when ``drafts/<slug>.md`` already holds another source's
+    diverted content, this one lands at a ``-collision-<hash>`` draft rather
+    than overwriting a page awaiting review.
     """
-    draft_path = drafts_dir / f"{slug}.md"
-    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    # circular: persistence -> batch via short_source_hash (batch imports
+    # persist_and_finalize / divert_concept_collision from persistence).
+    from lilbee.wiki.batch import short_source_hash
+
+    sources_label = ", ".join(sorted(source_names))
+    source_key = short_source_hash(sources_label)
     note = (
-        f"<!-- DRIFT: {change_ratio:.0%} content changed; origin: {origin_subdir} "
-        "- flagged for human review -->\n\n"
+        f"<!-- DRIFT: {change_ratio:.0%} content changed; origin: {origin_subdir}; "
+        f"{_DRIFT_SOURCE_FIELD}{source_key} - flagged for human review -->\n\n"
     )
-    draft_path.write_text(note + new_content, encoding="utf-8")
     log.warning(
         "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
         slug,
         change_ratio * 100,
         diff_text,
     )
+    draft_path = drafts_dir / f"{slug}.md"
+    if _draft_belongs_to_other_source(draft_path, source_key):
+        return divert_concept_collision(
+            slug=slug,
+            source=sources_label,
+            first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
+            content=note + new_content,
+            drafts_dir=drafts_dir,
+        )
+    atomic_write_text(draft_path, note + new_content)
     return draft_path
 
 
@@ -88,18 +143,26 @@ def persist_and_finalize(
     store: Store,
     config: Config,
 ) -> Path:
-    """Write page to disk, persist citations, index body chunks, update index and log."""
+    """Write page to disk, persist citations, index body chunks, update index and log.
+
+    Only a published page carries store state: a page routed to ``drafts/``
+    (drift diversion or a failed quality gate) is written and logged, then
+    returns. Its citations, chunks, and the raw sources it would supersede stay
+    untouched until the draft is accepted.
+    """
     # circular: page -> persistence via persist_and_finalize
     from lilbee.wiki.page import index_wiki_page, write_page
 
     page_path = write_page(
-        target.wiki_root, target.subdir, target.slug, content, config.wiki_drift_threshold
+        target.wiki_root,
+        target.subdir,
+        target.slug,
+        content,
+        config.wiki_drift_threshold,
+        source_names,
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
-        # write_page diverted the drifted content to drafts/ and left the published
-        # page intact. Don't index, re-cite, or prune raw sources under the published
-        # identity: the draft is unreviewed and is indexed only when accepted.
         append_wiki_log(
             WikiLogAction.GENERATED,
             f"{target.page_type} page for {target.label} drifted; diverted to draft "
@@ -108,10 +171,18 @@ def persist_and_finalize(
         )
         return page_path
 
+    if target.subdir == WikiSubdir.DRAFTS:
+        append_wiki_log(
+            WikiLogAction.GENERATED,
+            f"{target.page_type} page for {target.label} held in "
+            f"{WikiSubdir.DRAFTS}/{page_path.name} pending review",
+            config,
+        )
+        return page_path
+
     for rec in verified:
         rec["wiki_source"] = target.wiki_source
-    store.delete_citations_for_wiki(target.wiki_source)
-    store.add_citations(verified)
+    store.replace_citations_for_wiki(target.wiki_source, verified)
 
     index_wiki_page(content, target.wiki_source, store)
 
@@ -145,13 +216,22 @@ def write_pending_marker(
     the marker kind and carries the context (source, label). The
     optional ``frontmatter`` preserves minimal metadata for the
     drafts surface to round-trip (e.g. ``bad_title``-style fields).
+
+    An existing draft that is not itself a marker is generated content
+    awaiting review and is kept: the marker is not written over it.
     """
-    drafts_dir.mkdir(parents=True, exist_ok=True)
     draft_path = drafts_dir / f"{slug}.md"
+    existing = _read_draft(draft_path)
+    if existing is not None and not _is_pending_marker_text(existing):
+        log.warning(
+            "Keeping the draft at %s: it holds content pending review, not a marker",
+            draft_path,
+        )
+        return draft_path
     body = marker_line + "\n"
     if frontmatter:
         body += "\n" + frontmatter
-    draft_path.write_text(body, encoding="utf-8")
+    atomic_write_text(draft_path, body)
     return draft_path
 
 
@@ -165,17 +245,8 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     matters.
     """
     draft_path = drafts_dir / f"{slug}.md"
-    if not draft_path.is_file():
-        return False
-    try:
-        body = draft_path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    first_line = body.splitlines()[0] if body else ""
-    is_pending = first_line.startswith(_PENDING_PARSE_MARKER_PREFIX) or first_line.startswith(
-        _PENDING_COLLISION_MARKER_PREFIX
-    )
-    if not is_pending:
+    body = _read_draft(draft_path)
+    if body is None or not _is_pending_marker_text(body):
         return False
     draft_path.unlink()
     return True
@@ -206,9 +277,8 @@ def divert_concept_collision(
         f"{_PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
         f"content from {source} held for review -->\n\n"
     )
-    drafts_dir.mkdir(parents=True, exist_ok=True)
     path = drafts_dir / f"{collision_slug}.md"
-    path.write_text(marker + content, encoding="utf-8")
+    atomic_write_text(path, marker + content)
     log.warning(
         "Concept slug collision: %s already written by %s; diverted %s's version to %s",
         slug,

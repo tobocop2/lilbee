@@ -16,7 +16,6 @@ from lilbee.wiki.batch import (
     _unwrap_archived_links,
     archive_legacy_concept_pages,
 )
-from lilbee.wiki.cache import _find_cached_leaf, _leaf_hash
 from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.citations import (
     _extract_excerpt,
@@ -29,7 +28,7 @@ from lilbee.wiki.citations import (
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.generation import generate_synthesis_pages
 from lilbee.wiki.page import chunks_to_text, index_wiki_page, truncate_chunks_to_budget
-from lilbee.wiki.persistence import divert_to_drafts
+from lilbee.wiki.persistence import divert_to_drafts, write_pending_marker
 from lilbee.wiki.quality import (
     _embedding_faithfulness_score,
     _mean_vector,
@@ -38,6 +37,8 @@ from lilbee.wiki.quality import (
     diff_summary,
 )
 from lilbee.wiki.shared import (
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     PageTarget,
     WikiSubdir,
 )
@@ -108,7 +109,7 @@ def _mock_provider(
 
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
-    store.add_citations.return_value = 0
+    store.replace_chunks.side_effect = lambda records, predicate: len(records)
     return store
 
 
@@ -629,68 +630,6 @@ class TestGroupChunksByPage:
         assert len(result[0][1]) == 4
 
 
-class TestLeafHash:
-    def test_empty_returns_hash_of_empty(self):
-        """Deterministic hash even for no chunks."""
-        h = _leaf_hash([])
-        assert isinstance(h, str)
-        assert len(h) == 64  # sha256 hex digest
-
-    def test_same_chunks_same_hash(self):
-        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        b = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        assert _leaf_hash(a) == _leaf_hash(b)
-
-    def test_order_sensitive(self):
-        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        b = [_make_chunk("two", chunk_index=1), _make_chunk("one")]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-    def test_content_change_changes_hash(self):
-        a = [_make_chunk("one")]
-        b = [_make_chunk("two")]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-    def test_null_separator_prevents_concat_collision(self):
-        """Chunk boundaries must affect the hash, not just the concatenated bytes."""
-        a = [_make_chunk("ab"), _make_chunk("c", chunk_index=1)]
-        b = [_make_chunk("a"), _make_chunk("bc", chunk_index=1)]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-
-class TestFindCachedLeaf:
-    def _write(self, tmp_path: Path, subdir: str, slug: str, leaf_hash: str) -> Path:
-        path = tmp_path / subdir / f"{slug}.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fm = f"---\nleaf_hash: {leaf_hash}\n---\nBody.\n" if leaf_hash else "Body.\n"
-        path.write_text(fm, encoding="utf-8")
-        return path
-
-    def test_no_file_returns_none(self, tmp_path: Path):
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "h") is None
-
-    def test_returns_summaries_path_on_match(self, tmp_path: Path):
-        p = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
-
-    def test_returns_drafts_path_on_match(self, tmp_path: Path):
-        p = self._write(tmp_path, "drafts", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
-
-    def test_summaries_wins_when_both_match(self, tmp_path: Path):
-        s = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        self._write(tmp_path, "drafts", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == s
-
-    def test_mismatch_returns_none(self, tmp_path: Path):
-        self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "different") is None
-
-    def test_missing_hash_in_frontmatter_is_not_a_match(self, tmp_path: Path):
-        self._write(tmp_path, "summaries", "src/page-0001", "")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") is None
-
-
 class TestMakeSlug:
     def test_spaces_to_dashes(self):
         assert make_slug("gradual typing") == "gradual-typing"
@@ -833,7 +772,7 @@ class TestGenerateSynthesisPage:
         # embedding and the mean of the source chunk vectors. Matching
         # stub vectors produce a score of 1.00 (identical).
         assert "faithfulness_score: 1.00" in content
-        store.add_citations.assert_called_once()
+        store.replace_citations_for_wiki.assert_called_once()
 
     def test_low_score_goes_to_drafts(self, tmp_path: Path):
         sources = ["a.md", "b.md", "c.md"]
@@ -965,7 +904,7 @@ class TestGenerateSynthesisPage:
             cfg,
         )
         assert result is None
-        store.add_citations.assert_not_called()
+        store.replace_citations_for_wiki.assert_not_called()
 
 
 class _FakeClusterer:
@@ -1094,10 +1033,16 @@ class TestDiffSummary:
 
 
 class TestDivertToDrafts:
+    @staticmethod
+    def _divert(drafts_dir: Path, content: str, sources: list[str]) -> Path:
+        return divert_to_drafts(
+            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources
+        )
+
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text", "concepts")
+        result = self._divert(drafts_dir, content, ["a.md"])
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
@@ -1107,6 +1052,35 @@ class TestDivertToDrafts:
         # The origin subdir rides the marker so accept restores the page to concepts/.
         assert "origin: concepts" in text
         assert content in text
+
+    def test_same_source_rewrites_its_own_draft(self, tmp_path: Path):
+        drafts_dir = tmp_path / "drafts"
+        first = self._divert(drafts_dir, "# First\n", ["a.md"])
+        second = self._divert(drafts_dir, "# Second\n", ["a.md"])
+        assert second == first
+        assert "# Second" in first.read_text()
+
+    def test_other_source_lands_on_a_collision_draft(self, tmp_path: Path):
+        """A second source's diverted page must not overwrite one awaiting review."""
+        drafts_dir = tmp_path / "drafts"
+        first = self._divert(drafts_dir, "# From a\n", ["a.md"])
+        second = self._divert(drafts_dir, "# From b\n", ["b.md"])
+        assert second != first
+        assert second.name.startswith("my-page-collision-")
+        assert "# From a" in first.read_text()
+        assert "# From b" in second.read_text()
+        # The collision marker is what the drafts surface classifies on.
+        assert PENDING_MARKER_KEYWORD_COLLISION in second.read_text()
+
+    def test_replaces_a_pending_marker_at_the_same_slug(self, tmp_path: Path):
+        """A marker is a placeholder, not review content, so drift may claim the slug."""
+        drafts_dir = tmp_path / "drafts"
+        marker_path = write_pending_marker(
+            drafts_dir, "my-page", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        )
+        result = self._divert(drafts_dir, "# Regenerated\n", ["b.md"])
+        assert result == marker_path
+        assert "# Regenerated" in result.read_text()
 
 
 class TestSynthesisDriftDetection:
@@ -1138,6 +1112,24 @@ class TestSynthesisDriftDetection:
         assert "drafts" in str(result)
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
+
+
+def _assert_no_store_writes(store: MagicMock) -> None:
+    """Assert no citation or chunk rows were written for this page."""
+    store.replace_citations_for_wiki.assert_not_called()
+    store.add_citations.assert_not_called()
+    store.delete_citations_for_wiki.assert_not_called()
+    store.replace_chunks.assert_not_called()
+    store.clear_table.assert_not_called()
+
+
+def _assert_cleared(store: MagicMock, wiki_source: str) -> None:
+    """Assert the page's rows were cleared once, with no replacement written."""
+    store.clear_table.assert_called_once()
+    table, predicate = store.clear_table.call_args.args
+    assert table == CHUNKS_TABLE
+    assert wiki_source in predicate
+    assert ChunkType.WIKI in predicate
 
 
 class TestWikiIndexing:
@@ -1186,15 +1178,11 @@ class TestWikiIndexing:
         ):
             index_wiki_page(content, target.wiki_source, store)
 
-        store.clear_table.assert_called_once()
-        call_args = store.clear_table.call_args
-        assert call_args.args[0] == CHUNKS_TABLE
-        predicate = call_args.args[1]
+        store.clear_table.assert_not_called()
+        store.replace_chunks.assert_called_once()
+        records, predicate = store.replace_chunks.call_args.args
         assert target.wiki_source in predicate
         assert ChunkType.WIKI in predicate
-
-        store.add_chunks.assert_called_once()
-        records = store.add_chunks.call_args.args[0]
         assert len(records) == 1
         rec = records[0]
         assert rec["chunk_type"] == ChunkType.WIKI
@@ -1220,7 +1208,7 @@ class TestWikiIndexing:
             index_wiki_page(self._content("body"), target.wiki_source, store)
 
         store.clear_table.assert_not_called()
-        store.add_chunks.assert_not_called()
+        store.replace_chunks.assert_not_called()
 
     def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
         """A ``wiki_source`` without a subdir component is logged and
@@ -1253,9 +1241,9 @@ class TestWikiIndexing:
         ):
             index_wiki_page(content, target.wiki_source, store)
 
-        store.clear_table.assert_called_once()
+        _assert_cleared(store, target.wiki_source)
         chunker.assert_not_called()
-        store.add_chunks.assert_not_called()
+        store.replace_chunks.assert_not_called()
 
     def test_chunker_returns_empty_skips_add(self):
         """If chunk_text returns no chunks, invalidate stale rows and return."""
@@ -1268,26 +1256,31 @@ class TestWikiIndexing:
         ):
             index_wiki_page(self._content("some body"), target.wiki_source, store)
 
-        store.clear_table.assert_called_once()
-        store.add_chunks.assert_not_called()
+        _assert_cleared(store, target.wiki_source)
+        store.replace_chunks.assert_not_called()
 
-    def test_regen_invalidates_before_writing(self):
-        """Second call still clears first, then adds. No accumulation."""
+    def test_embedding_runs_before_any_store_write(self):
+        """No crash window empties the page: chunking and embedding finish before the
+        store is touched, and the swap itself is the store's single locked replace."""
         store = MagicMock(spec=Store)
         target = self._target()
+        store.replace_chunks.side_effect = RuntimeError("embedder is called first")
 
-        call_order: list[str] = []
-        store.clear_table.side_effect = lambda *a, **kw: call_order.append("clear")
-        store.add_chunks.side_effect = lambda records: call_order.append("add") or len(records)
+        embedded: list[list[str]] = []
+        services = self._services_mock()
+        services.embedder.embed_batch.side_effect = lambda texts, **kw: (
+            embedded.append(texts) or [[0.1] * cfg.embedding_dim for _ in texts]
+        )
 
         with (
-            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.get_services", return_value=services),
             patch("lilbee.wiki.page.chunk_text", return_value=["one chunk"]),
+            pytest.raises(RuntimeError),
         ):
             index_wiki_page(self._content("first body"), target.wiki_source, store)
-            index_wiki_page(self._content("second body"), target.wiki_source, store)
 
-        assert call_order == ["clear", "add", "clear", "add"]
+        assert embedded == [["one chunk"]]
+        store.clear_table.assert_not_called()
 
 
 class TestBuildFrontmatter:
@@ -1436,28 +1429,35 @@ class TestGroupEntitiesByPrimarySource:
 
 
 class TestLegacyConceptsMigration:
-    def test_archives_concept_pages(self, tmp_path: Path):
+    def test_archives_concept_pages_and_deletes_their_rows(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        store = MagicMock(spec=Store)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         assert not (wiki_root / "concepts" / "foo.md").exists()
         assert (wiki_root / "archive" / "concepts" / "foo.md").read_text() == "original"
         assert (data_dir / ".phase-d-migrated").exists()
+        # An archived page must stop serving its content from the index.
+        wiki_source = f"{cfg.wiki_dir}/concepts/foo.md"
+        store.delete_by_source.assert_called_once_with(wiki_source)
+        store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
 
     def test_idempotent(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        store = MagicMock(spec=Store)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         # Second run: nothing to archive; should not touch disk state.
         (wiki_root / "concepts").mkdir(parents=True, exist_ok=True)
         (wiki_root / "concepts" / "new.md").write_text("fresh")
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         # Freshly written page stayed put.
         assert (wiki_root / "concepts" / "new.md").exists()
+        store.delete_by_source.assert_called_once()
 
 
 class TestUnwrapArchivedLinks:
@@ -1539,7 +1539,7 @@ class TestRunFullSynthesize:
 
 class TestPersistAndFinalizeDrift:
     """A drift-diverted regen must not leak its unreviewed body into the index or
-    citations under the published page's identity (bb-ziks.35)."""
+    citations under the published page's identity."""
 
     def test_diversion_skips_publish_indexing(self):
         from lilbee.wiki.persistence import persist_and_finalize
@@ -1566,6 +1566,64 @@ class TestPersistAndFinalizeDrift:
 
         assert WikiSubdir.DRAFTS in page_path.parts
         assert "Old published body" in published.read_text()
-        store.add_citations.assert_not_called()
-        store.delete_citations_for_wiki.assert_not_called()
-        store.clear_table.assert_not_called()
+        _assert_no_store_writes(store)
+
+
+class TestPersistAndFinalizeDrafts:
+    """A page routed to drafts carries no store state until it is accepted."""
+
+    def test_draft_target_writes_the_file_and_nothing_else(self):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target(subdir=WikiSubdir.DRAFTS)
+        cfg.wiki_prune_raw = True
+
+        page_path = persist_and_finalize(
+            "# Brakes\n\nBody that failed the faithfulness gate.\n",
+            target,
+            [make_citation()],
+            ["doc.md"],
+            store,
+            cfg,
+        )
+
+        assert page_path == target.wiki_root / WikiSubdir.DRAFTS / f"{target.slug}.md"
+        assert page_path.read_text().startswith("# Brakes")
+        _assert_no_store_writes(store)
+        # A draft supersedes nothing, so its sources stay searchable.
+        store.delete_by_source.assert_not_called()
+        assert "pending review" in (target.wiki_root / "log.md").read_text()
+
+
+class TestWritePendingMarker:
+    def test_writes_the_marker_when_no_draft_exists(self, tmp_path: Path):
+        marker = f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        path = write_pending_marker(tmp_path / "drafts", "brakes", marker, "---\nx: 1\n---\n")
+        assert path.read_text() == f"{marker}\n\n---\nx: 1\n---\n"
+
+    def test_refreshes_an_existing_marker(self, tmp_path: Path):
+        drafts = tmp_path / "drafts"
+        first = write_pending_marker(
+            drafts, "brakes", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        )
+        second_marker = f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source b.md -->"
+        assert write_pending_marker(drafts, "brakes", second_marker) == first
+        assert "source b.md" in first.read_text()
+
+    def test_keeps_a_draft_holding_real_content(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A parse failure must not replace a page a human is reviewing with a marker."""
+        drafts = tmp_path / "drafts"
+        review_path = divert_to_drafts(
+            "# Brakes\n\nReviewed body.\n", drafts, "brakes", 0.4, "diff", "concepts", ["a.md"]
+        )
+        with caplog.at_level("WARNING", logger="lilbee.wiki.persistence"):
+            result = write_pending_marker(
+                drafts, "brakes", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+            )
+        assert result == review_path
+        assert "Reviewed body." in review_path.read_text()
+        assert PENDING_MARKER_KEYWORD_PARSE not in review_path.read_text()
+        assert "pending review" in caplog.text

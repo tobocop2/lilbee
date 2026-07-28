@@ -375,6 +375,50 @@ class TestSync:
             for r in caplog.records
         )
 
+    @pytest.mark.parametrize("auto_update", [True, False])
+    async def test_wiki_hook_runs_only_when_auto_update_is_on(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """Enabling the wiki never generates by itself; auto-update is the opt-in."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+
+        await sync(quiet=True)
+
+        assert hook.called is auto_update
+
+    async def test_wiki_failure_does_not_skip_post_ingest_verification(
+        self, mock_extract_file, isolated_env, monkeypatch, caplog
+    ):
+        """A wiki exception must not abort the entity pass or the silent-drop guard."""
+        import logging
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook chokes on.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.ingest.incremental_update",
+            mock.AsyncMock(side_effect=RuntimeError("embedder down")),
+        )
+        entities = mock.MagicMock()
+        monkeypatch.setattr("lilbee.retrieval.entities.lifecycle.ensure_entities", entities)
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            result = await sync(quiet=True)
+
+        assert "wikified.txt" in result.added
+        assert any("Wiki auto-update failed" in r.getMessage() for r in caplog.records)
+        entities.assert_called_once()
+
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.data.ingest import sync

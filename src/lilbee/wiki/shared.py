@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -133,6 +135,24 @@ class PageTarget:
     wiki_source: str
     page_type: str
     label: str
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write *text* to *path* via a temp file and ``os.replace``, creating parents.
+
+    A crash mid-write leaves the previous page intact rather than a truncated
+    one. ``mkstemp`` creates the temp file owner-only and ``os.replace`` keeps
+    that mode.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:

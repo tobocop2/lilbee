@@ -49,6 +49,7 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
     WikiSubdir,
+    atomic_write_text,
 )
 
 log = logging.getLogger(__name__)
@@ -137,22 +138,18 @@ def build_frontmatter(
     config: Config,
     source_names: list[str],
     score: float,
-    leaf_hash: str = "",
     chunks: list[SearchChunk] | None = None,
 ) -> str:
     """Build YAML frontmatter for a wiki page.
 
-    When ``leaf_hash`` is non-empty it is written so incremental rebuild
-    can skip regeneration on a subsequent sync whose chunks produce the
-    same hash. When ``chunks`` is provided the frontmatter carries a
-    ``provenance`` block naming the source/chunk-index pairs that fed
-    the generator and the extraction method from config, so a bad page
-    is auditable without re-running the pipeline.
+    When ``chunks`` is provided the frontmatter carries a ``provenance``
+    block naming the source/chunk-index pairs that fed the generator and
+    the extraction method from config, so a bad page is auditable
+    without re-running the pipeline.
     """
     # A JSON array is valid YAML flow syntax and escapes quotes/backslashes/
     # unicode, so a filename like ``a"b\c.txt`` cannot corrupt the frontmatter.
     sources_yaml = json.dumps(sorted(source_names))
-    hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     provenance_block = render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
@@ -160,7 +157,6 @@ def build_frontmatter(
         f"generated_at: {datetime.now(UTC).isoformat()}\n"
         f"sources: {sources_yaml}\n"
         f"faithfulness_score: {score:.2f}\n"
-        f"{hash_line}"
         f"{provenance_block}"
         f"---\n\n"
     )
@@ -172,6 +168,7 @@ def write_page(
     slug: str,
     full_content: str,
     drift_threshold: float,
+    source_names: list[str],
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 
@@ -179,7 +176,6 @@ def write_page(
     any intermediate directories are created before writing.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
-    page_path.parent.mkdir(parents=True, exist_ok=True)
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -187,9 +183,11 @@ def write_page(
         if ratio > drift_threshold:
             drafts_dir = wiki_root / WikiSubdir.DRAFTS
             diff_text = diff_summary(old_content, full_content)
-            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text, subdir)
+            return divert_to_drafts(
+                full_content, drafts_dir, slug, ratio, diff_text, subdir, source_names
+            )
 
-    page_path.write_text(full_content, encoding="utf-8")
+    atomic_write_text(page_path, full_content)
     return page_path
 
 
@@ -211,8 +209,9 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     ``wiki_source`` must follow the ``<wiki_dir>/<subdir>/<slug>.md``
     shape (see :attr:`PageTarget.wiki_source`). Three branches:
 
-    - subdir in :data:`WIKI_CONTENT_SUBDIRS`: clear stale rows, chunk,
-      embed, write. Returns the row count.
+    - subdir in :data:`WIKI_CONTENT_SUBDIRS`: chunk, embed, then swap
+      the page's rows in one locked replace, so an embedder failure
+      leaves the previous rows searchable. Returns the row count.
     - subdir is ``drafts/`` or ``archive/``: skip without touching the
       store. Returns 0.
     - malformed ``wiki_source`` (no subdir component): log.warning and
@@ -231,16 +230,11 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     if subdir not in WIKI_CONTENT_SUBDIRS:
         return 0
 
+    predicate = f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'"
     body = extract_body(content).strip()
-    store.clear_table(
-        CHUNKS_TABLE,
-        f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'",
-    )
-    if not body:
-        return 0
-
-    chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True)
+    chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True) if body else []
     if not chunks:
+        store.clear_table(CHUNKS_TABLE, predicate)
         return 0
 
     vectors = get_services().embedder.embed_batch(chunks)
@@ -259,8 +253,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
         }
         for idx, (text, vector) in enumerate(zip(chunks, vectors, strict=True))
     ]
-    store.add_chunks(records)
-    return len(records)
+    return store.replace_chunks(records, predicate)
 
 
 def generate_page(
@@ -275,7 +268,6 @@ def generate_page(
     store: Store,
     config: Config,
     on_progress: WikiProgressCallback | None = None,
-    leaf_hash: str = "",
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
 
@@ -319,7 +311,7 @@ def generate_page(
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = build_frontmatter(config, source_names, score, leaf_hash, chunks=chunks)
+    frontmatter = build_frontmatter(config, source_names, score, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, wiki_text, citation_block)
 

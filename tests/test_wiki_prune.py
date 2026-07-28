@@ -214,6 +214,20 @@ class TestArchivePage:
         store.delete_by_source.assert_called_once_with("wiki/summaries/doc.md")
         store.delete_citations_for_wiki.assert_called_once_with("wiki/summaries/doc.md")
 
+    def test_store_is_cleaned_before_the_file_moves(self, tmp_path: Path):
+        """Rows go first: a crash between the two steps must leave a page to retry,
+        never rows serving a page no disk scan reaches."""
+        page = write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        wiki_root = tmp_path / "wiki"
+        store = MagicMock(spec=Store)
+        page_present_at_delete: list[bool] = []
+        store.delete_by_source.side_effect = lambda _s: page_present_at_delete.append(page.exists())
+
+        _archive_page("wiki/summaries/doc.md", wiki_root, store, cfg)
+
+        assert page_present_at_delete == [True]
+        assert not page.exists()
+
     def test_same_slug_across_subdirs_archived_separately(self, tmp_path: Path):
         """Same-slug pages from different subdirs archive to distinct paths instead
         of overwriting each other under a flat archive/."""
@@ -238,17 +252,19 @@ class TestArchivePage:
         store.delete_by_source.assert_called_once()
         store.delete_citations_for_wiki.assert_called_once()
 
-    def test_delete_failure_does_not_abort_archival(self, tmp_path: Path):
-        """A failed index delete is logged; archival and citation cleanup proceed."""
+    def test_delete_failure_leaves_the_page_for_the_next_pass(self, tmp_path: Path):
+        """Cleanup runs before the move, so a failed delete keeps the page on disk
+        where the next prune pass finds it, instead of stranding rows under a file
+        no scan reaches."""
         page = write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
         wiki_root = tmp_path / "wiki"
         store = MagicMock(spec=Store)
         store.delete_by_source.side_effect = RuntimeError("commit conflict")
 
-        _archive_page("wiki/summaries/doc.md", wiki_root, store, cfg)
+        assert not _archive_page("wiki/summaries/doc.md", wiki_root, store, cfg)
 
-        assert not page.exists()  # archived despite the delete failure
-        store.delete_citations_for_wiki.assert_called_once_with("wiki/summaries/doc.md")
+        assert page.exists()
+        assert not (wiki_root / "archive" / "summaries" / "doc.md").exists()
 
 
 class TestPruneWiki:
@@ -381,8 +397,68 @@ class TestPruneWiki:
 
         assert report.records == []
 
+    def test_failed_cleanup_leaves_the_page_unpruned(self, tmp_path: Path):
+        """A page whose rows cannot be deleted is not reported archived: it stays on
+        disk and the next pass retries it."""
+        page = write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [make_citation(source_filename="deleted.md")]
+        store.delete_by_source.side_effect = RuntimeError("commit conflict")
+
+        report = prune_wiki(store)
+
+        assert report.records == []
+        assert page.exists()
+
     def test_uses_default_config_when_none(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         # Should not raise: uses cfg as default
         report = prune_wiki(store, config=None)
         assert isinstance(report, PruneReport)
+
+
+class TestReconcileOrphanRows:
+    """Rows whose page is gone from the content subdirs are deleted on the next pass."""
+
+    @staticmethod
+    def _store(sources: set[str]) -> MagicMock:
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        store.wiki_chunk_sources.return_value = sources
+        return store
+
+    def test_page_still_on_disk_keeps_its_rows(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        store = self._store({"wiki/summaries/doc.md"})
+
+        report = prune_wiki(store)
+
+        assert report.records == []
+        store.delete_by_source.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "wiki_source",
+        [
+            "wiki/summaries/gone.md",  # page deleted or never archived cleanly
+            "wiki/archive/summaries/old.md",  # archived page, outside the content subdirs
+            "malformed",  # no subdir component at all
+        ],
+    )
+    def test_orphaned_rows_are_deleted_and_recorded(self, tmp_path: Path, wiki_source: str):
+        store = self._store({wiki_source})
+
+        report = prune_wiki(store)
+
+        assert [r.wiki_source for r in report.records] == [wiki_source]
+        assert report.records[0].action == PruneAction.RECONCILED
+        store.delete_by_source.assert_called_once_with(wiki_source)
+        store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
+        assert "reconciled" in (tmp_path / "wiki" / "log.md").read_text()
+
+    def test_failed_delete_is_not_recorded(self, tmp_path: Path):
+        store = self._store({"wiki/summaries/gone.md"})
+        store.delete_by_source.side_effect = RuntimeError("commit conflict")
+
+        report = prune_wiki(store)
+
+        assert report.records == []

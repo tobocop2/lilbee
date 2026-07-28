@@ -223,7 +223,7 @@ def build_wiki(
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
-    archive_legacy_concept_pages(wiki_root, config.data_dir)
+    archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
 
     grouped = group_entities_by_primary_source(entities)
     all_sources = _all_sources_in_scope(entities, grouped, store, config, extract_concepts)

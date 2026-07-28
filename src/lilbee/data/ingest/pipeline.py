@@ -26,7 +26,7 @@ from rich.progress import (
 )
 
 from lilbee.app.services import get_services
-from lilbee.core.config import active_config
+from lilbee.core.config import Config, active_config
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_document,
@@ -883,15 +883,30 @@ async def _run_post_ingest_passes(
         store.ensure_vector_index()
         store.optimize_sources()
         await _rebuild_concept_clusters()
-        # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
-        # post-ingest hook stays function-local at this boundary.
-        from lilbee.wiki.ingest import incremental_update
-
-        await incremental_update(touched)
+        await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
 
     await to_ingest_thread(ensure_entities, cancel)
+
+
+async def _update_wiki(changed_sources: set[str], config: Config) -> None:
+    """Regenerate the wiki pages this sync touched, when auto-update is enabled.
+
+    Best effort: the ingest itself already succeeded and `lilbee wiki update`
+    re-runs the regeneration, so a wiki failure must not skip the post-ingest
+    entity pass or the reconciliation guard.
+    """
+    if not (config.wiki and config.wiki_auto_update):
+        return
+    # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
+    # post-ingest hook stays function-local at this boundary.
+    from lilbee.wiki.ingest import incremental_update
+
+    try:
+        await incremental_update(changed_sources)
+    except Exception:
+        log.warning("Wiki auto-update failed after sync", exc_info=True)
 
 
 async def sync(
