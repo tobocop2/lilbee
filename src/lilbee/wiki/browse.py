@@ -54,8 +54,18 @@ class WikiPageContent:
 
 
 def _json_safe(value: Any) -> Any:
-    """yaml.safe_load returns datetime/date objects for date-like scalars; JSON needs strings."""
-    return value.isoformat() if isinstance(value, (datetime, date)) else value
+    """yaml.safe_load returns datetime/date objects for date-like scalars; JSON needs strings.
+
+    Recurses into lists and dicts so nested frontmatter (provenance blocks,
+    source lists) is safe too.
+    """
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def list_md_files(directory: Path) -> list[Path]:

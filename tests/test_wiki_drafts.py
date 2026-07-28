@@ -229,6 +229,15 @@ class TestAcceptDraft:
         with pytest.raises(FileNotFoundError):
             accept_draft("missing", tmp_path / "wiki", MagicMock())
 
+    def test_refreshes_the_wiki_index(self) -> None:
+        """Accept is a tree mutation like build and prune, so index.md must list
+        the page it just published."""
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content("# Brakes\n\nbody"))
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, MagicMock())
+        assert "summaries/brakes.md" in (wiki_root / "index.md").read_text()
+
     def test_collision_accept_returns_rename_result(self, tmp_path: Path) -> None:
         """End-to-end: a PENDING-COLLISION draft under the hashed slug
         lands at the de-hashed base slug, and the AcceptResult surfaces
@@ -579,6 +588,19 @@ class TestPendingKindDetection:
         [d] = list_drafts(wiki_root)
         assert d.pending_kind == PendingKind.PARSE
         assert d.drift_ratio is None
+
+    def test_a_marker_quoted_in_the_body_does_not_classify_the_draft(self, tmp_path: Path) -> None:
+        """Markers are written as the first line. A drift draft that quotes one
+        further down would otherwise accept as a marker and be deleted unpublished."""
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            "<!-- DRIFT: 20% content changed - flagged for human review -->\n\n"
+            f"The build wrote <!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt -->\n",
+        )
+        [d] = list_drafts(wiki_root)
+        assert d.pending_kind is None
+        assert d.drift_ratio == pytest.approx(0.20)
 
     def test_pending_collision_marker_surfaces_kind(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"

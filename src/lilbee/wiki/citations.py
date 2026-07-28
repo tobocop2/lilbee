@@ -62,20 +62,16 @@ class ParsedCitation:
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     """Extract citation footnote definitions from wiki markdown.
 
-    When the auto-generated block comment is present, scans from that
-    line onward. When a looser model leaves the comment out, falls back
-    to scanning the whole document for ``[^srcN]: ...`` definition lines.
-    That pattern unambiguously identifies a citation footnote and only
-    appears at the block level. A key is taken once: a mid-body
-    definition repeated in the trailing block is a single citation.
+    Scans the whole document: the ``[^srcN]: ...`` pattern unambiguously
+    identifies a citation footnote wherever a model put it, so a mid-body
+    definition is a citation too. A key is taken once: a mid-body definition
+    repeated in the trailing block is a single citation.
     """
     lines = markdown.splitlines()
-    block_start = _find_citation_block_start(lines)
-    start = block_start if block_start is not None else 0
 
     citations: list[ParsedCitation] = []
     seen: set[str] = set()
-    for line_idx in range(start, len(lines)):
+    for line_idx in range(len(lines)):
         match = FOOTNOTE_RE.match(lines[line_idx])
         if match and match.group(1) not in seen:
             seen.add(match.group(1))
@@ -108,13 +104,19 @@ def footnote_marker_keys(body: str) -> set[str]:
 
 
 def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
-    """Remove ``[^srcN]`` markers from *body* that no verified record defines.
+    """Drop in-body footnote definition lines and unverified ``[^srcN]`` markers.
 
-    A marker whose definition was dropped renders as literal ``[^srcN]`` text
-    and hides the claim from ``find_unmarked_claims``.
+    The citation block is re-rendered from the verified records, so any
+    definition line still inside the body would either duplicate a verified
+    definition or publish an unverified excerpt as prose. A marker whose
+    definition was dropped renders as literal ``[^srcN]`` text and hides the
+    claim from ``find_unmarked_claims``.
     """
+    # keepends so removing a definition line does not also rewrite the body's
+    # own line endings or drop its trailing newline.
+    kept = [line for line in body.splitlines(keepends=True) if not FOOTNOTE_RE.match(line)]
     keys = {rec["citation_key"] for rec in verified}
-    return CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", body)
+    return CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", "".join(kept))
 
 
 def wiki_sourced_count(records: list[CitationRecord], config: Config) -> int:

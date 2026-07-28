@@ -36,7 +36,7 @@ LLM-bound wiki op (`build`, `update`, `synthesize`) goes through the
 
 | Tool | Use |
 |---|---|
-| `lilbee_wiki_status()` | Page counts, generator settings, last build, and the `wiki_enabled` flag. |
+| `lilbee_wiki_status()` | The `wiki_enabled` flag, summary/draft/page counts, and lint error and warning counts. |
 | `lilbee_wiki_list()` | Every wiki page with slug, title, type, source count. |
 | `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
 | `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |

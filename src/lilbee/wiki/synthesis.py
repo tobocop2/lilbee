@@ -61,7 +61,7 @@ log = logging.getLogger(__name__)
 # labels like ``## Brake System (hydraulic)`` still parse. Bold lines are
 # not headers: a mid-body ``**emphasis**`` would otherwise truncate its
 # section and open a bogus one.
-_SECTION_HEADER_RE = re.compile(r"^##?\s+(?P<name>[^\n]+)\s*$", re.MULTILINE)
+_SECTION_HEADER_RE = re.compile(r"^##?[ \t]+(?P<name>[^\n]+?)[ \t]*$", re.MULTILINE)
 
 # Machine-readable concept declaration the batched prompt requires when
 # concept curation is on. Only a declared name may open a concept section.
@@ -168,6 +168,9 @@ def _split_batched_output(
             log.info("Dropping section %r: matches no expected entity or declared concept", name)
             continue
         kind, label = kind_label
+        if label in recovered:
+            log.info("Dropping section %r: label %r already has a section", name, label)
+            continue
         recovered[label] = (kind, _prefix_heading(label, body))
     return recovered
 

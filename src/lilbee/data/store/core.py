@@ -803,12 +803,13 @@ class Store:
             return self._add_chunks_unlocked(records)
 
     def replace_chunks(self, records: list[dict], predicate: str) -> int:
-        """Replace the chunk rows matching *predicate* with *records* under one lock.
+        """Replace the chunk rows matching *predicate* with *records* under one write lock.
 
         Same compatibility and dimension gates as :meth:`add_chunks`, both run
         before the delete so a rejected write leaves the existing rows in place.
-        A reader never observes the predicate's rows missing mid-replace. Returns
-        the count added.
+        The lock serializes writers; delete and add are separate commits, so a
+        concurrent reader can briefly see the rows absent, and callers retry on
+        a crash between the two. Returns the count added.
         """
         with self._write_lock():
             self._ensure_embedding_compat()
@@ -1745,8 +1746,9 @@ class Store:
     def replace_citations_for_wiki(self, wiki_source: str, records: list[CitationRecord]) -> None:
         """Swap a wiki page's citations for *records* under one write lock.
 
-        A page is never left with the old rows deleted and the new ones unwritten,
-        so provenance cannot silently vanish between two locked writes.
+        The lock keeps another writer from landing between the delete and the
+        add; the two remain separate commits, so a crash in between leaves the
+        rows absent until the page is regenerated or accepted again.
         """
         self.clear_and_add(
             CITATIONS_TABLE,

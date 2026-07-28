@@ -8,6 +8,7 @@ kwarg, and PENDING marker replacement on successful regen.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -193,6 +194,30 @@ class TestSplitBatchedOutput:
         text = "just a paragraph with no headings at all.\n\n> some body text\n"
         parsed = _split_batched_output(text, {"Henry Ford"})
         assert parsed == {}
+
+    @pytest.mark.parametrize("divider", ["##", "# ", "##\t"])
+    def test_a_header_line_with_no_name_opens_no_section(self, divider: str):
+        """A bare header line is a malformed divider: the prose under it stays in
+        the section it interrupts instead of becoming that section's header."""
+        text = (
+            "## Henry Ford\n\n> Henry Ford founded Ford Motor Company.[^src1]\n\n"
+            f"{divider}\nHenry Ford also built tractors.\n"
+        )
+        parsed = _split_batched_output(text, {"Henry Ford"})
+        assert set(parsed) == {"Henry Ford"}
+        body = parsed["Henry Ford"][1]
+        assert "founded Ford Motor Company" in body
+        assert "also built tractors" in body
+
+    def test_a_second_header_binding_the_same_label_is_dropped(self, caplog):
+        """Two headers for one label must not let the later body replace the first."""
+        text = "## Henry Ford\n\n> first body.[^src1]\n\n## Ford\n\n> second body.[^src2]\n"
+        with caplog.at_level(logging.INFO, logger="lilbee.wiki.synthesis"):
+            parsed = _split_batched_output(text, {"Henry Ford"})
+        assert set(parsed) == {"Henry Ford"}
+        assert "first body" in parsed["Henry Ford"][1]
+        assert "second body" not in parsed["Henry Ford"][1]
+        assert any("already has a section" in r.message for r in caplog.records)
 
 
 class TestParseDeclaredConcepts:

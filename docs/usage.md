@@ -223,7 +223,7 @@ Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness or parse-failure pages awaiting your accept/reject |
-| `summaries/` | Where an accepted draft lands when there is no published page for it to replace |
+| `summaries/` | Fallback landing spot for an accepted draft with no published counterpart and no recorded origin type |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |

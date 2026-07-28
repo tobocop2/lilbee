@@ -480,9 +480,10 @@ class WikiLintIssueItem(BaseModel):
 
 
 class WikiLintResult(BaseModel):
-    """Result of a full wiki lint run."""
+    """Result of a wiki lint run, whole-wiki or single-page."""
 
     issues: list[WikiLintIssueItem] = []
+    total: int = 0
     errors: int = 0
     warnings: int = 0
 

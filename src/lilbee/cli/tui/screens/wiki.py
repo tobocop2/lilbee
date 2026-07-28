@@ -458,6 +458,7 @@ def start_wikify(app: LilbeeApp) -> None:
         from lilbee.wiki.generation import run_full_build
 
         summary = run_full_build(on_progress=_build_progress(reporter))
+        reporter.check_cancelled()
         call_from_thread(app, app.notify, msg.WIKI_BUILD_DONE.format(count=summary["count"]))
 
     app.task_bar.start_task(msg.TASK_NAME_WIKI, TaskType.WIKI, _target, indeterminate=True)
