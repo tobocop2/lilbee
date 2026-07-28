@@ -519,6 +519,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.WIKI,
         help_text="Enable the wiki layer (synthesis pages with citations)",
     ),
+    "wiki_auto_update": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.WIKI,
+        help_text="Regenerate touched wiki pages after each sync (off: wikify explicitly)",
+    ),
     "wiki_dir": SettingDef(
         str,
         nullable=False,

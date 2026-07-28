@@ -14,18 +14,20 @@ log = logging.getLogger(__name__)
 async def incremental_update(changed_sources: set[str]) -> None:
     """Regenerate only the wiki pages touched by *changed_sources*.
 
-    Builds a fresh ``ExtractedEntity`` set from the current corpus,
-    keeps the records that either have no page on disk yet or whose
-    chunk trail includes one of the changed sources, and regenerates
-    just those. Above ``cfg.wiki_ingest_update_cap`` touched pages the
-    auto-update bails out and logs a manual-update hint instead.
+    Builds a fresh ``ExtractedEntity`` set from the current corpus and
+    keeps the records whose chunk trail includes one of the changed
+    sources. An entity with no page on disk is not by itself a reason to
+    regenerate: its page may be a draft or a marker held for review, and
+    re-queueing those every sync burns LLM calls and overwrites pending
+    review content. Above ``cfg.wiki_ingest_update_cap`` touched pages
+    the auto-update bails out and logs a manual-update hint instead.
     """
     if not cfg.wiki or not changed_sources:
         return
     from lilbee.data.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
-    from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor
-    from lilbee.wiki.shared import WikiLogAction, WikiSubdir
+    from lilbee.wiki.entity_extractor import get_entity_extractor
+    from lilbee.wiki.shared import WikiLogAction
 
     svc = get_services()
     extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
@@ -35,20 +37,11 @@ async def incremental_update(changed_sources: set[str]) -> None:
         chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
     entities = await asyncio.to_thread(extractor.extract, chunks)
 
-    wiki_root = cfg.data_root / cfg.wiki_dir
-    touched = []
-    for entity in entities:
-        # The extractor emits only ENTITY kind; CONCEPT is reserved for
-        # LLM-curated pages produced inside the batched call. Keeping
-        # the dispatch neutral guards against a future extractor that
-        # re-introduces CONCEPT.
-        subdir = WikiSubdir.CONCEPTS if entity.kind is EntityKind.CONCEPT else WikiSubdir.ENTITIES
-        page_path = wiki_root / subdir / f"{entity.slug}.md"
-        if not page_path.exists():
-            touched.append(entity)
-            continue
-        if any(ref.source in changed_sources for ref in entity.chunk_refs):
-            touched.append(entity)
+    touched = [
+        entity
+        for entity in entities
+        if any(ref.source in changed_sources for ref in entity.chunk_refs)
+    ]
 
     if not touched:
         return

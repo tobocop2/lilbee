@@ -209,3 +209,32 @@ class TestSlugWhitespaceHandling:
         from lilbee.core.text import make_slug
 
         assert make_slug("  Caprice  ") == "caprice"
+
+
+class TestAtomicWriteText:
+    def test_replaces_the_previous_file(self, tmp_path):
+        from lilbee.wiki.shared import atomic_write_text
+
+        path = tmp_path / "pages" / "brakes.md"
+        atomic_write_text(path, "first")
+        atomic_write_text(path, "second")
+        assert path.read_text() == "second"
+        assert list(path.parent.iterdir()) == [path]
+
+    def test_failed_replace_keeps_the_old_file_and_leaves_no_temp(self, tmp_path, monkeypatch):
+        import os
+
+        from lilbee.wiki.shared import atomic_write_text
+
+        def _disk_full(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        path = tmp_path / "brakes.md"
+        atomic_write_text(path, "original")
+        monkeypatch.setattr(os, "replace", _disk_full)
+
+        with pytest.raises(OSError, match="disk full"):
+            atomic_write_text(path, "replacement")
+
+        assert path.read_text() == "original"
+        assert list(tmp_path.iterdir()) == [path]

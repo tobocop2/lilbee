@@ -155,6 +155,79 @@ class TestClearAndAdd:
         assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
 
 
+class TestReplaceChunks:
+    def test_replaces_matching_rows_in_place(self, store):
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(1, chunk_type="raw"))
+        replacement = _make_records(1, chunk_type=ChunkType.WIKI)
+        replacement[0]["chunk"] = "the only wiki row left"
+
+        added = store.replace_chunks(replacement, f"chunk_type = '{ChunkType.WIKI}'")
+
+        assert added == 1
+        rows = store.open_table(CHUNKS_TABLE).search().to_list()
+        wiki_chunks = [r["chunk"] for r in rows if r["chunk_type"] == ChunkType.WIKI]
+        assert wiki_chunks == ["the only wiki row left"]
+        assert sum(1 for r in rows if r["chunk_type"] == "raw") == 1
+
+    def test_empty_replacement_just_clears(self, store):
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        assert store.replace_chunks([], f"chunk_type = '{ChunkType.WIKI}'") == 0
+        assert store.open_table(CHUNKS_TABLE).search().to_list() == []
+
+    def test_bad_dimension_is_rejected_before_the_delete(self, store):
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        bad = _make_records(1, dim=cfg.embedding_dim - 1, chunk_type=ChunkType.WIKI)
+
+        with pytest.raises(ValueError, match="Vector dimension mismatch"):
+            store.replace_chunks(bad, f"chunk_type = '{ChunkType.WIKI}'")
+
+        assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
+
+    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+        import lilbee.data.store.core as core_mod
+
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
+
+        assert store.replace_chunks(_make_records(1, chunk_type=ChunkType.WIKI), "1 = 1") == 0
+        assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
+
+
+class TestWikiChunkSources:
+    def test_returns_only_wiki_row_sources(self, store):
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(1, chunk_type="raw"))
+        assert store.wiki_chunk_sources() == {"doc0.md", "doc1.md"}
+
+    def test_empty_store_returns_empty_set(self, store):
+        assert store.wiki_chunk_sources() == set()
+
+
+class TestReplaceCitationsForWiki:
+    def test_swaps_one_page_and_leaves_the_others(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="old"),
+                make_citation(wiki_source="wiki/concepts/b.md", citation_key="other"),
+            ]
+        )
+
+        store.replace_citations_for_wiki(
+            "wiki/concepts/a.md",
+            [make_citation(wiki_source="wiki/concepts/a.md", citation_key="new")],
+        )
+
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/a.md")] == [
+            "new"
+        ]
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/b.md")] == [
+            "other"
+        ]
+
+
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
         store.ensure_fts_index()

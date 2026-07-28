@@ -20,6 +20,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.data.store import Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
+from lilbee.wiki.persistence import subdir_from_wiki_source
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
     WIKI_CONTENT_SUBDIRS,
@@ -37,6 +38,7 @@ class PruneAction(Enum):
 
     ARCHIVED = "archived"
     FLAGGED = "flagged"
+    RECONCILED = "reconciled"
 
 
 @dataclass(frozen=True)
@@ -71,13 +73,36 @@ class PruneReport:
         return sum(1 for r in self.records if r.action == PruneAction.FLAGGED)
 
 
+def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
+    """Delete a wiki page's chunk and citation rows. Returns whether it succeeded."""
+    try:
+        store.delete_by_source(wiki_source)
+        store.delete_citations_for_wiki(wiki_source)
+    except Exception:
+        log.warning(
+            "Failed to delete store rows for %s; leaving the page in place for the next prune pass",
+            wiki_source,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def _archive_page(
     wiki_source: str,
     wiki_root: Path,
     store: Store,
     config: Config,
-) -> None:
-    """Move a wiki page to wiki/archive/ and clean up store data."""
+) -> bool:
+    """Clean up a wiki page's store data, then move the file to wiki/archive/.
+
+    Store cleanup runs first so a crash or a failed delete leaves the page on
+    disk, where the next prune pass finds it and retries. Moving first would
+    strand rows that serve archived content under a source no disk scan reaches.
+    """
+    if not _delete_wiki_rows(wiki_source, store):
+        return False
+
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
@@ -91,14 +116,7 @@ def _archive_page(
         log.info("Archived wiki page %s -> %s", source_path, archive_path)
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
-
-    try:
-        store.delete_by_source(wiki_source)
-    except Exception:
-        # Best-effort maintenance: the page is already archived on disk, and a
-        # stale index row must not abort the rest of the prune pass.
-        log.warning("Failed to delete index rows for %s", wiki_source, exc_info=True)
-    store.delete_citations_for_wiki(wiki_source)
+    return True
 
 
 def _check_all_sources_deleted(
@@ -155,9 +173,10 @@ def _archive_and_record(
     store: Store,
     config: Config,
     reason: str,
-) -> PruneRecord:
-    """Archive a wiki page and return a PruneRecord for the action."""
-    _archive_page(wiki_source, wiki_root, store, config)
+) -> PruneRecord | None:
+    """Archive a wiki page and return a PruneRecord, or None when it stays put."""
+    if not _archive_page(wiki_source, wiki_root, store, config):
+        return None
     return PruneRecord(wiki_source=wiki_source, action=PruneAction.ARCHIVED, reason=reason)
 
 
@@ -186,6 +205,33 @@ def _evaluate_page(
     return None
 
 
+def _reconcile_orphan_rows(store: Store, wiki_root: Path, config: Config) -> list[PruneRecord]:
+    """Delete wiki rows whose page is no longer a file under a content subdir.
+
+    The page scan only ever revisits pages still on disk, so rows left behind by
+    an interrupted archive, a manual delete, or a migration would otherwise keep
+    serving retired content in search forever.
+    """
+    prefix = config.wiki_dir + "/"
+    records: list[PruneRecord] = []
+    for wiki_source in sorted(store.wiki_chunk_sources()):
+        subdir = subdir_from_wiki_source(wiki_source)
+        page_path = wiki_root / wiki_source.removeprefix(prefix)
+        if subdir in WIKI_CONTENT_SUBDIRS and page_path.is_file():
+            continue
+        if not _delete_wiki_rows(wiki_source, store):
+            continue
+        log.info("Reconciled orphaned wiki rows for %s (no page on disk)", wiki_source)
+        records.append(
+            PruneRecord(
+                wiki_source=wiki_source,
+                action=PruneAction.RECONCILED,
+                reason="indexed rows without a page on disk",
+            )
+        )
+    return records
+
+
 def _finalize_prune(report: PruneReport, config: Config) -> None:
     """Update wiki index and log after pruning."""
     if not report.records:
@@ -205,16 +251,18 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
 
 
 def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
-    """Scan all wiki pages and prune stale/orphaned ones."""
+    """Scan all wiki pages and prune stale/orphaned ones.
+
+    The page scan covers pages still on disk; reconciliation then covers rows
+    whose page is not, including the case of a wiki directory removed wholesale.
+    """
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
     report = PruneReport()
-    if not wiki_root.exists():
-        return report
     for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
-        if not subdir_path.exists():
+        if not subdir_path.is_dir():
             continue
         for md_path in sorted(subdir_path.rglob("*.md")):
             relative = md_path.relative_to(wiki_root)
@@ -222,5 +270,6 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
             record = _evaluate_page(wiki_source, wiki_root, store, config)
             if record:
                 report.records.append(record)
+    report.records.extend(_reconcile_orphan_rows(store, wiki_root, config))
     _finalize_prune(report, config)
     return report

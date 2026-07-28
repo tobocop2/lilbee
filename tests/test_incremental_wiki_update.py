@@ -85,30 +85,40 @@ class TestIncrementalWikiUpdate:
         assert args[0] == [touched]
 
     @pytest.mark.asyncio
-    async def test_new_entity_without_existing_page_is_touched(
-        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    @pytest.mark.parametrize("existing_page", [None, "concepts/braking.md", "drafts/braking.md"])
+    async def test_changed_source_is_touched_whatever_the_page_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        _isolated_wiki: Path,
+        existing_page: str | None,
     ) -> None:
-        brand_new = _entity("fresh", EntityKind.CONCEPT, ["untouched.txt"])
-        _install_service_stubs(monkeypatch, [brand_new])
-        with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
-            await incremental_update({"untouched.txt"})
-        build.assert_called_once()
-        assert build.call_args.args[0] == [brand_new]
-
-    @pytest.mark.asyncio
-    async def test_existing_page_with_changed_source_is_touched(
-        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
-    ) -> None:
-        """Existing-page + cited-source-changed is the separate branch from new-entity."""
-        existing = _entity("braking", EntityKind.CONCEPT, ["changed.txt"])
-        wiki_root = _isolated_wiki / "wiki"
-        (wiki_root / "concepts").mkdir(parents=True)
-        (wiki_root / "concepts" / "braking.md").write_text("stale\n")
-        _install_service_stubs(monkeypatch, [existing])
+        """A changed cited source is the only trigger: page state does not gate it."""
+        entity = _entity("braking", EntityKind.CONCEPT, ["changed.txt"])
+        if existing_page is not None:
+            page = _isolated_wiki / "wiki" / existing_page
+            page.parent.mkdir(parents=True)
+            page.write_text("stale\n")
+        _install_service_stubs(monkeypatch, [entity])
         with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
             await incremental_update({"changed.txt"})
         build.assert_called_once()
-        assert build.call_args.args[0] == [existing]
+        assert build.call_args.args[0] == [entity]
+
+    @pytest.mark.asyncio
+    async def test_entity_whose_sources_are_unchanged_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """A page held in drafts for review is not a missing page: re-queueing it on
+        every sync burns LLM calls and overwrites content awaiting review."""
+        held = _entity("braking", EntityKind.CONCEPT, ["other.txt"])
+        drafts = _isolated_wiki / "wiki" / "drafts"
+        drafts.mkdir(parents=True)
+        (drafts / "braking.md").write_text("<!-- DRIFT: 40% content changed -->\n")
+        _install_service_stubs(monkeypatch, [held])
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"changed.txt"})
+        build.assert_not_called()
+        assert "DRIFT" in (drafts / "braking.md").read_text()
 
     @pytest.mark.asyncio
     async def test_cap_exceeded_skips_regeneration_and_logs_hint(
@@ -155,8 +165,8 @@ class TestIncrementalWikiUpdate:
     async def test_returns_when_no_entities_touched(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
-        """Sources exist but every extracted entity has an existing page and is
-        unrelated to changed_sources -> touched stays empty -> early return.
+        """Sources exist but every extracted entity is unrelated to
+        changed_sources -> touched stays empty -> early return.
 
         Exercises both the source-iteration branch (chunks.extend on a non-empty
         get_sources()) and the empty-touched-list early return.
