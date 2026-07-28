@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -292,6 +293,46 @@ class TestEnginePin:
         assert env["ENGINE_LLAMA_CPP_VERSION"] in pin
         assert env["ENGINE_LLAMA_SWAP_VERSION"] in pin
         assert env["ENGINE_GGUF_PARSER_REF"] in pin
+
+
+def _plant_host_binary(directory: Path, tool: EngineTool) -> Path:
+    """An executable engine binary as a developer machine would carry on PATH."""
+    exe = directory / (tool.value + (".exe" if os.name == "nt" else ""))
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return exe
+
+
+class TestEngineResolutionSeal:
+    """The suite-wide seal: engine binaries a test did not plant never resolve."""
+
+    @pytest.mark.parametrize("tool", _ALL_TOOLS)
+    def test_host_path_binary_does_not_resolve(
+        self, tool: EngineTool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        _plant_host_binary(tmp_path, tool)
+        monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+        with pytest.raises(ProviderError, match="not found"):
+            resolve_engine_tool(tool)
+
+    def test_engine_build_id_ignores_host_path_binaries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        monkeypatch.setitem(sys.modules, "lilbee_engine", None)
+        _plant_host_binary(tmp_path, EngineTool.LLAMA_SERVER)
+        monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+        assert _engine_build_id() == "unpinned"
+
+    @pytest.mark.real_engine_resolution
+    def test_marker_restores_host_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        planted = _plant_host_binary(tmp_path, EngineTool.LLAMA_SERVER)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert resolve_llama_server() == planted
 
 
 def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> None:

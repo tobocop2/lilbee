@@ -2,7 +2,7 @@ class LilbeeCompat < Formula
   desc "Whole local AI stack in one executable: models, search, crawler (pre-Haswell)"
   homepage "https://github.com/tobocop2/lilbee"
   version "0.0.0"
-  license "Elastic-2.0"
+  license "MIT"
 
   conflicts_with "tobocop2/lilbee/lilbee", because: "both install the lilbee binary"
   conflicts_with "tobocop2/lilbee/lilbee-cuda", because: "both install the lilbee binary"

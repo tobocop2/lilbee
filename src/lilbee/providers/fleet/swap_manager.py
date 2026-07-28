@@ -88,6 +88,8 @@ _HTTP_TIMEOUT_S = 10.0
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
 _BOOT_POLL_S = 0.25
+# Cap on the captured llama-swap output a boot-failure error carries.
+_BOOT_LOG_TAIL_CHARS = 2000
 # Per-group SIGTERM grace before SIGKILL on the manager shutdown/reload path. A
 # hard kill is safe (llama-server holds no persistent state). Note this is NOT
 # the constant the serve handoff waits on: that path goes through stop_engine ->
@@ -198,6 +200,8 @@ class SwapManager:
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
+        # Where this boot's output starts in the append-mode log file.
+        self._log_offset = 0
         self._port: int | None = None
         self._member_ports: list[int] = []
         # The serving contract (per-role model/ctx/slots) persisted in every
@@ -254,6 +258,7 @@ class SwapManager:
         self._close_log()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
+        self._log_offset = self._log_path.stat().st_size
         self._proc = spawn_bound_child(
             [
                 str(resolve_llama_swap()),
@@ -437,9 +442,22 @@ class SwapManager:
             }
         return set()
 
+    def _boot_log_tail(self) -> str:
+        """The current boot's captured llama-swap output, capped for an error message."""
+        try:
+            with self._log_path.open("rb") as handle:
+                handle.seek(self._log_offset)
+                data = handle.read()
+        except OSError:
+            return ""
+        return data.decode(errors="replace").strip()[-_BOOT_LOG_TAIL_CHARS:]
+
     def _fail(self, message: str) -> None:
-        """Tear down and raise a user-facing engine-start error."""
+        """Tear down and raise a user-facing engine-start error carrying the boot log."""
         self.shutdown()
+        tail = self._boot_log_tail()
+        if tail:
+            message = f"{message} Engine log ({self._log_path}):\n{tail}"
         raise ProviderError(message, provider=_PROVIDER, kind=ProviderErrorKind.SERVER)
 
 
