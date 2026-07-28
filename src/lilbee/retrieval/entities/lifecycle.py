@@ -3,7 +3,7 @@
 Turning ``entity_extraction`` on is the whole user interaction. Sync does
 the rest: the first run samples the indexed chunks, induces a schema, and
 extracts across the whole index; later runs extract new files at ingest
-(see ``pipeline._build_entity_records``). The schema is machine state
+(see ``pipeline.build_entity_records``). The schema is machine state
 persisted inside the index, so it travels with the data and there is
 nothing for the user to manage.
 
