@@ -236,8 +236,12 @@ def _reconcile_orphan_rows(store: Store, wiki_root: Path, config: Config) -> lis
     return records
 
 
-def _finalize_prune(report: PruneReport, config: Config) -> None:
-    """Update wiki index and log after pruning."""
+def _finalize_prune(report: PruneReport, wiki_root: Path, config: Config) -> None:
+    """Update wiki index and log after pruning.
+
+    A pass that reconciled rows for a wiki directory the user deleted writes
+    nothing back: index.md and log.md would recreate the tree it removed.
+    """
     if not report.records:
         return
     log.info(
@@ -246,6 +250,8 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
         report.flagged_count,
         report.reconciled_count,
     )
+    if not wiki_root.exists():
+        return
     update_wiki_index(config)
     for rec in report.records:
         append_wiki_log(
@@ -279,5 +285,5 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
                 if record:
                     report.records.append(record)
         report.records.extend(_reconcile_orphan_rows(store, wiki_root, config))
-        _finalize_prune(report, config)
+        _finalize_prune(report, wiki_root, config)
     return report

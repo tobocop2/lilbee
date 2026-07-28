@@ -45,7 +45,7 @@ from lilbee.wiki.browse import (
     read_page,
 )
 from lilbee.wiki.drafts import (
-    StaleDraftError,
+    DraftAcceptError,
     accept_draft,
     diff_draft,
     list_drafts,
@@ -132,7 +132,7 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
         result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
-    except StaleDraftError as exc:
+    except DraftAcceptError as exc:
         raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc

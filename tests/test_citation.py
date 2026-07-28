@@ -2,16 +2,20 @@
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data.store import CitationRecord
 from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
     _extract_excerpt,
     find_unmarked_claims,
+    footnote_marker_keys,
     parse_wiki_citations,
     render_citation_block,
+    scrub_unverified_markers,
     strip_citation_block,
     verify_citation,
+    wiki_sourced_count,
 )
 from tests.conftest import make_citation as _citation_record
 
@@ -52,6 +56,15 @@ class TestParseWikiCitations:
             source_ref="pep-695.txt, lines 1-30",
             line_number=19,
         )
+
+    def test_a_key_defined_twice_parses_once(self):
+        """A mid-body definition repeated in the trailing block is one citation,
+        so accept cannot store duplicate rows for the same key."""
+        md = (
+            '[^src1]: doc.md, excerpt: "first"\n\nBody text.\n\n[^src1]: doc.md, excerpt: "first"\n'
+        )
+        result = parse_wiki_citations(md)
+        assert [c.citation_key for c in result] == ["src1"]
 
     def test_returns_empty_for_no_citation_block(self):
         assert parse_wiki_citations("# Just a heading\n\nSome text.") == []
@@ -448,3 +461,34 @@ class TestMatchCitationSource:
         from lilbee.wiki.citations import _match_citation_source
 
         assert _match_citation_source("see other.md", ["doc.md"]) == ""
+
+
+class TestScrubUnverifiedMarkers:
+    """A marker whose definition was dropped must not survive into the body."""
+
+    def test_drops_markers_with_no_verified_definition(self):
+        body = "Cited claim.[^src1]\n\nDropped claim.[^src2]\n"
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert result == "Cited claim.[^src1]\n\nDropped claim.\n"
+
+    def test_a_scrubbed_claim_becomes_visible_to_the_unmarked_gate(self):
+        body = "Dropped claim.[^src2]\n"
+        assert find_unmarked_claims(body) == []
+        assert find_unmarked_claims(scrub_unverified_markers(body, [])) == ["Dropped claim."]
+
+
+class TestFootnoteMarkerKeys:
+    def test_reads_in_body_marker_keys(self):
+        assert footnote_marker_keys("a[^src1] b[^src2] b[^src1]") == {"src1", "src2"}
+
+    def test_empty_when_body_has_no_markers(self):
+        assert footnote_marker_keys("plain text") == set()
+
+
+class TestWikiSourcedCount:
+    def test_counts_only_citations_naming_a_wiki_page(self):
+        records = [
+            _citation_record(source_filename=f"{cfg.wiki_dir}/summaries/page.md"),
+            _citation_record(source_filename="doc.md"),
+        ]
+        assert wiki_sourced_count(records, cfg) == 1

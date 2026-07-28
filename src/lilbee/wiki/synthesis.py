@@ -147,6 +147,9 @@ def _split_batched_output(
     could not be recovered are simply absent from the result; the caller
     loops over the expected sets to write their PENDING markers.
     """
+    # A ``## CONCEPTS: a; b`` declaration parses as an H2 header, and its text
+    # substring-matches the labels it declares.
+    text = _CONCEPT_DECLARATION_RE.sub("", text)
     concepts = expected_concept_labels or set()
     recovered: dict[str, tuple[EntityKind, str]] = {}
     matches = list(_SECTION_HEADER_RE.finditer(text))

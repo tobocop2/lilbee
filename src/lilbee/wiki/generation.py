@@ -118,7 +118,6 @@ def generate_synthesis_pages(
 
 
 def _all_sources_in_scope(
-    entities: list[ExtractedEntity],
     grouped: dict[str, list[ExtractedEntity]],
     store: Store,
     config: Config,
@@ -126,12 +125,12 @@ def _all_sources_in_scope(
 ) -> set[str]:
     """Union of sources with entities and (when enabled) eligible for concept curation.
 
-    Seed the union with every entity's primary source. When
-    ``extract_concepts`` is True AND ``wiki_batch_min_chunks`` is
-    satisfied, add any source in the store that passes the floor.
-    This gives concept-only sources (no extracted entities) their
-    chance at curation while keeping zero-entity short sources
-    skipped entirely.
+    Seed the union with every entity's primary source (the keys of
+    ``grouped``). When ``extract_concepts`` is True AND
+    ``wiki_batch_min_chunks`` is satisfied, add any source in the store
+    that passes the floor. This gives concept-only sources (no extracted
+    entities) their chance at curation while keeping zero-entity short
+    sources skipped entirely.
     """
     sources: set[str] = set(grouped)
     if not extract_concepts:
@@ -150,7 +149,6 @@ def _all_sources_in_scope(
         chunk_count = record.get("chunk_count", 0) if isinstance(record, dict) else 0
         if chunk_count >= config.wiki_batch_min_chunks:
             sources.add(name)
-    _ = entities  # silences linters on unused pass-through; kept for doc clarity
     return sources
 
 
@@ -256,7 +254,7 @@ def build_wiki(
     archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
 
     grouped = group_entities_by_primary_source(entities)
-    all_sources = _all_sources_in_scope(entities, grouped, store, config, extract_concepts)
+    all_sources = _all_sources_in_scope(grouped, store, config, extract_concepts)
     written_concept_slugs: dict[str, str] = {}
     pages: list[Path] = []
 
@@ -387,10 +385,11 @@ def run_full_build(
             stats=stats,
         )
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.INDEX))
-        update_wiki_index()
+        update_wiki_index(config)
         append_wiki_log(
             WikiLogAction.BUILD,
             f"{len(pages)} pages from {len(entities)} records; {stats.summary_line()}",
+            config,
         )
     return {
         "paths": [str(p) for p in pages],

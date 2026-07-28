@@ -24,9 +24,12 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citations import (
     ParsedCitation,
+    footnote_marker_keys,
     render_citation_block,
+    scrub_unverified_markers,
     strip_citation_block,
     verify_citations,
+    wiki_sourced_count,
 )
 from lilbee.wiki.entity_extractor import EntityKind
 from lilbee.wiki.page import assemble_content, build_frontmatter
@@ -45,11 +48,6 @@ from lilbee.wiki.shared import (
 from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
-
-# In-body ``[^keyN]`` footnote-marker pattern. Module-scope so the
-# batched-generation hot path (`finalize_section`) does not recompile
-# it on every recovered section.
-_FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
 
 # Sentinel file for the one-time legacy-concepts archival. Lives under
 # data_dir (NOT inside wiki/) so Obsidian sync and wiki tree-walkers
@@ -228,12 +226,13 @@ def finalize_section(
     # from the citation-stripped body: the response's trailing block lands in
     # the last section, whose definitions would otherwise make it claim every
     # citation in the response.
-    section_keys = set(_FOOTNOTE_MARKER_RE.findall(strip_citation_block(body)))
+    section_keys = footnote_marker_keys(strip_citation_block(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
     resolved = citation_resolver(relevant)
     verified = verify_citations(resolved, chunks, header_label, config)
-    stats.record_citations(len(verified), len(resolved) - len(verified))
+    dropped = len(relevant) - wiki_sourced_count(resolved, config) - len(verified)
     if not verified:
+        stats.record_citations(0, dropped)
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None
 
@@ -251,7 +250,7 @@ def finalize_section(
             threshold,
         )
 
-    clean_body = strip_citation_block(body)
+    clean_body = scrub_unverified_markers(strip_citation_block(body), verified)
     frontmatter = build_frontmatter(config, source_names, score, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, clean_body, citation_block)
@@ -274,6 +273,8 @@ def finalize_section(
             )
             return None
         written_concept_slugs.setdefault(slug, source)
+
+    stats.record_citations(len(verified), dropped)
 
     # Successful regen of a previously-PENDING slug: remove the old
     # marker so the drafts surface no longer lists it.

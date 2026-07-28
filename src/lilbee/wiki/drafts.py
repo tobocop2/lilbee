@@ -20,12 +20,16 @@ from typing import Any
 
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
-from lilbee.data.store import Store
+from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.batch import hash_existing_sources
 from lilbee.wiki.citations import (
+    CitationStatus,
     parse_wiki_citations,
+    render_citation_block,
     resolve_multi_source_citations,
-    verify_citations,
+    scrub_unverified_markers,
+    strip_citation_block,
+    verify_citation,
 )
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
@@ -41,9 +45,11 @@ from lilbee.wiki.shared import (
 
 __all__ = [
     "AcceptResult",
+    "DraftAcceptError",
     "DraftInfo",
     "PendingKind",
     "StaleDraftError",
+    "UnverifiedDraftError",
     "accept_draft",
     "diff_draft",
     "list_drafts",
@@ -89,8 +95,16 @@ _PUBLISHED_SUBDIRS: tuple[str, ...] = (
 )
 
 
-class StaleDraftError(ValueError):
+class DraftAcceptError(ValueError):
+    """Base for the refusals that stop a draft from being published."""
+
+
+class StaleDraftError(DraftAcceptError):
     """Raised when a draft's published counterpart is newer than the draft itself."""
+
+
+class UnverifiedDraftError(DraftAcceptError):
+    """Raised when none of a draft's citations survive verification."""
 
 
 @dataclass
@@ -341,6 +355,8 @@ def accept_draft(
     rows are created: the citation block embedded in the draft body is
     re-parsed, verified against the chunks of the sources its
     frontmatter names, and written under the published ``wiki_source``.
+    The published body is rendered from that same set, so its footnotes
+    and its rows cannot disagree.
 
     Sequence for drift/collision: write the published file first,
     register citations and re-index next, delete the draft last. If a
@@ -349,8 +365,9 @@ def accept_draft(
     the citation replace and ``index_wiki_page`` are idempotent on the
     same ``wiki_source``.
 
-    Raises :class:`FileNotFoundError` when the draft does not exist and
-    :class:`StaleDraftError` when the published counterpart is newer.
+    Raises :class:`FileNotFoundError` when the draft does not exist,
+    :class:`StaleDraftError` when the published counterpart is newer, and
+    :class:`UnverifiedDraftError` when no cited excerpt is still in its source.
 
     Holds the wiki build mutex while publishing, so accepting a draft cannot
     interleave with a build, synthesis, or prune from another surface.
@@ -378,12 +395,15 @@ def accept_draft(
         target_slug = (
             _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
         )
-        target = _accept_target(wiki_root, target_slug, slug, raw, draft)
-        atomic_write_text(target, clean)
+        target = _accept_target(wiki_root, target_slug, slug, raw)
+        wiki_source = _wiki_source_for(target, wiki_root, config)
+        records = _accepted_citations(clean, wiki_source, slug, store)
+        content = _render_accepted_page(clean, records)
+        _refuse_stale_draft(target, draft, slug, content)
 
-        wiki_source = _wiki_source_for(target, wiki_root)
-        _persist_accepted_citations(clean, wiki_source, store, config)
-        reindexed = index_wiki_page(clean, wiki_source, store, config)
+        atomic_write_text(target, content)
+        store.replace_citations_for_wiki(wiki_source, records)
+        reindexed = index_wiki_page(content, wiki_source, store, config)
         draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(
@@ -394,42 +414,86 @@ def accept_draft(
     )
 
 
-def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str, draft: Path) -> Path:
-    """Resolve where an accepted draft lands, refusing a draft the wiki has outrun.
-
-    A published counterpart with a newer mtime means a later build already
-    regenerated the page; accepting would overwrite it with the older proposal.
-    """
+def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str) -> Path:
+    """Resolve where an accepted draft lands."""
     published = _find_published(wiki_root, target_slug)
-    if published is None:
-        fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
-        log.info("Draft %s has no published counterpart; accepting into %s", slug, fallback_subdir)
-        return wiki_root / fallback_subdir / f"{target_slug}.md"
-    if published.stat().st_mtime > draft.stat().st_mtime:
+    if published is not None:
+        return published
+    fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
+    log.info("Draft %s has no published counterpart; accepting into %s", slug, fallback_subdir)
+    return wiki_root / fallback_subdir / f"{target_slug}.md"
+
+
+def _refuse_stale_draft(target: Path, draft: Path, slug: str, content: str) -> None:
+    """Refuse a draft a later build has already outrun.
+
+    A published counterpart newer than the draft is a regenerated page the
+    older proposal would overwrite. Identical content is accept's own earlier
+    write: a retry after a failed citation or index step, which must finish.
+    """
+    if not target.is_file():
+        return
+    if target.read_text(encoding="utf-8") == content:
+        return
+    if target.stat().st_mtime > draft.stat().st_mtime:
         raise StaleDraftError(
             f"draft {slug} is older than the published page it would overwrite; "
             "reject it and re-run `lilbee wiki build`"
         )
-    return published
 
 
-def _persist_accepted_citations(
-    content: str, wiki_source: str, store: Store, config: Config
-) -> None:
-    """Rebuild the accepted page's citation rows under its published wiki_source."""
+def _accepted_citations(
+    content: str, wiki_source: str, slug: str, store: Store
+) -> list[CitationRecord]:
+    """Citation rows for an accepted draft, verified against the store's chunks.
+
+    Follows the same rule as lint: a cited source the store holds no chunks
+    for was verified at build time and keeps its records, while a record whose
+    excerpt is absent from chunks that ARE present is dropped. A draft whose
+    citations all fail would publish provenance the store cannot back, so
+    accept refuses it.
+    """
+    parsed = parse_wiki_citations(content)
     source_names = _frontmatter_sources(content)
     chunks_by_source = {name: store.get_chunks_by_source(name) for name in source_names}
     records = resolve_multi_source_citations(
-        parse_wiki_citations(content),
+        parsed,
         source_names,
         hash_existing_sources(source_names),
         chunks_by_source,
     )
-    all_chunks = [chunk for chunks in chunks_by_source.values() for chunk in chunks]
-    verified = verify_citations(records, all_chunks, wiki_source, config)
-    for rec in verified:
+    kept = [rec for rec in records if _keeps_provenance(rec, chunks_by_source, slug)]
+    if parsed and not kept:
+        raise UnverifiedDraftError(
+            f"draft {slug} has no citation whose excerpt is still in its source; "
+            "reject it and re-run `lilbee wiki build`"
+        )
+    for rec in kept:
         rec["wiki_source"] = wiki_source
-    store.replace_citations_for_wiki(wiki_source, verified)
+    return kept
+
+
+def _keeps_provenance(
+    rec: CitationRecord, chunks_by_source: dict[str, list[SearchChunk]], slug: str
+) -> bool:
+    """Whether an accepted draft's citation record survives re-verification."""
+    chunk_texts = [c.chunk for c in chunks_by_source.get(rec["source_filename"], [])]
+    if verify_citation(rec, chunk_texts) is not CitationStatus.EXCERPT_MISSING:
+        return True
+    log.warning(
+        "Dropping citation %s from draft %s: excerpt no longer in %s",
+        rec["citation_key"],
+        slug,
+        rec["source_filename"],
+    )
+    return False
+
+
+def _render_accepted_page(content: str, records: list[CitationRecord]) -> str:
+    """Rebuild the page body around the citations that persisted."""
+    body = scrub_unverified_markers(strip_citation_block(content), records)
+    block = render_citation_block(records)
+    return f"{body.rstrip()}\n\n{block}" if block else body
 
 
 def _frontmatter_sources(content: str) -> list[str]:
@@ -448,15 +512,15 @@ def reject_draft(slug: str, wiki_root: Path) -> None:
     log.info("Rejected draft %s", slug)
 
 
-def _wiki_source_for(target: Path, wiki_root: Path) -> str:
+def _wiki_source_for(target: Path, wiki_root: Path, config: Config) -> str:
     """Build the ``wiki_source`` identifier used in the chunks table.
 
     Shape matches :attr:`PageTarget.wiki_source`:
-    ``<wiki_dir>/<subdir>/<slug>.md``.
+    ``<wiki_dir>/<subdir>/<slug>.md``. Built from ``config.wiki_dir`` like
+    every other producer, so a nested wiki_dir (``notes/wiki``) resolves.
     """
-    wiki_dir_name = wiki_root.name
     relative = target.relative_to(wiki_root)
-    return f"{wiki_dir_name}/{relative.as_posix()}"
+    return f"{config.wiki_dir}/{relative.as_posix()}"
 
 
 def _coerce_float(value: Any) -> float | None:

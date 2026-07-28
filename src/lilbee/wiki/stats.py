@@ -35,8 +35,9 @@ class BuildStats:
     by the faithfulness or drift gate). ``pending_markers`` counts sections
     that produced no page at all and left a PENDING marker under ``drafts/``,
     from a parse failure or a concept-slug collision.
-    ``citations_dropped_unverified`` counts resolved citation records that
-    verification rejected, whose excerpt was not found in the source chunks.
+    ``citations_dropped_unverified`` counts parsed footnotes that reached no
+    page: excerpt not found in the source chunks, or no source to attribute
+    them to. Footnotes skipped for citing a wiki page are in neither count.
     ``verified_by_page`` maps a published page's ``wiki_source`` to the number
     of citations it rendered.
     """
@@ -63,7 +64,7 @@ class BuildStats:
 
     @property
     def citation_verify_rate(self) -> float:
-        """Fraction of resolved citation records whose excerpt verified."""
+        """Fraction of counted citations that rendered on a page."""
         total = self.citations_rendered + self.citations_dropped_unverified
         if not total:
             return 0.0

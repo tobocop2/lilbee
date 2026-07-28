@@ -24,6 +24,7 @@ from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 from lilbee.wiki.grammar import (
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,
+    CITE_RE,
     FOOTNOTE_RE,
 )
 
@@ -65,16 +66,19 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     line onward. When a looser model leaves the comment out, falls back
     to scanning the whole document for ``[^srcN]: ...`` definition lines.
     That pattern unambiguously identifies a citation footnote and only
-    appears at the block level.
+    appears at the block level. A key is taken once: a mid-body
+    definition repeated in the trailing block is a single citation.
     """
     lines = markdown.splitlines()
     block_start = _find_citation_block_start(lines)
     start = block_start if block_start is not None else 0
 
     citations: list[ParsedCitation] = []
+    seen: set[str] = set()
     for line_idx in range(start, len(lines)):
         match = FOOTNOTE_RE.match(lines[line_idx])
-        if match:
+        if match and match.group(1) not in seen:
+            seen.add(match.group(1))
             citations.append(
                 ParsedCitation(
                     citation_key=match.group(1),
@@ -96,6 +100,35 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
     for rec in citations:
         lines.append(f"[^{rec['citation_key']}]: {_format_source_ref(rec)}")
     return "\n".join(lines) + "\n"
+
+
+def footnote_marker_keys(body: str) -> set[str]:
+    """Citation keys the body's ``[^srcN]`` markers reference."""
+    return set(CITE_RE.findall(body))
+
+
+def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
+    """Remove ``[^srcN]`` markers from *body* that no verified record defines.
+
+    A marker whose definition was dropped renders as literal ``[^srcN]`` text
+    and hides the claim from ``find_unmarked_claims``.
+    """
+    keys = {rec["citation_key"] for rec in verified}
+    return CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", body)
+
+
+def wiki_sourced_count(records: list[CitationRecord], config: Config) -> int:
+    """Number of *records* citing a wiki page rather than a raw source.
+
+    :func:`verify_citations` skips these, so they are neither rendered nor
+    dropped as unverified.
+    """
+    return sum(1 for rec in records if _is_wiki_sourced(rec, config))
+
+
+def _is_wiki_sourced(record: CitationRecord, config: Config) -> bool:
+    """Whether a citation names a wiki page as its source."""
+    return record["source_filename"].startswith(config.wiki_dir + "/")
 
 
 def excerpt_in_chunks(excerpt: str, chunk_texts: list[str]) -> bool:
@@ -155,8 +188,9 @@ def _find_citation_block_start(lines: list[str]) -> int | None:
 def _body_end(lines: list[str]) -> int:
     """Return the line index the body ends at, before any citation block.
 
-    Footnote definitions without the auto-generated comment are a citation
-    block too: ``parse_wiki_citations`` reads them, so stripping removes them.
+    Without the auto-generated comment only the document's trailing run of
+    ``[^srcN]:`` definitions is a block; definitions followed by prose stay
+    in the body.
     """
     block_start = _find_citation_block_start(lines)
     if block_start is None:
@@ -374,11 +408,10 @@ def verify_citations(
 
     A footnote left without a quotable excerpt is unverified and dropped.
     """
-    wiki_prefix = config.wiki_dir + "/"
     chunk_texts = [c.chunk for c in chunks]
     verified: list[CitationRecord] = []
     for rec in citation_records:
-        if rec["source_filename"].startswith(wiki_prefix):
+        if _is_wiki_sourced(rec, config):
             log.debug("Skipping wiki-sourced citation %s", rec["citation_key"])
             continue
         if excerpt_in_chunks(rec["excerpt"], chunk_texts):

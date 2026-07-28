@@ -35,8 +35,10 @@ from lilbee.wiki.citations import (
     parse_wiki_citations,
     render_citation_block,
     render_provenance,
+    scrub_unverified_markers,
     strip_citation_block,
     verify_citations,
+    wiki_sourced_count,
 )
 from lilbee.wiki.persistence import (
     delete_drift_draft_if_present,
@@ -221,9 +223,10 @@ def write_page(
 
     ``slug`` may contain forward slashes (e.g. ``cv-manual/page-0042``);
     any intermediate directories are created before writing. Publishing
-    retires any drift draft still pending for the slug: that proposal
-    predates this body and accepting it would undo the regen. A ``drafts/``
-    target skips drift entirely and routes through :func:`_write_draft_page`.
+    retires this page's own drift draft: that proposal predates this body
+    and accepting it would undo the regen. Another source's draft under the
+    same slug is kept. A ``drafts/`` target skips drift entirely and routes
+    through :func:`_write_draft_page`.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
@@ -242,7 +245,7 @@ def write_page(
             )
 
     atomic_write_text(page_path, full_content)
-    delete_drift_draft_if_present(drafts_dir, slug)
+    delete_drift_draft_if_present(drafts_dir, slug, source_names)
     return page_path
 
 
@@ -380,7 +383,10 @@ def generate_page(
     parsed_citations = parse_wiki_citations(wiki_text)
     resolved = citation_resolver(parsed_citations)
     verified = verify_citations(resolved, chunks, label, config)
-    stats.record_citations(len(verified), len(resolved) - len(verified))
+    stats.record_citations(
+        len(verified),
+        len(parsed_citations) - wiki_sourced_count(resolved, config) - len(verified),
+    )
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
         _emit("failed", error="No valid citations found")
@@ -393,7 +399,7 @@ def generate_page(
     if subdir == WikiSubdir.DRAFTS:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
-    wiki_text = strip_citation_block(wiki_text)
+    wiki_text = scrub_unverified_markers(strip_citation_block(wiki_text), verified)
     frontmatter = build_frontmatter(config, source_names, score, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, wiki_text, citation_block)

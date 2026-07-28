@@ -447,6 +447,7 @@ class TestReconcileOrphanRows:
         ],
     )
     def test_orphaned_rows_are_deleted_and_recorded(self, tmp_path: Path, wiki_source: str):
+        write_wiki_page(tmp_path, "summaries", "keeper", "# Keeper\n")
         store = self._store({wiki_source})
 
         report = prune_wiki(store)
@@ -456,6 +457,15 @@ class TestReconcileOrphanRows:
         store.delete_by_source.assert_called_once_with(wiki_source)
         store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
         assert "reconciled" in (tmp_path / "wiki" / "log.md").read_text()
+
+    def test_a_deleted_wiki_dir_is_not_recreated(self, tmp_path: Path):
+        """Reconciling rows for a wiki the user removed must not write it back."""
+        store = self._store({"wiki/summaries/gone.md"})
+
+        report = prune_wiki(store)
+
+        assert report.reconciled_count == 1
+        assert not (tmp_path / "wiki").exists()
 
     def test_citation_only_orphan_is_reconciled(self, tmp_path: Path):
         store = self._store(set(), citation_sources={"wiki/entities/ghost.md"})

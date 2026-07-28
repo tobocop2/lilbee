@@ -289,16 +289,26 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     return True
 
 
-def delete_drift_draft_if_present(drafts_dir: Path, slug: str) -> bool:
-    """Delete a superseded drift draft for *slug*; return whether one was removed.
+def delete_drift_draft_if_present(drafts_dir: Path, slug: str, source_names: list[str]) -> bool:
+    """Delete *slug*'s superseded drift draft; return whether one was removed.
 
     A regen that lands under the drift threshold supersedes the proposal an
-    earlier regen parked in ``drafts/``: accepting the older draft afterwards
-    would overwrite the newer published body.
+    earlier regen of the same sources parked in ``drafts/``: accepting the
+    older draft afterwards would overwrite the newer published body. The
+    drafts namespace is flat, so a draft carrying another source's key (a
+    concept and an entity can share a slug) is kept.
     """
+    # circular: persistence -> batch via short_source_hash (batch imports
+    # persist_and_finalize / divert_concept_collision from persistence).
+    from lilbee.wiki.batch import short_source_hash
+
     draft_path = drafts_dir / f"{slug}.md"
     text = _read_draft(draft_path)
     if text is None or not text.lstrip().startswith(_DRIFT_MARKER_PREFIX):
+        return False
+    source_key = short_source_hash(", ".join(sorted(source_names)))
+    if _draft_belongs_to_other_source(draft_path, source_key):
+        log.info("Keeping drift draft %s: it holds another source's proposal", draft_path)
         return False
     draft_path.unlink()
     log.info("Removed superseded drift draft %s", draft_path)
