@@ -35,6 +35,10 @@ log = logging.getLogger(__name__)
 _PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
 _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 
+# Leading comment on a drift-diverted draft. The drafts surface matches the
+# same wording with a regex.
+_DRIFT_MARKER_PREFIX = "<!-- DRIFT:"
+
 # A ``<wiki_dir>/<subdir>/<slug>.md`` source has at least this many ``/``-split
 # parts. Anything shorter is a malformed wiki source and has no subdir.
 _WIKI_SOURCE_MIN_PARTS = 2
@@ -102,7 +106,7 @@ def divert_to_drafts(
     sources_label = ", ".join(sorted(source_names))
     source_key = short_source_hash(sources_label)
     note = (
-        f"<!-- DRIFT: {change_ratio:.0%} content changed; origin: {origin_subdir}; "
+        f"{_DRIFT_MARKER_PREFIX} {change_ratio:.0%} content changed; origin: {origin_subdir}; "
         f"{_DRIFT_SOURCE_FIELD}{source_key} - flagged for human review -->\n\n"
     )
     log.warning(
@@ -249,6 +253,22 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     if body is None or not _is_pending_marker_text(body):
         return False
     draft_path.unlink()
+    return True
+
+
+def delete_drift_draft_if_present(drafts_dir: Path, slug: str) -> bool:
+    """Delete a superseded drift draft for *slug*; return whether one was removed.
+
+    A regen that lands under the drift threshold supersedes the proposal an
+    earlier regen parked in ``drafts/``: accepting the older draft afterwards
+    would overwrite the newer published body.
+    """
+    draft_path = drafts_dir / f"{slug}.md"
+    text = _read_draft(draft_path)
+    if text is None or not text.lstrip().startswith(_DRIFT_MARKER_PREFIX):
+        return False
+    draft_path.unlink()
+    log.info("Removed superseded drift draft %s", draft_path)
     return True
 
 

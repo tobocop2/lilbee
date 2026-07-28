@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lilbee.core.config import cfg
+from lilbee.data.store import SearchChunk
 from lilbee.wiki.drafts import (
     AcceptResult,
     DraftInfo,
     PendingKind,
+    StaleDraftError,
     _base_slug_for_collision,
     accept_draft,
     diff_draft,
@@ -27,6 +31,12 @@ from lilbee.wiki.shared import (
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _make_newer(path: Path, reference: Path) -> None:
+    """Set *path*'s mtime a second past *reference*'s, deterministically."""
+    stamp = reference.stat().st_mtime + 1
+    os.utime(path, (stamp, stamp))
 
 
 def _draft_content(
@@ -242,6 +252,104 @@ class TestAcceptDraft:
         assert PENDING_MARKER_KEYWORD_COLLISION not in landed
         # Draft file gone.
         assert not (wiki_root / WikiSubdir.DRAFTS / f"{collision_slug}.md").exists()
+
+
+_EXCERPT = "Henry Ford founded Ford Motor."
+
+
+def _cited_draft(source: str = "a.md") -> str:
+    return (
+        "---\n"
+        f'sources: ["{source}"]\n'
+        "faithfulness_score: 0.9\n"
+        "---\n\n"
+        "# Brakes\n\n"
+        f"> {_EXCERPT}[^src1]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        f'[^src1]: {source}, excerpt: "{_EXCERPT}"\n'
+    )
+
+
+def _store_with_chunk(source: str = "a.md") -> MagicMock:
+    chunk = SearchChunk(
+        source=source,
+        content_type="text",
+        chunk_type="raw",
+        page_start=0,
+        page_end=0,
+        line_start=0,
+        line_end=0,
+        chunk=_EXCERPT,
+        chunk_index=0,
+        vector=[0.1] * cfg.embedding_dim,
+    )
+    store = MagicMock()
+    store.get_chunks_by_source.side_effect = lambda name: [chunk] if name == source else []
+    return store
+
+
+class TestAcceptRegistersCitations:
+    """Drafts carry no store state, so accept is where provenance lands."""
+
+    def test_rows_are_written_under_the_published_wiki_source(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert wiki_source == f"{wiki_root.name}/{WikiSubdir.CONCEPTS}/brakes.md"
+        assert [rec["citation_key"] for rec in records] == ["src1"]
+        assert records[0]["wiki_source"] == wiki_source
+        assert records[0]["source_filename"] == "a.md"
+        assert records[0]["excerpt"] == _EXCERPT
+
+    def test_an_excerpt_missing_from_the_source_leaves_no_rows(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = MagicMock()
+        store.get_chunks_by_source.return_value = []
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert records == []
+
+    @pytest.mark.parametrize(
+        "frontmatter",
+        ["---\nfaithfulness_score: 0.9\n---\n", "---\nsources: a.md\n---\n"],
+        ids=["absent", "not-a-list"],
+    )
+    def test_a_draft_naming_no_sources_stores_no_rows(
+        self, tmp_path: Path, frontmatter: str
+    ) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", f"{frontmatter}\n# Brakes\n\nbody\n")
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert records == []
+        store.get_chunks_by_source.assert_not_called()
+
+
+class TestAcceptRefusesStaleDrafts:
+    """A draft the wiki has already outrun must not clobber the newer page."""
+
+    def test_refuses_when_the_published_page_is_newer(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(draft, _draft_content("old proposal"))
+        _write(published, "regenerated body\n")
+        _make_newer(published, draft)
+        store = MagicMock()
+        with pytest.raises(StaleDraftError, match="older than the published page"):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+        assert published.read_text() == "regenerated body\n"
+        store.replace_citations_for_wiki.assert_not_called()
 
 
 class TestRejectDraft:

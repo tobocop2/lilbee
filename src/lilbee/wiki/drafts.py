@@ -5,8 +5,8 @@ drift against an existing page exceeds the configured threshold or
 when the faithfulness score falls below it. Without a review
 surface drafts accumulate with no exit ramp, so this module exposes
 the four operations a reviewer needs: see what is pending, diff
-against the published version, accept (overwrite the published
-page and re-index its chunks), or reject (delete the draft file).
+against the published version, accept (publish the page, register its
+citations, re-index its chunks), or reject (delete the draft file).
 """
 
 from __future__ import annotations
@@ -18,8 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
 from lilbee.data.store import Store
+from lilbee.wiki.batch import hash_existing_sources
+from lilbee.wiki.citation import parse_wiki_citations
+from lilbee.wiki.citations import resolve_multi_source_citations, verify_citations
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
@@ -27,6 +31,7 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     PendingKind,
     WikiSubdir,
+    atomic_write_text,
     parse_frontmatter,
 )
 
@@ -34,6 +39,7 @@ __all__ = [
     "AcceptResult",
     "DraftInfo",
     "PendingKind",
+    "StaleDraftError",
     "accept_draft",
     "diff_draft",
     "list_drafts",
@@ -77,6 +83,10 @@ _PUBLISHED_SUBDIRS: tuple[str, ...] = (
     WikiSubdir.CONCEPTS,
     WikiSubdir.ENTITIES,
 )
+
+
+class StaleDraftError(ValueError):
+    """Raised when a draft's published counterpart is newer than the draft itself."""
 
 
 @dataclass
@@ -302,8 +312,10 @@ def _base_slug_for_collision(slug: str) -> str:
     return _COLLISION_SUFFIX_RE.sub("", slug)
 
 
-def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
-    """Move the draft into its published subdir and re-index its chunks.
+def accept_draft(
+    slug: str, wiki_root: Path, store: Store, config: Config | None = None
+) -> AcceptResult:
+    """Publish the draft, register its citations, and re-index its chunks.
 
     Behavior branches on the draft's pending kind:
 
@@ -321,15 +333,23 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
       winning slug, overwrites the winning page with this draft's
       body, re-indexes, deletes the collision marker.
 
-    Sequence for drift/collision: write the published file first,
-    re-index next, delete the draft last. If the re-index raises
-    (chunker, embedder, LanceDB contention), the draft file stays
-    on disk so the user can retry ``accept``: ``index_wiki_page``
-    is idempotent on the same ``wiki_source`` (``clear_table`` +
-    re-write).
+    Drafts carry no store state, so accept is where a page's citation
+    rows are created: the citation block embedded in the draft body is
+    re-parsed, verified against the chunks of the sources its
+    frontmatter names, and written under the published ``wiki_source``.
 
-    Raises :class:`FileNotFoundError` when the draft does not exist.
+    Sequence for drift/collision: write the published file first,
+    register citations and re-index next, delete the draft last. If a
+    later step raises (chunker, embedder, LanceDB contention), the
+    draft file stays on disk so the user can retry ``accept``: both
+    the citation replace and ``index_wiki_page`` are idempotent on the
+    same ``wiki_source``.
+
+    Raises :class:`FileNotFoundError` when the draft does not exist and
+    :class:`StaleDraftError` when the published counterpart is newer.
     """
+    if config is None:
+        config = cfg
     draft = _draft_path(wiki_root, slug)
     if not draft.is_file():
         raise FileNotFoundError(f"draft not found: {slug}")
@@ -348,21 +368,12 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
         return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
 
     target_slug = _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
-    published = _find_published(wiki_root, target_slug)
-    if published is not None:
-        target = published
-    else:
-        fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
-        target = wiki_root / fallback_subdir / f"{target_slug}.md"
-        log.info(
-            "Draft %s has no published counterpart; accepting into %s",
-            slug,
-            fallback_subdir,
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(clean, encoding="utf-8")
+    target = _accept_target(wiki_root, target_slug, slug, raw, draft)
+    atomic_write_text(target, clean)
 
-    reindexed = _reindex_accepted_page(target, wiki_root, store)
+    wiki_source = _wiki_source_for(target, wiki_root)
+    _persist_accepted_citations(clean, wiki_source, store, config)
+    reindexed = index_wiki_page(clean, wiki_source, store)
     draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(
@@ -373,6 +384,51 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     )
 
 
+def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str, draft: Path) -> Path:
+    """Resolve where an accepted draft lands, refusing a draft the wiki has outrun.
+
+    A published counterpart with a newer mtime means a later build already
+    regenerated the page; accepting would overwrite it with the older proposal.
+    """
+    published = _find_published(wiki_root, target_slug)
+    if published is None:
+        fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
+        log.info("Draft %s has no published counterpart; accepting into %s", slug, fallback_subdir)
+        return wiki_root / fallback_subdir / f"{target_slug}.md"
+    if published.stat().st_mtime > draft.stat().st_mtime:
+        raise StaleDraftError(
+            f"draft {slug} is older than the published page it would overwrite; "
+            "reject it and re-run `lilbee wiki build`"
+        )
+    return published
+
+
+def _persist_accepted_citations(
+    content: str, wiki_source: str, store: Store, config: Config
+) -> None:
+    """Rebuild the accepted page's citation rows under its published wiki_source."""
+    source_names = _frontmatter_sources(content)
+    chunks_by_source = {name: store.get_chunks_by_source(name) for name in source_names}
+    records = resolve_multi_source_citations(
+        parse_wiki_citations(content),
+        source_names,
+        hash_existing_sources(source_names),
+        chunks_by_source,
+    )
+    all_chunks = [chunk for chunks in chunks_by_source.values() for chunk in chunks]
+    verified = verify_citations(records, all_chunks, wiki_source, config)
+    for rec in verified:
+        rec["wiki_source"] = wiki_source
+    store.replace_citations_for_wiki(wiki_source, verified)
+
+
+def _frontmatter_sources(content: str) -> list[str]:
+    """Source filenames recorded in a page's ``sources`` frontmatter field."""
+    # Frontmatter is untyped YAML: a hand-edited page can carry anything here.
+    raw = parse_frontmatter(content).get("sources")
+    return [str(item) for item in raw] if isinstance(raw, list) else []
+
+
 def reject_draft(slug: str, wiki_root: Path) -> None:
     """Delete the draft file without touching the published page or the index."""
     draft = _draft_path(wiki_root, slug)
@@ -380,19 +436,6 @@ def reject_draft(slug: str, wiki_root: Path) -> None:
         raise FileNotFoundError(f"draft not found: {slug}")
     draft.unlink()
     log.info("Rejected draft %s", slug)
-
-
-def _reindex_accepted_page(target: Path, wiki_root: Path, store: Store) -> int:
-    """Re-index *target* via :func:`lilbee.wiki.page.index_wiki_page`.
-
-    Returns the number of ``chunk_type="wiki"`` rows written. Routes
-    through the same chunk / embed / clear-and-rewrite path as initial
-    page generation, so an accepted draft is indexed identically to a
-    fresh page and no bespoke accept-time code path exists.
-    """
-    wiki_source = _wiki_source_for(target, wiki_root)
-    content = target.read_text(encoding="utf-8")
-    return index_wiki_page(content, wiki_source, store)
 
 
 def _wiki_source_for(target: Path, wiki_root: Path) -> str:
