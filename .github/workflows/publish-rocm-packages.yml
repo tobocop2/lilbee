@@ -1,22 +1,26 @@
-name: Publish CUDA Packages
+name: Publish ROCm Packages
 
-# Updates the Homebrew lilbee-cuda formula, AUR lilbee-cuda PKGBUILD, and the
-# Nix flake CUDA entry to pin a tag's GH-release CUDA Linux binary. Runs
-# manually after build-gpu-executables.yml has attached the CUDA exe.
+# Updates the Homebrew lilbee-rocm formula, AUR lilbee-rocm PKGBUILD, and the Nix
+# flake ROCm entry to pin a tag's GH-release ROCm Linux binary, and builds the
+# lilbee-rocm snap. Runs manually after build-gpu-executables.yml has attached the
+# ROCm exe.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag whose CUDA executables are on the GH release (e.g. v0.6.66b476)."
+        description: "Release tag whose ROCm executable is on the GH release (e.g. v0.6.66b476)."
         required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-cuda-packages-${{ inputs.tag }}
+  group: publish-rocm-packages-${{ inputs.tag }}
   cancel-in-progress: false
+
+env:
+  ROCM_ASSET: lilbee-linux-x86_64-rocm
 
 jobs:
   resolve:
@@ -24,9 +28,9 @@ jobs:
     outputs:
       tag: ${{ steps.info.outputs.tag }}
       version: ${{ steps.info.outputs.version }}
-      sha_linux_cuda: ${{ steps.info.outputs.sha_linux_cuda }}
+      sha_linux_rocm: ${{ steps.info.outputs.sha_linux_rocm }}
     steps:
-      - name: Resolve tag and CUDA asset digest
+      - name: Resolve tag and ROCm asset digest
         id: info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -39,17 +43,13 @@ jobs:
           gh api "/repos/${REPO}/releases/tags/${tag}" \
             --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
 
-          get_sha() {
-            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
-          }
-          sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
-
-          [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-gpu-executables.yml first"; exit 1; }
+          sha_linux_rocm=$(awk -F'\t' -v name="${ROCM_ASSET}" '$1 == name { print $2 }' /tmp/assets.tsv)
+          [ -n "$sha_linux_rocm" ] || { echo "${ROCM_ASSET} missing from release ${tag}; run build-gpu-executables.yml first"; exit 1; }
 
           {
             echo "tag=$tag"
             echo "version=$version"
-            echo "sha_linux_cuda=$sha_linux_cuda"
+            echo "sha_linux_rocm=$sha_linux_rocm"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -60,9 +60,9 @@ jobs:
       - uses: ./.github/actions/publish-homebrew-formula
         with:
           tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          formula-path: Formula/lilbee-cuda.rb
-          render-args: --cuda --version ${{ needs.resolve.outputs.version }} --sha-linux-cu125 ${{ needs.resolve.outputs.sha_linux_cuda }}
-          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }}"
+          formula-path: Formula/lilbee-rocm.rb
+          render-args: --rocm --version ${{ needs.resolve.outputs.version }} --sha-linux-rocm ${{ needs.resolve.outputs.sha_linux_rocm }}
+          commit-message: "lilbee-rocm ${{ needs.resolve.outputs.version }}"
 
   aur:
     needs: resolve
@@ -71,10 +71,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/publish-aur-package
         with:
-          pkgname: lilbee-cuda
-          pkgbuild-dir: packaging/aur/lilbee-cuda
+          pkgname: lilbee-rocm
+          pkgbuild-dir: packaging/aur/lilbee-rocm
           version: ${{ needs.resolve.outputs.version }}
-          sha-linux: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_rocm }}
           aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   nix-flake:
@@ -90,18 +90,19 @@ jobs:
       - name: Build systems JSON
         id: sys
         env:
-          SHA_LINUX_CUDA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          SHA_LINUX_ROCM: ${{ needs.resolve.outputs.sha_linux_rocm }}
         run: |
           systems=$(jq -nc \
-            --arg sha "$SHA_LINUX_CUDA" \
-            '{ "x86_64-linux": { asset: "lilbee-linux-x86_64-cu125", sha256: $sha } }')
+            --arg sha "$SHA_LINUX_ROCM" \
+            --arg asset "${ROCM_ASSET}" \
+            '{ "x86_64-linux": { asset: $asset, sha256: $sha } }')
           echo "value=${systems}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/publish-flake-sources
         with:
-          target-file: sources-cuda.json
+          target-file: sources-rocm.json
           version: ${{ needs.resolve.outputs.version }}
           systems-json: ${{ steps.sys.outputs.value }}
-          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"
+          commit-message: "lilbee-rocm ${{ needs.resolve.outputs.version }} (flake)"
 
   snap:
     needs: resolve
@@ -110,33 +111,33 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Download and verify the CUDA binary
+      - name: Download and verify the ROCm binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
-          SHA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          SHA: ${{ needs.resolve.outputs.sha_linux_rocm }}
         run: |
           set -euo pipefail
-          mkdir -p packaging/snap-cuda/payload
+          mkdir -p packaging/snap-rocm/payload
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            -p lilbee-linux-x86_64-cu125 -O packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125
-          echo "$SHA  packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125" | sha256sum -c -
-          chmod +x packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125
+            -p "${ROCM_ASSET}" -O "packaging/snap-rocm/payload/${ROCM_ASSET}"
+          echo "$SHA  packaging/snap-rocm/payload/${ROCM_ASSET}" | sha256sum -c -
+          chmod +x "packaging/snap-rocm/payload/${ROCM_ASSET}"
       - name: Render snapcraft.yaml
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
-        run: bash packaging/tools/render_snapcraft.sh packaging/snap-cuda/snapcraft.yaml "$VERSION"
+        run: bash packaging/tools/render_snapcraft.sh packaging/snap-rocm/snapcraft.yaml "$VERSION"
       - uses: snapcore/action-build@v1
         id: build
         with:
-          path: packaging/snap-cuda
+          path: packaging/snap-rocm
       - name: Smoke test
         env:
           EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
-          ACTUAL=$(/snap/bin/lilbee-cuda --version)
+          ACTUAL=$(/snap/bin/lilbee-rocm --version)
           echo "snap: $ACTUAL"
           test "$ACTUAL" = "$EXPECTED"
       - name: Attach to release
@@ -144,6 +145,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          cp "${{ steps.build.outputs.snap }}" lilbee-linux-x86_64-cu125.snap
-          gh release upload "$TAG" lilbee-linux-x86_64-cu125.snap --repo "$GITHUB_REPOSITORY" --clobber
-
+          cp "${{ steps.build.outputs.snap }}" "${ROCM_ASSET}.snap"
+          gh release upload "$TAG" "${ROCM_ASSET}.snap" --repo "$GITHUB_REPOSITORY" --clobber

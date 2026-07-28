@@ -15,17 +15,15 @@ the wheels' location is only known at install time.
 from __future__ import annotations
 
 import importlib.util
-import logging
 import os
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lilbee.providers import model_cache
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_diagnostics import device_probe_diagnostic, ldd_output
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.devices import FleetDevice
@@ -47,18 +45,6 @@ _CUDA_WHEEL_IMPORTS: tuple[str, ...] = (
 # could not initialize a device fell to CPU in exactly the silence this exists to
 # break.
 _CUDA_SONAME_RE = re.compile(r"\blib(?:cudart|cublas|nvrtc)\.so\.(\d+)")
-# The HIP equivalents. A ROCm build links these and none of the CUDA sonames, so
-# the CUDA guard above never fired for it.
-_HIP_SONAMES: tuple[str, ...] = ("libamdhip64.so", "librocblas.so", "libhipblas.so")
-# Substrings that mark a CUDA init failure in the engine's --list-devices output.
-_CUDA_ERROR_MARKERS: tuple[str, ...] = ("error", "fail", "no cuda")
-_LDD_TIMEOUT_S = 10
-# PCI vendor id for AMD, as sysfs reports it.
-log = logging.getLogger(__name__)
-
-_AMD_PCI_VENDOR_ID = "0x1002"
-# How much of the probe output to quote when no specific error line is found.
-_DIAGNOSTIC_TAIL_CHARS = 300
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
@@ -148,26 +134,6 @@ def apply_cuda_runtime_env(binary: Path | None = None) -> None:
     os.environ.update(cuda_runtime_env(binary))
 
 
-def _ldd_output(binary: Path, env: dict[str, str]) -> str | None:
-    """``ldd`` stdout for *binary* under *env*; None when ldd can't run on it."""
-    ldd = shutil.which("ldd")
-    if ldd is None:
-        return None
-    try:
-        proc = subprocess.run(  # noqa: S603 - ldd path and the resolved binary
-            [ldd, str(binary)],
-            capture_output=True,
-            text=True,
-            timeout=_LDD_TIMEOUT_S,
-            env=env,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        # Not an ELF, a static binary, or a timeout: nothing to inspect.
-        return None
-    return proc.stdout
-
-
 def _linked_cuda_major(ldd_output: str) -> int | None:
     """The CUDA runtime major *ldd_output* links, or ``None`` when it links none."""
     match = _CUDA_SONAME_RE.search(ldd_output)
@@ -176,101 +142,8 @@ def _linked_cuda_major(ldd_output: str) -> int | None:
 
 def _links_cuda_runtime(binary: Path, env: dict[str, str]) -> bool:
     """True when *binary* lists a CUDA runtime soname (a CUDA build), resolved or not."""
-    out = _ldd_output(binary, env)
+    out = ldd_output(binary, env)
     return out is not None and _linked_cuda_major(out) is not None
-
-
-def _device_probe_diagnostic(probe_output: str) -> str:
-    """The probe's CUDA error line, or a short tail of its output."""
-    out = probe_output.strip()
-    for line in out.splitlines():
-        lowered = line.lower()
-        if "cuda" in lowered and any(marker in lowered for marker in _CUDA_ERROR_MARKERS):
-            return line.strip()
-    return out[-_DIAGNOSTIC_TAIL_CHARS:] if out else "(the engine's device probe printed nothing)"
-
-
-def _links_hip_runtime(binary: Path, env: dict[str, str]) -> bool:
-    """True when *binary* lists a HIP runtime soname (a ROCm build), resolved or not."""
-    out = _ldd_output(binary, env)
-    if out is None:
-        return False
-    return any(soname in out for soname in _HIP_SONAMES)
-
-
-def _amd_gpu_present() -> bool:
-    """Whether the kernel exposes an AMD GPU, without needing ROCm to work.
-
-    Read from sysfs rather than from amd-smi or rocm-smi: those ship with ROCm,
-    and the failure this guards is precisely ROCm being installed wrong, so a
-    tool-based check would report "no GPU" for the case it exists to catch.
-    """
-    if not Path("/dev/kfd").exists():
-        return False
-    for vendor in Path("/sys/class/drm").glob("card*/device/vendor"):
-        try:
-            if vendor.read_text().strip().lower() == _AMD_PCI_VENDOR_ID:
-                return True
-        except OSError:
-            continue
-    return False
-
-
-def _amd_discrete_gpu_proven() -> bool:
-    """Whether a discrete AMD card is positively known to be present.
-
-    Positive evidence only. The sysfs checks that find an AMD GPU cannot tell a
-    discrete card from an APU, and the difference decides between refusing to
-    start and merely running slower, so the question is put to the Vulkan loader,
-    which reports the device type. An unreachable loader proves nothing and
-    answers no, which keeps the softer path.
-    """
-    from lilbee.providers.fleet.gpu_select import PCIVendorID, discrete_gpu_from_vendor
-
-    return discrete_gpu_from_vendor(PCIVendorID.AMD) is True
-
-
-def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
-    """Fail loud when a GPU build cannot initialize any device on a host that has one.
-
-    Dispatches on what the binary actually links, so a ROCm build gets the same
-    treatment a CUDA build has always had. ROCm has a wide silent-failure class
-    (kernel and user-space version mismatch, an unsupported gfx target, no
-    permission on /dev/kfd) and every one of them previously ended as a quiet
-    fall back to CPU.
-    """
-    assert_cuda_devices_usable(binary, devices, probe_output)
-    if not sys.platform.startswith("linux") or devices:
-        return
-    env = {**os.environ, **cuda_runtime_env(binary)}
-    if not (_links_hip_runtime(binary, env) and _amd_gpu_present()):
-        return
-    if not _amd_discrete_gpu_proven():
-        # An APU is an AMD GPU by every check above: amdgpu exposes /dev/kfd for
-        # integrated parts too, and the iGPU carries vendor 0x1002. But AMD's
-        # population of GPUs ROCm legitimately does not support is large, and an
-        # unsupported gfx target is the normal case for an APU rather than a
-        # misconfiguration. Failing here would stop the engine on a laptop where
-        # CPU serving worked, which is worse than the slow fallback this guard
-        # exists to catch, so say so and let it start.
-        log.warning(
-            "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
-            "enumerated no device, so GPU work will fall back to CPU. No discrete AMD card "
-            "was found, so this is most likely an APU whose gfx target this ROCm build does "
-            "not support (check with 'rocminfo'). The engine reported: %s",
-            _device_probe_diagnostic(probe_output),
-        )
-        return
-    raise ProviderError(
-        "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
-        "enumerated no device, so GPU work would silently fall back to CPU.\n"
-        f"The engine reported: {_device_probe_diagnostic(probe_output)}\n"
-        "Likely causes: the ROCm user-space version does not match the amdgpu kernel "
-        "driver; the GPU's gfx target is not supported by this ROCm build (check with "
-        "'rocminfo'); no read/write permission on /dev/kfd (the user is usually added "
-        "to the 'render' and 'video' groups); or a restrictive ROCR_VISIBLE_DEVICES or "
-        "HIP_VISIBLE_DEVICES."
-    )
 
 
 def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
@@ -291,7 +164,7 @@ def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_o
         return
     if not model_cache.has_nvidia_gpu():
         return
-    diagnostic = _device_probe_diagnostic(probe_output)
+    diagnostic = device_probe_diagnostic(probe_output)
     raise ProviderError(
         "The engine links the CUDA runtime and this host has an NVIDIA GPU, but it "
         "enumerated no CUDA-capable device, so GPU work would silently fall back to CPU.\n"

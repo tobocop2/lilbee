@@ -65,10 +65,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine-*.whl' --dir engine/
-      - name: Every CUDA engine wheel carries the runtime it links
+      # No --backend here: a released wheel carries the -1.<backend>- build tag, so
+      # each one declares its own flavor.
+      - name: Every engine wheel carries the backend it claims
         shell: bash
-        run: python3 tools/qa/assert_cuda_bundle.py engine/*.whl
-      - name: Every CUDA asset the matrices build is on the release
+        run: python3 tools/qa/assert_engine_bundle.py engine/*.whl
+      - name: Every GPU asset the matrices build is on the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,8 +92,9 @@ jobs:
           lilbee-compat-linux-x86_64-cu124
           lilbee-windows-x86_64-cu124.exe
           lilbee-windows-x86_64-cu125.exe
+          lilbee-linux-x86_64-rocm
           EOF
-          [ "${missing}" -eq 0 ] || { echo "a continue-on-error CUDA build cell dropped its artifact"; exit 1; }
+          [ "${missing}" -eq 0 ] || { echo "a continue-on-error GPU build cell dropped its artifact"; exit 1; }
           echo "every expected CUDA asset is present"
 
   # The packaging fan-outs are dispatched fire-and-forget and finish after the RC
@@ -117,8 +120,10 @@ jobs:
           WAIT_MINUTES: "180"
         run: |
           set -uo pipefail
-          expected="lilbee.flatpak lilbee-cuda.flatpak lilbee-compat.flatpak
+          expected="lilbee.flatpak lilbee-cuda.flatpak lilbee-rocm.flatpak
+                    lilbee-compat.flatpak
                     lilbee-linux-x86_64.snap lilbee-linux-x86_64-cu125.snap
+                    lilbee-linux-x86_64-rocm.snap
                     lilbee-compat-linux-x86_64.snap"
           deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
           while true; do

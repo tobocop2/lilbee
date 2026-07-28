@@ -16,6 +16,8 @@ on:
       - 'engine-versions.env'
       - 'scripts/check_style_rules.py'
       - 'tools/qa/**'
+      - 'tools/wheel-build/**'
+      - 'packaging/tools/**'
       - 'scripts/qa/**'
       - '.github/workflows/ci.yml'
       - '.github/actions/restore-ci-models/**'

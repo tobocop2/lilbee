@@ -34,5 +34,5 @@ jobs:
   # No `with:`: the inputs are optional and an empty release_tag keeps this in
   # artifacts-only mode, so both attach steps skip.
   warm-cuda:
-    uses: ./.github/workflows/build-cuda-executables.yml
+    uses: ./.github/workflows/build-gpu-executables.yml
     secrets: inherit

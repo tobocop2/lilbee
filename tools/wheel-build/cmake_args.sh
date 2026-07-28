@@ -16,6 +16,9 @@ set -euo pipefail
 
 backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${script_dir}/../../engine-versions.env"
 
 # TARGET_ARCH: cross-compile target. Defaults to host arch.
 target_arch="${TARGET_ARCH:-$(uname -m)}"
@@ -60,6 +63,51 @@ esac
 common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
 common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
+# Every AMD target lilbee wants to ship for: gfx906 (MI50), gfx908 (MI100),
+# gfx90a (MI200), gfx942 (MI300), gfx950 (MI350), gfx1030 (RDNA2), gfx1100/1101/1102
+# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). Intent, not support:
+# targets the installed ROCm cannot serve are filtered below, not removed here.
+rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
+
+# The subset of those the ROCm at $1 actually supports, as a cmake list: the
+# intersection of the device bitcode (what clang can compile; one unsupported
+# target fails the whole configure) and the rocBLAS lazy Tensile masters (what
+# the runtime can execute; a target with bitcode but no masters builds fine and
+# aborts inside rocBLAS at the first batched GEMM, as 7.2's gfx906 does).
+rocm_buildable_targets() {
+  local root="$1" arch targets="" no_bitcode="" no_kernels=""
+  local kernels_dir="${root}/lib/rocblas/library" check_kernels="1"
+  if [ ! -d "${kernels_dir}" ]; then
+    check_kernels=""
+    echo "cmake_args.sh: no rocBLAS kernel library under ${kernels_dir}," \
+      "filtering on device bitcode alone" >&2
+  fi
+  for arch in ${rocm_wanted_targets}; do
+    if [ ! -e "${root}/amdgcn/bitcode/oclc_isa_version_${arch#gfx}.bc" ]; then
+      no_bitcode="${no_bitcode} ${arch}"
+      continue
+    fi
+    if [ -n "${check_kernels}" ] && [ ! -e "${kernels_dir}/TensileLibrary_lazy_${arch}.dat" ]; then
+      no_kernels="${no_kernels} ${arch}"
+      continue
+    fi
+    targets="${targets}${targets:+;}${arch}"
+  done
+
+  [ -z "${no_bitcode}" ] || echo "cmake_args.sh: ROCm at ${root} has no device bitcode for:${no_bitcode}" >&2
+  [ -z "${no_kernels}" ] || echo "cmake_args.sh: rocBLAS at ${root} has no GEMM kernels for:${no_kernels}" >&2
+
+  # An install this script does not understand. Build everything rather than
+  # silently emitting a wheel for no card at all.
+  if [ -z "${targets}" ]; then
+    echo "cmake_args.sh: no wanted target survives the filter," \
+      "building every wanted target unfiltered" >&2
+    echo "${rocm_wanted_targets}" | tr ' ' ';'
+    return
+  fi
+  printf '%s' "${targets}"
+}
+
 case "${backend}_${runner_os}" in
   cpu_Linux)
     args="${common_x86} -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=OFF"
@@ -93,11 +141,14 @@ case "${backend}_${runner_os}" in
     args="${common_x86} -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
   rocm_Linux)
-    # AMD ROCm/HIP. Only Linux is realistic — ROCm on Windows is preview-quality.
-    # Compute capabilities cover RDNA2/RDNA3/RDNA4 + CDNA: gfx906 (MI50),
-    # gfx908 (MI100), gfx90a (MI200), gfx940/942 (MI300), gfx1030 (RDNA2),
-    # gfx1100 (RDNA3), gfx1101/1102 (Navi 32/33).
-    args="${common_x86} -DGGML_HIPBLAS=ON -DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx940;gfx942;gfx1030;gfx1100;gfx1101;gfx1102 -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF"
+    # ROCm on Windows is preview-quality, so Linux only.
+    # GGML_HIP, not GGML_HIPBLAS: cmake caches an unknown -D instead of failing, so
+    # the renamed-away spelling built a CPU-only engine.
+    # HIP device code needs AMD's clang, which ROCm 7 keeps under lib/llvm.
+    rocm_root="${ROCM_PATH:-/opt/rocm-${ENGINE_ROCM_VERSION}}"
+    rocm_clang="${rocm_root}/lib/llvm/bin/clang"
+    rocm_targets="$(rocm_buildable_targets "${rocm_root}")"
+    args="${common_x86} -DGGML_HIP=ON -DAMDGPU_TARGETS=${rocm_targets} -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=${rocm_clang} -DCMAKE_CXX_COMPILER=${rocm_clang}++"
     ;;
   sycl_Linux|sycl_Windows)
     # Intel oneAPI SYCL — Intel Arc + Data Center Max GPUs.

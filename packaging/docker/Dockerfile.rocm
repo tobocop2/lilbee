@@ -1,0 +1,34 @@
+# The runtime base, not the full ROCm image: the executable carries its own ROCm
+# userspace, so only the kernel driver comes from the host.
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libgomp1 \
+        libnuma1 \
+        libdrm2 \
+        libdrm-amdgpu1 \
+        libelf1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG LILBEE_VERSION
+ARG ROCM_ASSET=lilbee-linux-x86_64-rocm
+RUN test -n "${LILBEE_VERSION}" || (echo "LILBEE_VERSION build arg required" && exit 1) && \
+    curl -fsSL -o /usr/local/bin/lilbee \
+        "https://github.com/tobocop2/lilbee/releases/download/v${LILBEE_VERSION}/${ROCM_ASSET}" && \
+    chmod +x /usr/local/bin/lilbee && \
+    /usr/local/bin/lilbee --version
+
+RUN useradd -m -u 1000 lilbee
+# No usermod here: ubuntu:22.04 has no `render` group (systemd-sysusers creates it and
+# this image has no systemd), so adding it would fail the build, and a group created
+# here would not carry the host's GID anyway. Access comes from the run command:
+#   docker run --device /dev/kfd --device /dev/dri --group-add video --group-add render
+USER lilbee
+WORKDIR /home/lilbee/data
+ENV LILBEE_DATA_DIR=/home/lilbee/data
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/local/bin/lilbee"]
+CMD ["--help"]
