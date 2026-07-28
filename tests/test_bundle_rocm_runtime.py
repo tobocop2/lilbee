@@ -138,24 +138,65 @@ def _write_stub_patchelf(bin_dir: pathlib.Path, log: pathlib.Path) -> None:
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
 
+# Everything bundle_rocm_runtime.sh shells out to, minus readelf and patchelf which
+# are stubbed. PATH is built from this alone so "patchelf is absent" is a property of
+# the test rather than of the host: CI runners have a real one, developer laptops
+# usually do not, and the test that asserts absence flipped between them.
+_REAL_TOOLS = (
+    # bash and env first: the stubs below carry a #!/usr/bin/env bash shebang, which
+    # resolves through this PATH like everything else.
+    "bash",
+    "env",
+    "basename",
+    "cmp",
+    "cp",
+    "cut",
+    "dirname",
+    "du",
+    "find",
+    "grep",
+    "head",
+    "mkdir",
+    "rm",
+    "sed",
+    "tr",
+)
+
+
+def _link_real_tools(stub_dir: pathlib.Path) -> None:
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    for tool in _REAL_TOOLS:
+        found = shutil.which(tool)
+        assert found, f"{tool} not on PATH; the bundler needs it"
+        target = stub_dir / tool
+        if not target.exists():
+            target.symlink_to(found)
+
+
 def _run(
     bin_dir: pathlib.Path,
     rocm_tree: pathlib.Path,
     tmp_path: pathlib.Path,
     needed: dict[str, list[str]] | None = None,
     targets: str | None = None,
+    with_patchelf: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     stub_dir = tmp_path / "stub"
     _write_stub_readelf(stub_dir, _NEEDED if needed is None else needed)
-    _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
+    if with_patchelf:
+        _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
+    _link_real_tools(stub_dir)
     env = {
         "ROCM_PATH": str(rocm_tree),
-        "PATH": f"{stub_dir}:/usr/bin:/bin",
+        "PATH": str(stub_dir),
     }
     if targets is not None:
         env["ROCM_TARGETS"] = targets
+    # bash by absolute path: PATH above is the script's lookup table, not ours.
+    bash = shutil.which("bash")
+    assert bash, "bash not on PATH"
     return subprocess.run(
-        ["bash", str(_SCRIPT), str(bin_dir)],
+        [bash, str(_SCRIPT), str(bin_dir)],
         capture_output=True,
         text=True,
         env=env,
@@ -306,15 +347,7 @@ def test_leaves_the_engines_own_libraries_alone(bundled, tmp_path):
 
 def test_fails_when_patchelf_is_absent(bin_dir, rocm_tree, tmp_path):
     """Silently skipping the rewrite ships a bundle that resolves only where built."""
-    stub_dir = tmp_path / "stub"
-    _write_stub_readelf(stub_dir, _NEEDED)
-    result = subprocess.run(
-        ["bash", str(_SCRIPT), str(bin_dir)],
-        capture_output=True,
-        text=True,
-        env={"ROCM_PATH": str(rocm_tree), "PATH": f"{stub_dir}:/usr/bin:/bin"},
-        check=False,
-    )
+    result = _run(bin_dir, rocm_tree, tmp_path, with_patchelf=False)
     assert result.returncode == 1
     assert "patchelf is required" in result.stderr
 
