@@ -8898,6 +8898,22 @@ class TestWikiScreenReloadHook:
                 app.task_bar._after_done_hooks(task_type.value)
             reload_.assert_called_once_with()
 
+    async def test_completion_reloads_an_open_drafts_screen(self, tmp_path):
+        """A finishing wikify refreshes the review queue it just filled.
+
+        The build and the sync-time incremental update are what create drift
+        drafts and PENDING markers, so an open drafts screen must rescan too.
+        """
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+            with patch.object(WikiDraftsScreen, "reload") as reload_:
+                app.task_bar._after_done_hooks(TaskType.WIKI.value)
+            reload_.assert_called_once_with()
+
     async def test_reload_before_the_screen_is_composed_is_skipped(self, tmp_path):
         from textual.css.query import NoMatches
 
@@ -9001,7 +9017,7 @@ async def _run_draft_action(tmp_path, target: str, side_effect, *, accept: bool)
         screen = app.screen
         assert isinstance(screen, WikiDraftsScreen)
         with (
-            patch.object(WikiDraftsScreen, "notify") as notify,
+            patch.object(app, "notify") as notify,
             patch(f"lilbee.cli.tui.screens.wiki_drafts.{target}", side_effect=side_effect),
         ):
             if accept:
@@ -9502,6 +9518,45 @@ class TestWikiDraftsScreen:
             screen._do_reject("gone-already")
             assert await pump_until(pilot, lambda: table.row_count == 0), "table kept a dead row"
 
+    async def test_outcome_lands_after_the_screen_is_popped(self, tmp_path, monkeypatch):
+        """A draft task that finishes after the user left still toasts and refreshes.
+
+        WIKI tasks have capacity 1, so an accept queues behind a running
+        wikify for minutes and the screen that started it is routinely gone
+        by the time it lands.
+        """
+        import threading
+
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        _write_draft(cfg.data_root / cfg.wiki_dir, "late-draft")
+        monkeypatch.setattr(drafts_screen_mod, "reject_draft", lambda slug, root: None)
+
+        targets = []
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            monkeypatch.setattr(
+                app.task_bar,
+                "start_task",
+                lambda name, task_type, target, **kw: targets.append(target),
+            )
+            screen._do_reject("late-draft")
+            app.pop_screen()
+            await pilot.pause()
+            with patch.object(app, "notify") as notify:
+                worker = threading.Thread(target=targets[0], args=(MagicMock(),))
+                worker.start()
+                landed = await pump_until(pilot, lambda: notify.called)
+                worker.join()
+            assert landed, "outcome never reached the app after the screen was popped"
+            assert msg.WIKI_DRAFTS_REJECTED.format(slug="late-draft") in str(notify.call_args)
+
     async def test_accept_without_highlight_is_noop(self, tmp_path, monkeypatch):
         """Pressing ``a`` with no rows does not push the confirm dialog."""
         from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
@@ -9969,6 +10024,36 @@ class TestWikiCoverageEdgeCases:
             tree = screen.query_one("#wiki-page-list", Tree)
             assert [str(c.label) for c in tree.root.children] == [msg.WIKI_LOAD_FAILED_LEAF]
             assert "boom" in screen.query_one("#wiki-content", Markdown).source
+
+    async def test_load_failure_survives_a_filter_keystroke(self, tmp_path):
+        """Typing after a failed listing must not swap the error for 'no pages'.
+
+        The cache is empty because the walk failed, so the empty-wiki state
+        would be a lie until a reload succeeds.
+        """
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Markdown, Tree
+
+            from lilbee.cli.tui import messages as msg
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.list_pages", side_effect=OSError("boom")):
+                screen.reload()
+            screen._load_pages(filter_text="anything")
+            await pilot.pause()
+            tree = screen.query_one("#wiki-page-list", Tree)
+            assert [str(c.label) for c in tree.root.children] == [msg.WIKI_LOAD_FAILED_LEAF]
+            assert "boom" in screen.query_one("#wiki-content", Markdown).source
+
+            with patch("lilbee.wiki.browse.list_pages", return_value=[]):
+                screen.reload()
+            await pilot.pause()
+            assert [str(c.label) for c in tree.root.children] == [msg.wiki_empty_state_leaf()]
 
     async def test_filtering_reads_the_cache_instead_of_re_walking_disk(self, tmp_path):
         """A debounced keystroke repaints from the cached list, not from disk."""

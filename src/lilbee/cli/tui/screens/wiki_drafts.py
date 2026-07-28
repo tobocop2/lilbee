@@ -75,6 +75,21 @@ def _draft_failure(exc: Exception, slug: str) -> tuple[str, SeverityLevel]:
     return str(exc), "error"
 
 
+def _post_outcome(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Marshal a draft outcome back to the event loop from the worker thread.
+
+    Targets the app, not the screen: a WIKI task queues behind a running
+    build, so the screen that started it may be gone by the time it lands.
+    """
+    call_from_thread(app, _apply_outcome, app, message, severity)
+
+
+def _apply_outcome(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Toast the outcome and re-read the drafts the task just changed."""
+    app.notify(message, severity=severity)
+    app.task_bar.reload_wiki_screens()
+
+
 def _kind_label(pending_kind: str | None) -> str:
     """Map a pending_kind value to its display label.
 
@@ -152,10 +167,14 @@ class WikiDraftsScreen(Screen[None]):
             msg.WIKI_DRAFTS_COLUMN_FAITHFULNESS,
             msg.WIKI_DRAFTS_COLUMN_PUBLISHED,
         )
-        self._load_drafts()
+        self.reload()
 
-    def _load_drafts(self) -> None:
-        """Re-read drafts from disk and repopulate the table."""
+    def reload(self) -> None:
+        """Re-read drafts from disk and repopulate the table.
+
+        Public entry point for the task bar, which refreshes an open drafts
+        screen after work that wrote or removed drafts.
+        """
         try:
             self._drafts = list_drafts(_wiki_root())
         except Exception as exc:
@@ -362,6 +381,7 @@ class WikiDraftsScreen(Screen[None]):
         freeze the UI for the length of whatever build holds the mutex.
         Failures re-raise after the toast so the task row records them too.
         """
+        app = self.app
 
         def _target(reporter: ProgressReporter) -> None:
             reporter.update(0, slug, indeterminate=True)
@@ -369,17 +389,8 @@ class WikiDraftsScreen(Screen[None]):
                 work()
             except Exception as exc:
                 error, severity = _draft_failure(exc, slug)
-                self._post_outcome(failure_template.format(error=error), severity)
+                _post_outcome(app, failure_template.format(error=error), severity)
                 raise
-            self._post_outcome(success_message, "information")
+            _post_outcome(app, success_message, "information")
 
-        self.app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)
-
-    def _post_outcome(self, message: str, severity: SeverityLevel) -> None:
-        """Hand the outcome back to the event loop from the worker thread."""
-        call_from_thread(self, self._show_outcome, message, severity)
-
-    def _show_outcome(self, message: str, severity: SeverityLevel) -> None:
-        """Toast the outcome and re-read the drafts the task just changed."""
-        self.notify(message, severity=severity)
-        self._load_drafts()
+        app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)
