@@ -107,6 +107,9 @@ def rocm_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     for name in _ROCM_GRAPH:
         target = llvm if name in _LLVM_LIBS else lib
         (target / name).write_text(f"elf: {name}")
+    # ROCm ships three names for comgr; only the SONAME form may be bundled.
+    (lib / "libamd_comgr.so").write_text("elf: libamd_comgr.so.3")
+    (lib / "libamd_comgr.so.3.0.0").write_text("elf: libamd_comgr.so.3")
     return tmp_path / "rocm"
 
 
@@ -419,3 +422,18 @@ def test_fails_when_the_dlopened_library_is_missing(bin_dir, rocm_tree, tmp_path
     result = _run(bin_dir, rocm_tree, tmp_path)
     assert result.returncode == 1
     assert "libamd_comgr" in result.stderr
+
+
+def test_takes_only_the_soname_of_a_dlopened_library(bundled):
+    """cp -L on each of libfoo.so, .so.3 and .so.3.0.0 is three full copies of one library."""
+    assert (bundled / "libamd_comgr.so.3").is_file()
+    assert not (bundled / "libamd_comgr.so").exists()
+    assert not (bundled / "libamd_comgr.so.3.0.0").exists()
+
+
+def test_keeps_the_dlopened_soname_when_nothing_links_it(bin_dir, rocm_tree, tmp_path):
+    """With rocroller gone nothing DT_NEEDEDs comgr, and dedup must still not take it."""
+    needed = {**_NEEDED, "librocroller.so.1": []}
+    result = _run(bin_dir, rocm_tree, tmp_path, needed=needed)
+    assert result.returncode == 0, result.stderr
+    assert (bin_dir / "libamd_comgr.so.3").is_file()

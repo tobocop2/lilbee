@@ -21,6 +21,8 @@ source "${script_dir}/../../engine-versions.env"
 rocm_root="${ROCM_PATH:-/opt/rocm-${ENGINE_ROCM_VERSION}}"
 # SONAMEs copied out of the ROCm tree, set by copy_rocm_closure.
 bundled=""
+# The subset of those nothing links, so no pass may treat them as dead.
+dlopened_sonames=""
 # ROCm 7 splits what the engine links: hip, rocblas and hipblas under lib, clang's
 # OpenMP runtime under lib/llvm/lib. The rocm cell compiles with AMD's clang, so
 # ggml's OpenMP is libomp from the second rather than the host's libgomp.
@@ -33,6 +35,9 @@ rocm_lib_dirs="${rocm_root}/lib ${rocm_root}/lib/llvm/lib"
 # gate. It survives today only because librocroller happens to declare it. Seeded
 # explicitly so pruning an unrelated edge cannot take the code-object manager with it.
 required_libs="libamdhip64 librocblas libhipblas libamd_comgr"
+# Stems loaded by name at runtime. Only the SONAME form is taken: ROCm ships
+# libamd_comgr.so, .so.3 and .so.3.0.0, and cp -L would turn each into its own
+# 152 MiB copy.
 dlopened_libs="libamd_comgr.so"
 
 needed_by() {
@@ -41,17 +46,31 @@ needed_by() {
 
 # Libraries loaded by name at runtime rather than linked. No walk can discover them.
 copy_dlopened_libs() {
-  local stem src match
+  local stem soname
   for stem in ${dlopened_libs}; do
-    for match in "${rocm_root}"/lib/"${stem}"*; do
-      [ -e "${match}" ] || continue
-      src="$(basename "${match}")"
-      [ -e "${pkg_bin_dir}/${src}" ] && continue
-      cp -L "${match}" "${pkg_bin_dir}/"
-      bundled="${bundled} ${src}"
-      pending="${pending} ${pkg_bin_dir}/${src}"
-      echo "bundled dlopened library: ${src}"
-    done
+    soname="$(soname_form "${stem}")"
+    [ -n "${soname}" ] || { echo "no ${stem}.N under ${rocm_root}/lib" >&2; exit 1; }
+    [ -e "${pkg_bin_dir}/${soname}" ] && continue
+    cp -L "${rocm_root}/lib/${soname}" "${pkg_bin_dir}/"
+    bundled="${bundled} ${soname}"
+    pending="${pending} ${pkg_bin_dir}/${soname}"
+    dlopened_sonames="${dlopened_sonames} ${soname}"
+    echo "bundled dlopened library: ${soname}"
+  done
+}
+
+# The one name a loader asks for: libfoo.so.3, not the libfoo.so dev symlink and not
+# the fully-versioned libfoo.so.3.0.0 behind it.
+soname_form() {
+  local stem="$1" match name
+  for match in "${rocm_root}"/lib/"${stem}".[0-9]*; do
+    [ -e "${match}" ] || continue
+    name="$(basename "${match}")"
+    case "${name#"${stem}".}" in
+      *.*) continue ;;
+    esac
+    printf '%s' "${name}"
+    return
   done
 }
 
@@ -215,11 +234,7 @@ drop_orphans() {
 
   local kept=""
   # A dlopened library is unreachable by construction; that is why it is listed.
-  for stem in ${dlopened_libs}; do
-    for soname in ${bundled}; do
-      case "${soname}" in "${stem}"*) reachable="${reachable} ${soname}" ;; esac
-    done
-  done
+  reachable="${reachable} ${dlopened_sonames}"
 
   for soname in ${bundled}; do
     case " ${reachable} " in
