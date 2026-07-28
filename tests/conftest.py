@@ -1,6 +1,7 @@
 """Shared test helpers."""
 
 import os
+import shutil
 import sys
 import threading
 import warnings
@@ -35,6 +36,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.providers.fleet.binary import EngineTool
 
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
 pytest_plugins = ["tests._hang_watchdog"]
@@ -178,6 +180,30 @@ def _assume_litellm_available(request, monkeypatch):
     if "real_litellm_probe" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _sealed_engine_resolution(request, monkeypatch):
+    """Seal engine-binary resolution so every machine behaves like CI.
+
+    resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
+    empty (always, outside a release build), so a developer with llama-server
+    installed resolves a real binary where CI raises ProviderError. Blocking
+    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
+    override forces a test that needs a binary to plant its own (a tmp-file
+    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
+    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    """
+    if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
+        return
+    monkeypatch.setattr(cfg, "llama_server_path", "")
+    sealed = {tool.value for tool in EngineTool}
+    real_which = shutil.which
+
+    def _engineless_which(cmd, *args, **kwargs):
+        return None if cmd in sealed else real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _engineless_which)
 
 
 @pytest.fixture(autouse=True)
@@ -666,3 +692,8 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
         ),
     )
     return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
+async def one_shard(files):
+    """Present a known file list to ``ingest_stream`` as a single-shard stream."""
+    yield list(files)

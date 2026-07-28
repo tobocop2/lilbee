@@ -10341,12 +10341,12 @@ async def test_catalog_grid_leave_down_focuses_next():
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
-            # focus() lands over one or more refresh hops, not synchronously; a
-            # bare pause here lets LeaveDown post before grids[0] is actually the
-            # focused widget, so focus_next moves from the wrong anchor and can
-            # land back on grids[0]. Wait for the anchor to settle first, and
-            # assert it landed: without focus on grids[0] the post-condition
-            # ("focus moved off grids[0]") would pass for the wrong reason.
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            grids[0].focus()
+            # Wait for focus to settle: focus() lands over one or more refresh
+            # hops, so a bare pause can leave grids[0] unfocused and LeaveDown
+            # then moves from the wrong anchor.
             assert await pump_until(pilot, lambda: screen.focused is grids[0])
             grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
             await pump_until(pilot, lambda: screen.focused is not grids[0])

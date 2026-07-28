@@ -99,7 +99,7 @@ the full pipeline over HTTP via `/api/search`.
 
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
-- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill.
+- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill. This diff is streamed shard by shard so embedding starts before the whole corpus is hashed — see [Streaming the plan](#streaming-the-plan-start-embedding-before-the-corpus-is-hashed).
 - **Markdown.** Heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., `# Setup > ## Install`) so each chunk's section context travels with it. Inspired by Anthropic's Contextual Retrieval (2024), which showed adding context to chunks reduces retrieval failures by 49%.
 - **Code.** tree-sitter AST splitting via tree-sitter-language-pack for 150+ languages, with symbol name, type, and line range in chunk headers.
 - **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model on `llama-server`). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
@@ -112,6 +112,48 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
+
+### Planning: which files to ingest
+
+Before any embedding, sync diffs the corpus against the store to decide which files to process. That diff is a **stat-gated hash**, per file.
+
+```mermaid
+flowchart TD
+    F["file on disk"] --> ST{"stored size + mtime<br/>match, and predate<br/>the recorded capture?"}
+    ST -->|yes| U["unchanged — bytes never read"]
+    ST -->|no| H["SHA-256 the bytes"]
+    H --> HC{"hash matches<br/>the stored row?"}
+    HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
+    HC -->|no| SK{"hash matches a<br/>failed-file skip marker?"}
+    SK -->|yes| SKIP["skip — failed here last sync"]
+    SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
+```
+
+The hash is doing two jobs at once, which is why it stays in this pass and cannot move to write time:
+
+- **Change key.** The stored hash is what the next sync diffs against. A stat match alone skips the read; the hash runs only when the stat pair drifts.
+- **Content identity.** The chunks written for a file are keyed by the hash of the *same bytes* they were extracted from. Deferring the hash to flush time would let a file edited mid-run store stale chunks under the new content's hash — the next sync would then see a matching stat, match the stored hash, and never re-process, serving stale chunks forever.
+
+### Streaming the plan: start embedding before the corpus is hashed
+
+Planning the whole corpus first, then embedding, means the GPU fleet sits idle for the entire diff. On a multi-million-file corpus that walk-plus-hash pass is tens of minutes of paid idle before the first passage is embedded.
+
+Instead, the plan is **sharded and overlapped** with ingest. Files are sorted, sliced into contiguous shards (ramping 256 → 8192), and each shard is handed to ingest as it lands. The next shard is planned on a dedicated thread while the current one is being extracted and embedded.
+
+```mermaid
+flowchart LR
+    W["walk + sort corpus"] --> SL["slice into shards<br/>256 → 8192 files"]
+    SL --> P1["plan shard 1"]
+    P1 -->|"fleet starts in ~1s"| I1["extract + embed shard 1"]
+    P1 -.->|"plan next while<br/>shard 1 ingests"| P2["plan shard 2"]
+    P2 --> I2["extract + embed shard 2"]
+    P2 -.-> P3["plan shard 3 …"]
+    P3 --> I3["…"]
+```
+
+Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, skip markers) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
+
+**Why the list is sorted.** `os.walk` yields files in arbitrary filesystem order, so the corpus is sorted by key first. That fixed order is what makes the plan deterministic: classification fans out across a thread pool and completes out of order, but the plan is reassembled in sorted order, so it matches what a single serial pass would produce regardless of thread scheduling (a test asserts `parallel == serial`). It also makes move detection deterministic — when several deleted sources share a content hash, a reappeared file pairs with exactly one old key — and makes the shard boundaries stable, so a killed-and-restarted run re-shards the same corpus the same way.
 
 ### Ingest concurrency: keeping the GPUs fed
 
@@ -1336,7 +1378,9 @@ Two properties do the work:
 
 **Tag runs read, they never write.** GitHub scopes a cache save to the creating ref, and a tag is its own scope, so anything a release saved was unreadable by every later run while still evicting the main-scoped entry that would have hit. Every save is now guarded on `github.ref_type != 'tag'`; the warm workflows on main are what populate.
 
-**Engines live on a release, not in the cache.** The Actions cache has a hard 10 GiB per-repo cap with LRU eviction and drops anything unaccessed for 7 days. Engine binaries are ~3.5 GiB of that and are perfectly immutable (every source pinned in `engine-versions.env`), so they sit on the `engine-binaries` release instead, keyed by the same hash the cache key uses. `tools/wheel-build/engine_asset_name.sh` maps key to asset name for both the reader and the writer, because a mismatch there would not fail, it would silently never hit. Fetched with `curl`, not `gh`: the manylinux container the Linux legs build in ships no `gh`.
+**Engines live on a release, not in the cache.** The Actions cache has a hard 10 GiB per-repo cap with LRU eviction and drops anything unaccessed for 7 days. Engine binaries are ~3.5 GiB of that and are perfectly immutable (every source pinned in `engine-versions.env`), so they sit on the `engine-binaries` release instead, keyed by the same hash the cache key uses.
+
+A built engine is written to the mirror and nowhere else. Storing it in the Actions cache too would spend the cap duplicating what the mirror already holds durably, and that cap is exactly what the Nuitka object caches need: object caches want per-file granularity and must be a cache, engines are a single immutable blob and need not be. Restores still fall through mirror, then cache, then a source build, so engines cached before the mirror existed are still read. `asset_name()` in `tools/wheel-build/ci_mirror.sh` maps key to asset name for both the reader and the writer, because a mismatch there would not fail, it would silently never hit. Fetched with `curl`, not `gh`: the manylinux container the Linux legs build in ships no `gh`.
 
 **Nothing here can change a shipped binary.** Every mechanism either serves bytes that are already identical or misses:
 

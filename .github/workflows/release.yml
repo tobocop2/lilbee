@@ -241,8 +241,19 @@ jobs:
       # preprocessed source plus flags, so a mismatched entry misses, never lies.
       # The asset name stays in the primary key only so concurrent cells do not
       # save the same key; restore-keys is what shares them.
-      - name: Restore Nuitka cache (Windows)
+      # The mirror is readable from a tag ref, unlike the Actions cache, so a
+      # release starts warm from whatever the last build contributed, and can
+      # contribute its own compile back.
+      - name: Restore the Nuitka cache from the mirror
+        id: nuitka-mirror
         if: runner.os == 'Windows'
+        uses: ./.github/actions/nuitka-object-cache
+        with:
+          phase: restore
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
         uses: actions/cache/restore@v4
         with:
           path: nuitka-cache
@@ -276,7 +287,7 @@ jobs:
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
-      # Pinned to the latest stable lancedb for Python (0.33), served by the fork as
+      # Pinned to the latest stable lancedb for Python (0.34), served by the fork as
       # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
@@ -284,7 +295,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.33.0+compat
+            lancedb==0.34.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
       # baked rpath) and install lilbee_engine so Nuitka bundles the whole
@@ -318,6 +329,27 @@ jobs:
         with:
           path: nuitka-cache
           key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
+
+      # Any ref, including tags. See the action for why this cannot be an
+      # actions/cache save.
+      # success() is explicit rather than load-bearing: steps already carry an
+      # implicit success(), so a failed compile would not reach this anyway. It
+      # is spelled out because first-publish-wins makes a partial cache permanent
+      # for the key, and that guarantee should not rest on an implicit default.
+      #
+      # continue-on-error because this is a pure optimisation sitting between a
+      # finished compile and the artifact upload. ci_mirror.sh soft-fails on its
+      # own errors, but mktemp and wc run under set -euo pipefail and can still
+      # hard-exit; on a soft cell that would go green with the asset missing.
+      - name: Publish the Nuitka cache to the mirror
+        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
+        continue-on-error: true
+        uses: ./.github/actions/nuitka-object-cache
+        with:
+          phase: publish
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+          token: ${{ github.token }}
+
 
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.

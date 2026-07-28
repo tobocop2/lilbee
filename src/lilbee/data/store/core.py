@@ -106,8 +106,8 @@ _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
+# The index type is carried by the lancedb IvfPq config at build time.
 _VECTOR_METRIC = "cosine"
-_ANN_INDEX_TYPE = "IVF_PQ"
 _ANN_NPROBES_FLOOR = 20
 _ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
@@ -406,18 +406,20 @@ class Store:
         runs LanceDB's default compaction + version pruning (default prune
         window: 7 days). Work scales with recent deltas rather than total
         chunk count, so large corpora no longer pay the full
-        ``create_fts_index(replace=True)`` rebuild cost on every sync.
+        ``create_index(config=FTS(), replace=True)`` rebuild cost on every sync.
         """
         with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
+            from lancedb.index import FTS
+
             try:
                 if _has_fts_index(table):
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                 else:
-                    table.create_fts_index("chunk", replace=False)
+                    table.create_index("chunk", config=FTS(), replace=False)
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._fts_ready = True
             except Exception:
@@ -443,8 +445,10 @@ class Store:
                 return True
             if not force and (threshold <= 0 or table.count_rows() < threshold):
                 return False
+            from lancedb.index import IvfPq
+
             try:
-                table.create_index(metric=_VECTOR_METRIC, index_type=_ANN_INDEX_TYPE)
+                table.create_index("vector", config=IvfPq(distance_type=_VECTOR_METRIC))
                 log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
                 return True
             except Exception:

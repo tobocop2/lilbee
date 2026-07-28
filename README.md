@@ -12,37 +12,36 @@
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/tutorial">Tutorial reels</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a> &nbsp;·&nbsp; <a href="https://web.libera.chat/#lilbee">Chat (#lilbee)</a></p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?label=release&logo=github&logoColor=white" alt="Latest release"></a>
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=white" alt="lilbee on PyPI"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2C3E50" alt="License: MIT"></a>
-  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-7c3aed?logo=obsidian&logoColor=white" alt="Obsidian community plugin"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?label=release&logo=github&logoColor=c4a7e7&style=flat-square&labelColor=191724&color=c4a7e7" alt="Latest release"></a>
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="lilbee on PyPI"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-9ccfd8?logo=python&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Python 3.11+"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-908caa?style=flat-square&labelColor=191724" alt="Platforms">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-6e6a86?style=flat-square&labelColor=191724" alt="License: MIT"></a>
+  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-c4a7e7?logo=obsidian&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Obsidian community plugin"></a>
   <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
-  <a href="https://web.libera.chat/#lilbee"><img src="https://img.shields.io/badge/IRC-%23lilbee%20on%20Libera.Chat-5865F2?logo=liberadotchat&logoColor=white" alt="#lilbee on Libera.Chat"></a>
+  <a href="https://web.libera.chat/#lilbee"><img src="https://img.shields.io/badge/IRC-%23lilbee%20on%20Libera.Chat-f6c177?logo=liberadotchat&logoColor=f6c177&style=flat-square&labelColor=191724" alt="#lilbee on Libera.Chat"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tobocop2/lilbee/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white" alt="CI"></a>
-  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-2EA043" alt="Coverage"></a>
-  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-2A6DB2" alt="Typed"></a>
-  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
-  <a href="https://pepy.tech/project/lilbee"><img src="https://img.shields.io/pepy/dt/lilbee?label=downloads&logo=python&logoColor=white&color=3776AB" alt="PyPI downloads"></a>
-  <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total?label=release%20downloads&logo=github&logoColor=white&color=2C3E50" alt="GitHub release downloads"></a>
+  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tobocop2/lilbee/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="CI"></a>
+  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-31748f?style=flat-square&labelColor=191724" alt="Coverage"></a>
+  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-c4a7e7?style=flat-square&labelColor=191724" alt="Typed"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square" alt="Ruff"></a>
+  <a href="https://pypistats.org/packages/lilbee"><img src="https://img.shields.io/pypi/dm/lilbee?label=downloads&logo=python&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="PyPI downloads per month"></a>
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-3775A9?logo=pypi&logoColor=white" alt="Install from PyPI"></a>
-  <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white" alt="Homebrew tap"></a>
-  <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/aur/version/lilbee?logo=archlinux&logoColor=white&label=AUR" alt="lilbee on the AUR"></a>
-  <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white" alt="Docker image on GHCR"></a>
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-9ccfd8?logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Install from PyPI"></a>
+  <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-f6c177?logo=homebrew&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Homebrew tap"></a>
+  <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/badge/AUR-package-c4a7e7?logo=archlinux&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="lilbee on the AUR"></a>
+  <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-9ccfd8?logo=docker&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Docker image on GHCR"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white" alt="Nix flake"></a>
-  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-4A90D9?logo=flatpak&logoColor=white" alt="Flatpak repo"></a>
-  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-82BEA0?logo=snapcraft&logoColor=white" alt="Snap package"></a>
-  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-c4a7e7?logo=nixos&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Nix flake"></a>
+  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-9ccfd8?logo=flatpak&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Flatpak repo"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-f6c177?logo=snapcraft&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Snap package"></a>
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-908caa?logo=windows&logoColor=908caa&style=flat-square&labelColor=191724" alt="Scoop bucket"></a>
 </p>
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
@@ -419,7 +418,7 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 
 |              | Command                                                                                                                                                                                  |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre lilbee 'lancedb==0.33.0+compat' --extra-index-url https://lilbee.sh/compat/`                                                                          |
+| **pip**      | `pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/`                                                                          |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-compat`                                                                                                                                            |
 | **AUR**      | `paru -S lilbee-compat`                                                                                                                                                                 |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-compat`                                                                                                                                          |
