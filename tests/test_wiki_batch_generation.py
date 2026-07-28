@@ -460,6 +460,27 @@ class TestGenerateSourceBatchEdgeCases:
         marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry-ford.md"
         assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
 
+    def test_a_marker_only_inside_a_fence_fails_the_citation_gate(self, stub_embedder):
+        """The parser and the scrubber read a fenced marker as example syntax; the
+        gate has to agree, or the section publishes with no cited prose and an
+        orphan footnote definition."""
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        body = "Henry Ford ran the company.\n\n```markdown\nUse [^src1] markers\n```\n"
+        text = _section("Henry Ford", body) + _valid_citation_block()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry-ford.md"
+        assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
 
 class TestSectionFaithfulnessScope:
     """Which chunks a batched section is scored against."""
@@ -1173,7 +1194,10 @@ class TestBatchGeneration:
         drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
         collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
         assert len(collision_files) == 1
-        assert PENDING_MARKER_KEYWORD_COLLISION in collision_files[0].read_text()
+        marker = collision_files[0].read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in marker
+        # Origin rides the marker so accepting the loser restores it to concepts/.
+        assert f"origin: {WikiSubdir.CONCEPTS}" in marker
 
     def test_below_threshold_concept_collision_still_diverts(self, stub_embedder, monkeypatch):
         """Two sources proposing the same concept slug that BOTH score below the

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -20,6 +21,7 @@ from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
@@ -28,9 +30,10 @@ from lilbee.wiki.shared import (
 from lilbee.wiki.stats import format_summary_line
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from lilbee.data.store import CitationRecord
+    from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
     from lilbee.wiki.generation import WikiEntityCandidate
     from lilbee.wiki.stats import BuildStatsDict
 
@@ -60,6 +63,47 @@ def _count_md_files(directory: Path) -> int:
 def _print_build_stats(stats: BuildStatsDict) -> None:
     """Print what a build or synthesize run's quality gates did."""
     console.print(f"  Gates: {format_summary_line(stats)}")
+
+
+def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | None:
+    """Progress description for a wiki run event, or None when it carries no line.
+
+    Wording is shared with the TUI task bar so both surfaces name a phase and a
+    page the same way.
+    """
+    if event_type is EventType.WIKI_PHASE and isinstance(data, WikiPhaseEvent):
+        return msg.WIKI_BUILD_PHASE.format(phase=data.phase.value)
+    if event_type is EventType.WIKI_PAGE and isinstance(data, WikiPageEvent):
+        return msg.WIKI_BUILD_PAGE.format(label=data.label, current=data.current, total=data.total)
+    return None
+
+
+@contextmanager
+def _wiki_progress() -> Iterator[DetailedProgressCallback]:
+    """Render a wiki run's phase and page events on a spinner line.
+
+    A build issues one LLM call per source and runs for hours, so the CLI shows
+    the same events the HTTP and TUI surfaces consume. Disabled in json_mode so
+    stdout stays a single JSON document.
+    """
+    from rich.console import Console as RichConsole
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        transient=True,
+        console=RichConsole(stderr=True),
+        disable=cfg.json_mode,
+    ) as progress:
+        task = progress.add_task(msg.WIKI_BUILD_STARTING, total=None)
+
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            line = _wiki_progress_line(event_type, data)
+            if line is not None:
+                progress.update(task, description=line)
+
+        yield on_progress
 
 
 def _fail_wiki_disabled() -> NoReturn:
@@ -349,7 +393,8 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    result = run_full_synthesize(cfg)
+    with _wiki_progress() as on_progress:
+        result = run_full_synthesize(cfg, on_progress)
 
     if cfg.json_mode:
         json_output({"command": "wiki_synthesize", **result})
@@ -438,7 +483,8 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    result = run_full_build(cfg)
+    with _wiki_progress() as on_progress:
+        result = run_full_build(cfg, on_progress)
 
     if cfg.json_mode:
         json_output({"command": command_name, **result})

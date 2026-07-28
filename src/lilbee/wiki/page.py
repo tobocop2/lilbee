@@ -218,6 +218,7 @@ def write_page(
     full_content: str,
     drift_threshold: float,
     source_names: list[str],
+    page_type: str,
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 
@@ -226,12 +227,13 @@ def write_page(
     retires this page's own drift draft: that proposal predates this body
     and accepting it would undo the regen. Another source's draft under the
     same slug is kept. A ``drafts/`` target skips drift entirely and routes
-    through :func:`_write_draft_page`.
+    through :func:`_write_draft_page`; ``page_type`` is the subdir the page
+    would have published to, which a diverted page carries in its marker.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
     if subdir == WikiSubdir.DRAFTS:
-        return _write_draft_page(page_path, drafts_dir, slug, full_content, source_names)
+        return _write_draft_page(page_path, drafts_dir, slug, full_content, source_names, page_type)
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -255,6 +257,7 @@ def _write_draft_page(
     slug: str,
     full_content: str,
     source_names: list[str],
+    page_type: str,
 ) -> Path:
     """Land a below-threshold page in ``drafts/``, keeping another source's draft.
 
@@ -271,6 +274,7 @@ def _write_draft_page(
             first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
             content=full_content,
             drafts_dir=drafts_dir,
+            origin_subdir=page_type,
         )
     atomic_write_text(draft_path, full_content)
     return draft_path

@@ -108,6 +108,10 @@ class UnverifiedDraftError(DraftAcceptError):
     """Raised when none of a draft's citations survive verification."""
 
 
+class UnindexedDraftError(DraftAcceptError):
+    """Raised when publishing a draft produced no chunk rows."""
+
+
 @dataclass
 class DraftInfo:
     """Metadata about a single draft, surfaced in ``wiki drafts list``.
@@ -206,7 +210,7 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
 
 
 _ORIGIN_MARKER_RE = re.compile(
-    r"<!--\s*DRIFT:[^>]*origin:\s*(?P<subdir>\w+)[^>]*-->",
+    r"<!--[^>]*origin:\s*(?P<subdir>\w+)[^>]*-->",
     re.IGNORECASE,
 )
 
@@ -222,12 +226,12 @@ def _parse_drift_ratio(text: str) -> float | None:
 
 
 def _parse_origin_subdir(text: str) -> WikiSubdir | None:
-    """Extract the origin page-type subdir from a drift marker, if it names a valid one.
+    """Extract the origin page-type subdir from a marker run, if it names a valid one.
 
-    The marker carries ``origin: <subdir>`` so an unpaired drift draft accepts
-    back into its own page type. Returns None for drafts without the field
-    (markers written before this was recorded) or values outside the content
-    subdirs, so the caller keeps the summaries fallback.
+    Drift and collision markers both carry ``origin: <subdir>`` so an unpaired
+    draft accepts back into its own page type. Returns None for drafts without
+    the field (markers written before this was recorded) or values outside the
+    content subdirs, so the caller keeps the summaries fallback.
     """
     match = _ORIGIN_MARKER_RE.search(text)
     if match is None:
@@ -392,11 +396,13 @@ def accept_draft(
     later step raises (chunker, embedder, LanceDB contention), the
     draft file stays on disk so the user can retry ``accept``: both
     the citation replace and ``index_wiki_page`` are idempotent on the
-    same ``wiki_source``.
+    same ``wiki_source``. A body that indexed nothing is a failed step
+    too: an accepted page always chunks to at least one row.
 
     Raises :class:`FileNotFoundError` when the draft does not exist,
-    :class:`StaleDraftError` when the published counterpart is newer, and
-    :class:`UnverifiedDraftError` when no cited excerpt is still in its source.
+    :class:`StaleDraftError` when the published counterpart is newer,
+    :class:`UnverifiedDraftError` when no cited excerpt is still in its source,
+    and :class:`UnindexedDraftError` when the published body indexed no chunks.
 
     Holds the wiki build mutex while publishing, so accepting a draft cannot
     interleave with a build, synthesis, or prune from another surface.
@@ -433,6 +439,11 @@ def accept_draft(
         atomic_write_text(target, content)
         store.replace_citations_for_wiki(wiki_source, records)
         reindexed = index_wiki_page(content, wiki_source, store, config)
+        if not reindexed:
+            raise UnindexedDraftError(
+                f"draft {slug} published no searchable chunks; the draft is kept, "
+                "re-run `accept` once the index is writable"
+            )
         update_wiki_index(config)
         draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)

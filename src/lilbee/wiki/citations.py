@@ -12,6 +12,7 @@ wiki page's frontmatter.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -120,8 +121,18 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
 
 
 def footnote_marker_keys(body: str) -> set[str]:
-    """Citation keys the body's ``[^srcN]`` markers reference."""
-    return set(CITE_RE.findall(body))
+    """Citation keys the body's ``[^srcN]`` markers reference, fences excluded.
+
+    Shares :func:`_fence_flags` with the parser and the scrubber: a marker the
+    other two treat as example syntax must not count as a section's citation.
+    """
+    lines = body.splitlines()
+    return {
+        key
+        for line, fenced in zip(lines, _fence_flags(lines), strict=True)
+        if not fenced
+        for key in CITE_RE.findall(line)
+    }
 
 
 def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
@@ -401,20 +412,31 @@ def verify_citations(
     label: str,
     config: Config,
 ) -> list[CitationRecord]:
-    """Filter citation records, keeping only those whose excerpts are in the chunks.
+    """Filter citation records, keeping only those whose excerpts are in their own source.
 
-    A footnote left without a quotable excerpt is unverified and dropped.
+    Each record is checked against the chunks of the source it names, the rule
+    lint and draft-accept apply. Checking against the whole pool would pass a
+    footnote that attributes source B a quote only source A carries, and publish
+    it with B's hash and no location. A footnote left without a quotable excerpt
+    is unverified and dropped.
     """
-    chunk_texts = [c.chunk for c in chunks]
+    chunk_texts_by_source: dict[str, list[str]] = defaultdict(list)
+    for chunk in chunks:
+        chunk_texts_by_source[chunk.source].append(chunk.chunk)
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if _is_wiki_sourced(rec, config):
             log.debug("Skipping wiki-sourced citation %s", rec["citation_key"])
             continue
-        if excerpt_in_chunks(rec["excerpt"], chunk_texts):
+        if excerpt_in_chunks(rec["excerpt"], chunk_texts_by_source[rec["source_filename"]]):
             verified.append(rec)
         else:
-            log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)
+            log.debug(
+                "Citation %s excerpt not found in %s (%s), dropping",
+                rec["citation_key"],
+                rec["source_filename"],
+                label,
+            )
     return verified
 
 

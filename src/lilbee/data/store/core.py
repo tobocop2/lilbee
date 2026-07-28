@@ -809,14 +809,16 @@ class Store:
         before the delete so a rejected write leaves the existing rows in place.
         The lock serializes writers; delete and add are separate commits, so a
         concurrent reader can briefly see the rows absent, and callers retry on
-        a crash between the two. Returns the count added.
+        a crash between the two. A delete failure propagates, following the same
+        rule as :meth:`_delete_by_sources_unlocked`: swallowed, the caller would
+        read a success-shaped result over rows still describing the old body.
+        Returns the count added.
         """
         with self._write_lock():
             self._ensure_embedding_compat()
             _check_vector_dims(records, self._config.embedding_dim)
             table = self._chunks_table()
-            if not _safe_delete_unlocked(table, predicate):
-                return 0
+            table.delete(predicate)
             return self._add_chunks_unlocked(records)
 
     def bm25_probe(
@@ -1698,14 +1700,15 @@ class Store:
         """Replace the rows matching *predicate* with *rows* in one locked write.
 
         Delete and add run under a single write lock, so a reader never observes
-        the table emptied mid-rebuild. The add is skipped when the delete failed,
-        to avoid duplicating rows whose predecessors were not removed.
+        the table emptied mid-rebuild. A delete failure propagates, following the
+        same rule as :meth:`_delete_by_sources_unlocked`: adding over rows whose
+        predecessors are still there duplicates them, and reporting success would
+        leave the caller acting on state it thinks it replaced.
         """
         with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, name, schema)
-            if not _safe_delete_unlocked(table, predicate):
-                return
+            table.delete(predicate)
             if rows:
                 table.add(rows)
 

@@ -150,6 +150,7 @@ def divert_to_drafts(
             first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
             content=note + new_content,
             drafts_dir=drafts_dir,
+            origin_subdir=origin_subdir,
         )
     atomic_write_text(draft_path, note + new_content)
     return draft_path
@@ -199,6 +200,7 @@ def persist_and_finalize(
         content,
         config.wiki_drift_threshold,
         source_names,
+        target.page_type,
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
@@ -333,13 +335,18 @@ def divert_concept_collision(
     first_source: str,
     content: str,
     drafts_dir: Path,
+    origin_subdir: str,
 ) -> Path:
     """Write the losing concept to ``drafts/<slug>-collision-<hash>.md``.
 
     The winning source's page is unchanged on disk. Hash is the
     first 8 hex of sha256(source_filename); stable per source so a
     retry on the same two sources lands at the same draft path,
-    letting the user iterate without marker sprawl.
+    letting the user iterate without marker sprawl. ``origin_subdir``
+    is the published subdir the losing page would have landed in; it
+    rides the marker like the drift note's ``origin:`` field so that
+    accepting a collision with no published counterpart restores it to
+    its own page type instead of ``summaries/``.
     """
     # circular: persistence -> batch via short_source_hash (batch imports
     # persist_and_finalize / divert_concept_collision from persistence).
@@ -349,7 +356,7 @@ def divert_concept_collision(
     collision_slug = f"{slug}-collision-{short}"
     marker = (
         f"{_PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
-        f"content from {source} held for review -->\n\n"
+        f"content from {source} held for review; origin: {origin_subdir} -->\n\n"
     )
     path = drafts_dir / f"{collision_slug}.md"
     atomic_write_text(path, marker + content)

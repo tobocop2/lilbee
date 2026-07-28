@@ -23,6 +23,14 @@ from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
+from lilbee.runtime.progress import (
+    CrawlDoneEvent,
+    EventType,
+    WikiPageEvent,
+    WikiPhase,
+    WikiPhaseEvent,
+    noop_callback,
+)
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
@@ -3280,6 +3288,74 @@ def _citation_row(**overrides: object) -> dict:
         "created_at": "2026-01-01",
         **overrides,
     }
+
+
+class TestWikiRunProgress:
+    """Build, update and synthesize show the events every other surface consumes."""
+
+    @staticmethod
+    def _emitting_run(seen: list):
+        """Stand-in for a wiki run that records and exercises its progress callback."""
+
+        def run(config=None, on_progress=noop_callback):
+            seen.append(on_progress)
+            on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=2))
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="a.md", pages=1, current=1, total=2),
+            )
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=0, files_written=0))
+            return _stub_build_summary([], 0)
+
+        return run
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            (["wiki", "build"], "lilbee.wiki.run_full_build"),
+            (["wiki", "update"], "lilbee.wiki.run_full_build"),
+            (["wiki", "synthesize"], "lilbee.wiki.run_full_synthesize"),
+        ],
+    )
+    @pytest.mark.usefixtures("wiki_enabled")
+    def test_the_run_receives_a_reporting_callback(
+        self, mock_svc, isolated_env, monkeypatch, command, target
+    ):
+        """A run issuing one LLM call per source used to print nothing until it ended."""
+        seen: list = []
+        monkeypatch.setattr(target, self._emitting_run(seen))
+        result = runner.invoke(app, command)
+        assert result.exit_code == 0
+        assert seen and seen[0] is not noop_callback
+
+    @pytest.mark.usefixtures("wiki_enabled")
+    def test_json_mode_leaves_stdout_a_single_document(self, mock_svc, isolated_env, monkeypatch):
+        cfg.json_mode = True
+        monkeypatch.setattr("lilbee.wiki.run_full_build", self._emitting_run([]))
+        result = runner.invoke(app, ["--json", "wiki", "build"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["command"] == "wiki_build"
+
+    @pytest.mark.parametrize(
+        ("event_type", "data", "expected"),
+        [
+            (
+                EventType.WIKI_PHASE,
+                WikiPhaseEvent(phase=WikiPhase.EXTRACT),
+                msg.WIKI_BUILD_PHASE.format(phase="extract"),
+            ),
+            (
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="a.md", pages=1, current=3, total=9),
+                msg.WIKI_BUILD_PAGE.format(label="a.md", current=3, total=9),
+            ),
+            (EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=2, files_written=1), None),
+        ],
+    )
+    def test_progress_line_per_event(self, event_type, data, expected):
+        from lilbee.cli.commands.wiki import _wiki_progress_line
+
+        assert _wiki_progress_line(event_type, data) == expected
 
 
 class TestWikiBrowseCommands:

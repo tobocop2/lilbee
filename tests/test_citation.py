@@ -550,6 +550,12 @@ class TestFootnoteMarkerKeys:
     def test_empty_when_body_has_no_markers(self):
         assert footnote_marker_keys("plain text") == set()
 
+    def test_a_fenced_marker_is_example_syntax(self):
+        """Third reader of the same fence contract: counting a fenced marker lets a
+        section pass the citation gate with no citation in its prose."""
+        body = "Prose.[^src1]\n\n```markdown\nUse [^src2] markers\n```\n"
+        assert footnote_marker_keys(body) == {"src1"}
+
 
 class TestWikiSourcedCount:
     def test_counts_only_citations_naming_a_wiki_page(self):

@@ -981,7 +981,7 @@ Only relevant when running the HTTP server.
 
 ### Wiki tuning (experimental)
 
-Only relevant once the wiki is on and you have wikified at least once.
+Only relevant if you use the wiki layer. `LILBEE_WIKI` and `LILBEE_WIKI_DIR` need to be set before the first build; the rest tune generation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
