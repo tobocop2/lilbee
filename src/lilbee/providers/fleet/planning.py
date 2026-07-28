@@ -1191,18 +1191,20 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
     probe that times out raises instead (a wedged GPU driver); falling through
     to the in-process Vulkan probe there could hang this thread unkillably.
     """
-    from lilbee.providers.fleet.cuda_runtime import assert_gpu_devices_usable
+    from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
+    from lilbee.providers.fleet.rocm_runtime import assert_rocm_devices_usable
 
     probe = probe_devices(binary)
     devices = probe.devices
-    # A CUDA build that links a runtime it cannot init a GPU with must fail loud,
-    # not silently fall back to CPU (the Vulkan VRAM probe below would mask it).
-    # Only when the engine actually answered, though: a binary that does not
-    # support --list-devices enumerated nothing because it was never asked, and
-    # accusing its driver of failing to initialize would be both wrong and fatal.
+    # A GPU build that links a runtime it cannot serve the host's GPU with must
+    # fail loud, not silently fall back to CPU (the Vulkan VRAM probe below
+    # would mask it). Only when the engine actually answered, though: a binary
+    # that does not support --list-devices enumerated nothing because it was
+    # never asked, and accusing its driver of failing would be wrong and fatal.
     if probe.spoke_protocol:
-        assert_gpu_devices_usable(binary, devices, probe.output)
+        assert_cuda_devices_usable(binary, devices, probe.output)
+        assert_rocm_devices_usable(binary, devices, probe.output)
     if not devices and probe.spoke_protocol and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "

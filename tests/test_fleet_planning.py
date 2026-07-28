@@ -2725,7 +2725,10 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
     monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
     monkeypatch.setattr("lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None)
     monkeypatch.setattr(
-        "lilbee.providers.fleet.cuda_runtime.assert_gpu_devices_usable", lambda *_a: None
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.rocm_runtime.assert_rocm_devices_usable", lambda *_a: None
     )
     monkeypatch.setattr(planning_mod, "probe_devices", _counting)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 20 * _GB)
