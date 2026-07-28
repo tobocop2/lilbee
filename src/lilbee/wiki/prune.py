@@ -23,6 +23,7 @@ from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.persistence import subdir_from_wiki_source
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
@@ -71,6 +72,10 @@ class PruneReport:
     @property
     def flagged_count(self) -> int:
         return sum(1 for r in self.records if r.action == PruneAction.FLAGGED)
+
+    @property
+    def reconciled_count(self) -> int:
+        return sum(1 for r in self.records if r.action == PruneAction.RECONCILED)
 
 
 def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
@@ -237,9 +242,10 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
     if not report.records:
         return
     log.info(
-        "Wiki prune: %d archived, %d flagged",
+        "Wiki prune: %d archived, %d flagged, %d reconciled",
         report.archived_count,
         report.flagged_count,
+        report.reconciled_count,
     )
     update_wiki_index(config)
     for rec in report.records:
@@ -255,21 +261,24 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
 
     The page scan covers pages still on disk; reconciliation then covers rows
     whose page is not, including the case of a wiki directory removed wholesale.
+    Archiving and the index rewrite make this a writer, so it holds the wiki
+    build mutex for the whole pass.
     """
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
     report = PruneReport()
-    for subdir in WIKI_CONTENT_SUBDIRS:
-        subdir_path = wiki_root / subdir
-        if not subdir_path.is_dir():
-            continue
-        for md_path in sorted(subdir_path.rglob("*.md")):
-            relative = md_path.relative_to(wiki_root)
-            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
-            record = _evaluate_page(wiki_source, wiki_root, store, config)
-            if record:
-                report.records.append(record)
-    report.records.extend(_reconcile_orphan_rows(store, wiki_root, config))
-    _finalize_prune(report, config)
+    with WIKI_BUILD_LOCK:
+        for subdir in WIKI_CONTENT_SUBDIRS:
+            subdir_path = wiki_root / subdir
+            if not subdir_path.is_dir():
+                continue
+            for md_path in sorted(subdir_path.rglob("*.md")):
+                relative = md_path.relative_to(wiki_root)
+                wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
+                record = _evaluate_page(wiki_source, wiki_root, store, config)
+                if record:
+                    report.records.append(record)
+        report.records.extend(_reconcile_orphan_rows(store, wiki_root, config))
+        _finalize_prune(report, config)
     return report

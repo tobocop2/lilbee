@@ -14,13 +14,15 @@ from typing import Any
 from litestar import delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.params import Parameter
+from litestar.response import Stream
+from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.server import handlers
 from lilbee.server.models import (
     DraftInfoResponse,
-    WikiBuildResult,
     WikiCitationRecord,
     WikiCitationsResult,
     WikiDraftAcceptResponse,
@@ -32,17 +34,16 @@ from lilbee.server.models import (
     WikiPruneRecordResponse,
     WikiPruneResult,
     WikiStatusResult,
-    WikiSynthesizeResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
-from lilbee.wiki import run_full_build, run_full_synthesize
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
     read_page,
 )
 from lilbee.wiki.drafts import (
+    StaleDraftError,
     accept_draft,
     diff_draft,
     list_drafts,
@@ -126,13 +127,13 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        # accept_draft overwrites a published page and refreshes the index, the
-        # same artifacts a build writes, so it shares the build mutex. It also
-        # re-chunks and embeds, so it runs off the event loop.
-        async with _wiki_build_lock():
-            result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
+        # accept_draft re-chunks and embeds, so it runs off the event loop; it
+        # takes the wiki build mutex itself.
+        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except StaleDraftError as exc:
+        raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftAcceptResponse(**result.to_dict())
@@ -213,76 +214,50 @@ async def wiki_lint_route() -> WikiLintResult:
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    # prune archives pages and rewrites the index, so it takes the build mutex
-    # like the other writers. It also walks the whole tree and store, so it runs
-    # off the event loop.
-    async with _wiki_build_lock():
-        report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
+    # prune walks the whole tree and store, so it runs off the event loop; it
+    # takes the wiki build mutex itself.
+    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
         flagged=report.flagged_count,
+        reconciled=report.reconciled_count,
     )
 
 
-# Serialize wiki builds: ``run_full_build`` writes pages, the wiki index, and
-# the wiki log; two concurrent calls would corrupt those. The lock is created
-# lazily because ``Lock()`` requires a running event loop.
-_WIKI_BUILD_LOCK: asyncio.Lock | None = None
-
-
-def _wiki_build_lock() -> asyncio.Lock:
-    """Return the per-process wiki-build mutex, creating it on first call."""
-    global _WIKI_BUILD_LOCK
-    if _WIKI_BUILD_LOCK is None:
-        _WIKI_BUILD_LOCK = asyncio.Lock()
-    return _WIKI_BUILD_LOCK
-
-
-def _reset_wiki_build_lock() -> None:
-    """Test hook: clear the per-process wiki-build mutex.
-
-    Mirrors ``handlers._reset_ingest_locks`` so a test that creates the
-    lock under one event loop doesn't leak it into the next test.
-    """
-    global _WIKI_BUILD_LOCK
-    _WIKI_BUILD_LOCK = None
-
-
 @post("/api/wiki/build")
-async def wiki_build_route() -> WikiBuildResult:
+async def wiki_build_route() -> Stream:
     """Build the concept and entity wiki across all ingested sources.
 
-    The build is CPU- and IO-bound (LLM calls, embeddings, file writes) so
-    it runs in a worker thread; concurrent build/update requests serialize
-    on a per-process lock so they don't corrupt the wiki index.
+    A build issues per-source LLM calls and embeddings and can run for a long
+    time, so the response is an SSE stream: wiki_phase and wiki_page events
+    while it runs, then a done event carrying the summary. The work runs in a
+    worker thread and holds the wiki build mutex, so a second request streams
+    its own progress only once the first run finishes.
     """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_build, cfg)
-    return WikiBuildResult(**result)
+    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
 
 
 @patch("/api/wiki/update")
-async def wiki_update_route() -> WikiBuildResult:
-    """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
+async def wiki_update_route() -> Stream:
+    """Refresh the concept and entity wiki after an ingest.
+
+    A full rebuild, streamed like /api/wiki/build.
+    """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_build, cfg)
-    return WikiBuildResult(**result)
+    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
 
 
 @post("/api/wiki/synthesize")
-async def wiki_synthesize_route() -> WikiSynthesizeResult:
+async def wiki_synthesize_route() -> Stream:
     """Generate synthesis pages for concept clusters spanning 3+ sources.
 
-    Shares the wiki-build mutex so synthesis can't race a build/update
-    over the same on-disk wiki tree.
+    Streams per-cluster progress and shares the wiki build mutex, so synthesis
+    can't race a build over the same on-disk wiki tree.
     """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_synthesize, cfg)
-    return WikiSynthesizeResult(**result)
+    return Stream(handlers.wiki_synthesize_stream(), media_type="text/event-stream")
 
 
 @get("/api/wiki/status")

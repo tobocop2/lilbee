@@ -480,14 +480,7 @@ class WikiPruneResult(BaseModel):
     records: list[WikiPruneRecordResponse] = []
     archived: int = 0
     flagged: int = 0
-
-
-class WikiBuildResult(BaseModel):
-    """Result of a full wiki build/update."""
-
-    paths: list[str] = []
-    entities: int = 0
-    count: int = 0
+    reconciled: int = 0
 
 
 class WikiStatusResult(BaseModel):
@@ -499,13 +492,6 @@ class WikiStatusResult(BaseModel):
     pages: int = 0
     lint_errors: int = 0
     lint_warnings: int = 0
-
-
-class WikiSynthesizeResult(BaseModel):
-    """Result of generating synthesis pages for cross-source concept clusters."""
-
-    paths: list[str] = []
-    count: int = 0
 
 
 class DraftInfoResponse(BaseModel):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich.table import Table
@@ -50,12 +50,13 @@ def _count_md_files(directory: Path) -> int:
     return len(list(directory.rglob("*.md")))
 
 
-def _fail_wiki_disabled() -> None:
-    """Emit the standard wiki-disabled message in the caller's output mode."""
+def _fail_wiki_disabled() -> NoReturn:
+    """Emit the standard wiki-disabled message and exit non-zero."""
     if cfg.json_mode:
         json_output({"error": msg.CMD_WIKI_DISABLED})
-        return
-    console.print(msg.CMD_WIKI_DISABLED)
+    else:
+        console.print(msg.CMD_WIKI_DISABLED)
+    raise typer.Exit(1)
 
 
 @wiki_app.command(name="lint")
@@ -64,10 +65,13 @@ def wiki_lint(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """Lint wiki pages for stale citations, missing sources, and unmarked claims."""
+    """Lint wiki pages for stale citations, missing sources, and unmarked claims.
+
+    Exits 1 when any issue is an error, so a script can gate on the result.
+    """
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.lint import IssueSeverity, lint_wiki_page
     from lilbee.wiki.lint import lint_all as _lint_all
-    from lilbee.wiki.lint import lint_wiki_page
 
     store = get_services().store
     if wiki_source:
@@ -75,6 +79,7 @@ def wiki_lint(
     else:
         report = _lint_all(store)
         issues = report.issues
+    error_count = sum(1 for i in issues if i.severity is IssueSeverity.ERROR)
 
     if cfg.json_mode:
         json_output(
@@ -82,23 +87,24 @@ def wiki_lint(
                 "command": "wiki_lint",
                 "issues": [i.to_dict() for i in issues],
                 "total": len(issues),
+                "errors": error_count,
             }
         )
-        return
-
-    if not issues:
+    elif not issues:
         console.print("No issues found.")
-        return
+    else:
+        table = Table(title="Wiki Lint Issues")
+        table.add_column("Page", style=theme.ACCENT)
+        table.add_column("Severity")
+        table.add_column("Message")
+        for issue in issues:
+            sev_style = theme.ERROR if issue.severity is IssueSeverity.ERROR else theme.WARNING
+            sev_text = f"[{sev_style}]{issue.severity.value}[/{sev_style}]"
+            table.add_row(issue.wiki_source, sev_text, issue.message)
+        console.print(table)
 
-    table = Table(title="Wiki Lint Issues")
-    table.add_column("Page", style=theme.ACCENT)
-    table.add_column("Severity")
-    table.add_column("Message")
-    for issue in issues:
-        sev_style = theme.ERROR if issue.severity.value == "error" else theme.WARNING
-        sev_text = f"[{sev_style}]{issue.severity.value}[/{sev_style}]"
-        table.add_row(issue.wiki_source, sev_text, issue.message)
-    console.print(table)
+    if error_count:
+        raise typer.Exit(1)
 
 
 @wiki_app.command(name="citations")
@@ -202,27 +208,20 @@ def wiki_synthesize(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if not cfg.wiki:
         _fail_wiki_disabled()
-        return
-    from lilbee.wiki.generation import generate_synthesis_pages
+    from lilbee.wiki import run_full_synthesize
 
-    svc = get_services()
-    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+    result = run_full_synthesize(cfg)
 
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "wiki_synthesize",
-                "paths": [str(p) for p in paths],
-                "count": len(paths),
-            }
-        )
+        json_output({"command": "wiki_synthesize", **result})
         return
 
+    paths = result["paths"]
     if not paths:
         console.print("No synthesis pages generated (need 3+ sources per cluster).")
         return
 
-    console.print(f"Generated [{theme.LABEL}]{len(paths)}[/{theme.LABEL}] synthesis pages:")
+    console.print(f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:")
     for path in paths:
         console.print(f"  {path}")
 
@@ -234,6 +233,8 @@ def wiki_prune(
 ) -> None:
     """Prune stale and orphaned wiki pages."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
     from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)
@@ -245,6 +246,7 @@ def wiki_prune(
                 "records": [r.to_dict() for r in report.records],
                 "archived": report.archived_count,
                 "flagged": report.flagged_count,
+                "reconciled": report.reconciled_count,
             }
         )
         return
@@ -281,7 +283,6 @@ def wiki_build(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if not cfg.wiki:
         _fail_wiki_disabled()
-        return
 
     if dry_run:
         from lilbee.data.store import SearchChunk
@@ -391,8 +392,8 @@ def wiki_update(
 ) -> None:
     """Refresh the concept and entity wiki after an ingest.
 
-    Currently a full rebuild. The incremental touched-slug regeneration
-    lands in the ingest-hook task and will re-route this command then.
+    A full rebuild: every source is re-extracted and regenerated. The capped
+    touched-slug regeneration only runs from the ingest hook.
     """
     wiki_build(data_dir=data_dir, use_global=use_global, dry_run=False)
 
@@ -488,12 +489,14 @@ def wiki_drafts_accept(
 ) -> None:
     """Overwrite the published page with the draft and re-index its chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.wiki.drafts import accept_draft
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+    from lilbee.wiki.drafts import StaleDraftError, accept_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     try:
         result = accept_draft(slug, wiki_root, get_services().store)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, StaleDraftError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
@@ -519,6 +522,8 @@ def wiki_drafts_reject(
 ) -> None:
     """Delete the draft file. Does not touch the published page or index."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
     from lilbee.wiki.drafts import reject_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir

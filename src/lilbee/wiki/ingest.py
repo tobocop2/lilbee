@@ -27,7 +27,7 @@ async def incremental_update(changed_sources: set[str]) -> None:
     from lilbee.data.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import get_entity_extractor
-    from lilbee.wiki.shared import WikiLogAction
+    from lilbee.wiki.shared import WIKI_BUILD_LOCK, WikiLogAction
 
     svc = get_services()
     extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
@@ -52,7 +52,7 @@ async def incremental_update(changed_sources: set[str]) -> None:
         # would see no signal at all during `lilbee sync` when the cap trips.
         log.warning(
             "Wiki auto-update skipped: %d pages touched (cap %d). "
-            "Run 'lilbee wiki update' to refresh.",
+            "Run 'lilbee wiki update' for a full rebuild.",
             len(touched),
             cfg.wiki_ingest_update_cap,
         )
@@ -65,11 +65,15 @@ async def incremental_update(changed_sources: set[str]) -> None:
     # extract_concepts=False so an incremental sync does not churn
     # concept slugs. Concept curation is a deliberate, user-invoked
     # refresh (full `lilbee wiki build`).
-    pages = await asyncio.to_thread(
-        build_wiki, touched, svc.provider, svc.store, cfg, extract_concepts=False
-    )
-    update_wiki_index()
-    append_wiki_log(
-        WikiLogAction.INGEST,
-        f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
-    )
+    def _regenerate() -> None:
+        with WIKI_BUILD_LOCK:
+            pages = build_wiki(touched, svc.provider, svc.store, cfg, extract_concepts=False)
+            update_wiki_index()
+            append_wiki_log(
+                WikiLogAction.INGEST,
+                f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
+            )
+
+    # The mutex is taken in the worker thread: acquiring it here would block the
+    # event loop for the length of another surface's build.
+    await asyncio.to_thread(_regenerate)

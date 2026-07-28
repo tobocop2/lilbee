@@ -23,12 +23,21 @@ from lilbee.core.config import Config, cfg
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    WikiPageEvent,
+    WikiPhase,
+    WikiPhaseEvent,
+    noop_callback,
+)
 from lilbee.wiki.batch import archive_legacy_concept_pages
 from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
@@ -70,6 +79,7 @@ def generate_synthesis_pages(
     store: Store,
     clusterer: SourceClusterer,
     config: Config | None = None,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[Path]:
     """Generate synthesis pages for source clusters spanning 3+ documents."""
     if config is None:
@@ -80,11 +90,21 @@ def generate_synthesis_pages(
         log.info("No source clusters span %d+ sources, skipping synthesis", MIN_CLUSTER_SOURCES)
         return []
 
+    on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=len(clusters)))
     pages: list[Path] = []
-    for cluster in clusters:
+    for index, cluster in enumerate(clusters, start=1):
         page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config)
         if page is not None:
             pages.append(page)
+        on_progress(
+            EventType.WIKI_PAGE,
+            WikiPageEvent(
+                label=cluster.label,
+                pages=0 if page is None else 1,
+                current=index,
+                total=len(clusters),
+            ),
+        )
 
     log.info("Generated %d synthesis pages", len(pages))
     return pages
@@ -201,6 +221,7 @@ def build_wiki(
     config: Config | None = None,
     *,
     extract_concepts: bool = True,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[Path]:
     """Produce entity and LLM-curated concept pages per source.
 
@@ -230,12 +251,28 @@ def build_wiki(
     written_concept_slugs: dict[str, str] = {}
     pages: list[Path] = []
 
-    for source in sorted(all_sources):
+    on_progress(
+        EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=len(all_sources))
+    )
+    for index, source in enumerate(sorted(all_sources), start=1):
         source_entities = grouped.get(source, [])
         chunks = store.get_chunks_by_source(source)
         chunk_count = len(chunks)
         source_extract = extract_concepts and chunk_count >= config.wiki_batch_min_chunks
-        if not source_entities and not source_extract:
+        source_pages: list[Path] = []
+        if source_entities or source_extract:
+            source_pages = generate_source_batch(
+                source=source,
+                entities=source_entities,
+                chunks=chunks,
+                provider=provider,
+                store=store,
+                config=config,
+                extract_concepts=source_extract,
+                written_concept_slugs=written_concept_slugs,
+            )
+            pages.extend(source_pages)
+        else:
             log.info(
                 "Skipping source %s: %d entities, %d chunks, min=%d, extract=%s",
                 source,
@@ -244,18 +281,15 @@ def build_wiki(
                 config.wiki_batch_min_chunks,
                 source_extract,
             )
-            continue
-        source_pages = generate_source_batch(
-            source=source,
-            entities=source_entities,
-            chunks=chunks,
-            provider=provider,
-            store=store,
-            config=config,
-            extract_concepts=source_extract,
-            written_concept_slugs=written_concept_slugs,
+        on_progress(
+            EventType.WIKI_PAGE,
+            WikiPageEvent(
+                label=source,
+                pages=len(source_pages),
+                current=index,
+                total=len(all_sources),
+            ),
         )
-        pages.extend(source_pages)
 
     _rewrite_links_across_wiki(entities, config)
     log.info("Generated %d batched wiki pages", len(pages))
@@ -270,26 +304,36 @@ class WikiBuildSummary(TypedDict):
     count: int
 
 
-def run_full_build(config: Config | None = None) -> WikiBuildSummary:
-    """Extract entities and build wiki pages for every ingested source."""
+def run_full_build(
+    config: Config | None = None, on_progress: DetailedProgressCallback = noop_callback
+) -> WikiBuildSummary:
+    """Extract entities and build wiki pages for every ingested source.
+
+    Holds the wiki build mutex for the whole run, so a build started from any
+    surface waits for one already in flight instead of interleaving writes.
+    """
     if config is None:
         config = cfg
-    svc = get_services()
-    chunks: list[SearchChunk] = []
-    for record in svc.store.get_sources():
-        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+    with WIKI_BUILD_LOCK:
+        svc = get_services()
+        on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
+        chunks: list[SearchChunk] = []
+        for record in svc.store.get_sources():
+            chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
 
-    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
-    entities = extractor.extract(chunks)
-    pages = build_wiki(
-        entities,
-        svc.provider,
-        svc.store,
-        config,
-        extract_concepts=config.wiki_extract_concepts,
-    )
-    update_wiki_index()
-    append_wiki_log(WikiLogAction.BUILD, f"{len(pages)} pages from {len(entities)} records")
+        extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
+        entities = extractor.extract(chunks)
+        pages = build_wiki(
+            entities,
+            svc.provider,
+            svc.store,
+            config,
+            extract_concepts=config.wiki_extract_concepts,
+            on_progress=on_progress,
+        )
+        on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.INDEX))
+        update_wiki_index()
+        append_wiki_log(WikiLogAction.BUILD, f"{len(pages)} pages from {len(entities)} records")
     return {
         "paths": [str(p) for p in pages],
         "entities": len(entities),
@@ -304,12 +348,21 @@ class WikiSynthesizeSummary(TypedDict):
     count: int
 
 
-def run_full_synthesize(config: Config | None = None) -> WikiSynthesizeSummary:
-    """Generate synthesis pages for cross-source clusters."""
+def run_full_synthesize(
+    config: Config | None = None, on_progress: DetailedProgressCallback = noop_callback
+) -> WikiSynthesizeSummary:
+    """Generate synthesis pages for cross-source clusters.
+
+    Shares the wiki build mutex with :func:`run_full_build` so synthesis and a
+    build never write the same tree at once.
+    """
     if config is None:
         config = cfg
     svc = get_services()
-    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer, config)
+    with WIKI_BUILD_LOCK:
+        paths = generate_synthesis_pages(
+            svc.provider, svc.store, svc.clusterer, config, on_progress
+        )
     return {
         "paths": [str(p) for p in paths],
         "count": len(paths),

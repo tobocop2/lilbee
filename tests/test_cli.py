@@ -23,6 +23,7 @@ from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
+from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from tests._mock_effects import repeat_last
 
 runner = CliRunner()
@@ -2885,6 +2886,72 @@ class TestWikiLint:
         result = runner.invoke(app, ["wiki", "lint", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
 
+    def test_lint_exits_nonzero_on_errors(self, mock_svc, isolated_env, monkeypatch):
+        """An error-severity finding must fail the command so CI can gate on it."""
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        report = LintReport(
+            issues=[
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.ERROR,
+                    message="cited source is gone",
+                    issue_type=IssueType.SOURCE_MISSING,
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 1
+        assert "cited source is gone" in result.output
+
+    def test_lint_warnings_alone_exit_zero(self, mock_svc, isolated_env, monkeypatch):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        report = LintReport(
+            issues=[
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.WARNING,
+                    message="no inbound links",
+                    issue_type=IssueType.ORPHAN,
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+
+    def test_lint_json_error_count_and_exit_code(self, mock_svc, isolated_env, monkeypatch):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        report = LintReport(
+            issues=[
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.ERROR,
+                    message="cited source is gone",
+                    issue_type=IssueType.UNVERIFIABLE,
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
+        result = runner.invoke(app, ["--json", "wiki", "lint"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["errors"] == 1
+        assert data["issues"][0]["issue_type"] == "unverifiable"
+
+    def test_lint_runs_with_the_wiki_disabled(self, mock_svc, isolated_env):
+        """Reads stay available on a disabled wiki; only writers are gated."""
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+        assert "No issues found" in result.output
+
     def test_lint_json_output(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
@@ -2926,17 +2993,18 @@ class TestWikiSynthesize:
         assert data["command"] == "wiki_synthesize"
         assert data["count"] == 1
 
-    def test_wiki_disabled_prints_message(self, mock_svc, isolated_env):
+    def test_wiki_disabled_exits_nonzero(self, mock_svc, isolated_env):
         cfg.wiki = False
         result = runner.invoke(app, ["wiki", "synthesize"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert msg.CMD_WIKI_DISABLED in result.output
 
-    def test_wiki_disabled_json_mode(self, mock_svc, isolated_env):
+    def test_wiki_disabled_json_mode_exits_nonzero(self, mock_svc, isolated_env):
+        """A --json error envelope with exit 0 read as success to every script."""
         cfg.wiki = False
         cfg.json_mode = True
         result = runner.invoke(app, ["--json", "wiki", "synthesize"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["error"] == msg.CMD_WIKI_DISABLED
 
@@ -3034,10 +3102,10 @@ class TestWikiBuild:
         assert result.exit_code == 0
         assert chunk_calls == ["a.txt", "b.txt"]
 
-    def test_wiki_disabled_prints_message(self, mock_svc, isolated_env):
+    def test_wiki_disabled_exits_nonzero(self, mock_svc, isolated_env):
         cfg.wiki = False
         result = runner.invoke(app, ["wiki", "build"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert msg.CMD_WIKI_DISABLED in result.output
 
     def test_dry_run_skips_build_wiki_and_shows_candidates(
@@ -3308,6 +3376,39 @@ class TestWikiPrune:
         assert data["command"] == "wiki_prune"
         assert data["archived"] == 0
 
+    def test_prune_json_reports_reconciled_rows(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+            mock_prune.return_value = PruneReport(
+                records=[
+                    PruneRecord(
+                        wiki_source="wiki/concepts/gone.md",
+                        action=PruneAction.RECONCILED,
+                        reason="indexed rows without a page on disk",
+                    )
+                ]
+            )
+            result = runner.invoke(app, ["--json", "wiki", "prune"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["reconciled"] == 1
+        assert data["archived"] == 0
+
+    def test_prune_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        """prune archives pages and rewrites the index; HTTP 404s it when the
+        wiki is off, so the CLI must refuse too instead of mutating the tree."""
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 1
+        assert msg.CMD_WIKI_DISABLED in result.output
+        mock_prune.assert_not_called()
+
     def test_prune_with_records(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
@@ -3502,6 +3603,58 @@ class TestWikiDraftsCli:
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert "error" in data
+
+    def test_accept_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.wiki = False
+        with mock.patch("lilbee.wiki.drafts.accept_draft") as accept:
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 1
+        assert msg.CMD_WIKI_DISABLED in result.output
+        accept.assert_not_called()
+
+    def test_reject_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.wiki = False
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "x"])
+        assert result.exit_code == 1
+        assert msg.CMD_WIKI_DISABLED in result.output
+        assert (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_list_still_reads_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        """Reads stay available on a disabled wiki; only the writers are gated."""
+        self._seed(isolated_env)
+        cfg.wiki = False
+        result = runner.invoke(app, ["wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        assert "x" in result.output
+
+    def test_accept_stale_draft_exits_nonzero(self, mock_svc, isolated_env):
+        """A published page newer than the draft means a later build already
+        regenerated it; accepting would silently overwrite that."""
+        self._seed(isolated_env)
+        from lilbee.wiki.drafts import StaleDraftError
+
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=StaleDraftError("published page for x is newer than the draft"),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 1
+        assert "newer than the draft" in result.output
+
+    def test_accept_stale_draft_json_error(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        from lilbee.wiki.drafts import StaleDraftError
+
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=StaleDraftError("published page for x is newer than the draft"),
+        ):
+            result = runner.invoke(app, ["--json", "wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 1
+        assert "newer than the draft" in json.loads(result.output)["error"]
 
     def test_reject_deletes_draft(self, mock_svc, isolated_env):
         self._seed(isolated_env)

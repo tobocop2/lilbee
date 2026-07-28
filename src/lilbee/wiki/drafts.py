@@ -28,6 +28,7 @@ from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     PendingKind,
     WikiSubdir,
@@ -347,34 +348,40 @@ def accept_draft(
 
     Raises :class:`FileNotFoundError` when the draft does not exist and
     :class:`StaleDraftError` when the published counterpart is newer.
+
+    Holds the wiki build mutex while publishing, so accepting a draft cannot
+    interleave with a build, synthesis, or prune from another surface.
     """
     if config is None:
         config = cfg
-    draft = _draft_path(wiki_root, slug)
-    if not draft.is_file():
-        raise FileNotFoundError(f"draft not found: {slug}")
-    raw = draft.read_text(encoding="utf-8")
-    # Single-pass classify + strip (kind plus the three-marker removal), instead
-    # of re-deriving the kind and re-stripping the markers separately.
-    pending_kind, _drift, clean = _classify_and_strip_markers(raw)
+    with WIKI_BUILD_LOCK:
+        draft = _draft_path(wiki_root, slug)
+        if not draft.is_file():
+            raise FileNotFoundError(f"draft not found: {slug}")
+        raw = draft.read_text(encoding="utf-8")
+        # Single-pass classify + strip (kind plus the three-marker removal), instead
+        # of re-deriving the kind and re-stripping the markers separately.
+        pending_kind, _drift, clean = _classify_and_strip_markers(raw)
 
-    if pending_kind == PendingKind.PARSE:
-        draft.unlink()
-        log.info(
-            "Accepted PENDING-PARSE marker %s; run `lilbee wiki build` "
-            "to regenerate the missing section.",
-            slug,
+        if pending_kind == PendingKind.PARSE:
+            draft.unlink()
+            log.info(
+                "Accepted PENDING-PARSE marker %s; run `lilbee wiki build` "
+                "to regenerate the missing section.",
+                slug,
+            )
+            return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
+
+        target_slug = (
+            _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
         )
-        return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
+        target = _accept_target(wiki_root, target_slug, slug, raw, draft)
+        atomic_write_text(target, clean)
 
-    target_slug = _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
-    target = _accept_target(wiki_root, target_slug, slug, raw, draft)
-    atomic_write_text(target, clean)
-
-    wiki_source = _wiki_source_for(target, wiki_root)
-    _persist_accepted_citations(clean, wiki_source, store, config)
-    reindexed = index_wiki_page(clean, wiki_source, store)
-    draft.unlink()
+        wiki_source = _wiki_source_for(target, wiki_root)
+        _persist_accepted_citations(clean, wiki_source, store, config)
+        reindexed = index_wiki_page(clean, wiki_source, store)
+        draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(
         slug=target_slug,
