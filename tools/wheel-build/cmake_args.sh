@@ -63,23 +63,17 @@ esac
 common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
 common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
-# Every AMD target ROCm supports that lilbee ships for: gfx906 (MI50), gfx908 (MI100),
+# Every AMD target lilbee wants to ship for: gfx906 (MI50), gfx908 (MI100),
 # gfx90a (MI200), gfx942 (MI300), gfx950 (MI350), gfx1030 (RDNA2), gfx1100/1101/1102
-# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). This is intent, not
-# support: anything the installed ROCm cannot both compile and run GEMM on is
-# filtered below rather than dropped from this list, so a target AMD un-drops
-# comes back without an edit here.
+# (RDNA3), gfx1150/1151 (RDNA3.5 APUs), gfx1200/1201 (RDNA4). Intent, not support:
+# targets the installed ROCm cannot serve are filtered below, not removed here.
 rocm_wanted_targets="gfx906 gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 
-# The subset of those the ROCm at $1 actually supports, as a cmake list.
-#
-# Two facts intersect, both readable without a GPU. The device bitcode is the
-# toolchain's own list of ISAs it can compile (one unsupported target fails the
-# whole configure, and AMD drops targets between releases: 7.0 removed gfx940).
-# The rocBLAS lazy Tensile masters are what the runtime can execute: an
-# architecture with bitcode but no TensileLibrary_lazy_<arch>.dat builds fine
-# and then aborts inside rocBLAS on the first batched GEMM (7.2 ships zero
-# gfx906 kernel files while its bitcode still advertises gfx906).
+# The subset of those the ROCm at $1 actually supports, as a cmake list: the
+# intersection of the device bitcode (what clang can compile; one unsupported
+# target fails the whole configure) and the rocBLAS lazy Tensile masters (what
+# the runtime can execute; a target with bitcode but no masters builds fine and
+# aborts inside rocBLAS at the first batched GEMM, as 7.2's gfx906 does).
 rocm_buildable_targets() {
   local root="$1" arch targets="" no_bitcode="" no_kernels=""
   local kernels_dir="${root}/lib/rocblas/library" check_kernels="1"

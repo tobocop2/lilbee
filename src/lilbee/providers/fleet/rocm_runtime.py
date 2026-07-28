@@ -1,10 +1,7 @@
 """Guard a ROCm engine build against AMD hosts it cannot actually serve.
 
-ROCm has a wide silent-failure class (kernel and user-space version mismatch,
-an unsupported gfx target, no permission on /dev/kfd) that ends either as a
-quiet CPU fallback or as a rocBLAS abort mid-inference. The checks here read
-the kernel driver and the bundled artifacts rather than ROCm tooling, because
-ROCm being broken is the case they exist to catch.
+Reads the kernel driver and the bundled artifacts rather than ROCm tooling,
+because ROCm being broken is the case these checks exist to catch.
 """
 
 from __future__ import annotations
@@ -79,8 +76,7 @@ def _gfx_name(target_version: int) -> str:
 def _host_amd_gfx_targets() -> set[str]:
     """The gfx targets of this host's AMD GPUs, from the driver's KFD topology.
 
-    CPU nodes report a target version of 0. Empty when the topology is absent
-    or unreadable, which is "no claim".
+    CPU nodes report a target version of 0. Empty means "no claim".
     """
     targets: set[str] = set()
     for props in Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties"):
@@ -98,8 +94,6 @@ def _host_amd_gfx_targets() -> set[str]:
 def _bundled_rocblas_gfx_targets(binary: Path) -> set[str] | None:
     """The gfx targets covered by the rocBLAS Tensile masters bundled beside *binary*.
 
-    rocBLAS aborts the process on a card it has no masters for, so the shipped
-    files are the ground truth for which cards this build can run a GEMM on.
     None when no bundle sits beside the binary (a system-ROCm engine): that is
     "no claim", where an empty set would mean "supports nothing".
     """
@@ -150,11 +144,8 @@ def _warn_if_override_uncovered(override: str, shipped: set[str]) -> None:
 def _assert_rocblas_covers_enumerated_devices(binary: Path, devices: list[FleetDevice]) -> None:
     """Refuse a card the bundle ships no rocBLAS kernels for, before rocBLAS aborts.
 
-    An enumerated device is no proof of support: the engine's device code and
-    rocBLAS's kernels are built from different lists, and a card covered by the
-    first but not the second initializes fine and then aborts the whole engine at
-    the first batched matrix multiply. Support is read from the bundled Tensile
-    masters rather than kept as a constant, so it cannot drift from what shipped.
+    An enumerated device is no proof of support: a card with engine device code
+    but no rocBLAS kernels initializes fine and aborts at the first batched GEMM.
     """
     if not any(d.backend in _AMD_BACKENDS for d in devices):
         return

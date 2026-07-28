@@ -15,7 +15,6 @@ the wheels' location is only known at install time.
 from __future__ import annotations
 
 import importlib.util
-import logging
 import os
 import sys
 from pathlib import Path
@@ -39,8 +38,6 @@ _CUDA_WHEEL_IMPORTS: tuple[str, ...] = (
 # The sonames those wheels provide, used to tell from ``ldd`` whether a binary is a
 # CUDA build (it lists the soname whether or not the runtime resolves).
 _CUDA_SONAMES: tuple[str, ...] = ("libcudart.so.12", "libcublas.so.12", "libnvrtc.so.12")
-
-log = logging.getLogger(__name__)
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
