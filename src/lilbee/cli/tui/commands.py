@@ -58,6 +58,7 @@ class LilbeeCommandProvider(Provider):
                 self._action_delete_document,
             ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
+            ("Wikify", "Generate wiki pages from indexed documents", self._action_wikify),
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",
@@ -156,6 +157,11 @@ class LilbeeCommandProvider(Provider):
 
     def _action_open_wiki(self) -> None:
         self._app.switch_view("Wiki")
+
+    def _action_wikify(self) -> None:
+        from lilbee.cli.tui.screens.wiki import start_wikify
+
+        start_wikify(self._app)
 
     def _action_reset(self) -> None:
         """Trigger /reset from the palette so the ConfirmDialog flow fires."""
