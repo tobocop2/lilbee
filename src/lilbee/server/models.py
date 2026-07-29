@@ -506,6 +506,18 @@ class WikiPruneResult(BaseModel):
     reconciled: int = 0
 
 
+class WikiWipeResult(BaseModel):
+    """Result of wiping the wiki.
+
+    ``rows_deleted`` is false when the pages went but the store delete failed,
+    so a client is never told the wiki is gone while its rows still answer.
+    """
+
+    pages_removed: int = 0
+    sources_cleared: int = 0
+    rows_deleted: bool = True
+
+
 class WikiStatusResult(BaseModel):
     """Wiki layer status counters."""
 

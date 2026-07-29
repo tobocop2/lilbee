@@ -852,6 +852,27 @@ def wiki_prune() -> dict[str, Any]:
     }
 
 
+@_tool
+def wiki_wipe(confirm: bool = False) -> dict[str, Any]:
+    """Delete every generated wiki page and its indexed rows. Pass ``confirm=true``.
+
+    Registered even with the wiki disabled, because turning the setting off
+    leaves the pages generated earlier in place.
+    """
+    if not confirm:
+        return _error("pass confirm=true to delete the wiki; this cannot be undone")
+    from lilbee.wiki.wipe import wipe_wiki
+
+    report = wipe_wiki(get_services().store)
+    if not report.rows_deleted:
+        return _error(report.summary())
+    return {
+        "command": "wiki_wipe",
+        "pages_removed": report.pages_removed,
+        "sources_cleared": report.sources_cleared,
+    }
+
+
 def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
     """Render a SettingInfo as a JSON-safe dict for the MCP wire format."""
     return {

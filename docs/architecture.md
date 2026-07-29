@@ -1144,9 +1144,15 @@ Wiki generation does not search. NER assigns each extracted entity to the source
 
 After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug surface forms to `[[slug]]` form in page bodies, skipping YAML frontmatter, code fences, and the auto-generated citation block. `lilbee wiki lint` flags concept or entity pages with zero inbound links.
 
+### Removing a wiki
+
+Disabling `wiki` stops new pages being written; it deletes nothing. `wiki/wipe.py::wipe_wiki` removes the whole wiki directory and then every `chunk_type=wiki` row and every citation row, in that order: rows outliving their page are what the next prune reconciles away, while a page outliving its rows reads as "nothing to do" and is never retried. It is reachable with the wiki disabled from all four surfaces (`lilbee wiki wipe`, the `W` binding, `DELETE /api/wiki`, the `wiki_wipe` MCP tool, which needs `confirm=true`), and the TUI offers it whenever the setting is switched off. A wipe reports whether the row delete actually landed, so a failure is never presented as a completed wipe.
+
 ### Search scope
 
 `search()` accepts a `scope` argument (`raw`, `wiki`, `both`) that filters the hybrid search pool to source chunks, wiki chunks, or the union. Used by the TUI scope toggle and the MCP tool.
+
+While `wiki` is off, generated pages are excluded from retrieval regardless of scope: an unscoped search narrows to `raw` (which covers table chunks), and a `wiki`-scoped search returns nothing rather than widening to the whole pool. Disabling the setting deletes no rows, so without this a library wikified once keeps surfacing generated pages in ordinary search.
 
 ---
 
@@ -1158,7 +1164,7 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee search "query"`: vector search, no LLM generation
 - `lilbee sync` / `lilbee add` / `lilbee remove`: document management
 - `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
-- `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
+- `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
 - `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit

@@ -149,6 +149,19 @@ class TestWikiDisabled:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 404
 
+    async def test_wipe_still_answers(self, monkeypatch: pytest.MonkeyPatch):
+        """The one write route that works with the wiki off. Disabling the
+        setting deletes nothing, so this is exactly when a client needs it."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr(
+            wipe_mod, "wipe_wiki", lambda store: wipe_mod.WipeReport(2, 2, rows_deleted=True)
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["pages_removed"] == 2
+
     async def test_build_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/build", headers=_h())
@@ -456,6 +469,38 @@ class TestWikiEnabled:
         assert body["reconciled"] == 1
         assert body["archived"] == 0
         assert body["records"][0]["action"] == "reconciled"
+
+    async def test_wipe_reports_a_failed_row_delete(self, monkeypatch: pytest.MonkeyPatch):
+        """The client must be able to tell a completed wipe from one that left
+        the rows behind, since those rows keep answering searches."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr(
+            wipe_mod, "wipe_wiki", lambda store: wipe_mod.WipeReport(2, 2, rows_deleted=False)
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["rows_deleted"] is False
+
+    async def test_wipe_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """The wipe walks the tree and the store and takes the wiki mutex; it
+        runs in a worker thread, not on the event loop."""
+        from conftest import make_mock_services
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        on_loop: list[bool] = []
+
+        def fake_wipe(store):
+            on_loop.append(_on_the_event_loop())
+            return wipe_mod.WipeReport(0, 0, rows_deleted=True)
+
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", fake_wipe)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
 
     async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
         """prune_wiki walks the whole tree + store; it runs in a worker thread, not

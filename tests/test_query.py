@@ -2089,7 +2089,10 @@ class TestSearchStructured:
         mock_svc.store.bm25_probe.return_value = [_make_result()]
         results = get_services().searcher._search_structured(QueryMode.TERM, "test query", 5)
         assert len(results) == 1
-        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5, chunk_type=None)
+        # Unscoped under the default (wiki off) means document chunks.
+        mock_svc.store.bm25_probe.assert_called_once_with(
+            "test query", top_k=5, chunk_type=ChunkType.RAW
+        )
 
     def test_vec_mode(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -2102,6 +2105,7 @@ class TestSearchStructured:
         results = get_services().searcher._search_structured(QueryMode.HYDE, "vague question", 5)
         assert len(results) == 1
 
+    @pytest.mark.usefixtures("wiki_enabled")
     def test_term_mode_forwards_chunk_type(self, mock_svc):
         """A ``term:`` query under an explicit scope must keep the scope filter."""
         mock_svc.store.bm25_probe.return_value = [_make_result()]
@@ -2110,11 +2114,13 @@ class TestSearchStructured:
         )
         assert mock_svc.store.bm25_probe.call_args[1]["chunk_type"] == ChunkType.WIKI
 
+    @pytest.mark.usefixtures("wiki_enabled")
     def test_vec_mode_forwards_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
         get_services().searcher._search_structured(QueryMode.VEC, "q", 5, chunk_type=ChunkType.WIKI)
         assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
 
+    @pytest.mark.usefixtures("wiki_enabled")
     def test_hyde_mode_forwards_chunk_type(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("doc")
         mock_svc.store.search.return_value = [_make_result()]
@@ -3192,33 +3198,68 @@ class TestChunkTypeScope:
         assert kwargs.get("chunk_type") == "wiki"
 
 
-class TestNormalizeChunkType:
-    """Wiki-scope requests normalize to no-filter when wiki generation is off.
+class TestWikiDisabledScope:
+    """Turning the wiki off keeps pages generated earlier out of retrieval.
 
-    Keeps the CLI/MCP/HTTP experience honest (no silent empty results)
-    and mirrors the TUI hiding the toggle altogether.
+    Disabling the setting deletes no rows, so every retrieval path has to
+    exclude them: an unscoped search narrows to document chunks, and a
+    wiki-scoped one serves nothing rather than widening to the whole pool.
     """
 
-    def test_wiki_scope_with_wiki_disabled_normalizes_to_none(self, mock_svc, caplog):
-        cfg.wiki = False
-        try:
-            mock_svc.store.search.return_value = []
-            get_services().searcher.search("q", chunk_type="wiki")
-            kwargs = mock_svc.store.search.call_args.kwargs
-            assert kwargs.get("chunk_type") is None
-            assert any("wiki is disabled" in r.message for r in caplog.records)
-        finally:
-            cfg.wiki = True
+    @pytest.fixture(autouse=True)
+    def _wiki_off(self, monkeypatch):
+        monkeypatch.setattr(cfg, "wiki", False)
 
-    def test_raw_scope_with_wiki_disabled_unchanged(self, mock_svc):
-        cfg.wiki = False
-        try:
-            mock_svc.store.search.return_value = []
-            get_services().searcher.search("q", chunk_type="raw")
-            kwargs = mock_svc.store.search.call_args.kwargs
-            assert kwargs.get("chunk_type") == "raw"
-        finally:
-            cfg.wiki = True
+    @pytest.mark.parametrize(
+        ("question", "scope"), [("q", "wiki"), ("wiki: energy", None)], ids=["explicit", "prefix"]
+    )
+    def test_wiki_scope_serves_nothing(self, mock_svc, caplog, question, scope):
+        """Both the explicit scope and the ``wiki:`` prefix return no results."""
+        mock_svc.store.search.return_value = [_make_result(chunk_type="wiki")]
+        assert get_services().searcher.search(question, chunk_type=scope) == []
+        mock_svc.store.search.assert_not_called()
+        assert any("wiki is disabled" in r.message for r in caplog.records)
+
+    def test_unscoped_search_narrows_to_documents(self, mock_svc):
+        """``raw`` covers table chunks, so the only rows dropped are wiki pages."""
+        mock_svc.store.search.return_value = []
+        get_services().searcher.search("q")
+        assert mock_svc.store.search.call_args.kwargs.get("chunk_type") == ChunkType.RAW
+
+    def test_raw_scope_unchanged(self, mock_svc):
+        mock_svc.store.search.return_value = []
+        get_services().searcher.search("q", chunk_type="raw")
+        assert mock_svc.store.search.call_args.kwargs.get("chunk_type") == "raw"
+
+    def test_term_prefix_narrows_to_documents(self, mock_svc):
+        mock_svc.store.bm25_probe.return_value = []
+        get_services().searcher.search("term: energy")
+        assert mock_svc.store.bm25_probe.call_args.kwargs.get("chunk_type") == ChunkType.RAW
+
+    def test_known_item_content_probe_narrows_to_documents(self, mock_svc):
+        """The probe that resolves a reference from document text is scoped too,
+        so a wiki page repeating the reference cannot route the query to itself."""
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.bm25_probe.return_value = []
+        mock_svc.store.search.return_value = []
+        with mock.patch.object(cfg, "intent_routing", True):
+            get_services().searcher.search("summarize survey_214.pdf")
+        probes = mock_svc.store.bm25_probe.call_args_list
+        assert probes, "expected the known-item content probe to run"
+        assert all(c.kwargs.get("chunk_type") == ChunkType.RAW for c in probes)
+
+
+class TestWikiScopeSkipsKnownItem:
+    """A wiki-scoped search asks for generated pages, not a named document."""
+
+    @pytest.mark.usefixtures("wiki_enabled")
+    def test_named_document_does_not_route_under_wiki_scope(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "survey_214.pdf"}]
+        mock_svc.store.get_chunks_by_source.return_value = [_make_result()]
+        mock_svc.store.search.return_value = []
+        with mock.patch.object(cfg, "intent_routing", True):
+            get_services().searcher.search("summarize survey_214.pdf", chunk_type="wiki")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
 
 
 class TestStructuredQueryScopeInteraction:
@@ -3240,14 +3281,13 @@ class TestStructuredQueryScopeInteraction:
         finally:
             cfg.wiki = False
 
-    def test_wiki_prefix_falls_back_to_full_pool_when_wiki_disabled(self, mock_svc):
-        """The ``wiki:`` prefix goes through the same wiki-disabled guard as the
-        explicit chunk_type arg, so it can't search an empty wiki pool."""
-        cfg.wiki = False
+    def test_explicit_raw_beats_wiki_prefix_while_wiki_disabled(self, mock_svc, monkeypatch):
+        """The explicit scope still wins over the prefix once the guard runs,
+        so ``raw:`` content is served rather than refused as a wiki request."""
+        monkeypatch.setattr(cfg, "wiki", False)
         mock_svc.store.search.return_value = []
-        get_services().searcher.search("wiki: energy")
-        kwargs = mock_svc.store.search.call_args.kwargs
-        assert kwargs.get("chunk_type") is None
+        get_services().searcher.search("wiki: energy", chunk_type="raw")
+        assert mock_svc.store.search.call_args.kwargs.get("chunk_type") == "raw"
 
 
 class TestStructuredQueryWikiRaw:

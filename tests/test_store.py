@@ -224,6 +224,43 @@ class TestReplaceChunks:
         assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
 
 
+class TestDeleteAllWikiRows:
+    def test_removes_wiki_chunks_and_citations_but_not_documents(self, store):
+        from tests.conftest import make_citation
+
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(1, chunk_type="raw"))
+        store.add_citations([make_citation(wiki_source="wiki/concepts/a.md")])
+
+        assert store.delete_all_wiki_rows() is True
+
+        rows = store.open_table(CHUNKS_TABLE).search().to_list()
+        assert [r["chunk_type"] for r in rows] == ["raw"]
+        assert store.wiki_citation_sources() == set()
+
+    def test_empty_store_succeeds(self, store):
+        assert store.delete_all_wiki_rows() is True
+
+    def test_reports_a_failed_delete(self, store, monkeypatch):
+        """A caller must not report a wipe over a swallowed failure."""
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        monkeypatch.setattr(store, "clear_table", lambda name, predicate: False)
+        assert store.delete_all_wiki_rows() is False
+
+    def test_both_deletes_run_even_when_the_first_fails(self, store, monkeypatch):
+        """A short-circuit would leave the citations behind whenever the chunk
+        delete failed, so the second delete never runs and never retries."""
+        cleared: list[str] = []
+
+        def _clear(name: str, predicate: str) -> bool:
+            cleared.append(name)
+            return False
+
+        monkeypatch.setattr(store, "clear_table", _clear)
+        store.delete_all_wiki_rows()
+        assert len(cleared) == 2
+
+
 class TestWikiChunkSources:
     def test_returns_only_wiki_row_sources(self, store):
         store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
