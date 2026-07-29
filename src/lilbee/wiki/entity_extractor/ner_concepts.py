@@ -137,7 +137,10 @@ def _accumulate_doc_entities(
         if ent.label_ not in allowed_ent_types:
             funnel["type_filter_dropped"] += 1
             continue
-        surface = ent.text.strip()
+        # Collapse first: spaCy spans cross wrapped lines constantly in PDF
+        # text, and the label is interpolated raw into a single-line marker.
+        # Rejecting the wrapped form instead would lose the mention entirely.
+        surface = _WHITESPACE_RE.sub(" ", ent.text.strip())
         if not is_valid_label(surface):
             funnel["label_sanity_dropped_entities"] += 1
             if debug_enabled:

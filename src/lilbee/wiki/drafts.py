@@ -202,7 +202,10 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
 
 
 _ORIGIN_MARKER_RE = re.compile(
-    r"<!--[^>]*origin:\s*(?P<subdir>\w+)[^>]*-->",
+    # Non-greedy like the PENDING patterns: a collision marker carries raw
+    # source names between the keyword and the origin field, and one of those
+    # may contain ">".
+    r"<!--.*?origin:\s*(?P<subdir>\w+).*?-->",
     re.IGNORECASE,
 )
 

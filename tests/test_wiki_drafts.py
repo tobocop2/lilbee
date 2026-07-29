@@ -161,6 +161,35 @@ class TestDiffDraft:
         assert "(new draft)" in diff
 
 
+class TestMarkerReadersAgree:
+    """Every reader of a marker line must reach the same verdict about it."""
+
+    def test_a_first_line_quoting_a_marker_is_content(self):
+        """Under an unanchored search this classifies as PENDING-PARSE, and
+        accepting it deletes the draft without publishing anything."""
+        from lilbee.wiki.drafts import _classify_and_strip_markers
+
+        text = (
+            "Wrote <!-- PENDING: batch parse failed for source s.txt --> then retried.\n"
+            "\nReal reviewed content.\n"
+        )
+        kind, _drift, body = _classify_and_strip_markers(text)
+        assert kind is None
+        assert "Wrote <!--" in body
+
+    def test_a_collision_marker_naming_an_odd_filename_keeps_its_origin(self):
+        """The source name is interpolated raw and > is legal in a filename, so
+        a reader that stops at the first > loses the origin field and the page
+        accepts into summaries/ instead of its own type."""
+        from lilbee.wiki.drafts import _parse_origin_subdir
+
+        marker = (
+            "<!-- PENDING: concept slug collision with source drafts/brakes.md, "
+            "content from q3>q2.pdf held for review; origin: concepts -->"
+        )
+        assert _parse_origin_subdir(marker) == WikiSubdir.CONCEPTS
+
+
 class TestAcceptDraft:
     def test_accepts_into_published_subdir_when_match_exists(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"

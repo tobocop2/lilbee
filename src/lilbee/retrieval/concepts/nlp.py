@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 from typing import Any
 
 from lilbee.core.text import is_valid_label
+
+_CHUNK_WHITESPACE_RE = re.compile(r"\s+")
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +78,9 @@ def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     seen: set[str] = set()
     concepts: list[str] = []
     for chunk in doc.noun_chunks:
-        concept = chunk.text.lower().strip()
+        # Collapse wrapped lines: a noun chunk spanning a line break is the
+        # same concept as its unwrapped form and must fold into one node.
+        concept = _CHUNK_WHITESPACE_RE.sub(" ", chunk.text.lower().strip())
         if not is_valid_label(concept):
             continue
         if concept in seen:
