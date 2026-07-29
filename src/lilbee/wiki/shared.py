@@ -98,12 +98,14 @@ PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 
 # Matched by every reader. Keyword spacing is loose because cached markers
 # vary, and the match is anchored because a marker is always the first thing on
-# its line: a body quoting one mid-line is content, not a placeholder.
+# its line: a body quoting one mid-line is content, not a placeholder. The tail
+# is non-greedy rather than [^>]*, because a comment ends at "-->" and the
+# writers interpolate raw source filenames, which may contain ">".
 _PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
 _COLLISION_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_COLLISION.replace(" ", r"\s+")
-PENDING_PARSE_MARKER_RE = re.compile(rf"\s*<!--\s*{_PARSE_KEYWORD_PATTERN}[^>]*-->", re.IGNORECASE)
+PENDING_PARSE_MARKER_RE = re.compile(rf"\s*<!--\s*{_PARSE_KEYWORD_PATTERN}.*?-->", re.IGNORECASE)
 PENDING_COLLISION_MARKER_RE = re.compile(
-    rf"\s*<!--\s*{_COLLISION_KEYWORD_PATTERN}[^>]*-->", re.IGNORECASE
+    rf"\s*<!--\s*{_COLLISION_KEYWORD_PATTERN}.*?-->", re.IGNORECASE
 )
 
 

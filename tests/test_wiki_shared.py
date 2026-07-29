@@ -292,10 +292,23 @@ class TestPendingMarkerPredicate:
             ("<!--  PENDING:  batch  parse  failed -->", True),
             ("<!-- PENDING: concept slug collision with x -->", True),
             ("<!-- DRIFT: 50% content changed -->", False),
+            ("Wrote <!-- PENDING: batch parse failed --> then retried", False),
+            ("<!-- PENDING: batch parse failed for source q3>q2.pdf -->", True),
+            ("<!-- PENDING: batch parse failed", False),
             ("---\ntitle: Brakes\n---\n", False),
             ("", False),
         ],
-        ids=["parse", "spaced", "collision", "drift", "content", "empty"],
+        ids=[
+            "parse",
+            "spaced",
+            "collision",
+            "drift",
+            "quoted-mid-line",
+            "source-name-with-angle-bracket",
+            "truncated",
+            "content",
+            "empty",
+        ],
     )
     def test_classifies_a_leading_marker_line(self, text: str, expected: bool):
         from lilbee.wiki.shared import is_pending_marker_text

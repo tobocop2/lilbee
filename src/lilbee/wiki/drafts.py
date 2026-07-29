@@ -65,16 +65,7 @@ _DRIFT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Batched-generation pending markers. The per-source batched call
-# writes one of these when the parser could not recover a requested
-# section, or when two sources proposed the same concept slug and the
-# second write lost the race. The keyword phrases live in
-# ``wiki.shared`` so writer (generation) and reader (drafts) agree on
-# the exact wording; this regex adds the ``<!--`` wrapper plus ``\s+``
-# in place of each literal space, so the reader tolerates double-space
-# variations in cached markers. Keywords carry no regex metacharacters
-# so ``re.escape`` is unnecessary.
-
+# Pending-marker patterns come from wiki.shared, which owns the wording.
 
 # Published wiki subdirs searched in priority order when pairing a
 # draft slug with its counterpart. Summaries and synthesis come first
@@ -248,16 +239,16 @@ def _parse_pending_kind(text: str) -> str | None:
     marker comment further down does not get mis-classified.
     """
     first_line = text.splitlines()[0] if text else ""
-    if PENDING_PARSE_MARKER_RE.search(first_line):
+    if PENDING_PARSE_MARKER_RE.match(first_line):
         return PendingKind.PARSE
-    if PENDING_COLLISION_MARKER_RE.search(first_line):
+    if PENDING_COLLISION_MARKER_RE.match(first_line):
         return PendingKind.COLLISION
     return None
 
 
 def _is_marker_line(line: str) -> bool:
     return any(
-        pattern.search(line)
+        pattern.match(line)
         for pattern in (
             PENDING_PARSE_MARKER_RE,
             PENDING_COLLISION_MARKER_RE,

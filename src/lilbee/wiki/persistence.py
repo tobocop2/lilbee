@@ -29,12 +29,6 @@ from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
 
-# Pending-marker conventions: the drafts listing surface
-# (``lilbee.wiki.drafts``) scans for these prefixes to classify a
-# draft as PARSE or COLLISION instead of a drift-routed regen. The
-# keyword phrases live in ``wiki.shared`` so writer (gen) and reader
-# (drafts) stay in sync on the exact wording.
-
 # Leading comment on a drift-diverted draft. The drafts surface matches the
 # same wording with a regex.
 _DRIFT_MARKER_PREFIX = "<!-- DRIFT:"
