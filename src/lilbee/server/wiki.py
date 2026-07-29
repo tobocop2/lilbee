@@ -32,6 +32,8 @@ from lilbee.server.models import (
     WikiDraftDiffResponse,
     WikiDraftRejectResponse,
     WikiEntityCandidateResponse,
+    WikiGenerateResult,
+    WikiIndexResult,
     WikiLintIssueItem,
     WikiLintResult,
     WikiPageDetail,
@@ -249,6 +251,46 @@ async def wiki_prune_route() -> WikiPruneResult:
         flagged=report.flagged_count,
         reconciled=report.reconciled_count,
     )
+
+
+@post("/api/wiki/index")
+async def wiki_index_route() -> WikiIndexResult:
+    """Rebuild the browse index of pages the corpus could have.
+
+    Spends no LLM call. Extraction walks every chunk, so it runs off the event
+    loop and takes the wiki build mutex itself.
+    """
+    _require_wiki()
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    stubs = await asyncio.to_thread(refresh_stub_index, svc_mod.get_services().store)
+    return WikiIndexResult(entries=len(stubs))
+
+
+@post("/api/wiki/generate/{slug:path}")
+async def wiki_generate_route(slug: str) -> WikiGenerateResult:
+    """Generate one indexed page. Costs a single LLM call.
+
+    404 when the slug names nothing in the index, 409 when the index entry is
+    stale and its sources are gone, so a client can tell "never heard of it"
+    from "nothing left to write it from".
+    """
+    _require_wiki()
+    slug = slug.lstrip("/")
+    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+
+    store = svc_mod.get_services().store
+    try:
+        # One LLM call plus embeddings, and it takes the wiki mutex.
+        path = await asyncio.to_thread(generate_stub_page, slug, store)
+    except UnknownStubError as exc:
+        raise NotFoundException(detail=str(exc)) from exc
+    if path is None:
+        raise ClientException(
+            detail=f"index entry for {slug} is stale; its sources are gone",
+            status_code=HTTP_409_CONFLICT,
+        )
+    return WikiGenerateResult(slug=slug, path=path.as_posix())
 
 
 @delete("/api/wiki", status_code=200)

@@ -852,6 +852,29 @@ def wiki_prune() -> dict[str, Any]:
     }
 
 
+@_wiki_tool
+def wiki_index() -> dict[str, Any]:
+    """Rebuild the browse index of pages the corpus could have. No LLM call."""
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    stubs = refresh_stub_index(get_services().store)
+    return {"command": "wiki_index", "entries": len(stubs)}
+
+
+@_wiki_tool
+def wiki_generate(slug: str) -> dict[str, Any]:
+    """Generate one indexed wiki page. Costs a single LLM call and is GPU-heavy."""
+    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+
+    try:
+        path = generate_stub_page(slug, get_services().store)
+    except UnknownStubError as exc:
+        return _error(str(exc))
+    if path is None:
+        return _error(f"index entry for {slug} is stale; its sources are gone")
+    return {"command": "wiki_generate", "slug": slug, "path": path.as_posix()}
+
+
 @_tool
 def wiki_wipe(confirm: bool = False) -> dict[str, Any]:
     """Delete every generated wiki page and its indexed rows. Pass ``confirm=true``.

@@ -1144,6 +1144,14 @@ Wiki generation does not search. NER assigns each extracted entity to the source
 
 After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug surface forms to `[[slug]]` form in page bodies, skipping YAML frontmatter, code fences, and the auto-generated citation block. `lilbee wiki lint` flags concept or entity pages with zero inbound links.
 
+### Lazy generation
+
+A build spends one LLM call per source document, so its cost tracks library size rather than what anyone reads. `wiki/stubs.py` splits that in half: NER already names every entity in the corpus with its chunk refs and spends no call, so the index of pages-that-could-exist is free and refreshes on every sync while the wiki is enabled (not gated on `wiki_auto_update`, which governs generation). `wiki/lazy.py::generate_stub_page` then writes one page for one call.
+
+Only entities are enumerable this way; LLM-curated concepts come from the per-source batched call and still arrive published from an explicit build.
+
+Per-page generation also widens the evidence. `group_entities_by_primary_source` assigns an entity to the source mentioning it most and generates from that source alone, dropping what every other document says. Reading the index gathers the subject's chunks across all of them and resolves each citation against whichever source holds the excerpt. Chunk refs are capped per entity (`wiki_stub_max_chunk_refs`, default 50, already more than one page's context budget admits) so the index stays small.
+
 ### Removing a wiki
 
 Disabling `wiki` stops new pages being written; it deletes nothing. `wiki/wipe.py::wipe_wiki` removes the whole wiki directory and then every `chunk_type=wiki` row and every citation row, in that order: rows outliving their page are what the next prune reconciles away, while a page outliving its rows reads as "nothing to do" and is never retried. It is reachable with the wiki disabled from all four surfaces: `lilbee wiki wipe`, `DELETE /api/wiki`, the `wiki_wipe` MCP tool (which needs `confirm=true`), and in the TUI the **Delete wiki** command-palette entry. The wiki screen's `W` binding is the quick route while the wiki is on, but the whole wiki view drops out of the nav once the setting is off, so the palette entry is what carries that state. The TUI also offers the wipe whenever the setting is switched off. A wipe reports whether the row delete actually landed, so a failure is never presented as a completed wipe.
@@ -1180,7 +1188,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
 - Crawl: `POST /api/crawl` (SSE progress)
-- Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize` (these three are SSE streams), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
+- Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize` (these three are SSE streams), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `POST /api/wiki/index`, `POST /api/wiki/generate/{slug}`, `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
 - Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`
@@ -1202,7 +1210,7 @@ The tradeoff is that the token is all-or-nothing: a client trusted with retrieva
 ### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
-- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`, `wiki_wipe` (needs `confirm=true`, and stays registered while the wiki is disabled). Accepting or rejecting a draft is deliberately absent from MCP: that call is a human review decision, so it stays on the CLI, the TUI, and the authenticated HTTP API.
+- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`, `wiki_index`, `wiki_generate`, `wiki_wipe` (needs `confirm=true`, and stays registered while the wiki is disabled). Accepting or rejecting a draft is deliberately absent from MCP: that call is a human review decision, so it stays on the CLI, the TUI, and the authenticated HTTP API.
 
 #### Transports
 

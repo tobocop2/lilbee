@@ -36,6 +36,8 @@ from lilbee.mcp_server import (
     wiki_citations,
     wiki_drafts_diff,
     wiki_drafts_list,
+    wiki_generate,
+    wiki_index,
     wiki_lint,
     wiki_list,
     wiki_prune,
@@ -1209,6 +1211,48 @@ class TestWikiPrune:
         result = wiki_prune()
         assert result["reconciled"] == 1
         assert result["archived"] == 0
+
+
+class TestWikiIndexAndGenerate:
+    def test_index_reports_its_size(self, mock_svc, monkeypatch):
+        from lilbee.wiki import stubs as stubs_mod
+
+        cfg.wiki = True
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1})
+        assert wiki_index()["entries"] == 1
+
+    def test_generate_returns_the_path(self, mock_svc, monkeypatch):
+        from pathlib import Path
+
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("w/ford.md"))
+        assert wiki_generate("ford")["path"] == "w/ford.md"
+
+    def test_generate_reports_an_unknown_slug_as_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+
+        def boom(slug, store):
+            raise lazy_mod.UnknownStubError("no indexed page")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", boom)
+        assert "error" in wiki_generate("nope")
+
+    def test_generate_reports_a_stale_entry_as_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: None)
+        assert "stale" in wiki_generate("ford")["error"]
+
+    @pytest.mark.parametrize("tool", ["index", "generate"], ids=["index", "generate"])
+    def test_both_refuse_when_the_wiki_is_disabled(self, mock_svc, tool):
+        cfg.wiki = False
+        result = wiki_index() if tool == "index" else wiki_generate("ford")
+        assert result["error"] == WIKI_DISABLED_ERROR
 
 
 class TestWikiWipe:

@@ -506,6 +506,19 @@ class WikiPruneResult(BaseModel):
     reconciled: int = 0
 
 
+class WikiIndexResult(BaseModel):
+    """Result of rebuilding the browse index. Costs no LLM call."""
+
+    entries: int = 0
+
+
+class WikiGenerateResult(BaseModel):
+    """Result of generating one indexed page."""
+
+    slug: str
+    path: str
+
+
 class WikiWipeResult(BaseModel):
     """Result of wiping the wiki.
 

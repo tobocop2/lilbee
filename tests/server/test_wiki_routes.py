@@ -493,6 +493,73 @@ class TestWikiEnabled:
         assert resp.headers["content-type"].startswith("application/json")
         assert "entities" in resp.json()
 
+    async def test_index_rebuilds_and_reports_its_size(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import stubs as stubs_mod
+
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2})
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/index", headers=_h())
+        assert resp.status_code == 201
+        assert resp.json()["entries"] == 2
+
+    async def test_index_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """Extraction walks every chunk in the corpus."""
+        from lilbee.wiki import stubs as stubs_mod
+
+        on_loop: list[bool] = []
+
+        def fake_refresh(store):
+            on_loop.append(_on_the_event_loop())
+            return {}
+
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", fake_refresh)
+        async with AsyncTestClient(_create_app()) as client:
+            await client.post("/api/wiki/index", headers=_h())
+        assert on_loop == [False]
+
+    async def test_generate_writes_one_page(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("wiki/e/ford.md"))
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/ford", headers=_h())
+        assert resp.status_code == 201
+        assert resp.json()["path"] == "wiki/e/ford.md"
+
+    async def test_generate_404s_an_unknown_slug(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        def boom(slug, store):
+            raise lazy_mod.UnknownStubError("no indexed page named 'nope'")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", boom)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/nope", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_generate_409s_a_stale_index_entry(self, monkeypatch: pytest.MonkeyPatch):
+        """A client has to tell "never heard of it" from "nothing to write it from"."""
+        from lilbee.wiki import lazy as lazy_mod
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: None)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/ford", headers=_h())
+        assert resp.status_code == 409
+
+    async def test_generate_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        on_loop: list[bool] = []
+
+        def fake_generate(slug, store):
+            on_loop.append(_on_the_event_loop())
+            return Path("wiki/e/ford.md")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", fake_generate)
+        async with AsyncTestClient(_create_app()) as client:
+            await client.post("/api/wiki/generate/ford", headers=_h())
+        assert on_loop == [False]
+
     async def test_wipe_reports_a_failed_row_delete(self, monkeypatch: pytest.MonkeyPatch):
         """The client must be able to tell a completed wipe from one that left
         the rows behind, since those rows keep answering searches."""
