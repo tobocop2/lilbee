@@ -103,7 +103,7 @@ class WikiScreen(Screen[None]):
     AUTO_FOCUS = "#wiki-page-list"
     HELP = (
         "Browse wiki pages. h/l collapse/expand, j/k navigate, Enter opens a page, "
-        "/ searches, b generates pages from your documents."
+        "/ searches, b generates pages from your documents (GPU-heavy)."
     )
 
     BINDINGS: ClassVar[list[BindingType]] = [

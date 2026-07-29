@@ -217,6 +217,11 @@ repeatedly in your library gets its own page, written and cited from the source
 that mentions it most. Coverage across sources comes from synthesis pages
 (`lilbee wiki synthesize`) and the `[[wiki link]]` graph.
 
+A build spends one LLM call per source document, so it is GPU-heavy and its cost
+scales with the size of your library, not with how many pages you read. A few dozen
+documents takes minutes; a few thousand takes hours. Nothing generates until you ask
+for it.
+
 Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 
 | Directory | Contents |

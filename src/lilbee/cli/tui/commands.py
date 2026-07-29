@@ -58,7 +58,11 @@ class LilbeeCommandProvider(Provider):
                 self._action_delete_document,
             ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
-            ("Wikify", "Generate wiki pages from indexed documents", self._action_wikify),
+            (
+                "Wikify",
+                "Generate wiki pages from indexed documents (GPU-heavy)",
+                self._action_wikify,
+            ),
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",

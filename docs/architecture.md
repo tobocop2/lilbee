@@ -1133,6 +1133,9 @@ Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` tar
 
 Enabling the wiki never starts generation on its own. A sync regenerates touched pages only when `LILBEE_WIKI_AUTO_UPDATE` is on, in which case `lilbee.wiki.ingest.incremental_update` runs after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 touched wiki pages per sync); past it the sync logs a warning and leaves the rebuild to you. Otherwise wikification is explicit: `lilbee wiki build` / `wiki update`, the `b` (Wikify) binding on the TUI wiki screen, or the HTTP and MCP build endpoints.
 
+A build spends one LLM call per source document, each carrying that document's chunks up to the context budget, so cost scales with library size rather than with how many pages you read. On a laptop a few dozen documents is minutes; a few thousand is hours of sustained GPU. Run large builds on a machine you are not also using.
+
+
 ### Chunk selection inside wiki generation
 
 Wiki generation does not search. NER assigns each extracted entity to the source that mentions it most (its `chunk_refs`), and the batched call for that source is handed that source's own chunks straight from `store.get_chunks_by_source`. Synthesis pages take the chunks of every source in the cluster. In both paths `wiki/page.py::truncate_chunks_to_budget` drops trailing chunks until the prompt plus the output cap (`LILBEE_WIKI_SUMMARY_MAX_TOKENS`) fits the context window, with a quarter-window fallback when the output cap and prompt overhead alone would exceed it. Hybrid search, the reranker, and the per-source diversity cap play no part in what a page is built from.

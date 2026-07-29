@@ -517,7 +517,11 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Enable the wiki layer (synthesis pages with citations)",
+        help_text=(
+            "Enable the wiki layer (cited concept and entity pages). "
+            "GPU-heavy: a build spends one LLM call per source document, "
+            "so a large library takes hours. Nothing generates until you wikify"
+        ),
     ),
     "wiki_auto_update": SettingDef(
         bool,
