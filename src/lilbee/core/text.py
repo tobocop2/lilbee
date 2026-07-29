@@ -83,7 +83,7 @@ def is_valid_label(label: str) -> bool:
     # splitlines because that is what those readers use, so the gate and they
     # agree on what a line break is. A non-breaking or thin space is not one,
     # and PDF text is full of both.
-    if "\n" in stripped or "\r" in stripped:
+    if len(stripped.splitlines()) > 1:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False
