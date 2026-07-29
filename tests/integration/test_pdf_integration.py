@@ -134,7 +134,7 @@ class TestTesseractOcrFallback:
         """Tesseract OCR produces non-empty text from the scanned PDF fixture."""
         from xberg import ExtractionConfig, OcrConfig
 
-        from lilbee.data.xberg_extract import aextract_document
+        from lilbee.data.extract.xberg import aextract_document
 
         config = ExtractionConfig(
             ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
@@ -155,7 +155,7 @@ class TestTesseractOcrFallback:
         """Tesseract OCR captures key phrases from the scanned document."""
         from xberg import ExtractionConfig, OcrConfig
 
-        from lilbee.data.xberg_extract import aextract_document
+        from lilbee.data.extract.xberg import aextract_document
 
         config = ExtractionConfig(
             ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
@@ -195,9 +195,9 @@ class TestVisionOcrFallback:
         from xberg import ExtractionConfig, OcrConfig
 
         from lilbee.app.services import get_services
-        from lilbee.data.ingest.types import OcrBackendName
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
-        from lilbee.data.xberg_extract import aextract_document
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.xberg import aextract_document
+        from lilbee.data.types import OcrBackendName
 
         sync_xberg_backend(BackendKind.OCR, get_services().provider)
         config = ExtractionConfig(

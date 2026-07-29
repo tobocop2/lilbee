@@ -96,7 +96,7 @@ def _make_xberg_result(text: str = "Some extracted text. " * 20, num_chunks: int
 
 
 @mock.patch(
-    "lilbee.data.xberg_extract.aextract_document",
+    "lilbee.data.extract.xberg.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -384,7 +384,7 @@ class TestAddValidation:
 
         paths = [f"/fake/file_{i}.txt" for i in range(285)]
         with mock.patch(
-            "lilbee.data.xberg_extract.aextract_document",
+            "lilbee.data.extract.xberg.aextract_document",
             new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):
@@ -662,7 +662,7 @@ class TestAddIngestMutex:
         assert lock is not None
         try:
             with mock.patch(
-                "lilbee.data.xberg_extract.aextract_document",
+                "lilbee.data.extract.xberg.aextract_document",
                 new_callable=mock.AsyncMock,
                 return_value=_make_xberg_result(),
             ):
@@ -715,7 +715,7 @@ class TestAddIngestMutex:
         async def _run(path: Path):
             text = ""
             with mock.patch(
-                "lilbee.data.xberg_extract.aextract_document",
+                "lilbee.data.extract.xberg.aextract_document",
                 new_callable=mock.AsyncMock,
                 return_value=_make_xberg_result(),
             ):
@@ -800,7 +800,7 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "lilbee.data.xberg_extract.aextract_document",
+            "lilbee.data.extract.xberg.aextract_document",
             new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):
@@ -824,7 +824,7 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "lilbee.data.xberg_extract.aextract_document",
+            "lilbee.data.extract.xberg.aextract_document",
             new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):

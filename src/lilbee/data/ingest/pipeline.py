@@ -27,6 +27,13 @@ from rich.progress import (
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
+from lilbee.data.extract.document import (
+    extract_batching,
+    ingest_document,
+    ingest_markdown,
+    warn_if_table_model_ignored,
+)
+from lilbee.data.extract.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.adaptive import (
     AdaptiveController,
     ResizableGate,
@@ -37,32 +44,11 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
-from lilbee.data.ingest.extract import (
-    extract_batching,
-    ingest_document,
-    ingest_markdown,
-    warn_if_table_model_ignored,
-)
-from lilbee.data.ingest.offload import (
-    embed_inflight_target,
-    max_workers,
-    to_executor,
-    to_ingest_thread,
-)
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
     write_skip_markers,
     write_skip_reasons,
-)
-from lilbee.data.ingest.title import derive_title
-from lilbee.data.ingest.trace import configure_from_env as configure_trace_from_env
-from lilbee.data.ingest.types import (
-    ChunkRecord,
-    FileChangePlan,
-    FileToProcess,
-    SyncResult,
-    _IngestResult,
 )
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
@@ -71,6 +57,12 @@ from lilbee.data.ingest.workers import (
     error_reason,
     resolve_process_count,
     warm_parent_engine,
+)
+from lilbee.data.offload import (
+    embed_inflight_target,
+    max_workers,
+    to_executor,
+    to_ingest_thread,
 )
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
@@ -83,6 +75,14 @@ from lilbee.data.store import (
     SourceStatBackfill,
     SourceType,
     source_stat,
+)
+from lilbee.data.title import derive_title
+from lilbee.data.types import (
+    ChunkRecord,
+    FileChangePlan,
+    FileToProcess,
+    SyncResult,
+    _IngestResult,
 )
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError

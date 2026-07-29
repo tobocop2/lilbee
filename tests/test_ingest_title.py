@@ -2,7 +2,7 @@
 
 from xberg import Metadata
 
-from lilbee.data.ingest.title import derive_title, source_meta_from_extraction
+from lilbee.data.title import derive_title, source_meta_from_extraction
 
 
 class TestDeriveTitle:
@@ -103,14 +103,14 @@ class TestEmbedTitles:
 
     def test_off_by_default_passes_texts_through(self):
         from lilbee.core.config import cfg
-        from lilbee.data.ingest.extract import _embed_inputs
+        from lilbee.data.extract.document import _embed_inputs
 
         assert cfg.embed_titles is False
         assert _embed_inputs(["chunk text"], "Annual Report") == ["chunk text"]
 
     def test_on_prefixes_the_title(self):
         from lilbee.core.config import cfg
-        from lilbee.data.ingest.extract import _embed_inputs
+        from lilbee.data.extract.document import _embed_inputs
 
         cfg.embed_titles = True
         try:
@@ -121,7 +121,7 @@ class TestEmbedTitles:
 
     def test_scoped_title_reaches_the_ocr_embed_path(self):
         from lilbee.core.config import cfg
-        from lilbee.data.ingest.extract import _embed_inputs, _title_scope
+        from lilbee.data.extract.document import _embed_inputs, _title_scope
 
         cfg.embed_titles = True
         try:
@@ -143,7 +143,7 @@ class TestContextualEnrichment:
         return svc
 
     def test_off_by_default_is_passthrough(self):
-        from lilbee.data.ingest.extract import _enrich_texts
+        from lilbee.data.extract.document import _enrich_texts
 
         assert _enrich_texts(["chunk"], "doc head", "a.pdf") == ["chunk"]
 
@@ -151,12 +151,12 @@ class TestContextualEnrichment:
         from unittest.mock import patch
 
         from lilbee.core.config import cfg
-        from lilbee.data.ingest.extract import _enrich_texts
+        from lilbee.data.extract.document import _enrich_texts
 
         svc = self._services()
         cfg.contextual_enrichment = True
         try:
-            with patch("lilbee.data.ingest.extract.get_services", return_value=svc):
+            with patch("lilbee.data.extract.document.get_services", return_value=svc):
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
@@ -166,13 +166,13 @@ class TestContextualEnrichment:
         from unittest.mock import patch
 
         from lilbee.core.config import cfg
-        from lilbee.data.ingest.extract import _enrich_texts
+        from lilbee.data.extract.document import _enrich_texts
 
         svc = self._services()
         svc.provider.chat.side_effect = RuntimeError("model down")
         cfg.contextual_enrichment = True
         try:
-            with patch("lilbee.data.ingest.extract.get_services", return_value=svc):
+            with patch("lilbee.data.extract.document.get_services", return_value=svc):
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False

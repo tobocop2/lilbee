@@ -13,7 +13,6 @@ from unittest import mock
 import pytest
 
 from lilbee.data.ingest import pipeline, workers
-from lilbee.data.ingest.types import FileToProcess
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
@@ -22,6 +21,7 @@ from lilbee.data.ingest.workers import (
     resolve_process_count,
 )
 from lilbee.data.store import SourceMeta
+from lilbee.data.types import FileToProcess
 from lilbee.runtime.cancellation import TaskCancelledError
 
 

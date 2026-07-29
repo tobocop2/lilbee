@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.ingest import offload
+from lilbee.data import offload
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm, keep_fleet_warm
 from lilbee.providers.fleet.provider import _warm_ttl_seconds
 
@@ -87,7 +87,7 @@ class TestKeepFleetWarm:
         assert offload.max_workers() == 64  # pool lifts to feed it too
 
     def test_embed_inflight_target_single_card_is_zero(self, monkeypatch):
-        from lilbee.data.ingest import offload
+        from lilbee.data import offload
 
         monkeypatch.setattr(
             "lilbee.providers.fleet.replicas.resolve_replica_count", lambda *_a, **_k: 1

@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.chunk import CHARS_PER_TOKEN
-from lilbee.data.ingest.types import SyncResult
+from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+from lilbee.data.types import SyncResult
 from lilbee.retrieval.embedder import Embedder
 
 

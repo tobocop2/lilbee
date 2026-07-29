@@ -104,8 +104,7 @@ def _sync(binding: XbergBinding, provider: LLMProvider, cfg: Config) -> None:
 
 def _load_bindings() -> None:
     """Import the backend modules so their ``register_binding`` calls have run."""
-    from lilbee.data import embedding_backend, tokenizer_backend  # noqa: F401
-    from lilbee.data.ingest import vision_ocr_backend  # noqa: F401
+    from . import embedding, tokenizer, vision_ocr  # noqa: F401
 
 
 def sync_xberg_backends(provider: LLMProvider) -> None:

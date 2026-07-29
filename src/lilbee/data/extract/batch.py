@@ -19,14 +19,14 @@ import contextvars
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from lilbee.data.xberg_extract import BatchItem
+from .xberg import BatchItem
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
 
-    from lilbee.data.ingest.types import ExtractMode
+    from lilbee.data.types import ExtractMode
 
 # Delay before firing a partial batch, so concurrent extractions arriving in the
 # same burst join it. Essential for the tail and when fewer than a full batch's

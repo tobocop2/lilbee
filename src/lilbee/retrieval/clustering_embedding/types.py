@@ -36,7 +36,7 @@ class ClusterChunk:
     """Lightweight view of one chunk row used by the clusterer.
 
     Named for the clusterer rather than ``ChunkRecord`` so it cannot be
-    confused with :class:`lilbee.data.ingest.types.ChunkRecord`, an
+    confused with :class:`lilbee.data.types.ChunkRecord`, an
     unrelated TypedDict with a different field set used across ingest.
 
     ``tokens`` is a derived cache of ``_tokenize_for_tf(text)``. It is

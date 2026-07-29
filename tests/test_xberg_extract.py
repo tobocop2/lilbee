@@ -1,4 +1,4 @@
-"""Tests for the xberg async-extract bridge (lilbee.data.xberg_extract)."""
+"""Tests for the xberg async-extract bridge (lilbee.data.extract.xberg)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.data import xberg_extract
+from lilbee.data.extract import xberg as xberg_extract
 
 
 class _FakeResult:

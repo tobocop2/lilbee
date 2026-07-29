@@ -37,13 +37,13 @@ from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
     from lilbee.core.config.model import Config
-    from lilbee.data.ingest.types import (
+    from lilbee.data.store import SourceMeta
+    from lilbee.data.types import (
         ChunkRecord,
         ConceptRecords,
         FileToProcess,
         PageTextRecord,
     )
-    from lilbee.data.store import SourceMeta
 
 log = logging.getLogger(__name__)
 

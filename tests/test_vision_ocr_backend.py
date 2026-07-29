@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
-from lilbee.data.ingest.vision_ocr_backend import (
+from lilbee.data.extract.backends.vision_ocr import (
     VisionOcrBackend,
     backend_options_for,
     ocr_request,
     ocr_requests,
 )
+from lilbee.data.types import MARKDOWN_MIME, OcrBackendName
 
 
 def _backend(ocr_fn=None, model="vendor/glm-ocr"):
@@ -57,7 +57,7 @@ class TestProtocol:
     def test_version_falls_back_when_package_missing(self, monkeypatch):
         from importlib.metadata import PackageNotFoundError
 
-        from lilbee.data.ingest import vision_ocr_backend as mod
+        from lilbee.data.extract.backends import vision_ocr as mod
 
         def _raise(_name):
             raise PackageNotFoundError

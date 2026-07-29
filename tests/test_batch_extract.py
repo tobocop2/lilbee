@@ -1,4 +1,4 @@
-"""Tests for the extraction coalescer (lilbee.data.ingest.batch_extract)."""
+"""Tests for the extraction coalescer (lilbee.data.extract.batch)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ import contextlib
 
 import pytest
 
-from lilbee.data.ingest.batch_extract import (
+from lilbee.data.extract.batch import (
     ExtractBatcher,
     active_extract_batcher,
     reset_active_batcher,
     set_active_batcher,
 )
-from lilbee.data.ingest.types import ExtractMode
+from lilbee.data.types import ExtractMode
 
 MODE = ExtractMode.MARKDOWN
 

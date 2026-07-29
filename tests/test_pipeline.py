@@ -350,7 +350,8 @@ class TestMaxConcurrent:
         assert pipeline._max_concurrent() == 4
 
     def test_scales_to_embed_replicas_when_no_vision(self, monkeypatch) -> None:
-        from lilbee.data.ingest import offload, pipeline
+        from lilbee.data import offload
+        from lilbee.data.ingest import pipeline
 
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
         monkeypatch.setattr(cfg, "vision_model", "")

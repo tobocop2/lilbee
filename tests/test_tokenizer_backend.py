@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from lilbee.data.ingest.types import TokenizerBackendName
-from lilbee.data.tokenizer_backend import LilbeeTokenizerBackend, _estimate_tokens
+from lilbee.data.extract.backends.tokenizer import LilbeeTokenizerBackend, _estimate_tokens
+from lilbee.data.types import TokenizerBackendName
 
 
 def test_name_is_lilbee():
