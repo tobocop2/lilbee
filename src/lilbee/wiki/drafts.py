@@ -451,9 +451,13 @@ def accept_draft(
         store.replace_citations_for_wiki(wiki_source, records)
         reindexed = index_wiki_page(content, wiki_source, store, config)
         if not reindexed:
+            # Backstop on the store write, not on the draft's content: the
+            # accept-time guard above already refused anything that chunks to
+            # nothing, so no production input reaches here. Its only test mocks
+            # the indexer, which is why that mock is not coverage of a live path.
             raise UnindexedDraftError(
-                f"draft {slug} published no searchable chunks; the draft is kept, "
-                "re-run `accept` once the index is writable"
+                f"draft {slug} published no searchable chunks; the draft is kept "
+                "and the page is written, but the index write did not land"
             )
         update_wiki_index(config)
         draft.unlink()
@@ -488,8 +492,8 @@ def _refuse_bodyless_draft(content: str, slug: str) -> None:
     """
     if not indexable_chunks(content):
         raise BodylessDraftError(
-            f"draft {slug} has no body to publish, only frontmatter and citations; "
-            "reject it or edit the draft to add content"
+            f"draft {slug} has nothing to index: its body produces no searchable "
+            "text; reject it or edit the draft to add content"
         )
 
 

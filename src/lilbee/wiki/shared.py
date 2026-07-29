@@ -174,16 +174,23 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     """Extract YAML frontmatter fields from a wiki page string.
 
     A draft carries its marker comments above the frontmatter (drift,
-    collision, origin), so the leading comment run is skipped before the
+    collision, origin), so the leading marker run is skipped before the
     opening delimiter is looked for. Without that every marked draft parses
-    as having no frontmatter at all. Uses line-by-line scanning so ``---``
-    inside YAML content is not mistaken for the closing delimiter.
+    as having no frontmatter at all. The writers separate stacked markers with
+    a blank line, so blank lines are consumed too once a marker has been seen,
+    and never before one: a page with no marker still requires ``---`` on line
+    zero. Uses line-by-line scanning so ``---`` inside YAML content is not
+    mistaken for the closing delimiter.
     """
     lines = text.splitlines()
     start = 0
-    while start < len(lines) and lines[start].lstrip().startswith("<!--"):
-        start += 1
-    while start < len(lines) and not lines[start].strip():
+    seen_marker = False
+    while start < len(lines):
+        stripped = lines[start].lstrip()
+        if stripped.startswith("<!--"):
+            seen_marker = True
+        elif not (seen_marker and not stripped):
+            break
         start += 1
     if start >= len(lines) or lines[start].strip() != "---":
         return {}

@@ -1162,10 +1162,8 @@ class TestOpenAPISchema:
         """The build route's return annotation unions a Stream with a generic
         Response, which litestar does not unwrap, so the dry-run payload is
         declared on the decorator. Without that the published schema shows an
-        empty object and the model is not registered at all."""
-        from lilbee.core.config import cfg
-
-        cfg.wiki = True
+        empty object and the model is not registered at all. The route is
+        registered unconditionally, so this holds with the wiki disabled."""
         schema = client.get("/schema/openapi.json").json()
         content = schema["paths"]["/api/wiki/build"]["post"]["responses"]["201"]["content"]
         assert "WikiBuildDryRunResult" in content["application/json"]["schema"]["$ref"]

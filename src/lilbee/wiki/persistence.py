@@ -86,15 +86,14 @@ def _read_draft(draft_path: Path) -> str | None:
 def draft_source_names(draft_path: Path) -> list[str] | None:
     """Sorted source names in an existing draft's frontmatter, or None when it has none.
 
-    Reads past a leading marker comment so a drift draft and a quality-gate
-    draft answer the same way. A PENDING marker carries no ``sources`` field and
-    so reads as unowned: it is a placeholder, not review content.
+    A PENDING marker carries no ``sources`` field and so reads as unowned: it is
+    a placeholder, not review content. Reading past the marker run is the
+    parser's job.
     """
     text = _read_draft(draft_path)
     if text is None:
         return None
-    body = text.split("\n", 1)[-1].lstrip("\n") if text.startswith("<!--") else text
-    sources = parse_frontmatter(body).get(_DRAFT_SOURCES_FIELD)
+    sources = parse_frontmatter(text).get(_DRAFT_SOURCES_FIELD)
     # Frontmatter is untyped YAML: a hand-edited draft can hold anything.
     return sorted(sources) if isinstance(sources, list) else None
 
