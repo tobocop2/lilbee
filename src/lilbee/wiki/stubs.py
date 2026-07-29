@@ -23,7 +23,12 @@ from lilbee.core.config import cfg
 
 from .entity_extractor import EntityKind, get_entity_extractor
 from .generation import _corpus_chunks
-from .shared import WIKI_BUILD_LOCK, WikiSubdir, atomic_write_text
+from .shared import (
+    WIKI_BUILD_LOCK,
+    WikiSubdir,
+    atomic_write_text,
+    is_pending_marker_text,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -284,11 +289,12 @@ def refresh_stub_index(
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
         stored = load_stub_index(config)
-        if sources is not None and not stored and stub_index_path(config).exists():
-            # The file is there but unreadable or from another version, so the
-            # subtract-and-merge below has nothing to build on and would leave
-            # only the changed sources. Rebuild the whole thing instead.
-            log.info("Wiki stub index unusable; rebuilding it in full")
+        if sources is not None and not stored:
+            # Nothing to subtract from and nothing to merge into, whether the
+            # file is missing, unreadable, or from another version. Proceeding
+            # would index only the changed sources and call that the whole
+            # corpus, so rebuild instead.
+            log.info("No usable wiki stub index; rebuilding it in full")
             sources = None
         if sources is None:
             chunks = _corpus_chunks(store)
@@ -376,9 +382,11 @@ def _is_placeholder(draft: Path) -> bool:
     A marker records that generation failed to produce the section, so the
     subject still has no page and must stay listed as unwritten.
     """
-    from .drafts import is_pending_marker_file
-
-    return is_pending_marker_file(draft)
+    try:
+        text = draft.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return is_pending_marker_text(text)
 
 
 def ungenerated_stubs(stubs: dict[str, WikiStub], wiki_root: Path) -> list[WikiStub]:

@@ -23,6 +23,7 @@ from lilbee.wiki.shared import (
     WikiLogAction,
     WikiSubdir,
     atomic_write_text,
+    is_pending_marker_text,
     parse_frontmatter,
 )
 from lilbee.wiki.stats import BuildStats
@@ -65,14 +66,6 @@ _DRIFT_SOURCE_FIELD = "source: "
 _DRAFT_SOURCES_FIELD = "sources"
 
 
-def _is_pending_marker_text(text: str) -> bool:
-    """Return whether *text* starts with a PENDING marker line."""
-    first_line = text.splitlines()[0] if text else ""
-    return first_line.startswith(_PENDING_PARSE_MARKER_PREFIX) or first_line.startswith(
-        _PENDING_COLLISION_MARKER_PREFIX
-    )
-
-
 def _read_draft(draft_path: Path) -> str | None:
     """Return the draft's text, or None when it is absent or unreadable."""
     if not draft_path.is_file():
@@ -110,7 +103,7 @@ def _draft_belongs_to_other_source(
     treated as a collision.
     """
     text = _read_draft(draft_path)
-    if text is None or not text.strip() or _is_pending_marker_text(text):
+    if text is None or not text.strip() or is_pending_marker_text(text):
         return False
     first_line = text.splitlines()[0]
     if f"{_DRIFT_SOURCE_FIELD}{source_key}" in first_line:
@@ -217,7 +210,7 @@ def persist_and_finalize(
     if page_path != published_path:
         # A drafts-target collision writes a PENDING marker, not review content;
         # count it the same way the batch collision branch does.
-        if _is_pending_marker_text(_read_draft(page_path) or ""):
+        if is_pending_marker_text(_read_draft(page_path) or ""):
             stats.record_pending_marker()
         else:
             stats.record_drafted()
@@ -283,7 +276,7 @@ def write_pending_marker(
     """
     draft_path = drafts_dir / f"{slug}.md"
     existing = _read_draft(draft_path)
-    if existing is not None and not _is_pending_marker_text(existing):
+    if existing is not None and not is_pending_marker_text(existing):
         log.warning(
             "Keeping the draft at %s: it holds content pending review, not a marker",
             draft_path,
@@ -307,7 +300,7 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     """
     draft_path = drafts_dir / f"{slug}.md"
     body = _read_draft(draft_path)
-    if body is None or not _is_pending_marker_text(body):
+    if body is None or not is_pending_marker_text(body):
         return False
     draft_path.unlink()
     return True

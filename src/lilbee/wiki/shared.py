@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import threading
 from collections.abc import Sequence
@@ -88,6 +89,28 @@ INVALID_DRAFT_SLUG_ERROR = "invalid draft slug"
 # markers on disk (one-shot find -delete or a regen).
 PENDING_MARKER_KEYWORD_PARSE = "PENDING: batch parse failed"
 PENDING_MARKER_KEYWORD_COLLISION = "PENDING: concept slug collision"
+
+# Marker lines tolerate whitespace variation, so cached markers written by an
+# older build still classify the same way for every reader.
+_PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
+_COLLISION_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_COLLISION.replace(" ", r"\s+")
+_PENDING_PARSE_LINE_RE = re.compile(rf"<!--\s*{_PARSE_KEYWORD_PATTERN}", re.IGNORECASE)
+_PENDING_COLLISION_LINE_RE = re.compile(rf"<!--\s*{_COLLISION_KEYWORD_PATTERN}", re.IGNORECASE)
+
+
+def is_pending_marker_text(text: str) -> bool:
+    """Whether *text* opens with a PENDING marker rather than review content.
+
+    One definition for every reader. The markers are always written as the
+    first line, and the keyword spacing is matched loosely because cached
+    markers vary, so a stricter prefix test would disagree with the drafts
+    surface about the same file.
+    """
+    first_line = text.splitlines()[0] if text else ""
+    return any(
+        pattern.search(first_line)
+        for pattern in (_PENDING_PARSE_LINE_RE, _PENDING_COLLISION_LINE_RE)
+    )
 
 
 class PendingKind(StrEnum):

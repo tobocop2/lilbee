@@ -267,6 +267,38 @@ def _wiki_lock_held() -> bool:
     return not free[0]
 
 
+class TestPendingMarkerPredicate:
+    """One definition of a PENDING marker for every reader.
+
+    persistence used a strict prefix test and drafts a whitespace-tolerant
+    regex, so the two disagreed about the same file.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("<!-- PENDING: batch parse failed -->", True),
+            ("<!--  PENDING:  batch  parse  failed -->", True),
+            ("<!-- PENDING: concept slug collision with x -->", True),
+            ("<!-- DRIFT: 50% content changed -->", False),
+            ("---\ntitle: Brakes\n---\n", False),
+            ("", False),
+        ],
+        ids=["parse", "spaced", "collision", "drift", "content", "empty"],
+    )
+    def test_classifies_a_leading_marker_line(self, text: str, expected: bool):
+        from lilbee.wiki.shared import is_pending_marker_text
+
+        assert is_pending_marker_text(text) is expected
+
+    def test_a_marker_further_down_is_not_a_marker(self):
+        """Markers are written as the first line, so a body quoting one is
+        review content, not a placeholder."""
+        from lilbee.wiki.shared import is_pending_marker_text
+
+        assert is_pending_marker_text("# Page\n\n<!-- PENDING: batch parse failed -->") is False
+
+
 class TestFrontmatterWithMarkers:
     """A draft carries marker comments above its frontmatter.
 

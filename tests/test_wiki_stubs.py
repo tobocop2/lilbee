@@ -191,13 +191,17 @@ class TestRefresh:
             refresh_stub_index(store, cfg)
         assert seen == [4]
 
-    def test_an_unreadable_index_rebuilds_in_full_rather_than_truncating(self):
-        """An index from another version reads as empty, so subtract-and-merge
-        would have nothing to build on and would leave only the changed
-        sources: the rest of the tree would silently vanish on the next sync."""
+    @pytest.mark.parametrize(
+        "payload", [None, '{"version": 999, "stubs": []}'], ids=["missing", "wrong-version"]
+    )
+    def test_no_usable_index_rebuilds_in_full_rather_than_truncating(self, payload):
+        """With nothing to subtract from or merge into, an incremental pass
+        would index only the changed sources and call that the whole corpus.
+        A missing index is the same situation as an unreadable one."""
         path = stub_index_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"version": 999, "stubs": []}', encoding="utf-8")
+        if payload is not None:
+            path.write_text(payload, encoding="utf-8")
         store = MagicMock()
         store.get_sources.return_value = []
         store.get_chunks_by_source.return_value = []
@@ -378,6 +382,18 @@ class TestUngeneratedStubs:
         archived.parent.mkdir(parents=True, exist_ok=True)
         archived.write_text("# Ford\n", encoding="utf-8")
         assert [s.slug for s in ungenerated_stubs({"ford": _stub("ford")}, wiki_root)] == ["ford"]
+
+    def test_an_unreadable_draft_does_not_hide_its_subject(self, isolated_env: Path):
+        """A draft we cannot read still means a page was written for review, so
+        the subject stays out of the unwritten list. Only a readable PENDING
+        marker proves the page is a placeholder rather than content."""
+        wiki_root = isolated_env / cfg.wiki_dir
+        draft = wiki_root / WikiSubdir.DRAFTS / "ford.md"
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text("# Ford\n", encoding="utf-8")
+        with patch("pathlib.Path.read_text", side_effect=OSError("permission denied")):
+            listed = ungenerated_stubs({"ford": _stub("ford")}, wiki_root)
+        assert listed == []
 
     def test_a_pending_marker_still_reads_as_unwritten(self, isolated_env: Path):
         """A marker records that generation failed to produce the section, so
