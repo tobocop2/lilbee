@@ -43,6 +43,7 @@ from lilbee.mcp_server import (
     wiki_status,
     wiki_synthesize,
     wiki_update,
+    wiki_wipe,
 )
 from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
@@ -1210,6 +1211,43 @@ class TestWikiPrune:
         assert result["archived"] == 0
 
 
+class TestWikiWipe:
+    """``wiki_wipe`` needs an explicit confirm and works with the wiki off."""
+
+    @pytest.fixture
+    def report(self, monkeypatch):
+        from lilbee.wiki import wipe as wipe_mod
+
+        stub = wipe_mod.WipeReport(pages_removed=4, sources_cleared=4, rows_deleted=True)
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: stub)
+        return stub
+
+    def test_refuses_without_confirm(self, mock_svc, monkeypatch):
+        """No confirm, no delete: an agent must not wipe on a vague instruction."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        called: list[object] = []
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: called.append(store))
+        result = wiki_wipe()
+        assert "confirm=true" in result["error"]
+        assert called == []
+
+    @pytest.mark.parametrize("wiki_enabled", [True, False], ids=["enabled", "disabled"])
+    def test_wipes_with_confirm_whether_or_not_enabled(self, mock_svc, report, wiki_enabled):
+        cfg.wiki = wiki_enabled
+        result = wiki_wipe(confirm=True)
+        assert result["command"] == "wiki_wipe"
+        assert result["pages_removed"] == 4
+
+    def test_failed_row_delete_is_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import wipe as wipe_mod
+
+        stub = wipe_mod.WipeReport(pages_removed=4, sources_cleared=4, rows_deleted=False)
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: stub)
+        result = wiki_wipe(confirm=True)
+        assert "error" in result
+
+
 class TestWikiList:
     def test_wiki_disabled(self):
         cfg.wiki = False
@@ -1939,8 +1977,10 @@ class TestToolsSchemaSize:
     async def test_only_wiki_status_is_registered_when_wiki_disabled(self) -> None:
         """``cfg.wiki=False`` (the default) keeps the wiki tools off the wire.
 
-        wiki_status is the exception, matching the HTTP status route: a client
-        needs a way to read the disabled state rather than finding no tool.
+        Two exceptions, both matching their HTTP routes: wiki_status so a
+        client can read the disabled state rather than finding no tool, and
+        wiki_wipe because turning the wiki off is exactly when the pages it
+        already generated need deleting.
         """
         from lilbee.core.config import cfg as _cfg
         from lilbee.mcp_server import build_mcp_server
@@ -1950,7 +1990,7 @@ class TestToolsSchemaSize:
         assert _cfg.wiki is False
         tools = await _mcp.list_tools()
         wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
-        assert wiki_tool_names == ["wiki_status"]
+        assert sorted(wiki_tool_names) == ["wiki_status", "wiki_wipe"]
 
     async def test_default_install_registers_exactly_the_pinned_tools(self) -> None:
         """The unconditionally-registered surface is exactly ``_DEFAULT_TOOL_NAMES``.

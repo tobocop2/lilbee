@@ -37,9 +37,11 @@ from lilbee.server.models import (
     WikiPruneRecordResponse,
     WikiPruneResult,
     WikiStatusResult,
+    WikiWipeResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
+from lilbee.wiki import wipe as wipe_mod
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
@@ -245,6 +247,23 @@ async def wiki_prune_route() -> WikiPruneResult:
         archived=report.archived_count,
         flagged=report.flagged_count,
         reconciled=report.reconciled_count,
+    )
+
+
+@delete("/api/wiki", status_code=200)
+async def wiki_wipe_route() -> WikiWipeResult:
+    """Delete every generated wiki page and its indexed rows.
+
+    Answers while the wiki is disabled, unlike the other write routes: turning
+    the setting off is exactly when a client needs to clear what was already
+    generated. The wipe touches the whole tree and the store, so it runs off
+    the event loop and takes the wiki build mutex itself.
+    """
+    report = await asyncio.to_thread(wipe_mod.wipe_wiki, svc_mod.get_services().store)
+    return WikiWipeResult(
+        pages_removed=report.pages_removed,
+        sources_cleared=report.sources_cleared,
+        rows_deleted=report.rows_deleted,
     )
 
 

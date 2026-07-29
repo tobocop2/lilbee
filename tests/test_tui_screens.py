@@ -8557,6 +8557,135 @@ class TestWikiScreenEmptyState:
             assert len(tree.root.children) >= 1
 
 
+class TestWikiWipeFlow:
+    """Deleting the wiki asks first, runs on the task bar, and is offered when
+    the user turns the setting off."""
+
+    async def test_w_asks_before_deleting(self, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        _create_wiki_page(cfg.data_root / cfg.wiki_dir, "concepts", "topic", "Topic")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with patch("lilbee.cli.tui.screens.wiki.start_wiki_wipe") as start:
+                await pilot.press("W")
+                await pilot.pause()
+                start.assert_not_called()
+                await pilot.press("y")
+                await pilot.pause()
+                start.assert_called_once_with(app)
+
+    async def test_declining_deletes_nothing(self, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        _create_wiki_page(cfg.data_root / cfg.wiki_dir, "concepts", "topic", "Topic")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with patch("lilbee.cli.tui.screens.wiki.start_wiki_wipe") as start:
+                await pilot.press("W")
+                await pilot.pause()
+                await pilot.press("n")
+                await pilot.pause()
+                start.assert_not_called()
+
+    async def test_nothing_to_delete_skips_the_dialog(self, tmp_path, mock_svc):
+        """No pages and no rows means no scary modal over an empty wiki."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        mock_svc.store.wiki_chunk_sources.return_value = set()
+        mock_svc.store.wiki_citation_sources.return_value = set()
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with patch("lilbee.cli.tui.screens.wiki.start_wiki_wipe") as start:
+                await pilot.press("W")
+                await pilot.pause()
+                await pilot.press("y")
+                await pilot.pause()
+                start.assert_not_called()
+
+    async def test_turning_the_setting_off_offers_the_wipe(self, tmp_path):
+        """Disabling removes nothing on its own, so the offer has to come from
+        the setter every route goes through, not from one screen."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        _create_wiki_page(cfg.data_root / cfg.wiki_dir, "concepts", "topic", "Topic")
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await await_chat(app, _pilot)
+            with patch("lilbee.cli.tui.screens.wiki.confirm_wiki_wipe") as offer:
+                app.set_setting("wiki", False)
+                offer.assert_called_once()
+                assert offer.call_args.kwargs["notify_when_empty"] is False
+
+    async def test_turning_the_setting_on_offers_nothing(self, tmp_path):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.wiki = False
+        cfg.data_root = tmp_path
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await await_chat(app, _pilot)
+            with patch("lilbee.cli.tui.screens.wiki.confirm_wiki_wipe") as offer:
+                app.set_setting("wiki", True)
+                offer.assert_not_called()
+
+
+class TestStartWikiWipe:
+    """The wipe runs as a task; it must never block the UI and must report a
+    failed row delete rather than toasting success over it."""
+
+    @staticmethod
+    def _capture_target():
+        """Start a wipe against a mock app; return the task target and that app."""
+        from lilbee.cli.tui.screens.wiki import start_wiki_wipe
+
+        fake_app = MagicMock()
+        start_wiki_wipe(fake_app)
+        return fake_app.task_bar.start_task.call_args.args[2], fake_app
+
+    def test_success_reloads_the_screens_and_toasts(self):
+        from lilbee.wiki.wipe import WipeReport
+
+        target, fake_app = self._capture_target()
+        with (
+            patch("lilbee.wiki.wipe.wipe_wiki", return_value=WipeReport(2, 2, rows_deleted=True)),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+        ):
+            target(MagicMock())
+        assert fake_app.task_bar.reload_wiki_screens in [c.args[1] for c in posted.call_args_list]
+
+    def test_failed_row_delete_fails_the_task(self):
+        """Pages gone but rows left is not a completed wipe."""
+        from lilbee.wiki.wipe import WipeReport
+
+        target, _app = self._capture_target()
+        with (
+            patch("lilbee.wiki.wipe.wipe_wiki", return_value=WipeReport(2, 2, rows_deleted=False)),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread"),
+            pytest.raises(RuntimeError),
+        ):
+            target(MagicMock())
+
+    def test_a_raising_wipe_still_reloads_the_screens(self):
+        """Whatever the wipe removed before it failed is already off disk, so
+        the tree has to be re-read either way."""
+        target, fake_app = self._capture_target()
+        with (
+            patch("lilbee.wiki.wipe.wipe_wiki", side_effect=OSError("permission denied")),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+            pytest.raises(OSError, match="permission denied"),
+        ):
+            target(MagicMock())
+        assert fake_app.task_bar.reload_wiki_screens in [c.args[1] for c in posted.call_args_list]
+
+
 class TestWikiScreenWithPages:
     async def test_lists_pages(self, tmp_path):
         """WikiScreen lists pages when wiki data exists."""

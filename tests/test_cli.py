@@ -3610,6 +3610,66 @@ class TestWikiStatus:
         assert "does not exist yet" in result.output
 
 
+class TestWikiWipe:
+    """``wiki wipe`` deletes generated pages and rows, and stays available with
+    the wiki disabled: turning the setting off is when the leftovers matter."""
+
+    @pytest.fixture
+    def mock_wipe(self):
+        from lilbee.wiki.wipe import WipeReport
+
+        with mock.patch("lilbee.wiki.wipe.wipe_wiki") as patched:
+            patched.return_value = WipeReport(pages_removed=3, sources_cleared=3, rows_deleted=True)
+            yield patched
+
+    @pytest.mark.parametrize("wiki_enabled", [True, False], ids=["enabled", "disabled"])
+    def test_wipes_whether_or_not_the_wiki_is_enabled(
+        self, mock_svc, isolated_env, mock_wipe, wiki_enabled
+    ):
+        cfg.wiki = wiki_enabled
+        result = runner.invoke(app, ["wiki", "wipe", "--yes"])
+        assert result.exit_code == 0
+        assert "3 pages" in result.output
+        mock_wipe.assert_called_once()
+
+    def test_prompt_declined_wipes_nothing(self, mock_svc, isolated_env, mock_wipe):
+        result = runner.invoke(app, ["wiki", "wipe"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        mock_wipe.assert_not_called()
+
+    def test_prompt_accepted_wipes(self, mock_svc, isolated_env, mock_wipe):
+        result = runner.invoke(app, ["wiki", "wipe"], input="y\n")
+        assert result.exit_code == 0
+        mock_wipe.assert_called_once()
+
+    def test_json_mode_requires_yes(self, mock_svc, isolated_env, mock_wipe):
+        """Nothing can prompt in JSON mode, so an unconfirmed wipe must refuse
+        rather than delete on the strength of a scripted call."""
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "wipe"])
+        assert result.exit_code == 1
+        assert json.loads(result.output)["error"] == msg.CMD_WIKI_WIPE_NEEDS_YES
+        mock_wipe.assert_not_called()
+
+    def test_json_output(self, mock_svc, isolated_env, mock_wipe):
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "wipe", "--yes"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_wipe"
+        assert data["pages_removed"] == 3
+        assert data["rows_deleted"] is True
+
+    def test_failed_row_delete_exits_non_zero(self, mock_svc, isolated_env, mock_wipe):
+        """A wipe that left the rows behind is a failure, not a success with a note."""
+        from lilbee.wiki.wipe import WipeReport
+
+        mock_wipe.return_value = WipeReport(pages_removed=3, sources_cleared=3, rows_deleted=False)
+        result = runner.invoke(app, ["wiki", "wipe", "--yes"])
+        assert result.exit_code == 1
+
+
 class TestWikiPrune:
     def test_prune_no_pages(self, mock_svc, isolated_env):
         cfg.wiki = True

@@ -257,6 +257,14 @@ never churns existing concept slugs. A sync that touches more than
 tells you to run `lilbee wiki update` yourself, so a bulk import cannot fire
 hundreds of LLM calls behind your back.
 
+Turning the wiki back off stops new pages being written, but the pages already
+generated stay on disk and their rows stay in the index. Remove them with
+`lilbee wiki wipe`, the `W` binding on the wiki screen, `DELETE /api/wiki`, or
+the `wiki_wipe` MCP tool. The TUI offers it for you when you switch the setting
+off. A wipe deletes only what the wiki generated; your documents are untouched.
+While the wiki is off, generated pages are excluded from search results even if
+you never wipe them.
+
 Lint, drafts review, and prune are available as CLI commands (see
 [Wiki commands](#wiki-1)) and as MCP tools.
 
@@ -535,6 +543,7 @@ lilbee --json wiki drafts diff <slug>          # unified diff between a draft an
 lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee --json wiki drafts reject <slug>        # discard a draft
 lilbee --json wiki prune                       # archive stale pages
+lilbee --json wiki wipe --yes                  # delete every generated page and its rows
 ```
 
 **Two patterns worth knowing:**
@@ -689,6 +698,7 @@ lilbee wiki drafts list                # list pending drafts
 lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee wiki drafts reject <slug>       # discard a draft
 lilbee wiki prune                      # move stale pages to archive/
+lilbee wiki wipe                       # delete every generated page and its rows
 ```
 
 MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_status`,

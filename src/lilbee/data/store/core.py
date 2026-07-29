@@ -1752,6 +1752,16 @@ class Store:
         """Delete all citations for a wiki page. Returns whether the delete succeeded."""
         return self.clear_table(CITATIONS_TABLE, _citations_for_wiki_predicate(wiki_source))
 
+    def delete_all_wiki_rows(self) -> bool:
+        """Delete every wiki chunk row and every citation. Returns whether both
+        deletes succeeded, so a caller cannot report a wipe over a swallowed
+        failure. Only the wiki layer writes citations, so wiping it empties
+        that table outright. Both deletes run before the results combine.
+        """
+        chunks_cleared = self.clear_table(CHUNKS_TABLE, f"chunk_type = '{ChunkType.WIKI}'")
+        citations_cleared = self.clear_table(CITATIONS_TABLE, "1 = 1")
+        return chunks_cleared and citations_cleared
+
     def replace_citations_for_wiki(self, wiki_source: str, records: list[CitationRecord]) -> None:
         """Swap a wiki page's citations for *records* under one write lock.
 

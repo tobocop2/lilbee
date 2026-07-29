@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.store import Store
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
     from lilbee.wiki.browse import WikiPageInfo
 
@@ -21,6 +22,7 @@ from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
+from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -112,6 +114,7 @@ class WikiScreen(Screen[None]):
         Binding("slash", "focus_search", "Search", show=True),
         Binding("D", "open_drafts", "Drafts", show=True),
         Binding("b", "wikify", "Wikify", show=True),
+        Binding("W", "wipe", "Wipe", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("h", "cursor_left", "Collapse", show=False),
@@ -416,6 +419,10 @@ class WikiScreen(Screen[None]):
         """Generate wiki pages from the ingested corpus -- bound to b."""
         start_wikify(self.app)
 
+    def action_wipe(self) -> None:
+        """Delete every generated page and its indexed rows -- bound to W."""
+        confirm_wiki_wipe(self.app)
+
 
 def _build_progress(reporter: ProgressReporter) -> DetailedProgressCallback:
     """Map wiki build events onto task-bar progress updates."""
@@ -468,6 +475,70 @@ def start_wikify(app: LilbeeApp) -> None:
         call_from_thread(app, app.notify, msg.WIKI_BUILD_DONE.format(count=summary["count"]))
 
     app.task_bar.start_task(msg.TASK_NAME_WIKI, TaskType.WIKI, _target, indeterminate=True)
+
+
+def wiki_has_content(store: Store) -> bool:
+    """Whether anything generated is still on disk or in the store.
+
+    Read before offering a wipe so the offer only appears when there is
+    something to remove.
+    """
+    wiki_root = _wiki_root()
+    if wiki_root.is_dir() and any(wiki_root.rglob("*.md")):
+        return True
+    return bool(store.wiki_chunk_sources() or store.wiki_citation_sources())
+
+
+def confirm_wiki_wipe(
+    app: LilbeeApp,
+    *,
+    title: str = msg.WIKI_WIPE_CONFIRM_TITLE,
+    message: str = msg.WIKI_WIPE_CONFIRM_MESSAGE,
+    notify_when_empty: bool = True,
+) -> None:
+    """Ask before deleting the wiki, then run the wipe on the task bar.
+
+    Offered from the wiki screen and from turning the wiki setting off, so
+    both routes get the same warning and the same task-bar progress. The
+    turn-off route passes its own wording and stays silent when there is
+    nothing to delete, since the user asked to disable, not to clean up.
+    """
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    if not wiki_has_content(get_services().store):
+        if notify_when_empty:
+            app.notify(msg.WIKI_WIPE_NOTHING)
+        return
+
+    def _on_confirm(confirmed: bool | None) -> None:
+        if confirmed:
+            start_wiki_wipe(app)
+
+    app.push_screen(ConfirmDialog(title, message), _on_confirm)
+
+
+def start_wiki_wipe(app: LilbeeApp) -> None:
+    """Run the wipe on the task bar and refresh the wiki screens after it.
+
+    The wipe takes the wiki mutex, so it must never run on the event loop.
+    """
+
+    def _target(reporter: ProgressReporter) -> None:
+        from lilbee.wiki.wipe import wipe_wiki
+
+        reporter.update(0, msg.WIKI_WIPE_RUNNING, indeterminate=True)
+        try:
+            report = wipe_wiki(get_services().store)
+        finally:
+            # Pages are gone whether or not the row delete landed; the tree
+            # must show the disk state either way.
+            call_from_thread(app, app.task_bar.reload_wiki_screens)
+        if not report.rows_deleted:
+            call_from_thread(app, app.notify, report.summary(), severity="error")
+            raise RuntimeError(report.summary())
+        call_from_thread(app, app.notify, msg.WIKI_WIPE_DONE.format(count=report.pages_removed))
+
+    app.task_bar.start_task(msg.TASK_NAME_WIKI_WIPE, TaskType.WIKI, _target, indeterminate=True)
 
 
 def _find_or_add_branch(

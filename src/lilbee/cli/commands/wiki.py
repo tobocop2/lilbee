@@ -452,6 +452,46 @@ def wiki_prune(
     console.print(table)
 
 
+@wiki_app.command(name="wipe")
+def wiki_wipe(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete every generated wiki page and its indexed rows.
+
+    Available with the wiki disabled: turning the setting off stops new pages
+    being written but leaves the ones already generated in place.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.wipe import wipe_wiki
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    if not yes:
+        if cfg.json_mode:
+            json_output({"error": msg.CMD_WIKI_WIPE_NEEDS_YES})
+            raise typer.Exit(1)
+        console.print(msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root))
+        if not typer.confirm("Delete the wiki?", default=False):
+            console.print("Aborted.")
+            raise typer.Exit(0)
+
+    report = wipe_wiki(get_services().store)
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_wipe",
+                "pages_removed": report.pages_removed,
+                "sources_cleared": report.sources_cleared,
+                "rows_deleted": report.rows_deleted,
+            }
+        )
+    else:
+        console.print(report.summary())
+    if not report.rows_deleted:
+        raise typer.Exit(1)
+
+
 @wiki_app.command(name="build")
 def wiki_build(
     data_dir: Path | None = data_dir_option,

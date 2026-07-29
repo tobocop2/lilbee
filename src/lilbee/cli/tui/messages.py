@@ -115,6 +115,7 @@ CMD_REBUILD_CONFIRM_MESSAGE = (
 )
 TASK_NAME_SYNC = "Sync documents"
 TASK_NAME_WIKI = "Wikify"
+TASK_NAME_WIKI_WIPE = "Delete wiki"
 TASK_NAME_REBUILD = "Rebuild index"
 TASK_NAME_IMPORT = "Import {file}"
 TASK_NAME_EXPORT = "Export {file}"
@@ -228,6 +229,10 @@ CHAT_COMPACTED_STRANDED_TOAST = (
 )
 CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
+CMD_WIKI_WIPE_NEEDS_YES = "Use --yes to confirm wiping the wiki in JSON mode"
+CMD_WIKI_WIPE_WARNING = (
+    "This deletes every generated wiki page and its indexed rows.\n  Pages: {path}"
+)
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
 STREAM_CANCELLED = "\n\n*Response cancelled.*"
@@ -411,6 +416,19 @@ WIKI_BUILD_PHASE = "{phase}..."
 WIKI_BUILD_PAGE = "{label} ({current}/{total})"
 WIKI_BUILD_DONE = "Wiki build finished: {count} pages"
 WIKI_ALREADY_ACTIVE = "Wiki build in progress, please wait"
+WIKI_WIPE_CONFIRM_TITLE = "Delete the wiki?"
+WIKI_WIPE_CONFIRM_MESSAGE = (
+    "This deletes every generated page and its indexed rows. "
+    "Your documents are not touched. This cannot be undone."
+)
+WIKI_WIPE_DISABLED_TITLE = "Wiki turned off. Delete what it generated?"
+WIKI_WIPE_DISABLED_MESSAGE = (
+    "Turning the wiki off stops new pages being written, but the pages already "
+    "generated stay on disk and in search. Delete them now?"
+)
+WIKI_WIPE_RUNNING = "Deleting wiki pages..."
+WIKI_WIPE_DONE = "Wiki deleted: {count} pages removed"
+WIKI_WIPE_NOTHING = "No wiki pages to delete"
 WIKI_INDEX_LABEL = "Index"
 WIKI_LOG_LABEL = "Log"
 WIKI_DRAFTS_TITLE = "Wiki Drafts"
