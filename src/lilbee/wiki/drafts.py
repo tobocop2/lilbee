@@ -24,7 +24,6 @@ from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.batch import hash_existing_sources
 from lilbee.wiki.citations import (
     CitationStatus,
-    extract_body,
     parse_wiki_citations,
     render_citation_block,
     resolve_multi_source_citations,
@@ -33,7 +32,7 @@ from lilbee.wiki.citations import (
     verify_citation,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.page import index_wiki_page
+from lilbee.wiki.page import index_wiki_page, indexable_chunks
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
@@ -481,12 +480,13 @@ def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str) -> Pa
 def _refuse_bodyless_draft(content: str, slug: str) -> None:
     """Refuse a draft whose only content is frontmatter and citations.
 
-    Checked before the published page is overwritten. Indexing such a page
-    produces no chunks and clears the rows of whatever it replaced, and the
-    old order reported that as an index failure, so every retry destroyed the
-    published page again and could never succeed.
+    Checked before the published page is overwritten, and against what the
+    indexer actually chunks: a body can be non-empty and still chunk to nothing
+    ("#", "---"). Indexing such a page clears the rows of whatever it replaced,
+    and the old order reported that as an index failure, so every retry
+    destroyed the published page again and could never succeed.
     """
-    if not extract_body(content).strip():
+    if not indexable_chunks(content):
         raise BodylessDraftError(
             f"draft {slug} has no body to publish, only frontmatter and citations; "
             "reject it or edit the draft to add content"

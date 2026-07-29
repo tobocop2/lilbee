@@ -187,6 +187,26 @@ class TestAcceptDraft:
         assert WikiSubdir.SUMMARIES in result.moved_to.parts
         assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
 
+    @pytest.mark.parametrize("body", ["", "#", "---"], ids=["empty", "heading", "rule"])
+    def test_unindexable_draft_leaves_the_published_page_intact(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """A body can be non-empty and still chunk to nothing, so the guard
+        tests what the indexer chunks rather than whether text is present."""
+        from lilbee.wiki.drafts import BodylessDraftError
+
+        wiki_root = tmp_path / "wiki"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(published, _draft_content("the published prose"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content(body))
+        store = MagicMock()
+
+        with pytest.raises(BodylessDraftError):
+            accept_draft("brakes", wiki_root, store)
+
+        assert "the published prose" in published.read_text()
+        store.replace_citations_for_wiki.assert_not_called()
+
     def test_bodyless_draft_leaves_the_published_page_intact(self, tmp_path: Path) -> None:
         """A draft trimmed to frontmatter and citations indexes nothing. The
         check runs before the write, because the old order overwrote the

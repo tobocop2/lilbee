@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -53,6 +54,16 @@ WIKI_CONTENT_SUBDIRS: tuple[WikiSubdir, ...] = (
 )
 
 
+def count_pages_in(wiki_root: Path, subdirs: Sequence[WikiSubdir]) -> int:
+    """Count ``.md`` pages under *subdirs* of *wiki_root*, at any depth."""
+    total = 0
+    for subdir in subdirs:
+        directory = wiki_root / subdir
+        if directory.is_dir():
+            total += sum(1 for _ in directory.rglob("*.md"))
+    return total
+
+
 def total_wiki_pages(wiki_root: Path) -> int:
     """Count published ``.md`` pages across every wiki content subdir.
 
@@ -60,12 +71,7 @@ def total_wiki_pages(wiki_root: Path) -> int:
     from draft-accept, so counting only summaries (+ drafts) reports zero pages
     after a normal build even though searchable pages exist.
     """
-    total = 0
-    for subdir in WIKI_CONTENT_SUBDIRS:
-        directory = wiki_root / subdir
-        if directory.exists():
-            total += sum(1 for _ in directory.rglob("*.md"))
-    return total
+    return count_pages_in(wiki_root, WIKI_CONTENT_SUBDIRS)
 
 
 WIKI_DISABLED_ERROR = "wiki not enabled"
@@ -166,20 +172,29 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
     """Extract YAML frontmatter fields from a wiki page string.
-    Uses line-by-line scanning so ``---`` inside YAML content is not
-    mistaken for the closing delimiter.
+
+    A draft carries its marker comments above the frontmatter (drift,
+    collision, origin), so the leading comment run is skipped before the
+    opening delimiter is looked for. Without that every marked draft parses
+    as having no frontmatter at all. Uses line-by-line scanning so ``---``
+    inside YAML content is not mistaken for the closing delimiter.
     """
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    start = 0
+    while start < len(lines) and lines[start].lstrip().startswith("<!--"):
+        start += 1
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start >= len(lines) or lines[start].strip() != "---":
         return {}
     end_idx: int | None = None
-    for i in range(1, len(lines)):
+    for i in range(start + 1, len(lines)):
         if lines[i].strip() == "---":
             end_idx = i
             break
     if end_idx is None:
         return {}
-    block = "\n".join(lines[1:end_idx])
+    block = "\n".join(lines[start + 1 : end_idx])
     try:
         return yaml.safe_load(block) or {}
     except yaml.YAMLError:

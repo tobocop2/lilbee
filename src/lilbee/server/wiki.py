@@ -13,6 +13,7 @@ from typing import Any
 
 from litestar import MediaType, Response, delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 from litestar.status_codes import HTTP_409_CONFLICT
@@ -267,7 +268,15 @@ async def wiki_wipe_route() -> WikiWipeResult:
     )
 
 
-@post("/api/wiki/build")
+@post(
+    "/api/wiki/build",
+    responses={
+        201: ResponseSpec(
+            data_container=WikiBuildDryRunResult,
+            description="Entity candidates a build would cover, when dry_run=true.",
+        )
+    },
+)
 async def wiki_build_route(
     dry_run: bool = Parameter(query="dry_run", default=False),
 ) -> Stream | Response[WikiBuildDryRunResult]:
