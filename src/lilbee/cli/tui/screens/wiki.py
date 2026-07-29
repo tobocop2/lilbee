@@ -29,6 +29,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
+from lilbee.wiki.stubs import WikiStub, load_stub_index, ungenerated_stubs
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class WikiScreen(Screen[None]):
         super().__init__()
         self._page_slugs: list[str] = []
         self._pages: list[WikiPageInfo] = []
+        self._stubs: dict[str, WikiStub] = {}
         self._load_error: str | None = None
         self._search_filter_timer: Timer | None = None
 
@@ -187,10 +189,15 @@ class WikiScreen(Screen[None]):
         from lilbee.wiki.browse import list_pages
 
         self._pages = []
+        self._stubs = {}
         self._load_error = None
         if cfg.wiki:
             try:
                 self._pages = list_pages(_wiki_root())
+                self._stubs = {
+                    stub.wiki_slug: stub
+                    for stub in ungenerated_stubs(load_stub_index(), _wiki_root())
+                }
             except Exception as exc:
                 log.warning("Failed to list wiki pages", exc_info=True)
                 self._load_error = msg.WIKI_LOAD_FAILED.format(error=exc)
@@ -218,20 +225,22 @@ class WikiScreen(Screen[None]):
             self._show_load_failure(self._load_error)
             return
         tree = self._empty_tree()
-        if not self._pages:
+        if not self._pages and not self._stubs:
             tree.root.add_leaf(msg.wiki_empty_state_leaf())
             self._show_placeholder()
             return
 
         needle = filter_text.lower()
         pages = [p for p in self._pages if needle in p.title.lower()]
-        if not pages:
+        stubs = [s for s in self._stubs.values() if needle in s.label.lower()]
+        if not pages and not stubs:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
             tree.root.add_leaf(msg.WIKI_NO_MATCHES.format(filter=filter_text))
             return
 
         self._populate_tree(tree, pages)
+        self._add_stub_group(tree, stubs)
 
     def _populate_tree(self, tree: Tree[str | None], pages: list[WikiPageInfo]) -> None:
         """Build the sidebar tree from a flat list of wiki pages.
@@ -251,6 +260,20 @@ class WikiScreen(Screen[None]):
             for page in group_pages:
                 self._page_slugs.append(page.slug)
                 self._insert_page(group_node, page, branches)
+
+    def _add_stub_group(self, tree: Tree[str | None], stubs: list[WikiStub]) -> None:
+        """List the pages the corpus names but nothing has written yet.
+
+        Rendered distinctly, following the red-link convention: a reader must
+        never wonder whether a page is blank because nothing was written or
+        because generation failed.
+        """
+        if not stubs:
+            return
+        group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=False)
+        for stub in stubs:
+            group.add_leaf(msg.WIKI_STUB_LABEL.format(title=stub.label), data=stub.wiki_slug)
+            self._page_slugs.append(stub.wiki_slug)
 
     def _add_root_shortcut(self, tree: Tree[str | None], slug: str, label: str) -> None:
         """Add a top-level leaf for an auto-generated page (index.md, log.md)."""
@@ -309,6 +332,18 @@ class WikiScreen(Screen[None]):
         """Load and display the selected wiki page when the node carries a slug."""
         slug = event.node.data
         if not isinstance(slug, str):
+            return
+        stub = self._stubs.get(slug)
+        if stub is not None:
+            # Opening a stub asks rather than generating. The detail pane
+            # explains the page either way, so dismissing the dialog leaves
+            # the reader looking at why the page is blank.
+            self._show_detail(
+                msg.WIKI_STUB_DETAIL.format(
+                    title=stub.label, label=stub.label, sources=_describe_sources(stub)
+                )
+            )
+            confirm_stub_generation(self.app, stub)
             return
         self._display_page(slug)
 
@@ -475,6 +510,68 @@ def start_wikify(app: LilbeeApp) -> None:
         call_from_thread(app, app.notify, msg.WIKI_BUILD_DONE.format(count=summary["count"]))
 
     app.task_bar.start_task(msg.TASK_NAME_WIKI, TaskType.WIKI, _target, indeterminate=True)
+
+
+def _describe_sources(stub: WikiStub) -> str:
+    """Name the documents a stub's page would be written from."""
+    count = len(stub.sources)
+    if count == 1:
+        return stub.sources[0]
+    return f"{count} documents"
+
+
+def confirm_stub_generation(app: LilbeeApp, stub: WikiStub) -> None:
+    """Ask before writing a page, then write it on the task bar.
+
+    Generation always asks. It spends real GPU time on the user's own machine,
+    so the prompt names that cost and says how to stop being asked at all.
+    """
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    def _on_confirm(confirmed: bool | None) -> None:
+        if confirmed:
+            start_stub_generation(app, stub)
+
+    app.push_screen(
+        ConfirmDialog(
+            msg.WIKI_STUB_CONFIRM_TITLE,
+            msg.WIKI_STUB_CONFIRM_MESSAGE.format(label=stub.label, sources=_describe_sources(stub)),
+        ),
+        _on_confirm,
+    )
+
+
+def start_stub_generation(app: LilbeeApp, stub: WikiStub) -> None:
+    """Write one page on the task bar and refresh the wiki screens after it."""
+
+    def _target(reporter: ProgressReporter) -> None:
+        from lilbee.wiki.lazy import generate_stub_page
+
+        reporter.update(0, stub.label, indeterminate=True)
+        try:
+            path = generate_stub_page(stub.slug, get_services().store)
+        except Exception as exc:
+            call_from_thread(
+                app,
+                app.notify,
+                msg.WIKI_STUB_FAILED.format(label=stub.label, error=exc),
+                severity="error",
+            )
+            raise
+        finally:
+            call_from_thread(app, app.task_bar.reload_wiki_screens)
+        if path is None:
+            message = msg.WIKI_STUB_STALE.format(label=stub.label)
+            call_from_thread(app, app.notify, message, severity="warning")
+            raise RuntimeError(message)
+        call_from_thread(app, app.notify, msg.WIKI_STUB_DONE.format(label=stub.label))
+
+    app.task_bar.start_task(
+        msg.WIKI_STUB_TASK.format(label=stub.label),
+        TaskType.WIKI,
+        _target,
+        indeterminate=True,
+    )
 
 
 def wiki_has_content(store: Store) -> bool:

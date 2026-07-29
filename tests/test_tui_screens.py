@@ -8489,6 +8489,20 @@ async def test_settings_group_titles_present():
         assert len(titles) >= 2
 
 
+def _descendants(node):
+    """Every node under *node*, at any depth."""
+    for child in node.children:
+        yield child
+        yield from _descendants(child)
+
+
+def _stub_node_event(slug: str):
+    """A Tree.NodeSelected carrying *slug*, for driving selection directly."""
+    event = MagicMock()
+    event.node.data = slug
+    return event
+
+
 class WikiTestApp(LilbeeAppHost):
     CSS = ""
 
@@ -8574,6 +8588,160 @@ class TestWikiScreenEmptyState:
 
             tree = app.screen.query_one("#wiki-page-list", Tree)
             assert len(tree.root.children) >= 1
+
+
+class TestWikiStubs:
+    """Pages the corpus names but nothing has written yet.
+
+    Four rules the owner set: stubs look like stubs, opening one never
+    generates silently, the ask names the cost and the way out, and the page
+    is written on the task bar rather than the UI thread.
+    """
+
+    @staticmethod
+    def _index(tmp_path, slug="ford", sources=("a.md",)):
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub, save_stub_index
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        stub = WikiStub(
+            slug=slug,
+            label=slug.title(),
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            sources=tuple(sources),
+            mentions=len(sources),
+            chunk_refs=tuple((s, 0) for s in sources),
+        )
+        save_stub_index({slug: stub})
+        return stub
+
+    async def test_a_stub_is_listed_and_marked(self, tmp_path):
+        self._index(tmp_path)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            labels = [str(n.label) for n in _descendants(tree.root)]
+            assert any("not written" in label for label in labels)
+
+    async def test_a_written_page_is_not_listed_as_a_stub(self, tmp_path):
+        self._index(tmp_path)
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "entities", "ford", "Ford")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            labels = [str(n.label) for n in _descendants(tree.root)]
+            assert not any("not written" in label for label in labels)
+
+    async def test_opening_a_stub_asks_instead_of_generating(self, tmp_path):
+        stub = self._index(tmp_path)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            with patch("lilbee.cli.tui.screens.wiki.start_stub_generation") as start:
+                app.screen._on_node_selected(_stub_node_event(stub.wiki_slug))
+                await _pilot.pause()
+                start.assert_not_called()
+                await _pilot.press("y")
+                await _pilot.pause()
+                start.assert_called_once()
+
+    async def test_declining_writes_nothing(self, tmp_path):
+        stub = self._index(tmp_path)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            with patch("lilbee.cli.tui.screens.wiki.start_stub_generation") as start:
+                app.screen._on_node_selected(_stub_node_event(stub.wiki_slug))
+                await _pilot.pause()
+                await _pilot.press("n")
+                await _pilot.pause()
+                start.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("sources", "expected"),
+        [(("a.md",), "a.md"), (("a.md", "b.md"), "2 documents")],
+        ids=["one-source", "several"],
+    )
+    def test_the_ask_names_where_the_evidence_comes_from(self, sources, expected):
+        """One document is worth naming; a dozen is not, so it says how many."""
+        from lilbee.cli.tui.screens.wiki import _describe_sources
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        stub = WikiStub(
+            slug="ford",
+            label="Ford",
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            sources=sources,
+            mentions=len(sources),
+            chunk_refs=tuple((s, 0) for s in sources),
+        )
+        assert _describe_sources(stub) == expected
+
+    async def test_the_ask_names_the_cost_and_the_way_out(self, tmp_path):
+        from lilbee.cli.tui import messages as m
+
+        assert "GPU-heavy" in m.WIKI_STUB_CONFIRM_MESSAGE
+        assert "turn the wiki off" in m.WIKI_STUB_CONFIRM_MESSAGE
+        assert "not been written" in m.WIKI_STUB_DETAIL
+
+
+class TestStartStubGeneration:
+    """The write runs as a task and reports failure rather than toasting success."""
+
+    @staticmethod
+    def _capture(slug="ford"):
+        from lilbee.cli.tui.screens.wiki import start_stub_generation
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        stub = WikiStub(
+            slug=slug,
+            label=slug.title(),
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            sources=("a.md",),
+            mentions=1,
+            chunk_refs=(("a.md", 0),),
+        )
+        fake_app = MagicMock()
+        start_stub_generation(fake_app, stub)
+        return fake_app.task_bar.start_task.call_args.args[2], fake_app
+
+    def test_success_reloads_the_screens(self):
+        target, fake_app = self._capture()
+        with (
+            patch("lilbee.wiki.lazy.generate_stub_page", return_value=Path("w/ford.md")),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+        ):
+            target(MagicMock())
+        assert fake_app.task_bar.reload_wiki_screens in [c.args[1] for c in posted.call_args_list]
+
+    def test_a_stale_entry_fails_the_task(self):
+        """Nothing was written, so the task must not report success."""
+        target, _app = self._capture()
+        with (
+            patch("lilbee.wiki.lazy.generate_stub_page", return_value=None),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread"),
+            pytest.raises(RuntimeError, match="sources are gone"),
+        ):
+            target(MagicMock())
+
+    def test_a_raising_generation_still_reloads_the_screens(self):
+        target, fake_app = self._capture()
+        with (
+            patch("lilbee.wiki.lazy.generate_stub_page", side_effect=OSError("disk full")),
+            patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
+            pytest.raises(OSError, match="disk full"),
+        ):
+            target(MagicMock())
+        assert fake_app.task_bar.reload_wiki_screens in [c.args[1] for c in posted.call_args_list]
 
 
 class TestWikiWipeFlow:

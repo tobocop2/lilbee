@@ -420,6 +420,25 @@ WIKI_BUILD_PHASE = "{phase}..."
 WIKI_BUILD_PAGE = "{label} ({current}/{total})"
 WIKI_BUILD_DONE = "Wiki build finished: {count} pages"
 WIKI_ALREADY_ACTIVE = "Wiki build in progress, please wait"
+WIKI_STUBS_HEADING = "Not written yet"
+WIKI_STUB_LABEL = "[dim]{title}[/] [dim italic](not written)[/]"
+WIKI_STUB_DETAIL = (
+    "# {title}\n\n"
+    "*This page has not been written yet.*\n\n"
+    "{label} appears in {sources}. Opening it offers to write the page, which "
+    "spends one LLM call and is GPU-heavy.\n\n"
+    "If you would rather not be asked about pages like this, turn the wiki off "
+    "in settings."
+)
+WIKI_STUB_CONFIRM_TITLE = "Write this page?"
+WIKI_STUB_CONFIRM_MESSAGE = (
+    "Writing {label} spends one LLM call and is GPU-heavy. It draws on {sources}.\n\n"
+    "You can turn the wiki off in settings if you would rather not be asked."
+)
+WIKI_STUB_TASK = "Write {label}"
+WIKI_STUB_DONE = "Wrote {label}"
+WIKI_STUB_FAILED = "Could not write {label}: {error}"
+WIKI_STUB_STALE = "Nothing left to write {label} from; its sources are gone"
 WIKI_WIPE_CONFIRM_TITLE = "Delete the wiki?"
 WIKI_WIPE_CONFIRM_MESSAGE = (
     "This deletes every generated page and its indexed rows. "
