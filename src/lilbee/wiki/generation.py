@@ -15,6 +15,7 @@ from :mod:`lilbee.wiki.synthesis` and :mod:`lilbee.wiki.page`.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import TypedDict
 
@@ -86,8 +87,13 @@ def generate_synthesis_pages(
     config: Config | None = None,
     on_progress: DetailedProgressCallback = noop_callback,
     stats: BuildStats | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[Path]:
-    """Generate synthesis pages for source clusters spanning 3+ documents."""
+    """Generate synthesis pages for source clusters spanning 3+ documents.
+
+    Setting *cancel* stops at the next cluster boundary so a disconnected
+    client does not leave the run holding the wiki build mutex.
+    """
     if config is None:
         config = cfg
     stats = BuildStats.ensure(stats)
@@ -100,6 +106,9 @@ def generate_synthesis_pages(
     on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=len(clusters)))
     pages: list[Path] = []
     for index, cluster in enumerate(clusters, start=1):
+        if cancel is not None and cancel.is_set():
+            log.info("Wiki synthesis cancelled after %d of %d clusters", index - 1, len(clusters))
+            break
         page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config, stats)
         if page is not None:
             pages.append(page)
@@ -228,6 +237,7 @@ def build_wiki(
     extract_concepts: bool = True,
     on_progress: DetailedProgressCallback = noop_callback,
     stats: BuildStats | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[Path]:
     """Produce entity and LLM-curated concept pages per source.
 
@@ -262,6 +272,9 @@ def build_wiki(
         EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=len(all_sources))
     )
     for index, source in enumerate(sorted(all_sources), start=1):
+        if cancel is not None and cancel.is_set():
+            log.info("Wiki build cancelled after %d of %d sources", index - 1, len(all_sources))
+            break
         source_entities = grouped.get(source, [])
         chunks = store.get_chunks_by_source(source)
         chunk_count = len(chunks)
@@ -360,12 +373,17 @@ def preview_build_entities(config: Config) -> list[WikiEntityCandidate]:
 
 
 def run_full_build(
-    config: Config | None = None, on_progress: DetailedProgressCallback = noop_callback
+    config: Config | None = None,
+    on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> WikiBuildSummary:
     """Extract entities and build wiki pages for every ingested source.
 
     Holds the wiki build mutex for the whole run, so a build started from any
     surface waits for one already in flight instead of interleaving writes.
+    Setting *cancel* stops the run at the next source boundary and releases the
+    mutex; without it a client that disconnects mid-stream leaves a build
+    holding the mutex until it finishes the whole corpus.
     """
     if config is None:
         config = cfg
@@ -383,6 +401,7 @@ def run_full_build(
             extract_concepts=config.wiki_extract_concepts,
             on_progress=on_progress,
             stats=stats,
+            cancel=cancel,
         )
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.INDEX))
         update_wiki_index(config)
@@ -408,7 +427,9 @@ class WikiSynthesizeSummary(TypedDict):
 
 
 def run_full_synthesize(
-    config: Config | None = None, on_progress: DetailedProgressCallback = noop_callback
+    config: Config | None = None,
+    on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> WikiSynthesizeSummary:
     """Generate synthesis pages for cross-source clusters.
 
@@ -421,7 +442,7 @@ def run_full_synthesize(
     svc = get_services()
     with WIKI_BUILD_LOCK:
         paths = generate_synthesis_pages(
-            svc.provider, svc.store, svc.clusterer, config, on_progress, stats
+            svc.provider, svc.store, svc.clusterer, config, on_progress, stats, cancel
         )
         append_wiki_log(
             WikiLogAction.SYNTHESIZE,

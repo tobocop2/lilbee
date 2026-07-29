@@ -41,6 +41,18 @@ _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 # same wording with a regex.
 _DRIFT_MARKER_PREFIX = "<!-- DRIFT:"
 
+
+def origin_marker(subdir: str) -> str:
+    """Leading comment recording the page type a draft would have published as.
+
+    Drift and collision drafts carry ``origin:`` inside their own markers. A
+    draft held only by the faithfulness gate has no marker of its own, so
+    without this one, accepting it with no published counterpart files it
+    under ``summaries/`` instead of its own page type.
+    """
+    return f"<!-- origin: {subdir} -->"
+
+
 # Once ``<wiki_dir>/`` is stripped, a well-formed source leaves at least
 # ``<subdir>/<slug>.md``. Anything shorter has no subdir.
 _WIKI_SOURCE_MIN_PARTS = 2

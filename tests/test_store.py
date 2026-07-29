@@ -2315,6 +2315,23 @@ class TestChunkTypePredicate:
         assert "IS NULL" not in pred
         assert pred == "chunk_type = 'wiki'"
 
+    def test_raw_matches_extracted_tables(self):
+        """``raw`` means document content. Scoping a search to the user's own
+        documents must not drop the tables extracted from them."""
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
+
+        assert f"'{ChunkType.TABLE}'" in _chunk_type_predicate("raw")
+
+    def test_raw_scoped_search_returns_table_rows(self, store):
+        """The predicate is only half of it: prove a scoped query really serves
+        table rows, since a wiki-disabled search narrows to raw by default."""
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.TABLE))
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+
+        rows = store.bm25_probe("text", chunk_type=ChunkType.RAW)
+
+        assert [r.chunk_type for r in rows] == [ChunkType.TABLE]
+
 
 class TestEmbeddingModelGate:
     """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""

@@ -303,7 +303,7 @@ class TestWikiBuildMutex:
         held: list[bool] = []
 
         def fake_build_wiki(
-            entities, provider, store, config, *, extract_concepts, on_progress, stats
+            entities, provider, store, config, *, extract_concepts, on_progress, stats, cancel
         ):
             held.append(_wiki_lock_held())
             return []
@@ -330,7 +330,7 @@ class TestWikiBuildMutex:
 
         held: list[bool] = []
 
-        def fake_generate(provider, store, clusterer, config, on_progress, stats):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats, cancel):
             held.append(_wiki_lock_held())
             return []
 
