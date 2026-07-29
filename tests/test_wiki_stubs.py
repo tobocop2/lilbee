@@ -96,6 +96,20 @@ class TestRoundTrip:
         path.write_text(payload, encoding="utf-8")
         assert load_stub_index() == {}
 
+    def test_an_index_whose_rows_are_all_unusable_reads_as_unreadable(self):
+        """It claims entries and none survived parsing, so it is damaged, not a
+        corpus that names nothing. Reporting it empty would let an incremental
+        refresh build on it and drop everything else."""
+        from lilbee.wiki.stubs import _read_stub_index
+
+        path = stub_index_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": 2, "stubs": [{"slug": "broken"}, {"nope": 1}]}),
+            encoding="utf-8",
+        )
+        assert _read_stub_index() is None
+
     def test_a_bad_row_is_dropped_without_losing_the_rest(self):
         path = stub_index_path()
         path.parent.mkdir(parents=True, exist_ok=True)

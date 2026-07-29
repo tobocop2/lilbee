@@ -143,8 +143,14 @@ def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None
         log.info("Wiki stub index version mismatch")
         return None
     rows = payload.get("stubs", [])
-    stubs = (_stub_from_dict(row) for row in rows if isinstance(row, dict))
-    return {stub.slug: stub for stub in stubs if stub is not None}
+    parsed = [_stub_from_dict(row) for row in rows if isinstance(row, dict)]
+    if rows and not any(stub is not None for stub in parsed):
+        # The file claims entries but none survived parsing, so it is damaged
+        # rather than describing a corpus that names nothing. Reporting it as
+        # empty would let an incremental refresh build on it and drop the rest.
+        log.warning("Wiki stub index holds no usable rows")
+        return None
+    return {stub.slug: stub for stub in parsed if stub is not None}
 
 
 def load_stub_index(config: Config | None = None) -> dict[str, WikiStub]:

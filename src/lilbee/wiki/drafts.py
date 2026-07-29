@@ -34,8 +34,8 @@ from lilbee.wiki.citations import (
 from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.page import index_wiki_page, indexable_chunks
 from lilbee.wiki.shared import (
-    PENDING_MARKER_KEYWORD_COLLISION,
-    PENDING_MARKER_KEYWORD_PARSE,
+    PENDING_COLLISION_MARKER_RE,
+    PENDING_PARSE_MARKER_RE,
     WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     PendingKind,
@@ -74,16 +74,7 @@ _DRIFT_MARKER_RE = re.compile(
 # in place of each literal space, so the reader tolerates double-space
 # variations in cached markers. Keywords carry no regex metacharacters
 # so ``re.escape`` is unnecessary.
-_PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
-_COLLISION_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_COLLISION.replace(" ", r"\s+")
-_PENDING_PARSE_MARKER_RE = re.compile(
-    rf"<!--\s*{_PARSE_KEYWORD_PATTERN}[^>]*-->",
-    re.IGNORECASE,
-)
-_PENDING_COLLISION_MARKER_RE = re.compile(
-    rf"<!--\s*{_COLLISION_KEYWORD_PATTERN}[^>]*-->",
-    re.IGNORECASE,
-)
+
 
 # Published wiki subdirs searched in priority order when pairing a
 # draft slug with its counterpart. Summaries and synthesis come first
@@ -257,9 +248,9 @@ def _parse_pending_kind(text: str) -> str | None:
     marker comment further down does not get mis-classified.
     """
     first_line = text.splitlines()[0] if text else ""
-    if _PENDING_PARSE_MARKER_RE.search(first_line):
+    if PENDING_PARSE_MARKER_RE.search(first_line):
         return PendingKind.PARSE
-    if _PENDING_COLLISION_MARKER_RE.search(first_line):
+    if PENDING_COLLISION_MARKER_RE.search(first_line):
         return PendingKind.COLLISION
     return None
 
@@ -268,8 +259,8 @@ def _is_marker_line(line: str) -> bool:
     return any(
         pattern.search(line)
         for pattern in (
-            _PENDING_PARSE_MARKER_RE,
-            _PENDING_COLLISION_MARKER_RE,
+            PENDING_PARSE_MARKER_RE,
+            PENDING_COLLISION_MARKER_RE,
             _DRIFT_MARKER_RE,
             _ORIGIN_MARKER_RE,
         )

@@ -92,10 +92,19 @@ PENDING_MARKER_KEYWORD_COLLISION = "PENDING: concept slug collision"
 
 # Marker lines tolerate whitespace variation, so cached markers written by an
 # older build still classify the same way for every reader.
+# Opening text of each marker, used by the writers.
+PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
+PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
+
+# Matched by every reader. Keyword spacing is loose because cached markers
+# vary, and the match is anchored because a marker is always the first thing on
+# its line: a body quoting one mid-line is content, not a placeholder.
 _PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
 _COLLISION_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_COLLISION.replace(" ", r"\s+")
-_PENDING_PARSE_LINE_RE = re.compile(rf"<!--\s*{_PARSE_KEYWORD_PATTERN}", re.IGNORECASE)
-_PENDING_COLLISION_LINE_RE = re.compile(rf"<!--\s*{_COLLISION_KEYWORD_PATTERN}", re.IGNORECASE)
+PENDING_PARSE_MARKER_RE = re.compile(rf"\s*<!--\s*{_PARSE_KEYWORD_PATTERN}[^>]*-->", re.IGNORECASE)
+PENDING_COLLISION_MARKER_RE = re.compile(
+    rf"\s*<!--\s*{_COLLISION_KEYWORD_PATTERN}[^>]*-->", re.IGNORECASE
+)
 
 
 def is_pending_marker_text(text: str) -> bool:
@@ -108,8 +117,8 @@ def is_pending_marker_text(text: str) -> bool:
     """
     first_line = text.splitlines()[0] if text else ""
     return any(
-        pattern.search(first_line)
-        for pattern in (_PENDING_PARSE_LINE_RE, _PENDING_COLLISION_LINE_RE)
+        pattern.match(first_line)
+        for pattern in (PENDING_PARSE_MARKER_RE, PENDING_COLLISION_MARKER_RE)
     )
 
 

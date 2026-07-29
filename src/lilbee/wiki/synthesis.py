@@ -48,7 +48,7 @@ from lilbee.wiki.page import (
 )
 from lilbee.wiki.persistence import write_pending_marker
 from lilbee.wiki.shared import (
-    PENDING_MARKER_KEYWORD_PARSE,
+    PENDING_PARSE_MARKER_PREFIX,
     PendingKind,
     WikiSubdir,
 )
@@ -83,8 +83,6 @@ _CONCEPT_LABEL_DECORATION = " \t*_`"
 # The list is a nudge toward established names, not a complete index, and an
 # uncapped one eats the whole chunk budget on a large wiki.
 _MAX_REUSE_CONCEPT_LABELS = 50
-
-_PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
 
 
 def generate_synthesis_page(
@@ -463,7 +461,7 @@ def _write_pending_markers(
         if entity.label in written_labels:
             continue
         marker = (
-            f"{_PENDING_PARSE_MARKER_PREFIX} for source {source}, "
+            f"{PENDING_PARSE_MARKER_PREFIX} for source {source}, "
             f"entity/concept {entity.label} - "
             "run wiki build again or manually accept via wiki drafts accept -->"
         )

@@ -17,8 +17,7 @@ from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
-    PENDING_MARKER_KEYWORD_COLLISION,
-    PENDING_MARKER_KEYWORD_PARSE,
+    PENDING_COLLISION_MARKER_PREFIX,
     PageTarget,
     WikiLogAction,
     WikiSubdir,
@@ -35,8 +34,6 @@ log = logging.getLogger(__name__)
 # draft as PARSE or COLLISION instead of a drift-routed regen. The
 # keyword phrases live in ``wiki.shared`` so writer (gen) and reader
 # (drafts) stay in sync on the exact wording.
-_PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
-_PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 
 # Leading comment on a drift-diverted draft. The drafts surface matches the
 # same wording with a regex.
@@ -359,7 +356,7 @@ def divert_concept_collision(
     short = short_source_hash(source)
     collision_slug = f"{slug}-collision-{short}"
     marker = (
-        f"{_PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
+        f"{PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
         f"content from {source} held for review; origin: {origin_subdir} -->\n\n"
     )
     path = drafts_dir / f"{collision_slug}.md"
