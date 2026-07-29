@@ -304,7 +304,13 @@ def indexable_chunks(content: str) -> list[str]:
     return chunk_text(body, mime_type="text/markdown", use_semantic=True) if body else []
 
 
-def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config) -> int:
+def index_wiki_page(
+    content: str,
+    wiki_source: str,
+    store: Store,
+    config: Config,
+    chunks: list[str] | None = None,
+) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
     ``wiki_source`` must follow the ``<config.wiki_dir>/<subdir>/<slug>.md``
@@ -323,6 +329,9 @@ def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config
     Record shape matches the markdown-ingest convention in
     ``lilbee.data.ingest``: ``content_type="text"``, all four page/line
     positions ``0`` (wiki pages are not paginated).
+
+    ``chunks`` lets a caller that already chunked this content pass the result
+    in rather than paying for a second semantic pass under the build lock.
     """
     subdir = subdir_from_wiki_source(wiki_source, config.wiki_dir)
     if subdir is None:
@@ -332,7 +341,8 @@ def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config
         return 0
 
     predicate = f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'"
-    chunks = indexable_chunks(content)
+    if chunks is None:
+        chunks = indexable_chunks(content)
     if not chunks:
         store.clear_table(CHUNKS_TABLE, predicate)
         return 0

@@ -210,6 +210,25 @@ class TestAcceptDraft:
         assert "the published prose" in published.read_text()
         store.replace_citations_for_wiki.assert_not_called()
 
+    def test_accept_chunks_the_body_once(self, tmp_path: Path) -> None:
+        """The guard and the indexer share one definition of indexable, but the
+        body must be chunked once: with semantic chunking on, the second pass
+        re-embeds every sentence of the page while holding the build lock."""
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", _draft_content("old prose"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content("new brakes prose"))
+        store = MagicMock()
+        store.replace_chunks.return_value = 1
+
+        with (
+            patch("lilbee.wiki.page.chunk_text", return_value=["new brakes prose"]) as chunker,
+            patch("lilbee.wiki.page.get_services") as services,
+        ):
+            services.return_value.embedder.embed_batch.return_value = [[0.1, 0.2]]
+            accept_draft("brakes", wiki_root, store)
+
+        assert chunker.call_count == 1
+
     def test_quality_gate_draft_accepts_into_its_own_page_type(self, tmp_path: Path) -> None:
         """A first-build concept held only by the faithfulness gate has no
         published counterpart, so without an origin marker of its own it would
