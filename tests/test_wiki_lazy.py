@@ -41,8 +41,9 @@ def _stub(slug: str, refs: tuple[tuple[str, int], ...]) -> WikiStub:
         label=slug.replace("-", " ").title(),
         kind=EntityKind.ENTITY,
         type_hint="PERSON",
-        sources=tuple(sorted({s for s, _ in refs})),
-        mentions=len(refs),
+        source_mentions=tuple(
+            sorted({s: sum(1 for x, _ in refs if x == s) for s, _ in refs}.items())
+        ),
         chunk_refs=refs,
     )
 
@@ -138,6 +139,52 @@ class TestGenerateStubPage:
         )
 
         assert {r["source_filename"] for r in records} == {"a.md", "b.md"}
+
+    def test_a_lazily_written_page_never_prunes_the_documents_that_mention_it(self):
+        """With wiki_prune_raw on, a build deletes the one document its page
+        replaces. These documents merely name the subject, so pruning them
+        would delete every document that mentioned it."""
+        save_stub_index({"ford": _stub("ford", (("a.md", 0), ("b.md", 0)))})
+        store = _store_with(
+            {
+                "a.md": [make_search_chunk("a.md", 0)],
+                "b.md": [make_search_chunk("b.md", 0)],
+            }
+        )
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
+            generate_stub_page("ford", store, cfg)
+        assert gen.call_args.kwargs["supersedes_sources"] is False
+
+    @pytest.mark.parametrize("form", ["ford", "entities/ford"], ids=["bare", "qualified"])
+    def test_either_slug_form_resolves(self, form: str):
+        """Every surface shows pages as entities/ford, so that is what a user
+        types; the index is keyed by the bare slug."""
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk("a.md", 0)]})
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")):
+            assert generate_stub_page(form, store, cfg) == Path("p.md")
+
+    def test_evidence_is_ordered_by_how_much_each_source_says(self):
+        """The context budget truncates from the end, so the documents with
+        least to say must be the ones that fall off."""
+        stub = WikiStub(
+            slug="ford",
+            label="Ford",
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            source_mentions=(("thin.md", 1), ("thick.md", 9)),
+            chunk_refs=(("thin.md", 0), ("thick.md", 0)),
+        )
+        save_stub_index({"ford": stub})
+        store = _store_with(
+            {
+                "thin.md": [make_search_chunk("thin.md", 0)],
+                "thick.md": [make_search_chunk("thick.md", 0)],
+            }
+        )
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
+            generate_stub_page("ford", store, cfg)
+        assert gen.call_args.kwargs["chunks"][0].source == "thick.md"
 
     def test_defaults_to_the_global_config(self):
         save_stub_index({"ford": _stub("ford", (("a.md", 0),))})

@@ -379,8 +379,14 @@ def generate_page(
     config: Config,
     on_progress: WikiProgressCallback | None = None,
     stats: BuildStats | None = None,
+    supersedes_sources: bool = True,
 ) -> Path | None:
-    """Core generation pipeline shared by summary and synthesis pages."""
+    """Core generation pipeline shared by summary and synthesis pages.
+
+    ``supersedes_sources`` is False when the sources merely mention the
+    subject rather than being replaced by the page, so ``wiki_prune_raw``
+    does not delete them.
+    """
     stats = BuildStats.ensure(stats)
 
     def _emit(stage: str, **data: object) -> None:
@@ -437,6 +443,7 @@ def generate_page(
         wiki_source=f"{config.wiki_dir}/{subdir}/{slug}.md",
         page_type=page_type,
         label=label,
+        supersedes_sources=supersedes_sources,
     )
     page_path = persist_and_finalize(
         full_content, target, verified, source_names, store, config, stats=stats

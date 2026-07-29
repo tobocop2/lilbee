@@ -407,12 +407,21 @@ class TestSync:
         monkeypatch.setattr(cfg, "wiki", True)
         monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
         monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", mock.AsyncMock())
-        refresh = mock.MagicMock(return_value={})
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+        # A real signature, not a MagicMock: the hook calls this through
+        # to_ingest_thread, which forwards its arguments, and a permissive mock
+        # accepts an arity the real function rejects.
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
 
         await sync(quiet=True)
 
-        assert refresh.called
+        assert len(calls) == 1
+        assert calls[0][2] is not None
 
     async def test_index_refresh_is_skipped_when_the_wiki_is_off(
         self, mock_extract_file, isolated_env, monkeypatch
@@ -422,12 +431,17 @@ class TestSync:
 
         (isolated_env / "unindexed.txt").write_text("Content.")
         monkeypatch.setattr(cfg, "wiki", False)
-        refresh = mock.MagicMock(return_value={})
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
 
         await sync(quiet=True)
 
-        refresh.assert_not_called()
+        assert calls == []
 
     async def test_a_failing_index_refresh_does_not_stop_the_sync(
         self, mock_extract_file, isolated_env, monkeypatch

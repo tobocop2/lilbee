@@ -246,7 +246,7 @@ def persist_and_finalize(
 
     index_wiki_page(content, target.wiki_source, store, config)
 
-    if config.wiki_prune_raw:
+    if config.wiki_prune_raw and target.supersedes_sources:
         for name in source_names:
             try:
                 store.delete_by_source(name)

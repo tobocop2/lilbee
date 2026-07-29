@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import logging
 import threading
 import time
@@ -912,10 +911,7 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
 
     try:
         await to_ingest_thread(
-            functools.partial(
-                refresh_stub_index, get_services().store, config, sources=changed_sources
-            ),
-            None,
+            refresh_stub_index, get_services().store, config, sources=changed_sources
         )
     except Exception:
         log.warning("Wiki index refresh failed after sync", exc_info=True)

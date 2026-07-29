@@ -150,6 +150,11 @@ class PageTarget:
     wiki_source: str
     page_type: str
     label: str
+    # Whether this page replaces the documents it was written from. True for a
+    # build, whose source is the one document the page summarizes. False when
+    # the sources merely mention the subject: pruning them would delete every
+    # document that named it.
+    supersedes_sources: bool = True
 
 
 def atomic_write_text(path: Path, text: str) -> None:

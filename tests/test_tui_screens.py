@@ -8610,8 +8610,7 @@ class TestWikiStubs:
             label=slug.title(),
             kind=EntityKind.ENTITY,
             type_hint="PERSON",
-            sources=tuple(sources),
-            mentions=len(sources),
+            source_mentions=tuple((s, 1) for s in sources),
             chunk_refs=tuple((s, 0) for s in sources),
         )
         save_stub_index({slug: stub})
@@ -8678,8 +8677,7 @@ class TestWikiStubs:
             label="Ford",
             kind=EntityKind.ENTITY,
             type_hint="PERSON",
-            sources=sources,
-            mentions=len(sources),
+            source_mentions=tuple((s, 1) for s in sources),
             chunk_refs=tuple((s, 0) for s in sources),
         )
         assert _describe_sources(stub) == expected
@@ -8706,8 +8704,7 @@ class TestStartStubGeneration:
             label=slug.title(),
             kind=EntityKind.ENTITY,
             type_hint="PERSON",
-            sources=("a.md",),
-            mentions=1,
+            source_mentions=(("a.md", 1),),
             chunk_refs=(("a.md", 0),),
         )
         fake_app = MagicMock()

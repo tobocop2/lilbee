@@ -42,7 +42,7 @@ STUB_INDEX_FILENAME = "stubs.json"
 # Schema marker, so a future shape change can be detected rather than parsed
 # as garbage. A mismatch is treated as no index at all and the next sync
 # rebuilds it.
-_INDEX_VERSION = 1
+_INDEX_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -53,9 +53,22 @@ class WikiStub:
     label: str
     kind: EntityKind
     type_hint: str
-    sources: tuple[str, ...]
-    mentions: int
+    # Per-source mention counts, sorted by source. Kept rather than a single
+    # total because an incremental refresh has to add and subtract one source's
+    # contribution exactly, and because chunk refs are capped, so counting them
+    # would shrink the total every time the index is rewritten.
+    source_mentions: tuple[tuple[str, int], ...]
     chunk_refs: tuple[tuple[str, int], ...]
+
+    @property
+    def sources(self) -> tuple[str, ...]:
+        """Every document naming this subject."""
+        return tuple(source for source, _ in self.source_mentions)
+
+    @property
+    def mentions(self) -> int:
+        """How often the corpus names this subject, across all its sources."""
+        return sum(count for _, count in self.source_mentions)
 
     @property
     def subdir(self) -> WikiSubdir:
@@ -74,8 +87,7 @@ class WikiStub:
             "label": self.label,
             "kind": self.kind.value,
             "type_hint": self.type_hint,
-            "sources": list(self.sources),
-            "mentions": self.mentions,
+            "source_mentions": [[source, count] for source, count in self.source_mentions],
             "chunk_refs": [[source, index] for source, index in self.chunk_refs],
         }
 
@@ -92,8 +104,7 @@ def _stub_from_dict(raw: dict[str, Any]) -> WikiStub | None:
             label=str(raw["label"]),
             kind=EntityKind(raw["kind"]),
             type_hint=str(raw.get("type_hint", "")),
-            sources=tuple(str(s) for s in raw["sources"]),
-            mentions=int(raw["mentions"]),
+            source_mentions=tuple((str(s), int(c)) for s, c in raw["source_mentions"]),
             chunk_refs=tuple((str(s), int(i)) for s, i in raw.get("chunk_refs", [])),
         )
     except (KeyError, TypeError, ValueError):
@@ -160,13 +171,15 @@ def _capped_refs(entity: ExtractedEntity, cap: int) -> tuple[tuple[str, int], ..
 
 def stub_from_entity(entity: ExtractedEntity, cap: int) -> WikiStub:
     """Build the index row for an extracted entity."""
+    counts: dict[str, int] = {}
+    for ref in entity.chunk_refs:
+        counts[ref.source] = counts.get(ref.source, 0) + 1
     return WikiStub(
         slug=entity.slug,
         label=entity.label,
         kind=entity.kind,
         type_hint=entity.type_hint,
-        sources=tuple(sorted({ref.source for ref in entity.chunk_refs})),
-        mentions=len(entity.chunk_refs),
+        source_mentions=tuple(sorted(counts.items())),
         chunk_refs=_capped_refs(entity, cap),
     )
 
@@ -178,32 +191,62 @@ def _without_sources(stub: WikiStub, dropped: set[str]) -> WikiStub | None:
     entity's stub behind, so an incremental refresh subtracts the sources it is
     about to recompute before merging the new findings back in.
     """
-    sources = tuple(s for s in stub.sources if s not in dropped)
-    if not sources:
+    kept = tuple((s, c) for s, c in stub.source_mentions if s not in dropped)
+    if not kept:
         return None
-    refs = tuple((s, i) for s, i in stub.chunk_refs if s not in dropped)
     return WikiStub(
         slug=stub.slug,
         label=stub.label,
         kind=stub.kind,
         type_hint=stub.type_hint,
-        sources=sources,
-        mentions=len(refs),
-        chunk_refs=refs,
+        source_mentions=kept,
+        chunk_refs=tuple((s, i) for s, i in stub.chunk_refs if s not in dropped),
     )
 
 
 def _merge(existing: WikiStub, found: WikiStub, cap: int) -> WikiStub:
-    """Combine a surviving stub with what a refresh just found for it."""
-    refs = (*existing.chunk_refs, *found.chunk_refs)[:cap]
-    return WikiStub(
+    """Combine a surviving stub with what a refresh just found for it.
+
+    Refs are re-cut across the union rather than concatenated and truncated:
+    head-truncation gave a stub already holding ``cap`` refs nothing at all
+    from a newly ingested source, however much that source had to say.
+    """
+    counts = dict(existing.source_mentions)
+    for source, count in found.source_mentions:
+        counts[source] = counts.get(source, 0) + count
+    merged = WikiStub(
         slug=found.slug,
         label=found.label,
         kind=found.kind,
         type_hint=found.type_hint,
-        sources=tuple(sorted({*existing.sources, *found.sources})),
-        mentions=existing.mentions + found.mentions,
-        chunk_refs=refs,
+        source_mentions=tuple(sorted(counts.items())),
+        chunk_refs=(*existing.chunk_refs, *found.chunk_refs),
+    )
+    return _recut_refs(merged, cap)
+
+
+def _recut_refs(stub: WikiStub, cap: int) -> WikiStub:
+    """Re-apply the cap across the stub's refs, most-mentioning source first."""
+    if len(stub.chunk_refs) <= cap:
+        return stub
+    by_source: dict[str, list[int]] = {}
+    for source, index in stub.chunk_refs:
+        by_source.setdefault(source, []).append(index)
+    counts = dict(stub.source_mentions)
+    ordered = sorted(by_source.items(), key=lambda kv: (-counts.get(kv[0], 0), kv[0]))
+    refs: list[tuple[str, int]] = []
+    for source, indexes in ordered:
+        for index in sorted(set(indexes)):
+            if len(refs) >= cap:
+                break
+            refs.append((source, index))
+    return WikiStub(
+        slug=stub.slug,
+        label=stub.label,
+        kind=stub.kind,
+        type_hint=stub.type_hint,
+        source_mentions=stub.source_mentions,
+        chunk_refs=tuple(refs),
     )
 
 
@@ -238,21 +281,75 @@ def refresh_stub_index(
                 if trimmed is not None:
                     surviving[slug] = trimmed
 
-        extractor = get_entity_extractor(config.wiki_entity_mode, get_services().provider, config)
+        # The mention threshold judges a subject across the whole corpus, so an
+        # incremental pass must not apply it to one source's chunks: an entity
+        # named twice in the document being re-indexed and forty times
+        # elsewhere would lose that document from its index entry, and lose
+        # another on every later sync.
+        pass_config = (
+            config if sources is None else config.model_copy(update={"wiki_entity_min_mentions": 1})
+        )
+        extractor = get_entity_extractor(
+            config.wiki_entity_mode, get_services().provider, pass_config
+        )
         for entity in extractor.extract(chunks):
             found = stub_from_entity(entity, cap)
             existing = surviving.get(found.slug)
             surviving[found.slug] = found if existing is None else _merge(existing, found, cap)
 
+        threshold = config.wiki_entity_min_mentions
+        surviving = {
+            slug: stub
+            for slug, stub in surviving.items()
+            # A stub whose refs all belonged to a re-indexed source has nothing
+            # left to write a page from, so it must not be offered as one.
+            if stub.mentions >= threshold and stub.chunk_refs
+        }
         save_stub_index(surviving, config)
     log.info("Wiki stub index: %d entities across the corpus", len(surviving))
     return surviving
 
 
+def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
+    """Whether this subject already has a page, published or awaiting review.
+
+    A page the faithfulness gate routed to drafts/ has been written and is
+    waiting on a human. Offering it as unwritten invites generating it again
+    and again, each time for another LLM call, while the draft sits there.
+    """
+    if (wiki_root / f"{stub.wiki_slug}.md").is_file():
+        return True
+    if (wiki_root / WikiSubdir.DRAFTS / f"{stub.slug}.md").is_file():
+        return True
+    # Prune moved it here when its sources went. Offering it as unwritten would
+    # regenerate what prune just retired, on the next sync and every one after.
+    return (wiki_root / WikiSubdir.ARCHIVE / f"{stub.wiki_slug}.md").is_file()
+
+
+def drop_sources_from_index(names: set[str], config: Config | None = None) -> None:
+    """Forget documents the library no longer has.
+
+    Subtraction only, so it costs no extraction pass. Without it a removed
+    document keeps its subjects in the browse tree forever: its skip marker
+    keeps it out of later syncs, so no refresh ever revisits those entries.
+    """
+    if not names:
+        return
+    if config is None:
+        config = cfg
+    with WIKI_BUILD_LOCK:
+        stubs = load_stub_index(config)
+        if not stubs:
+            return
+        kept: dict[str, WikiStub] = {}
+        for slug, stub in stubs.items():
+            trimmed = _without_sources(stub, names)
+            if trimmed is not None:
+                kept[slug] = trimmed
+        if len(kept) != len(stubs) or any(kept[s] != stubs[s] for s in kept):
+            save_stub_index(kept, config)
+
+
 def ungenerated_stubs(stubs: dict[str, WikiStub], wiki_root: Path) -> list[WikiStub]:
-    """The stubs whose page does not exist on disk yet, in slug order."""
-    return [
-        stub
-        for slug, stub in sorted(stubs.items())
-        if not (wiki_root / f"{stub.wiki_slug}.md").is_file()
-    ]
+    """The stubs nothing has written a page for yet, in slug order."""
+    return [stub for _, stub in sorted(stubs.items()) if not _page_exists(stub, wiki_root)]

@@ -54,15 +54,33 @@ def _chunks_for_stub(stub: WikiStub, store: Store) -> tuple[dict[str, list[Searc
     for source, index in stub.chunk_refs:
         wanted.setdefault(source, set()).add(index)
 
+    # Most-mentioning source first, so when the context budget truncates it
+    # drops the documents with least to say rather than the alphabetically
+    # unlucky ones.
+    counts = dict(stub.source_mentions)
+    order = sorted(wanted, key=lambda name: (-counts.get(name, 0), name))
+
     by_source: dict[str, list[SearchChunk]] = {}
     resolved = 0
-    for source in sorted(wanted):
+    for source in order:
         available = {c.chunk_index: c for c in store.get_chunks_by_source(source)}
         kept = [available[i] for i in sorted(wanted[source]) if i in available]
         resolved += len(kept)
         if kept:
             by_source[source] = kept
     return by_source, len(stub.chunk_refs) - resolved
+
+
+def _resolve(slug: str, stubs: dict[str, WikiStub]) -> WikiStub | None:
+    """Find a stub by bare slug or by the subdir-qualified form.
+
+    Every surface shows pages as ``entities/ford``, so that is what a user
+    types, while the index is keyed by the bare slug. Both resolve.
+    """
+    direct = stubs.get(slug)
+    if direct is not None:
+        return direct
+    return next((stub for stub in stubs.values() if stub.wiki_slug == slug), None)
 
 
 def generate_stub_page(
@@ -81,7 +99,8 @@ def generate_stub_page(
     if config is None:
         config = cfg
     with WIKI_BUILD_LOCK:
-        stub = load_stub_index(config).get(slug)
+        stubs = load_stub_index(config)
+        stub = _resolve(slug, stubs)
         if stub is None:
             raise UnknownStubError(f"no indexed page named {slug!r}")
 
@@ -120,4 +139,7 @@ def generate_stub_page(
             store=store,
             config=config,
             stats=stats,
+            # These documents mention the subject; the page does not replace
+            # them. Pruning here would delete every document that named it.
+            supersedes_sources=False,
         )
