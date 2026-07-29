@@ -283,7 +283,8 @@ class TestFrontmatterWithMarkers:
             "",
             "<!-- origin: concepts -->\n\n",
             "<!-- DRIFT: 50% content changed; origin: concepts -->\n\n",
-            "<!-- PENDING -->\n<!-- DRIFT: 50% content changed -->\n\n",
+            "<!-- PENDING: concept slug collision with source wiki/drafts/b.md -->\n\n"
+            "<!-- DRIFT: 50% content changed; origin: concepts; source: 11dd481a -->\n\n",
         ],
         ids=["plain", "origin", "drift", "stacked"],
     )
@@ -292,6 +293,11 @@ class TestFrontmatterWithMarkers:
 
     def test_a_body_with_no_frontmatter_still_parses_as_empty(self):
         assert parse_frontmatter("<!-- origin: concepts -->\n\n# Brakes\n") == {}
+
+    def test_blank_lines_alone_do_not_open_the_frontmatter_scan(self):
+        """Blank lines are only consumed after a marker, so an unmarked page
+        still has to carry its delimiter on line zero."""
+        assert parse_frontmatter("\n\n---\ntitle: Brakes\n---\n") == {}
 
 
 class TestWikiBuildMutex:
