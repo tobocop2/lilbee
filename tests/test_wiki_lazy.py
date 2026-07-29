@@ -20,13 +20,15 @@ def isolated_env(wiki_isolated_env: Path):
     yield wiki_isolated_env
 
 
-def make_search_chunk(source: str, chunk_index: int, chunk: str = "text") -> SearchChunk:
+def make_search_chunk(
+    source: str, chunk_index: int, chunk: str = "text", page: int = 0
+) -> SearchChunk:
     return SearchChunk(
         source=source,
         content_type="text",
         chunk_type="raw",
-        page_start=0,
-        page_end=0,
+        page_start=page,
+        page_end=page,
         line_start=0,
         line_end=0,
         chunk=chunk,
@@ -109,14 +111,19 @@ class TestGenerateStubPage:
     def test_citations_resolve_against_whichever_source_holds_the_excerpt(self):
         """The page cites two documents, so its resolver has to attribute each
         excerpt to the source that actually contains it. A build could not do
-        this: it only ever hands one source's chunks to a page."""
+        this: it only ever hands one source's chunks to a page.
+
+        The second footnote deliberately omits the filename. A model writes
+        those, and when it does the only way to attribute the excerpt is to look
+        it up in the chunk map. Naming both files instead would let the resolver
+        match on the reference text alone and the map would go untested."""
         from lilbee.wiki.citations import ParsedCitation
 
         save_stub_index({"ford": _stub("ford", (("a.md", 0), ("b.md", 0)))})
         store = _store_with(
             {
                 "a.md": [make_search_chunk("a.md", 0, "the model T sold well")],
-                "b.md": [make_search_chunk("b.md", 0, "the plant opened in 1913")],
+                "b.md": [make_search_chunk("b.md", 0, "the plant opened in 1913", page=7)],
             }
         )
         with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
@@ -132,13 +139,16 @@ class TestGenerateStubPage:
                 ),
                 ParsedCitation(
                     citation_key="src2",
-                    source_ref='b.md, excerpt: "the plant opened in 1913"',
+                    source_ref='excerpt: "the plant opened in 1913"',
                     line_number=2,
                 ),
             ]
         )
 
         assert {r["source_filename"] for r in records} == {"a.md", "b.md"}
+        # The page number can only have come from b.md's chunk, so the map is
+        # carrying the location too, not just the attribution.
+        assert next(r["page_start"] for r in records if r["source_filename"] == "b.md") == 7
 
     def test_a_lazily_written_page_never_prunes_the_documents_that_mention_it(self):
         """With wiki_prune_raw on, a build deletes the one document its page
