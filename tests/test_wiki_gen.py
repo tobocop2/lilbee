@@ -220,15 +220,18 @@ class TestTruncateChunksToBudget:
     def test_budget_floors_at_a_quarter_of_the_window(self):
         """An output cap larger than the whole window still leaves chunks room.
 
-        The window has to be wide enough that the floor holds many chunks. With
-        a small one the floor fits a single chunk, and so does a budget of
-        zero, because the keep-at-least-one guard takes over: the assertion
-        lands on the same number whether the floor exists or not.
+        Nineteen is what a quarter of a 4096-token window holds, and the count
+        moves with the fraction: a deleted floor keeps 1, an eighth keeps 9, a
+        half keeps 38. Enough chunks are offered that the budget is what binds,
+        so the number pins the quarter itself rather than the weaker claim that
+        some floor exists. An inflated floor is the failure that matters, since
+        this branch runs only when the window has no room left, and a floor of
+        the whole window would overflow it by the entire output cap.
         """
         cfg.num_ctx = 4096
         cfg.wiki_summary_max_tokens = 8192
-        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(20)]
-        assert len(truncate_chunks_to_budget(chunks, cfg)) > 1
+        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(60)]
+        assert len(truncate_chunks_to_budget(chunks, cfg)) == 19
 
     def test_the_floor_never_raises_a_positive_budget(self):
         """A budget between zero and a quarter of the window is honest and small.

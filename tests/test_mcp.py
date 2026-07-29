@@ -994,6 +994,37 @@ class TestWikiLint:
         assert result["errors"] == 0
         assert result["warnings"] == result["total"]
 
+    def test_lint_counts_errors_apart_from_warnings(self, mock_svc, tmp_path, monkeypatch):
+        """The severity split is the whole point of the two counts, and every
+        other fixture here yields warnings only, so both numbers would agree
+        with a hardcoded zero and a plain issue total."""
+        from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
+
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        cfg.wiki = True
+        report = LintReport(
+            issues=[
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.ERROR,
+                    message="cited source is gone",
+                    issue_type=IssueType.SOURCE_MISSING,
+                ),
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.WARNING,
+                    message="unmarked claim",
+                    issue_type=IssueType.UNMARKED_CLAIM,
+                ),
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
+        result = wiki_lint()
+        assert result["total"] == 2
+        assert result["errors"] == 1
+        assert result["warnings"] == 1
+
     def test_lint_single_page(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
@@ -1198,19 +1229,27 @@ class TestWikiPrune:
 
         cfg.wiki_dir = "wiki"
         cfg.wiki = True
+        # An archived record alongside the reconciled one, so the counts have
+        # to tell the actions apart. With one record of one action, counting
+        # RECONCILED is the same number as counting every record.
         report = PruneReport(
             records=[
                 PruneRecord(
                     wiki_source="wiki/concepts/gone.md",
                     action=PruneAction.RECONCILED,
                     reason="indexed rows without a page on disk",
-                )
+                ),
+                PruneRecord(
+                    wiki_source="wiki/concepts/retired.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="every source it cited is gone",
+                ),
             ]
         )
         monkeypatch.setattr("lilbee.wiki.prune.prune_wiki", lambda *a, **kw: report)
         result = wiki_prune()
         assert result["reconciled"] == 1
-        assert result["archived"] == 0
+        assert result["archived"] == 1
 
 
 class TestWikiIndexAndGenerate:
@@ -1218,8 +1257,10 @@ class TestWikiIndexAndGenerate:
         from lilbee.wiki import stubs as stubs_mod
 
         cfg.wiki = True
-        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1})
-        assert wiki_index()["entries"] == 1
+        # Three, not one: with a single entry the count is the same number as
+        # a hardcoded 1, and the tool would report "1 page" for a whole corpus.
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2, "c": 3})
+        assert wiki_index()["entries"] == 3
 
     def test_generate_returns_the_path(self, mock_svc, monkeypatch):
         from pathlib import Path

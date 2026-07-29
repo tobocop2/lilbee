@@ -3082,10 +3082,17 @@ class TestWikiBuild:
         assert data["stats"] == BuildStats().as_dict()
 
     def test_prints_what_the_gates_did(self, mock_svc, isolated_env, monkeypatch):
-        """Every build reports its gate outcomes, including a run that published nothing."""
+        """Every build reports its gate outcomes, including a run that published nothing.
+
+        The three gate counts differ, so the labels have to match the counters
+        they name. At one apiece the line reads the same however the fields are
+        wired, and a summary that swapped published with drafted would pass."""
         stats = BuildStats()
         stats.record_published("wiki/concepts/braking.md", 2)
         stats.record_drafted()
+        stats.record_drafted()
+        stats.record_pending_marker()
+        stats.record_pending_marker()
         stats.record_pending_marker()
         stats.record_citations(rendered=2, dropped=1)
         monkeypatch.setattr(
@@ -3095,7 +3102,7 @@ class TestWikiBuild:
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert "No concept or entity pages" in result.output
-        assert "1 published, 1 drafted, 1 markers, 2/3 citations verified" in result.output
+        assert "1 published, 2 drafted, 3 markers, 2/3 citations verified" in result.output
 
     def test_status_counts_all_content_pages(self, mock_svc, isolated_env):
         """wiki status pages counts every content subdir (1 summary + 2 concepts),
