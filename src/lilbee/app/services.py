@@ -140,11 +140,11 @@ class _ServicesState:
     """The cached process-global singleton plus the per-task scoped override.
 
     ``singleton`` is set on first ``get_services()`` call. Concurrency
-    contract: lilbee runs the asyncio loop on a single worker thread +
-    Textual's main thread; ``get_services()`` is idempotent (the early-out
-    covers re-entry from a background thread), and the Services dataclass is
-    logically immutable post-construction, so concurrent reads are safe
-    without a lock. Tests that need a custom container call
+    contract: creation is serialized by ``_singleton_create_lock`` (several
+    worker threads can first-touch services at once, and a duplicate build
+    would collide in xberg's process-global backend registry), and the
+    Services dataclass is logically immutable post-construction, so concurrent
+    reads are safe without a lock. Tests that need a custom container call
     ``set_services(make_mock_services(...))``; ``peek_services()`` is the
     read-only inspector for cleanup fixtures.
 
@@ -181,12 +181,19 @@ def build_services(
 
     ``get_services()`` calls this with the process-global cfg; the library API
     calls it per instance. Service modules are imported inside the function to
-    keep CLI startup fast (they transitively pull in lancedb / kreuzberg). Pass
+    keep CLI startup fast (they transitively pull in lancedb / xberg). Pass
     *provider* to reuse a caller-supplied one; otherwise it is built from
     *config* via the provider factory. Pass *registry* to reuse one already built
     (get_services builds it for embedding-dim reconciliation). Embedding-dim
     reconciliation is a global-cfg concern owned by :func:`get_services`, not
     done here.
+
+    Side effect: binds *provider* into xberg's process-global OCR, embedding and
+    tokenizer backends (see :mod:`lilbee.data.xberg_backends`) so scanned-page OCR,
+    semantic-chunk boundary detection, and token-budgeted chunk sizing route through
+    it. xberg's registry is a single global slot, so the most recently built container
+    wins; this is why binding lives here (every container, singleton or per-instance
+    library, binds its own provider) rather than only in :func:`get_services`.
     """
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
@@ -202,6 +209,13 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = provider or create_provider(config, hold_warm=interactive)
+    # Bind this provider into xberg's OCR/embedding/tokenizer backends so scanned-page
+    # OCR, semantic-chunk boundary detection and token-budgeted sizing route through it.
+    # Bound here (not only in get_services) so the library API's per-instance containers
+    # bind too; each backend reads live cfg and re-binds when the provider is rebuilt.
+    from lilbee.data.xberg_backends import sync_xberg_backends
+
+    sync_xberg_backends(provider)
     registry = registry or ModelRegistry(config.models_dir)
     store = Store(config)
     embedder = Embedder(config, provider)
@@ -235,6 +249,13 @@ def build_services(
     )
 
 
+# Serializes first-touch singleton creation: several worker threads (e.g.
+# concurrent downloads) can call get_services() before the singleton exists,
+# and a duplicate build re-registers xberg's process-global backends mid-flight,
+# raising 'already registered' in the losing thread.
+_singleton_create_lock = threading.Lock()
+
+
 def get_services() -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
 
@@ -249,26 +270,30 @@ def get_services() -> Services:
     if _state.singleton is not None:
         return _state.singleton
 
-    from lilbee.app.settings import reconcile_embedding_dim
-    from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelRegistry
+    with _singleton_create_lock:
+        if _state.singleton is not None:
+            return _state.singleton
 
-    registry = ModelRegistry(cfg.models_dir)
-    # Pin the store width to the embedder before Store(); pass the registry so
-    # resolution doesn't re-enter this half-built get_services.
-    reconcile_embedding_dim(registry)
-    _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
-    # Eager start is the default: pay the spawn cost per role server at TUI mount
-    # so the first user action lands on a warm fleet. Roles whose model is unset
-    # are skipped, so a setup with only chat + embed never spawns rerank or
-    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
-    # where mount time matters more than first-call latency.
-    if cfg.worker_pool_eager_start:
-        from contextlib import suppress
+        from lilbee.app.settings import reconcile_embedding_dim
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelRegistry
 
-        with suppress(Exception):
-            _state.singleton.provider.warm_up_pool()
-    return _state.singleton
+        registry = ModelRegistry(cfg.models_dir)
+        # Pin the store width to the embedder before Store(); pass the registry so
+        # resolution doesn't re-enter this half-built get_services.
+        reconcile_embedding_dim(registry)
+        _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
+        # Eager start is the default: pay the spawn cost per role server at TUI mount
+        # so the first user action lands on a warm fleet. Roles whose model is unset
+        # are skipped, so a setup with only chat + embed never spawns rerank or
+        # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
+        # where mount time matters more than first-call latency.
+        if cfg.worker_pool_eager_start:
+            from contextlib import suppress
+
+            with suppress(Exception):
+                _state.singleton.provider.warm_up_pool()
+        return _state.singleton
 
 
 @contextmanager

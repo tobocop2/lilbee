@@ -42,8 +42,8 @@ if TYPE_CHECKING:
         ConceptRecords,
         FileToProcess,
         PageTextRecord,
-        SourceMeta,
     )
+    from lilbee.data.store import SourceMeta
 
 log = logging.getLogger(__name__)
 
@@ -220,9 +220,9 @@ async def _produce_one(entry: FileToProcess) -> WorkerOutcome:
             name=entry.name,
             records=records,
             page_texts=page_texts,
-            meta=meta,
             concept_records=await build_concept_records(records, entry.name),
             entity_rows=await build_entity_records(records, entry.name),
+            meta=meta,
         )
     except Exception as exc:
         return WorkerOutcome(name=entry.name, error=WorkerIngestError(error_reason(exc)))

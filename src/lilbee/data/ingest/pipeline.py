@@ -37,7 +37,12 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
-from lilbee.data.ingest.extract import ingest_document, ingest_markdown
+from lilbee.data.ingest.extract import (
+    extract_batching,
+    ingest_document,
+    ingest_markdown,
+    warn_if_table_model_ignored,
+)
 from lilbee.data.ingest.offload import (
     embed_inflight_target,
     max_workers,
@@ -51,6 +56,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_reasons,
 )
 from lilbee.data.ingest.title import derive_title
+from lilbee.data.ingest.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,
@@ -1003,8 +1009,7 @@ async def sync(
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor the failed/skipped lists was dropped without
     # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    missing = _reconcile_missing(disk_files, _store.get_sources(), failed, skipped)
-    if missing:
+    if missing := _reconcile_missing(disk_files, _store.get_sources(), failed, skipped):
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "
             "with no failure reported (possible silent drop): %s",
@@ -1297,6 +1302,10 @@ async def ingest_stream(
     deleted in the same transaction as the new write, so the two are atomic per
     file. When *cancel* is set, pending files raise CancelledError before starting.
     """
+    # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
+    # the default WARNING so per-file extraction lines actually surface.
+    configure_trace_from_env()
+    warn_if_table_model_ignored()
     # Throughput is measured in OCR pages, not documents: a document's cost scales
     # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
     # unit of GPU-feeding work for the adaptive controller to hill-climb on.
@@ -1391,17 +1400,20 @@ async def ingest_stream(
     feed = _ResultFeed(_stream_tasks(shards, workers, _make_task))
     collect = _collect_results if quiet else _collect_under_bar
     try:
-        await collect(
-            feed,
-            added,
-            updated,
-            failed,
-            skipped,
-            window=window,
-            on_progress=on_progress,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
+        # extract_batching coalesces extractions into xberg batch calls when the
+        # toggle is on (off by default); the per-file collect contract is unchanged.
+        async with extract_batching():
+            await collect(
+                feed,
+                added,
+                updated,
+                failed,
+                skipped,
+                window=window,
+                on_progress=on_progress,
+                flush_failed=flush_failed,
+                reasons=reasons,
+            )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
         # loop must not outlive the batch it was tuning.

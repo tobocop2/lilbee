@@ -13,7 +13,7 @@ from unittest import mock
 import pytest
 
 from lilbee.data.ingest import pipeline, workers
-from lilbee.data.ingest.types import FileToProcess, SourceMeta
+from lilbee.data.ingest.types import FileToProcess
 from lilbee.data.ingest.workers import (
     BATCH_FILES,
     BatchDispatcher,
@@ -21,6 +21,7 @@ from lilbee.data.ingest.workers import (
     error_reason,
     resolve_process_count,
 )
+from lilbee.data.store import SourceMeta
 from lilbee.runtime.cancellation import TaskCancelledError
 
 
@@ -356,6 +357,9 @@ class TestRunBatch:
         assert outcomes[0].records == [{"chunk": "0.txt"}]
         assert outcomes[0].page_texts == [{"source": "0.txt"}]
         assert outcomes[0].entity_rows == [{"entity": "0.txt"}]
+        # The worker path carries source metadata through to the outcome, so the
+        # multiprocess ingest writes titles the same as the in-process path.
+        assert outcomes[0].meta == SourceMeta(title="0.txt")
 
     def test_one_bad_file_does_not_fail_its_batch_mates(self, monkeypatch):
         self._patch_producers(monkeypatch, failing={"1.txt"})
