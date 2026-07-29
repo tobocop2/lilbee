@@ -187,10 +187,11 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     seen_marker = False
     while start < len(lines):
         stripped = lines[start].lstrip()
-        if stripped.startswith("<!--"):
-            seen_marker = True
-        elif not (seen_marker and not stripped):
+        is_marker = stripped.startswith("<!--")
+        is_gap_between_markers = seen_marker and not stripped
+        if not (is_marker or is_gap_between_markers):
             break
+        seen_marker = seen_marker or is_marker
         start += 1
     if start >= len(lines) or lines[start].strip() != "---":
         return {}

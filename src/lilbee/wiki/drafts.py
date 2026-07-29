@@ -116,8 +116,9 @@ class UnindexedDraftError(DraftAcceptError):
 class BodylessDraftError(DraftAcceptError):
     """Raised when a draft's body would index nothing.
 
-    Covers an empty body and a body that chunks to nothing on its own, such as
-    a lone heading, rule, or image.
+    Covers an empty body and a body carrying no text of its own, such as a bare
+    "#", a horizontal rule, or an image. A heading with words in it indexes
+    normally.
     """
 
 
@@ -456,13 +457,13 @@ def accept_draft(
         store.replace_citations_for_wiki(wiki_source, records)
         reindexed = index_wiki_page(content, wiki_source, store, config, chunks)
         if not reindexed:
-            # Backstop on the store write, not on the draft's content: the
-            # accept-time guard above already refused anything that chunks to
-            # nothing, so no production input reaches here. Its only test mocks
-            # the indexer, which is why that mock is not coverage of a live path.
+            # Backstop on the store write. The accept-time guard already
+            # refused every body that chunks to nothing, so no production input
+            # reaches this branch; its only test mocks the indexer.
             raise UnindexedDraftError(
-                f"draft {slug} published no searchable chunks; the draft is kept "
-                "and the page is written, but the index write did not land"
+                f"draft {slug} published no searchable chunks: the page was "
+                "written but the index write did not land. The draft is kept; "
+                "re-run accept once the index is writable"
             )
         update_wiki_index(config)
         draft.unlink()
@@ -487,7 +488,7 @@ def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str) -> Pa
 
 
 def _refuse_bodyless_draft(content: str, slug: str) -> list[str]:
-    """Refuse a draft whose only content is frontmatter and citations.
+    """Refuse a draft whose body would index nothing.
 
     Checked before the published page is overwritten, and against what the
     indexer actually chunks: a body can be non-empty and still chunk to nothing

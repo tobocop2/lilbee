@@ -645,8 +645,10 @@ class TestAcceptAbortsBeforeConsumingTheDraft:
             accept_draft("brakes", wiki_root, store, cfg)
         assert draft.is_file()
 
-    def test_a_body_that_indexed_no_chunks_keeps_the_draft(self, tmp_path: Path) -> None:
-        """An accepted body always chunks to at least one row, so zero is a failed step."""
+    def test_a_store_write_that_landed_no_rows_keeps_the_draft(self, tmp_path: Path) -> None:
+        """Guards the store write, not the draft's content: the accept-time guard
+        already refused every body that chunks to nothing, so this mocks the
+        indexer rather than exercising a reachable production path."""
         wiki_root = tmp_path / "wiki"
         draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
         _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
