@@ -3829,6 +3829,83 @@ class TestUnsupportedFileInSync:
                 await sync(quiet=True)
 
 
+class TestRemoveDropsFromWikiIndex:
+    """A removed document's skip marker keeps it out of later syncs, so no
+    refresh would ever revisit its entries: removal has to drop them itself."""
+
+    def test_removed_documents_leave_the_index(self, isolated_env, monkeypatch):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core.config import cfg
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub, load_stub_index, save_stub_index
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_entity_min_mentions", 1)
+        (isolated_env / "gone.txt").write_text("content")
+        save_stub_index(
+            {
+                "ford": WikiStub(
+                    slug="ford",
+                    label="Ford",
+                    kind=EntityKind.ENTITY,
+                    type_hint="PERSON",
+                    source_mentions=(("gone.txt", 2),),
+                    chunk_refs=(("gone.txt", 0),),
+                )
+            }
+        )
+        monkeypatch.setattr(
+            "lilbee.app.ingest.get_services",
+            lambda: mock.MagicMock(
+                store=mock.MagicMock(
+                    remove_documents=mock.MagicMock(
+                        return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])
+                    )
+                )
+            ),
+        )
+
+        remove_documents_durably(["gone.txt"])
+
+        assert load_stub_index() == {}
+
+    def test_the_hook_is_skipped_when_the_wiki_is_off(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+        assert called == []
+
+    def test_an_index_failure_does_not_fail_the_removal(self, isolated_env, monkeypatch):
+        """The removal already succeeded; a wiki failure must not surface as one."""
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index",
+            mock.MagicMock(side_effect=RuntimeError("index unwritable")),
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+
+    def test_removing_nothing_touches_no_index(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index([])
+        assert called == []
+
+
 class TestRemoveDocumentsDurably:
     def test_writes_skip_marker_for_kept_file(self, isolated_env, mock_svc):
         """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""

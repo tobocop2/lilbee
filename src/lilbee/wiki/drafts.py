@@ -264,6 +264,15 @@ def _parse_pending_kind(text: str) -> str | None:
     return None
 
 
+def is_pending_marker_file(path: Path) -> bool:
+    """Whether *path* holds a PENDING marker rather than review content."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _parse_pending_kind(text) is not None
+
+
 def _is_marker_line(line: str) -> bool:
     return any(
         pattern.search(line)

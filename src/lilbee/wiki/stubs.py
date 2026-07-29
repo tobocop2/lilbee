@@ -250,6 +250,20 @@ def _recut_refs(stub: WikiStub, cap: int) -> WikiStub:
     )
 
 
+def _usable(stubs: dict[str, WikiStub], config: Config) -> dict[str, WikiStub]:
+    """Drop the entries that cannot back a page.
+
+    One rule for every writer of the index. A stub below the corpus-wide
+    mention floor should never have had a page, and a stub whose refs all
+    belonged to a source that is gone has nothing left to write one from;
+    either would sit in the browse tree offering a page that fails.
+    """
+    threshold = config.wiki_entity_min_mentions
+    return {
+        slug: stub for slug, stub in stubs.items() if stub.mentions >= threshold and stub.chunk_refs
+    }
+
+
 def refresh_stub_index(
     store: Store,
     config: Config | None = None,
@@ -270,13 +284,20 @@ def refresh_stub_index(
         config = cfg
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
+        stored = load_stub_index(config)
+        if sources is not None and not stored and stub_index_path(config).exists():
+            # The file is there but unreadable or from another version, so the
+            # subtract-and-merge below has nothing to build on and would leave
+            # only the changed sources. Rebuild the whole thing instead.
+            log.info("Wiki stub index unusable; rebuilding it in full")
+            sources = None
         if sources is None:
             chunks = _corpus_chunks(store)
             surviving: dict[str, WikiStub] = {}
         else:
             chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
             surviving = {}
-            for slug, stub in load_stub_index(config).items():
+            for slug, stub in stored.items():
                 trimmed = _without_sources(stub, sources)
                 if trimmed is not None:
                     surviving[slug] = trimmed
@@ -297,14 +318,7 @@ def refresh_stub_index(
             existing = surviving.get(found.slug)
             surviving[found.slug] = found if existing is None else _merge(existing, found, cap)
 
-        threshold = config.wiki_entity_min_mentions
-        surviving = {
-            slug: stub
-            for slug, stub in surviving.items()
-            # A stub whose refs all belonged to a re-indexed source has nothing
-            # left to write a page from, so it must not be offered as one.
-            if stub.mentions >= threshold and stub.chunk_refs
-        }
+        surviving = _usable(surviving, config)
         save_stub_index(surviving, config)
     log.info("Wiki stub index: %d entities across the corpus", len(surviving))
     return surviving
@@ -319,7 +333,8 @@ def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
     """
     if (wiki_root / f"{stub.wiki_slug}.md").is_file():
         return True
-    if (wiki_root / WikiSubdir.DRAFTS / f"{stub.slug}.md").is_file():
+    draft = wiki_root / WikiSubdir.DRAFTS / f"{stub.slug}.md"
+    if draft.is_file() and not _is_placeholder(draft):
         return True
     # Prune moved it here when its sources went. Offering it as unwritten would
     # regenerate what prune just retired, on the next sync and every one after.
@@ -341,13 +356,25 @@ def drop_sources_from_index(names: set[str], config: Config | None = None) -> No
         stubs = load_stub_index(config)
         if not stubs:
             return
-        kept: dict[str, WikiStub] = {}
-        for slug, stub in stubs.items():
-            trimmed = _without_sources(stub, names)
-            if trimmed is not None:
-                kept[slug] = trimmed
-        if len(kept) != len(stubs) or any(kept[s] != stubs[s] for s in kept):
+        trimmed = {
+            slug: t
+            for slug, stub in stubs.items()
+            if (t := _without_sources(stub, names)) is not None
+        }
+        kept = _usable(trimmed, config)
+        if kept != stubs:
             save_stub_index(kept, config)
+
+
+def _is_placeholder(draft: Path) -> bool:
+    """Whether a draft is a PENDING marker rather than written content.
+
+    A marker records that generation failed to produce the section, so the
+    subject still has no page and must stay listed as unwritten.
+    """
+    from .drafts import is_pending_marker_file
+
+    return is_pending_marker_file(draft)
 
 
 def ungenerated_stubs(stubs: dict[str, WikiStub], wiki_root: Path) -> list[WikiStub]:

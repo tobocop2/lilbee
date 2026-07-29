@@ -147,6 +147,70 @@ class TestRefresh:
         result = self._run([_entity("ford", [("a.md", 0)])], sources={"a.md"})
         assert sorted(result) == ["ford", "gm"]
 
+    def test_the_incremental_pass_does_not_pre_filter_by_the_threshold(self):
+        """The extractor drops entities under min_mentions from whatever chunks
+        it is given. On an incremental pass that is one document's chunks, so
+        the pass must run with the floor lifted and the merged total judged
+        instead. Asserted on the config the extractor is actually built with."""
+        cfg.wiki_entity_min_mentions = 4
+        save_stub_index({"ford": _stub("ford", ("b.md",), per_source=9)})
+        seen: list[int] = []
+
+        def fake_get_extractor(mode, provider, config):
+            seen.append(config.wiki_entity_min_mentions)
+            extractor = MagicMock()
+            extractor.extract.return_value = [_entity("ford", [("a.md", 0)])]
+            return extractor
+
+        store = MagicMock()
+        store.get_sources.return_value = []
+        store.get_chunks_by_source.return_value = []
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", fake_get_extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            refresh_stub_index(store, cfg, sources={"a.md"})
+        assert seen == [1]
+
+    def test_a_full_pass_keeps_the_configured_threshold(self):
+        cfg.wiki_entity_min_mentions = 4
+        seen: list[int] = []
+
+        def fake_get_extractor(mode, provider, config):
+            seen.append(config.wiki_entity_min_mentions)
+            extractor = MagicMock()
+            extractor.extract.return_value = []
+            return extractor
+
+        store = MagicMock()
+        store.get_sources.return_value = []
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", fake_get_extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            refresh_stub_index(store, cfg)
+        assert seen == [4]
+
+    def test_an_unreadable_index_rebuilds_in_full_rather_than_truncating(self):
+        """An index from another version reads as empty, so subtract-and-merge
+        would have nothing to build on and would leave only the changed
+        sources: the rest of the tree would silently vanish on the next sync."""
+        path = stub_index_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"version": 999, "stubs": []}', encoding="utf-8")
+        store = MagicMock()
+        store.get_sources.return_value = []
+        store.get_chunks_by_source.return_value = []
+        extractor = MagicMock()
+        extractor.extract.return_value = [_entity("ford", [("a.md", 0)])]
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            refresh_stub_index(store, cfg, sources={"a.md"})
+        # Went down the full-corpus path rather than the per-source one.
+        store.get_sources.assert_called()
+
     def test_the_mention_threshold_is_judged_across_the_whole_corpus(self):
         """An entity named twice in the document being re-indexed and often
         elsewhere must not lose that document. Applying the threshold to one
@@ -249,6 +313,10 @@ class TestRefresh:
 class TestDropSourcesFromIndex:
     """Removed documents leave the index, without an extraction pass."""
 
+    @pytest.fixture(autouse=True)
+    def _low_threshold(self):
+        cfg.wiki_entity_min_mentions = 1
+
     def test_a_removed_document_stops_contributing(self):
         save_stub_index({"ford": _stub("ford", ("a.md", "b.md"))})
         drop_sources_from_index({"a.md"})
@@ -266,6 +334,32 @@ class TestDropSourcesFromIndex:
         drop_sources_from_index(set())
         assert list(load_stub_index()) == ["ford"]
 
+    def test_a_subject_left_below_the_floor_is_dropped(self):
+        """The floor is a corpus-wide judgement, so losing a document can put a
+        subject under it just as re-indexing can."""
+        cfg.wiki_entity_min_mentions = 3
+        save_stub_index({"ford": _stub("ford", ("a.md", "b.md"), per_source=2)})
+        drop_sources_from_index({"a.md"})
+        assert load_stub_index() == {}
+
+    def test_a_subject_whose_evidence_all_belonged_to_it_is_dropped(self):
+        """The same rule refresh applies: sources left with no chunk refs
+        cannot back a page, so the entry must not survive."""
+        save_stub_index(
+            {
+                "ford": WikiStub(
+                    slug="ford",
+                    label="ford",
+                    kind=EntityKind.ENTITY,
+                    type_hint="ORG",
+                    source_mentions=(("a.md", 1), ("b.md", 4)),
+                    chunk_refs=(("a.md", 0),),
+                )
+            }
+        )
+        drop_sources_from_index({"a.md"})
+        assert load_stub_index() == {}
+
     def test_an_absent_index_is_not_created(self):
         drop_sources_from_index({"a.md"})
         assert not stub_index_path().exists()
@@ -280,6 +374,17 @@ class TestUngeneratedStubs:
         archived.parent.mkdir(parents=True, exist_ok=True)
         archived.write_text("# Ford\n", encoding="utf-8")
         assert ungenerated_stubs({"ford": _stub("ford")}, wiki_root) == []
+
+    def test_a_pending_marker_still_reads_as_unwritten(self, isolated_env: Path):
+        """A marker records that generation failed to produce the section, so
+        the subject has no page yet and must stay offered."""
+        from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
+
+        wiki_root = isolated_env / cfg.wiki_dir
+        draft = wiki_root / WikiSubdir.DRAFTS / "ford.md"
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text(f"<!-- {PENDING_MARKER_KEYWORD_PARSE} -->\n", encoding="utf-8")
+        assert [s.slug for s in ungenerated_stubs({"ford": _stub("ford")}, wiki_root)] == ["ford"]
 
     def test_a_drafted_page_does_not_read_as_unwritten(self, isolated_env: Path):
         """The faithfulness gate routed it to drafts and it is awaiting review.

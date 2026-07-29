@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -2017,6 +2018,32 @@ class TestBuildCancellation:
             build_wiki([], MagicMock(), store, cfg, cancel=cancel)
 
         assert batch.called is not cancelled
+
+
+class TestSupersedesSources:
+    """wiki_prune_raw deletes the documents a page replaces. A page written from
+    documents that merely mention its subject replaces none of them."""
+
+    @pytest.mark.parametrize("supersedes", [True, False], ids=["build", "subject-page"])
+    def test_only_a_superseding_page_prunes_its_sources(self, tmp_path: Path, supersedes: bool):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        cfg.wiki_prune_raw = True
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target(subdir=WikiSubdir.CONCEPTS)
+        target = replace(target, supersedes_sources=supersedes)
+
+        with patch("lilbee.wiki.page.index_wiki_page", return_value=1):
+            persist_and_finalize(
+                "# Brakes\n\nBody.\n",
+                target,
+                [make_citation()],
+                ["a.md", "b.md"],
+                store,
+                cfg,
+            )
+
+        assert store.delete_by_source.called is supersedes
 
 
 class TestUnwrapArchivedLinks:

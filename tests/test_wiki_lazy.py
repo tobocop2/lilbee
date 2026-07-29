@@ -172,19 +172,21 @@ class TestGenerateStubPage:
             label="Ford",
             kind=EntityKind.ENTITY,
             type_hint="PERSON",
-            source_mentions=(("thin.md", 1), ("thick.md", 9)),
-            chunk_refs=(("thin.md", 0), ("thick.md", 0)),
+            # "a" sorts before "z", so the loud source must be the LATER name
+            # for this to distinguish mention ordering from alphabetical.
+            source_mentions=(("a-quiet.md", 1), ("z-loud.md", 9)),
+            chunk_refs=(("a-quiet.md", 0), ("z-loud.md", 0)),
         )
         save_stub_index({"ford": stub})
         store = _store_with(
             {
-                "thin.md": [make_search_chunk("thin.md", 0)],
-                "thick.md": [make_search_chunk("thick.md", 0)],
+                "a-quiet.md": [make_search_chunk("a-quiet.md", 0)],
+                "z-loud.md": [make_search_chunk("z-loud.md", 0)],
             }
         )
         with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
             generate_stub_page("ford", store, cfg)
-        assert gen.call_args.kwargs["chunks"][0].source == "thick.md"
+        assert gen.call_args.kwargs["chunks"][0].source == "z-loud.md"
 
     def test_defaults_to_the_global_config(self):
         save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
