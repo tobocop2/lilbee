@@ -171,11 +171,17 @@ async def test_on_key_non_digit_is_passthrough() -> None:
 
 async def test_on_key_out_of_range_digit_is_passthrough() -> None:
     """A digit past the tab count is ignored, not clamped, and does not switch tabs."""
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
-        screen._activation_settled = True
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        # Wait for the deferred initial activation to reach Chat before probing.
+        # On Windows it can otherwise land during the post-keypress pause and be
+        # misread as the digit switching tabs.
+        await wait_until(pilot, lambda: tabs.active == "chat")
+        screen._activation_settled = True
         before = tabs.active
         event = Key(key="9", character="9")
         screen.on_key(event)

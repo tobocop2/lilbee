@@ -55,6 +55,10 @@ class TestFromEnvDefaults:
             assert c.top_k == 12
             assert c.max_distance == 0.75
             assert c.json_mode is False
+            # Multiprocess ingest is opt-in: 1 = single-process. It only helps a
+            # small/fast embedder that one process cannot use to saturate a multi-GPU
+            # fleet; 0 auto-sizes, N is explicit.
+            assert c.ingest_processes == 1
             # Memory-budget defaults: q8_0 KV halves per-token cost vs f16,
             # 8K target keeps the working window inside chat-with-RAG needs,
             # and ``None`` num_ctx_max lets the model's training_ctx be the
@@ -103,6 +107,86 @@ class TestEnvVarOverrides:
             assert c.documents_dir == tmp_path / "documents"
             assert c.data_dir == tmp_path / "data"
             assert c.lancedb_dir == tmp_path / "data" / "lancedb"
+
+    def test_data_root_expands_user_home(self):
+        """A ~ in LILBEE_DATA_ROOT expands: systemd/.env deliver a literal '~'
+        that would otherwise create a './~' tree and split a path-keyed lock."""
+        env = _clean_env()
+        env.pop("LILBEE_DATA", None)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        env["LILBEE_DATA_ROOT"] = "~/lilbee_expanduser_probe"
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root == Path.home() / "lilbee_expanduser_probe"
+            assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
+
+    def test_symlinked_data_root_keys_the_same_paths_as_its_target(self, tmp_path):
+        """Two spellings of one directory derive one set of lock paths."""
+        real = tmp_path / "real_root"
+        real.mkdir()
+        link = tmp_path / "link_root"
+        link.symlink_to(real)
+
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(real)}):
+            direct = Config()
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(link)}):
+            through_link = Config()
+
+        assert through_link.data_root == direct.data_root
+        assert through_link.data_dir == direct.data_dir
+        assert through_link.lancedb_dir == direct.lancedb_dir
+
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
+        (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
+            c = Config()
+        assert c.data_root == tmp_path
+        assert c.top_k == 7
+
+    def test_relative_data_root_resolves_absolute(self, tmp_path, monkeypatch):
+        """A relative root must not re-key on the process working directory."""
+        (tmp_path / "kb").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": "kb"}):
+            c = Config()
+        assert c.data_root.is_absolute()
+        assert c.data_root == (tmp_path / "kb").resolve()
+
+    def test_empty_data_root_falls_back_to_default_not_cwd(self):
+        """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
+        the process cwd (which would make the data dir move with the launcher)."""
+        env = _clean_env()
+        env.pop("LILBEE_DATA", None)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        env["LILBEE_DATA_ROOT"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root != Path()
+            assert c.data_root != Path.cwd()
+            assert str(c.data_root).endswith("lilbee")
+            # A raw blank string (direct construction / a string env source) hits
+            # the same fall-through instead of resolving to Path(".") = cwd.
+            c2 = Config(data_root="   ")
+            assert c2.data_root != Path()
+            assert c2.data_root != Path.cwd()
+            assert str(c2.data_root).endswith("lilbee")
+
+    def test_unresolvable_home_still_loads_config(self):
+        """An unresolvable ~ still yields a usable root instead of raising.
+
+        os.path.expanduser returns an unknown ~user unchanged; Path.expanduser
+        raises.
+        """
+        from lilbee.core.system import canonical_data_root
+
+        root = canonical_data_root("~nosuchuser_lilbee_probe/lilbee")
+        assert root.is_absolute()
+        assert str(root).endswith("lilbee")
+        # The normal case still expands to the real home.
+        assert canonical_data_root("~/lilbee") == Path.home() / "lilbee"
 
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
@@ -184,6 +268,24 @@ class TestEnvVarOverrides:
             cfg.chat_model = "   "
         with pytest.raises(ValidationError, match="embedding_model must not be blank"):
             cfg.embedding_model = "\t"
+
+    def test_fusion_config_fields_enforce_their_bounds(self):
+        """The new fusion/expansion knobs reject out-of-range values, so a bad
+        config surfaces at assignment instead of silently mis-weighting fusion."""
+        from pydantic import ValidationError
+
+        for field, bad in [
+            ("lexical_fusion_weight", 1.5),
+            ("lexical_fusion_weight", -0.1),
+            ("adaptive_fusion_margin", 2.5),
+            ("adaptive_fusion_margin", -0.1),
+            ("title_search_weight", 1.5),
+            ("title_search_weight", -0.1),
+            ("neighbor_expansion", -1),
+            ("neighbor_expansion", 101),  # upper bound guards against a token-count misread
+        ]:
+            with pytest.raises(ValidationError):
+                setattr(cfg, field, bad)
 
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
@@ -497,11 +599,16 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True
 
-    def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
+    def test_garbage_value_falls_back_to_auto(self) -> None:
+        """An unparseable value must not turn OCR on.
+
+        This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
+        so a typo silently enabled an expensive pass. The sibling bool
+        validators warn and take their default; this one now does too.
+        """
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
-            assert c.enable_ocr is True  # bool("maybe") is True
+            assert c.enable_ocr is None
 
     def test_whitespace_only_means_auto(self) -> None:
         """Whitespace-only strings hit the auto/none branch and return None."""
@@ -746,6 +853,17 @@ class TestResolveDefaultsValidator:
         env["LILBEE_SEMANTIC_CHUNKING"] = "true"
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().semantic_chunking is True
+
+    def test_data_root_env_var_is_coerced_to_path(self, tmp_path) -> None:
+        """LILBEE_DATA_ROOT sets the data_root field directly as a string;
+        deriving the child paths from it must not raise on str / str."""
+        env = _clean_env()
+        env["LILBEE_DATA_ROOT"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root == tmp_path
+            assert c.documents_dir == tmp_path / "documents"
+            assert c.data_dir == tmp_path / "data"
 
 
 class TestTopicThresholdConfig:
@@ -1768,3 +1886,120 @@ class TestActiveConfigScope:
         with config_scope(scoped):
             assert active_config() is scoped
         assert active_config() is cfg
+
+
+class TestBoolVocabularyMatchesPydantic:
+    """parse_bool must accept what pydantic accepts for the same settings object.
+
+    Every other bool field on Config is coerced by pydantic, which takes
+    on/off/y/n/t/f as well. The narrower hand-rolled vocabulary made the same
+    env spelling mean different things on different fields, and on enable_ocr
+    it inverted: the ValueError fell through to bool("off"), which is True.
+    """
+
+    @pytest.mark.parametrize("raw", ["on", "y", "t", "true", "1", "yes", "ON", " on "])
+    def test_truthy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is True
+
+    @pytest.mark.parametrize("raw", ["off", "n", "f", "false", "0", "no", "OFF", " off "])
+    def test_falsy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is False
+
+    def test_unknown_spelling_still_raises(self):
+        from lilbee.core.config.parsing import parse_bool
+
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            parse_bool("maybe")
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [("off", False), ("on", True), ("n", False), ("y", True)]
+    )
+    def test_enable_ocr_agrees_with_pydantic(self, raw, expected):
+        """enable_ocr routed through parse_bool; 'off' used to come back True."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr=raw).enable_ocr is expected
+
+    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
+        """An unparseable value must not silently become True via bool()."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr="maybe").enable_ocr is None
+
+
+class TestCrawlExclusionsMatchWholeSegments:
+    """The exclusion patterns are regexes against the whole URL, not globs.
+
+    Bare path prefixes therefore matched longer words and silently dropped
+    legitimate content pages from a crawl.
+    """
+
+    @staticmethod
+    def _excluded(url: str) -> bool:
+        import re
+
+        from lilbee.core.config.defaults import _AUTH_EXCLUDE, _ECOMMERCE_EXCLUDE
+
+        return any(re.search(p, url) for p in _AUTH_EXCLUDE + _ECOMMERCE_EXCLUDE)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cartography/maps",
+            "https://example.com/accounting/gaap",
+            "https://example.com/professional-services",
+            "https://example.com/registers-of-companies",
+        ],
+    )
+    def test_content_pages_are_not_excluded(self, url):
+        assert not self._excluded(url)
+
+    @pytest.mark.parametrize(
+        ("url", "excluded"),
+        [
+            ("https://x.dev/docs?ref=sidebar", False),
+            ("https://x.dev/p?share=twitter", False),
+            ("https://x.dev/p?utm_source=newsletter", True),
+            ("https://x.dev/p?fbclid=abc", True),
+            ("https://x.dev/p?replytocom=5", True),
+        ],
+    )
+    def test_only_campaign_tokens_are_treated_as_tracking(self, url, excluded):
+        """?ref= and ?share= are ordinary content links on docs and forum
+        platforms; dropping one can drop the only URL that reaches a page."""
+        import re
+
+        from lilbee.core.config.defaults import _TRACKING_EXCLUDE
+
+        assert any(re.search(p, url) for p in _TRACKING_EXCLUDE) is excluded
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cart",
+            "https://example.com/cart/",
+            "https://example.com/cart?step=1",
+            "https://example.com/checkout/step1",
+            "https://example.com/login",
+            "https://example.com/my-account/orders",
+        ],
+    )
+    def test_transactional_and_auth_urls_are_still_excluded(self, url):
+        assert self._excluded(url)
+
+
+class TestFtsLanguage:
+    def test_normalizes_case(self):
+        assert Config(fts_language="german").fts_language == "German"
+
+    def test_rejects_unsupported_language(self):
+        # A bad name would otherwise fail FTS index creation quietly and
+        # hybrid search would silently degrade to vector-only.
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="fts_language must be one of"):
+            Config(fts_language="Klingon")

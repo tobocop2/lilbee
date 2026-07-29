@@ -1,8 +1,8 @@
 """Two-phase typed entity extraction.
 
 Phase 1 (cheap): an LLM reads a stratified sample of chunks and proposes the
-corpus-specific type schema, persisted as an editable artifact before any
-expensive pass runs.
+corpus-specific type schema, persisted as machine state inside the index
+before any expensive pass runs (see :mod:`schema`; nothing to review or edit).
 
 Phase 2 (scales with corpus): each type is found by the cheapest extractor
 that can serve it: compiled regex for identifier-shaped types, spaCy labels
@@ -12,12 +12,15 @@ therefore dominated by how many LLM-kind types the schema keeps.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import regex
+
+from lilbee.core.llm_json import first_json_object, json_reply_format
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     EntityType,
@@ -42,6 +45,23 @@ LLM_EXTRACTION_BATCH = 8
 LLM_EXTRACTION_MAX_TOKENS = 800
 
 _CONFIDENCE = {ExtractorKind.REGEX: 1.0, ExtractorKind.SPACY: 0.8, ExtractorKind.LLM: 0.6}
+
+
+@dataclass
+class ExtractionStats:
+    """Mutable state :func:`extract_entities` carries across its calls.
+
+    Lets the full pass tell a clean zero-entity result from batches the
+    provider failed outright -- the latter must not count as a completed
+    pass, or the schema gets marked applied with rows silently missing.
+    ``timed_out_types`` carries a runaway pattern's name across batches so
+    it is abandoned once per pass instead of per chunk.
+    """
+
+    llm_batches: int = 0
+    llm_batches_failed: int = 0
+    timed_out_types: set[str] = field(default_factory=set)
+
 
 INDUCTION_PROMPT = (
     "You are designing an entity-extraction schema for a document collection. "
@@ -68,26 +88,6 @@ LLM_EXTRACTION_PROMPT = (
 )
 
 
-def _first_json_object(text: str) -> dict | None:
-    """The first balanced JSON object in *text*, or None."""
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i, ch in enumerate(text[start:], start):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    parsed = json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    return None
-                return parsed if isinstance(parsed, dict) else None
-    return None
-
-
 def normalize_value(text: str) -> str:
     """Canonical form for grouping: casefold, collapse spaces, and strip
     leading zeros from purely numeric values so 00482 and 482 group together."""
@@ -95,6 +95,28 @@ def normalize_value(text: str) -> str:
     if value.isdigit():
         value = value.lstrip("0") or "0"
     return value
+
+
+def _pattern_is_usable(entity_type: EntityType) -> bool:
+    """Whether an induced type's pattern can actually drive its extractor.
+
+    Only llm kinds legitimately leave the pattern blank (they carry a
+    description instead). An empty regex compiles but then matches at every
+    position of every chunk in the corpus, and an empty spaCy label names
+    nothing.
+    """
+    if entity_type.kind is ExtractorKind.LLM:
+        return True
+    if not entity_type.pattern:
+        log.warning("Dropping induced type %s: empty pattern", entity_type.name)
+        return False
+    if entity_type.kind is ExtractorKind.REGEX:
+        try:
+            _compile_pattern(entity_type.pattern)
+        except regex.error:
+            log.warning("Dropping induced type %s: bad regex", entity_type.name)
+            return False
+    return True
 
 
 def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchema | None:
@@ -111,12 +133,17 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
             # until the budget is gone and emit no JSON at all. temperature 0:
             # induction wants one deterministic, well-formed schema, not a
             # creative sample that parses only some of the time.
-            options={"num_predict": INDUCTION_MAX_TOKENS, "think": False, "temperature": 0},
+            options={
+                "num_predict": INDUCTION_MAX_TOKENS,
+                "think": False,
+                "temperature": 0,
+                "response_format": json_reply_format(),
+            },
         )
     except Exception:
         log.warning("Entity schema induction failed at the provider", exc_info=True)
         return None
-    payload = _first_json_object(strip_reasoning(response.text))
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         log.warning("Entity schema induction returned no parseable JSON")
         return None
@@ -128,12 +155,8 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
         except Exception:
             log.warning("Dropping invalid induced type: %r", raw)
             continue
-        if entity_type.kind is ExtractorKind.REGEX:
-            try:
-                re.compile(entity_type.pattern)
-            except re.error:
-                log.warning("Dropping induced type %s: bad regex", entity_type.name)
-                continue
+        if not _pattern_is_usable(entity_type):
+            continue
         # Small models sometimes propose several names for one extractor
         # (three types sharing a regex triple the table with identical rows);
         # the first name wins.
@@ -151,9 +174,25 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
 # never defeats the match.
 _IDENTIFIER_TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]*")
 
+# Wall-clock budget for one pattern against one chunk. Schema patterns are
+# authored by a small local model, so a pathological one (nested quantifiers)
+# is a realistic input; without a bound it backtracks until sync gives up.
+# A second is orders of magnitude above what a sane identifier pattern costs.
+_PATTERN_MATCH_TIMEOUT_SECONDS = 1.0
 
-def _extract_regex(entity_type: EntityType, text: str) -> list[str]:
-    """Regex mentions, treating anchored patterns as per-token full matches.
+
+def _compile_pattern(pattern: str) -> regex.Pattern[str]:
+    """Compile a schema pattern on the timeout-capable engine.
+
+    ``regex`` accepts everything ``re`` does and, unlike the stdlib module,
+    takes a per-match ``timeout``, which is the only way to bound an
+    LLM-authored pattern running over the whole corpus.
+    """
+    return regex.compile(pattern)
+
+
+def _extract_regex(entity_type: EntityType, text: str) -> list[str] | None:
+    """Regex mentions, or ``None`` when the match blew its time budget.
 
     Schema authors (and the induction model) tend to write ^...$ patterns
     that describe an identifier's whole shape. Applied to running text those
@@ -166,19 +205,24 @@ def _extract_regex(entity_type: EntityType, text: str) -> list[str]:
     # Only a single fully-anchored pattern converts; an alternation of
     # anchored branches (^A$|^B$) would be mangled by stripping the outer
     # pair, so it falls through to finditer unchanged.
-    if (
+    anchored = (
         pattern.startswith("^")
         and pattern.endswith("$")
         and "^" not in inner_text
         and "$" not in inner_text
-    ):
-        inner = re.compile(inner_text)
-        return [
-            token.group(0)
-            for token in _IDENTIFIER_TOKEN_RE.finditer(text)
-            if inner.fullmatch(token.group(0))
-        ]
-    return [m.group(0) for m in re.finditer(pattern, text)]
+    )
+    try:
+        if anchored:
+            inner = _compile_pattern(inner_text)
+            return [
+                token.group(0)
+                for token in _IDENTIFIER_TOKEN_RE.finditer(text)
+                if inner.fullmatch(token.group(0), timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)
+            ]
+        compiled = _compile_pattern(pattern)
+        return [m.group(0) for m in compiled.finditer(text, timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)]
+    except TimeoutError:
+        return None
 
 
 def _extract_spacy(types: list[EntityType], text: str, nlp: Any) -> list[tuple[EntityType, str]]:
@@ -196,7 +240,14 @@ def _extract_llm_batch(
     types: list[EntityType],
     texts: list[str],
     provider: LLMProvider,
-) -> list[list[tuple[EntityType, str]]]:
+) -> list[list[tuple[EntityType, str]]] | None:
+    """One LLM extraction call over a batch of texts.
+
+    Returns ``None`` when the provider call itself fails (model down or
+    unloaded), so the caller can tell a failed batch from a batch with no
+    entities. A response that parses to nothing usable is an empty result,
+    not a failure.
+    """
     by_name = {t.name: t for t in types}
     type_lines = "\n".join(f"- {t.name}: {t.description or t.name}" for t in types)
     passages = "\n".join(f"[{i}] {t[:800]}" for i, t in enumerate(texts))
@@ -210,8 +261,8 @@ def _extract_llm_batch(
         )
     except Exception:
         log.warning("LLM entity extraction failed for a batch", exc_info=True)
-        return empty
-    payload = _first_json_object(strip_reasoning(response.text))
+        return None
+    payload = first_json_object(strip_reasoning(response.text))
     if payload is None:
         return empty
     results = empty
@@ -232,12 +283,75 @@ def _extract_llm_batch(
     return results
 
 
+def _regex_findings(
+    regex_types: list[EntityType], text: str, timed_out: set[str]
+) -> list[tuple[EntityType, str]]:
+    """Regex-kind findings for one chunk, skipping types that blew their budget.
+
+    A type whose pattern times out is added to *timed_out* so the caller
+    stops attempting it; the ban lasts as long as that set does.
+    """
+    found: list[tuple[EntityType, str]] = []
+    for entity_type in regex_types:
+        if entity_type.name in timed_out:
+            continue
+        matches = _extract_regex(entity_type, text)
+        if matches is None:
+            timed_out.add(entity_type.name)
+            log.warning(
+                "Entity type %s: its pattern exceeded the %.0fs match budget; "
+                "skipping that type. Its regex is likely pathological.",
+                entity_type.name,
+                _PATTERN_MATCH_TIMEOUT_SECONDS,
+            )
+            continue
+        found.extend((entity_type, m) for m in matches)
+    return found
+
+
+# Singles failing in a row before a batch retry concludes the provider is down.
+_SINGLE_RETRY_ABORT = 3
+
+
+def _retry_batch_singly(
+    types: list[EntityType],
+    batch: list[Mapping[str, Any]],
+    provider: LLMProvider,
+) -> tuple[list[list[tuple[EntityType, str]]], bool]:
+    """Per-chunk retry of a failed batch: (per-chunk findings, batch failed).
+
+    A chunk whose single call still fails loses its entities (logged); the
+    batch only counts as failed when nothing succeeds, i.e. the provider
+    itself is down, so the pass retries next sync.
+    """
+    found_all: list[list[tuple[EntityType, str]]] = [[] for _ in batch]
+    any_ok = False
+    consecutive = 0
+    for offset, record in enumerate(batch):
+        single = _extract_llm_batch(types, [record["chunk"]], provider)
+        if single is None:
+            consecutive += 1
+            log.warning(
+                "LLM entity extraction failed for %s#%s; its entities are skipped",
+                record["source"],
+                record["chunk_index"],
+            )
+            if not any_ok and consecutive >= _SINGLE_RETRY_ABORT:
+                break
+            continue
+        consecutive = 0
+        any_ok = True
+        found_all[offset] = single[0]
+    return found_all, not any_ok
+
+
 def extract_entities(
     chunks: list[Mapping[str, Any]],
     schema: EntitySchema,
     *,
     provider: LLMProvider | None = None,
     nlp: Any = None,
+    stats: ExtractionStats | None = None,
 ) -> list[dict]:
     """Phase 2 over ingest-shaped chunk records; returns entities-table rows.
 
@@ -245,17 +359,21 @@ def extract_entities(
     ``page_start``. Extractor kinds degrade independently: regex always runs,
     spaCy kinds are skipped without a loaded model, LLM kinds without a
     provider, so a partial toolchain yields partial extraction, never failure.
+    Pass ``stats`` to observe how many LLM batches ran and how many the
+    provider failed; a failed batch contributes no rows either way.
     """
     regex_types = [t for t in schema.types if t.kind is ExtractorKind.REGEX]
     spacy_types = [t for t in schema.types if t.kind is ExtractorKind.SPACY]
     llm_types = [t for t in schema.types if t.kind is ExtractorKind.LLM]
 
+    # A pattern that blows its budget is abandoned rather than retried on
+    # every remaining chunk; with stats the ban holds for the whole pass.
+    timed_out = stats.timed_out_types if stats is not None else set()
+
     per_chunk: list[list[tuple[EntityType, str]]] = []
     for record in chunks:
         text = record["chunk"]
-        found: list[tuple[EntityType, str]] = []
-        for entity_type in regex_types:
-            found.extend((entity_type, m) for m in _extract_regex(entity_type, text))
+        found = _regex_findings(regex_types, text, timed_out)
         if spacy_types and nlp is not None:
             found.extend(_extract_spacy(spacy_types, text, nlp))
         per_chunk.append(found)
@@ -264,6 +382,15 @@ def extract_entities(
         for start in range(0, len(chunks), LLM_EXTRACTION_BATCH):
             batch = chunks[start : start + LLM_EXTRACTION_BATCH]
             batch_found = _extract_llm_batch(llm_types, [r["chunk"] for r in batch], provider)
+            failed = False
+            if batch_found is None:
+                # Retry chunk-by-chunk: one poisoned chunk must not fail the
+                # batch (and with it the whole pass) on every sync.
+                batch_found, failed = _retry_batch_singly(llm_types, batch, provider)
+            if stats is not None:
+                stats.llm_batches += 1
+                if failed:
+                    stats.llm_batches_failed += 1
             for offset, found in enumerate(batch_found):
                 per_chunk[start + offset].extend(found)
 

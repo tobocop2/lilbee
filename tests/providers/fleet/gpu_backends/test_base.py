@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from lilbee.providers.fleet.gpu_backends import base as base_mod
@@ -83,28 +81,28 @@ def test_parse_device_index_no_digit_returns_none() -> None:
 
 
 def test_run_smi_returns_stdout_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="output\n", stderr="")
+    def _fake_run(*_a: object, **_k: object) -> tuple[str, int]:
+        return "output\n", 0
 
-    monkeypatch.setattr(base_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(base_mod, "run_bounded", _fake_run)
     monkeypatch.setattr(base_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     assert run_smi("nvidia-smi", ["--version"]) == "output\n"
 
 
 def test_run_smi_returns_empty_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=1, stdout="output\n", stderr="")
+    def _fake_run(*_a: object, **_k: object) -> tuple[str, int]:
+        return "output\n", 1
 
-    monkeypatch.setattr(base_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(base_mod, "run_bounded", _fake_run)
     monkeypatch.setattr(base_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     assert run_smi("nvidia-smi", []) == ""
 
 
 def test_run_smi_returns_empty_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+    def _boom(*_a: object, **_k: object) -> tuple[str, int]:
         raise OSError("no such file")
 
-    monkeypatch.setattr(base_mod.subprocess, "run", _boom)
+    monkeypatch.setattr(base_mod, "run_bounded", _boom)
     monkeypatch.setattr(base_mod.shutil, "which", lambda _: None)
     assert run_smi("missing-tool", []) == ""
 
@@ -117,11 +115,7 @@ def test_run_smi_resolves_which_at_call_time(monkeypatch: pytest.MonkeyPatch) ->
         return f"/custom/{name}"
 
     monkeypatch.setattr(base_mod.shutil, "which", _fake_which)
-    monkeypatch.setattr(
-        base_mod.subprocess,
-        "run",
-        lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-    )
+    monkeypatch.setattr(base_mod, "run_bounded", lambda *_a, **_k: ("", 0))
     run_smi("my-tool", [])
     assert "my-tool" in resolved
 
@@ -130,12 +124,12 @@ def test_run_smi_falls_back_to_tool_name_when_which_fails(monkeypatch: pytest.Mo
     """When shutil.which returns None the tool name itself is used as binary."""
     called_with: list[list[str]] = []
 
-    def _fake_run(*args: object, **_k: object) -> subprocess.CompletedProcess:
+    def _fake_run(*args: object, **_k: object) -> tuple[str, int]:
         called_with.append(list(args[0]))  # type: ignore[arg-type]
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        return "", 0
 
     monkeypatch.setattr(base_mod.shutil, "which", lambda _: None)
-    monkeypatch.setattr(base_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(base_mod, "run_bounded", _fake_run)
     run_smi("my-tool", ["--flag"])
     assert called_with[0][0] == "my-tool"
 

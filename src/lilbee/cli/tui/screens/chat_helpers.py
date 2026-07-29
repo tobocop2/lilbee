@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import shutil
 import subprocess
 import sys
 import time
@@ -17,7 +16,6 @@ from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -134,23 +132,33 @@ def remember_from_input(raw: str) -> RememberOutcome:
     return RememberOutcome(msg.CMD_REMEMBER_SUCCESS.format(kind=kind.value))
 
 
-def remove_copied_files(names: list[str]) -> None:
-    """Delete files previously copied into documents/ by a /add invocation.
+def unregister_added_roots(labels: list[str]) -> None:
+    """Un-register roots a /add invocation created, for cancel/failure cleanup.
 
-    Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync. Silently tolerates missing entries;
-    the user may have removed them concurrently, and the goal is just to
-    prevent accidental indexing.
+    Called on cancel or failure of the add task so a cancelled source is not
+    re-found on the next sync. Only the registry entries this invocation added are
+    dropped; the source bytes on disk and files the user owns are never touched.
     """
-    for name in names:
-        target = cfg.documents_dir / name
-        try:
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            log.debug("Could not remove copied file %s", target, exc_info=True)
+    from lilbee.app.ingest import unregister_roots
+
+    if labels:
+        unregister_roots(labels)
+
+
+def _throttled_embed_tick(reporter: ProgressReporter) -> Callable[[EmbedEvent], None]:
+    """Return the throttled EMBED tick shared by the add/sync/import callbacks."""
+    last_update = 0.0
+
+    def _tick(data: EmbedEvent) -> None:
+        nonlocal last_update
+        now = time.monotonic()
+        if now - last_update < _ADD_EMBED_THROTTLE_SECONDS:
+            return
+        last_update = now
+        pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+        reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+
+    return _tick
 
 
 def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
@@ -163,10 +171,9 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
     as a hang; EMBED ticks per chunk, throttled to a steady cadence.
     """
     in_flight: list[str] = []
-    last_embed_update = 0.0
+    embed_tick = _throttled_embed_tick(reporter)
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        nonlocal last_embed_update
         reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             in_flight.append(data.file)
@@ -186,12 +193,7 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
                 indeterminate=True,
             )
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            embed_tick(data)
 
     return on_progress
 
@@ -204,15 +206,14 @@ def build_sync_progress_callback(
     EXTRACT mirrors the /add path: a 44MB scanned PDF needs a per-page
     tick or the row reads as frozen.
     """
-    last_embed_update = 0.0
+    embed_tick = _throttled_embed_tick(reporter)
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        nonlocal last_embed_update
         # Mirror /add: explicit cancel check on every event so a SYNC task
         # cancelled mid-batch stops at the next progress tick instead of
         # finishing the current file. update() also checks, but events
         # without a reporter.update call (e.g. BATCH_PROGRESS in the
-        # ingest_batch path) would otherwise miss the cooperative checkpoint.
+        # ingest_stream path) would otherwise miss the cooperative checkpoint.
         reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             pct = int((data.current_file - 1) * 100 / data.total_files)
@@ -231,14 +232,21 @@ def build_sync_progress_callback(
                 indeterminate=True,
             )
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            embed_tick(data)
         elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
             total = data.added + data.updated + data.removed
             reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
+
+    return on_progress
+
+
+def build_import_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+    """Build the on_progress callback used by /import (EMBED events only)."""
+    embed_tick = _throttled_embed_tick(reporter)
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        reporter.check_cancelled()
+        if event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            embed_tick(data)
 
     return on_progress

@@ -4,6 +4,8 @@ from unittest import mock
 
 import pytest
 
+from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 
 
@@ -115,6 +117,40 @@ class TestSetValue:
         assert settings.get(tmp_path, "chat_model") == "mistral"
 
 
+class TestMutateValue:
+    def test_reads_persisted_value_inside_the_lock(self, tmp_path):
+        settings.set_value(tmp_path, "linked_roots", {"a": "/x"})
+
+        seen = {}
+
+        def _fn(current):
+            seen["current"] = current
+            return {**(current or {}), "b": "/y"}, "done"
+
+        result = settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert seen["current"] == {"a": "/x"}  # the persisted value, not None
+        assert result == "done"
+        assert settings.load(tmp_path)["linked_roots"] == {"a": "/x", "b": "/y"}
+
+    def test_passes_none_when_key_absent(self, tmp_path):
+        captured = {}
+
+        def _fn(current):
+            captured["current"] = current
+            return {"only": "/z"}, None
+
+        settings.mutate_value(tmp_path, "linked_roots", _fn)
+        assert captured["current"] is None
+        assert settings.load(tmp_path)["linked_roots"] == {"only": "/z"}
+
+    def test_preserves_sibling_keys(self, tmp_path):
+        settings.set_value(tmp_path, "chat_model", "keep-me")
+        settings.mutate_value(tmp_path, "linked_roots", lambda cur: ({"a": "/x"}, None))
+        loaded = settings.load(tmp_path)
+        assert loaded["chat_model"] == "keep-me"
+        assert loaded["linked_roots"] == {"a": "/x"}
+
+
 class TestDeleteValue:
     def test_delete_existing_key(self, tmp_path):
         settings.set_value(tmp_path, "temperature", "0.5")
@@ -167,15 +203,49 @@ class TestTomlEscaping:
         settings.set_value(tmp_path, "key", "")
         assert settings.get(tmp_path, "key") == ""
 
-    def test_escape_toml_string_function(self):
-        from lilbee.core.settings import _escape_toml_string
+    @pytest.mark.parametrize(
+        ("label", "value"),
+        [
+            ("escape", "before\x1bafter"),
+            ("nul", "before\x00after"),
+            ("vertical_tab", "before\x0bafter"),
+            ("bell", "before\x07after"),
+            ("delete", "before\x7fafter"),
+            ("every_c0", "".join(chr(c) for c in range(0x20))),
+        ],
+    )
+    def test_control_characters_round_trip(self, tmp_path, label, value):
+        """TOML forbids raw control characters; writing one used to break the whole file."""
+        settings.set_value(tmp_path, label, value)
+        assert settings.get(tmp_path, label) == value
 
-        assert _escape_toml_string('say "hi"') == r"say \"hi\""
-        assert _escape_toml_string(r"C:\path") == r"C:\\path"
-        assert _escape_toml_string("a\nb") == r"a\nb"
-        assert _escape_toml_string("a\tb") == r"a\tb"
-        assert _escape_toml_string("normal") == "normal"
-        assert _escape_toml_string("") == ""
+    def test_one_control_character_does_not_discard_the_rest_of_the_config(self, tmp_path):
+        """A parse failure makes the reader drop every setting, not just the bad key."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", "rank\x1bthese")
+        assert settings.load(tmp_path) == {"model": "qwen3:8b", "reranker_prompt": "rank\x1bthese"}
+
+    @pytest.mark.parametrize(
+        "value",
+        ['say "hi"', r"C:\path", "a\nb", "a\tb", "normal", "", "a\x1bb", "a\x00b", "a\x7fb"],
+    )
+    def test_a_value_survives_the_round_trip_verbatim(self, tmp_path, value):
+        """Escaping is only correct if the reader gives the string back unchanged."""
+        settings.set_value(tmp_path, "reranker_prompt", value)
+        assert settings.load(tmp_path)["reranker_prompt"] == value
+
+    def test_a_list_value_round_trips_as_a_list(self, tmp_path):
+        """The hand-rolled emitter stringified anything non-scalar, so a list
+        was persisted as the quoted repr "['a', 'b']" and read back as text."""
+        settings.set_value(tmp_path, "exclude", ["a", "b"])
+        assert settings.load(tmp_path)["exclude"] == ["a", "b"]
+
+    def test_a_none_value_is_dropped_rather_than_written_as_text(self, tmp_path):
+        """It used to land as the string "None", which then read back as a
+        truthy setting rather than an absent one."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", None)
+        assert settings.load(tmp_path) == {"model": "qwen3:8b"}
 
 
 class TestRerankerConfig:
@@ -206,12 +276,44 @@ class TestRerankerConfig:
 
         assert "reranker_type" in LOAD_AFFECTING_KEYS
 
+    def test_flash_attention_is_load_affecting(self):
+        # flash_attention bakes into the llama-server argv, so it must reload the
+        # engine and gate cross-process sharing (it feeds the engine pin signature).
+        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+
+        assert "flash_attention" in LOAD_AFFECTING_KEYS
+
     def test_reranker_fields_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert "reranker_type" in SETTINGS_MAP
         assert "reranker_prompt" in SETTINGS_MAP
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
+
+    def test_neighbor_expansion_in_settings_map(self):
+
+        defn = SETTINGS_MAP["neighbor_expansion"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.group == "Retrieval"
+        assert get_default("neighbor_expansion") == 0
+
+    def test_fusion_knobs_in_settings_map(self):
+        """The four adaptive-fusion / structural-filter knobs (which gate the
+        on-by-default fusion behavior) are on the settings surface with their
+        shipped defaults, so a dropped or typo'd entry fails CI."""
+
+        assert get_default("lexical_fusion_weight") == 1.0
+        assert get_default("adaptive_fusion") is False
+        assert get_default("adaptive_fusion_margin") == 0.15
+        assert get_default("filter_structural_chunks") is False
+        for key in (
+            "lexical_fusion_weight",
+            "adaptive_fusion",
+            "adaptive_fusion_margin",
+            "filter_structural_chunks",
+        ):
+            assert SETTINGS_MAP[key].writable is True, key
+            assert SETTINGS_MAP[key].group == "Retrieval", key
 
 
 class TestReplicaDefaults:
@@ -242,7 +344,6 @@ class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 
     def test_num_ctx_max_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["num_ctx_max"]
         assert defn.writable is True
@@ -251,7 +352,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("num_ctx_max") is None
 
     def test_chat_n_ctx_target_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["chat_n_ctx_target"]
         assert defn.writable is True
@@ -264,7 +364,6 @@ class TestMemoryTuningSettingsMap:
             assert get_default("chat_n_ctx_target") == 8192
 
     def test_flash_attention_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["flash_attention"]
         assert defn.writable is True
@@ -273,7 +372,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("flash_attention") is None
 
     def test_kv_cache_type_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.core.config.enums import KvCacheType
 
         defn = SETTINGS_MAP["kv_cache_type"]
@@ -281,7 +379,6 @@ class TestMemoryTuningSettingsMap:
         assert defn.choices == tuple(t.value for t in KvCacheType)
 
     def test_n_gpu_layers_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["n_gpu_layers"]
         assert defn.writable is True
@@ -289,7 +386,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("n_gpu_layers") is None
 
     def test_vision_ocr_max_tokens_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["vision_ocr_max_tokens"]
         assert defn.writable is True
@@ -299,7 +395,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["vision_ocr_concurrency"]
         assert defn.writable is True
@@ -309,7 +404,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.core.config.enums import CrawlRenderMode
 
         defn = SETTINGS_MAP["crawl_render_mode"]
@@ -318,14 +412,12 @@ class TestMemoryTuningSettingsMap:
         assert defn.choices == tuple(m.value for m in CrawlRenderMode)
 
     def test_crawl_render_mode_is_writable_for_programmatic_surfaces(self):
-        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 
         # The TUI checkbox persists the choice via apply_settings_update, so the
         # field must be writable through the HTTP / MCP / programmatic contract.
         assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
 
     def test_browser_memory_levers_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
         assert recycle.writable is True
@@ -457,19 +549,16 @@ class TestAutoSyncConfig:
         assert Config().auto_sync is True
 
     def test_auto_sync_is_writable(self):
-        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 
         assert "auto_sync" in WRITABLE_CONFIG_FIELDS
 
     def test_auto_sync_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert "auto_sync" in SETTINGS_MAP
 
 
 class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
         # Chromium flag list must not be regex-validated.
@@ -490,9 +579,91 @@ class TestUtf8RoundTrip:
         decoded = raw.decode("utf-8")
         assert "key" in decoded
 
-    def test_win32_platform_sim_does_not_break_save(self, tmp_path, monkeypatch) -> None:
-        """Simulate Windows platform: write_text with encoding= must still work."""
-        monkeypatch.setattr("lilbee.core.settings.sys.platform", "win32")
+    def test_overwriting_an_existing_file_round_trips_unicode(self, tmp_path) -> None:
+        """The atomic replace must not lose the UTF-8 encoding on a rewrite."""
+        settings.save(tmp_path, {"key": "value"})
         settings.save(tmp_path, {"key": "value", "unicode": "é"})
         result = settings.load(tmp_path)
         assert result["unicode"] == "é"
+
+
+class TestTitleSearchSettings:
+    """The title-arm knobs are exposed on every settings surface."""
+
+    def test_title_search_in_settings_map(self):
+
+        defn = SETTINGS_MAP["title_search"]
+        assert defn.writable is True
+        assert defn.type is bool
+        assert defn.group == "Retrieval"
+        assert get_default("title_search") is False
+
+    def test_title_search_weight_in_settings_map(self):
+
+        defn = SETTINGS_MAP["title_search_weight"]
+        assert defn.writable is True
+        assert defn.type is float
+        assert defn.group == "Retrieval"
+        assert get_default("title_search_weight") == 0.5
+
+    def test_title_search_fields_are_writable_for_programmatic_surfaces(self):
+
+        assert "title_search" in WRITABLE_CONFIG_FIELDS
+        assert "title_search_weight" in WRITABLE_CONFIG_FIELDS
+
+
+class TestConcurrentConfigWrites:
+    """A server, a CLI run, and an MCP process share one data root."""
+
+    def test_a_second_process_does_not_drop_the_first_processes_key(self, tmp_path):
+        """Cross-process read-modify-write must serialize, not interleave.
+
+        A threading.Lock only covers one interpreter, so two processes could
+        both load the same snapshot and each save it back without the other's
+        key. This drives real subprocesses, which a thread test cannot.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        # Each process holds the read-modify-write open for a beat. Under the
+        # lock they queue up and every key survives; without it they all load
+        # the same snapshot and the last writer wins.
+        script = textwrap.dedent(
+            f"""
+            import sys, time
+            from pathlib import Path
+            from lilbee.core import settings
+
+            real_save = settings.save
+            def slow_save(root, values):
+                time.sleep(0.3)
+                real_save(root, values)
+            settings.save = slow_save
+
+            settings.set_value(Path({str(tmp_path)!r}), sys.argv[1], sys.argv[1])
+            """
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", script, f"key{i}"]) for i in range(4)]
+        for proc in procs:
+            assert proc.wait(timeout=120) == 0
+
+        result = settings.load(tmp_path)
+        assert sorted(result) == [f"key{i}" for i in range(4)]
+
+    def test_a_stale_lock_does_not_block_the_write(self, tmp_path, monkeypatch, caplog):
+        """Losing an update to an abandoned lock file is worse than the race."""
+        from filelock import FileLock
+
+        from lilbee.core import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            with caplog.at_level("WARNING"):
+                settings.set_value(tmp_path, "key", "value")
+        finally:
+            held.release()
+        assert settings.get(tmp_path, "key") == "value"
+        assert "Timed out waiting" in caplog.text

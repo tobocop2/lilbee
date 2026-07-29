@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
+from textual.widgets._tabbed_content import ContentTabs
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
@@ -40,6 +41,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
+from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
@@ -2821,7 +2823,13 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
 class _DatasetStubEmbedder:
     truncated_total = 0
 
-    def embed_batch(self, texts, **_kwargs):
+    def embed_batch(self, texts, *, source="", on_progress=None, **_kwargs):
+        if on_progress is not None:
+            from lilbee.runtime.progress import EmbedEvent, EventType
+
+            total = len(texts)
+            for i, _text in enumerate(texts, 1):
+                on_progress(EventType.EMBED, EmbedEvent(file=source, chunk=i, total_chunks=total))
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
 
@@ -2839,8 +2847,34 @@ def _dataset_services(tmp_path, *, seed=True):
     return store, make_mock_services(store=store, embedder=_DatasetStubEmbedder())
 
 
+async def _wait_for_dataset_task(app, _pilot, task_type):
+    """Spin until the queued dataset task reaches a terminal state; return the row.
+
+    Task-bar work runs on a daemon worker thread, not a Textual worker, so
+    ``app.screen.workers`` never tracks it and cannot be waited on.
+    """
+    import time
+
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    terminal = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        await _pilot.pause()
+        done = [
+            t
+            for t in app.task_bar.queue.history
+            if t.task_type == task_type.value and t.status in terminal
+        ]
+        if done:
+            return done[0]
+    raise AssertionError(f"{task_type} task did not finish")
+
+
 async def test_chat_slash_export_writes_file(tmp_path):
     """``/export <path>`` writes the dataset and notifies success."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     out = tmp_path / "pages.parquet"
     app = ChatTestApp()
@@ -2848,8 +2882,8 @@ async def test_chat_slash_export_writes_file(tmp_path):
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_export(str(out))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.EXPORT)
+            assert task.status == TaskStatus.DONE
             assert out.exists()
             assert "Exported" in mock_notify.call_args[0][0]
     set_services(None)
@@ -2870,20 +2904,24 @@ async def test_chat_slash_export_no_arg(tmp_path):
 
 async def test_chat_slash_export_error(tmp_path):
     """An empty store surfaces the DatasetError via an error notification."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path, seed=False)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_export(str(tmp_path / "pages.parquet"))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.EXPORT)
+            assert task.status == TaskStatus.FAILED
             assert "Nothing to export" in mock_notify.call_args[0][0]
     set_services(None)
 
 
 async def test_chat_slash_import_round_trip(tmp_path):
     """``/import <path>`` re-embeds the dataset and notifies success."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     out = tmp_path / "pages.jsonl"
     from lilbee.app.dataset import export_to_path
@@ -2902,8 +2940,8 @@ async def test_chat_slash_import_round_trip(tmp_path):
             ) as mock_invalidate,
         ):
             app.screen._cmd_import(str(out))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+            assert task.status == TaskStatus.DONE
             assert "Imported" in mock_notify.call_args[0][0]
             mock_invalidate.assert_called_once()
     set_services(None)
@@ -2923,15 +2961,46 @@ async def test_chat_slash_import_no_arg(tmp_path):
 
 
 async def test_chat_slash_import_missing_file(tmp_path):
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+
     _store, services = _dataset_services(tmp_path)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_import(str(tmp_path / "nope.parquet"))
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+            assert task.status == TaskStatus.FAILED
             assert "Dataset not found" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_import_reports_embed_progress(tmp_path):
+    """The import task row ticks determinate progress off EMBED events."""
+    from lilbee.cli.tui.task_queue import TaskType
+
+    _store, services = _dataset_services(tmp_path)
+    out = tmp_path / "pages.jsonl"
+    from lilbee.app.dataset import export_to_path
+
+    set_services(services)
+    export_to_path(out, "", None)
+    set_services(None)
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        updates: list[tuple[float, str]] = []
+        real_update = app.task_bar.queue.update_task
+
+        def _spy(task_id, progress, detail="", **kwargs):
+            updates.append((progress, detail))
+            return real_update(task_id, progress, detail, **kwargs)
+
+        with patch.object(app.task_bar.queue, "update_task", side_effect=_spy):
+            app.screen._cmd_import(str(out))
+            await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+        assert any("Embedding" in detail for _, detail in updates)
     set_services(None)
 
 
@@ -3790,6 +3859,20 @@ async def test_chat_completion_value_preserves_posix_directory():
         app.screen._completion_origin = "/add /var/tmp/docs/quantum_test.md"
         assert (
             app.screen._completion_value("quantum_test.md") == "/add /var/tmp/docs/quantum_test.md"
+        )
+
+
+async def test_chat_completion_value_preserves_directory_for_import_and_export():
+    """Accepting an /import or /export path completion keeps the typed directory."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._completion_origin = "/import /var/tmp/docs/pages.parquet"
+        assert (
+            app.screen._completion_value("pages.parquet") == "/import /var/tmp/docs/pages.parquet"
+        )
+        app.screen._completion_origin = "/export /var/tmp/docs/pages.parquet"
+        assert (
+            app.screen._completion_value("pages.parquet") == "/export /var/tmp/docs/pages.parquet"
         )
 
 
@@ -4710,6 +4793,32 @@ async def test_catalog_load_more_isolates_per_task_offset():
             assert screen._hf_offset_by_task[ModelTask.EMBEDDING] == 0
             assert screen._hf_offset_by_task[ModelTask.VISION] == 0
             assert screen._hf_offset_by_task[ModelTask.RERANK] == 0
+
+
+async def test_catalog_tabs_never_force_an_active_id_at_construction():
+    """The strip composes without a forced-active id, and Chat still wins.
+
+    A forced id arms `Tabs._on_mount`'s unguarded set, which raises "No Tab with
+    id" when the tab children mount late.
+    """
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog import TAB_CHAT, CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            strip = tabs.query_one(ContentTabs)
+            assert strip._first_active is None
+            for _ in range(20):
+                await _pilot.pause()
+                if tabs.active == TAB_CHAT:
+                    break
+            assert tabs.active == TAB_CHAT
 
 
 async def test_catalog_tab_activation_fetches_lazily():
@@ -6145,9 +6254,7 @@ async def test_chat_run_sync_worker():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -6164,9 +6271,7 @@ async def test_chat_sync_file_done_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
@@ -6188,9 +6293,7 @@ async def test_chat_sync_file_start_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
@@ -6209,9 +6312,7 @@ async def test_chat_sync_embed_bad_type():
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -6225,9 +6326,7 @@ async def test_chat_run_sync_error_worker():
 
         with patch("lilbee.data.ingest.sync", new=failing_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
 
@@ -7286,11 +7385,11 @@ async def test_cmd_add_error_in_background(tmp_path):
         test_file = tmp_path / "doc.txt"
         test_file.write_text("hello")
 
-        with patch("lilbee.app.ingest.copy_files", side_effect=RuntimeError("copy failed")):
+        with patch(
+            "lilbee.app.ingest.register_sources", side_effect=RuntimeError("register failed")
+        ):
             app.screen._handle_slash(f"/add {test_file}")
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.ADD)
             assert app.screen._sync_active is False
 
 
@@ -7340,6 +7439,42 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
     assert kwargs.get("indeterminate") is True
 
 
+def test_build_import_progress_callback_routes_embed_events() -> None:
+    """``build_import_progress_callback`` ticks determinate progress on EMBED events."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import build_import_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.runtime.progress import EmbedEvent, EventType
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = build_import_progress_callback(reporter)
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=5, total_chunks=10))
+    reporter.update.assert_called_once()
+    args, kwargs = reporter.update.call_args
+    assert args[0] == 50
+    assert "doc.pdf" in args[1]
+    assert kwargs.get("indeterminate") is False
+
+
+def test_build_import_progress_callback_throttles_and_ignores_other_events() -> None:
+    """A second EMBED inside the throttle window is dropped; non-EMBED events no-op."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import build_import_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = build_import_progress_callback(reporter)
+    callback(EventType.EXTRACT, ExtractEvent(file="doc.pdf", page=1, total_pages=3))
+    reporter.update.assert_not_called()
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=1, total_chunks=10))
+    callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=2, total_chunks=10))
+    assert reporter.update.call_count == 1
+    reporter.check_cancelled.assert_called()
+
+
 async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     """_do_add must surface EMBED chunk progress and EXTRACT page totals.
 
@@ -7379,10 +7514,10 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
         reporter = MagicMock(spec=ProgressReporter)
 
         with (
-            patch("lilbee.app.ingest.copy_files") as mock_copy,
+            patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
 
             def _run_worker() -> None:
                 app.screen._do_add([test_file], reporter)
@@ -7391,7 +7526,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             thread.start()
             thread.join(timeout=5)
 
-        # Three reporter.update calls in order: copy banner, EXTRACT,
+        # Three reporter.update calls in order: register banner, EXTRACT,
         # EMBED. Assert at least the EMBED + EXTRACT messages reached
         # the reporter.
         update_calls = [c for c in reporter.update.call_args_list]
@@ -7434,10 +7569,10 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
                 captured["exc"] = exc
 
         with (
-            patch("lilbee.app.ingest.copy_files") as mock_copy,
+            patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
             thread = threading.Thread(target=_run_worker)
             thread.start()
             thread.join(timeout=5)
@@ -7459,9 +7594,7 @@ async def test_sync_called_with_quiet_true():
 
         with patch("lilbee.data.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
 
         assert len(sync_kwargs) >= 1
         assert sync_kwargs[0].get("quiet") is True
@@ -10236,6 +10369,12 @@ async def test_catalog_grid_leave_down_focuses_next():
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
             await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            grids[0].focus()
+            # Wait for focus to settle: focus() lands over one or more refresh
+            # hops, so a bare pause can leave grids[0] unfocused and LeaveDown
+            # then moves from the wrong anchor.
+            assert await pump_until(pilot, lambda: screen.focused is grids[0])
             grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
             await pump_until(pilot, lambda: screen.focused is not grids[0])
             assert screen.focused is not grids[0]
@@ -10268,9 +10407,15 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             grids = list(screen.query("#grid-chat ModelGrid"))
             last = grids[-1]
             last.focus()
-            await pilot.pause()
+            # Wait for focus to actually land before exercising LeaveDown: a bare
+            # pause can post the event while focus is still in flight, so the
+            # "focus stays put" assertion would pass for the wrong reason.
+            await pump_until(pilot, lambda: screen.focused is last)
             last.post_message(ModelGrid.LeaveDown(last))
-            await pilot.pause()
+            # Drain several hops so a mistaken focus_next would have moved focus
+            # off `last` by now; the guarantee is that it does not.
+            for _ in range(5):
+                await pilot.pause()
             assert screen.focused is last
 
 
@@ -10323,9 +10468,14 @@ async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
             if not grids:
                 pytest.skip("test requires at least one grid mounted in chat tab")
             grids[0].focus()
-            await pilot.pause()
+            # Settle focus onto grids[0] before exercising LeaveUp so the "stays
+            # put" assertion can't pass simply because focus was still in flight.
+            await pump_until(pilot, lambda: screen.focused is grids[0])
             grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
-            await pilot.pause()
+            # Drain several hops so a mistaken focus_previous would have leaked
+            # focus upward by now; the guarantee is that it does not.
+            for _ in range(5):
+                await pilot.pause()
             assert screen.focused is grids[0]
 
 
@@ -11379,7 +11529,7 @@ def test_run_tui_keyboard_interrupt_during_shutdown_propagates():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.sync.shutdown_executor", side_effect=KeyboardInterrupt),
-        patch("lilbee.cli.tui.reset_services") as mock_reset,
+        patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
         pytest.raises(KeyboardInterrupt),
     ):
         run_tui()
@@ -13095,14 +13245,15 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
 
 def test_catalog_tick_loading_spinner_advances_frame_with_no_widgets():
     """_tick_loading_spinner advances the frame counter even when widgets are missing."""
-    from lilbee.cli.tui.screens.catalog import _SPINNER_FRAMES, CatalogScreen
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.spinner import SPINNER_FRAMES
 
     screen = CatalogScreen()
     start = screen._spinner_frame
     # query_one will raise NoMatches off-mount; the suppress wrappers
     # still let _spinner_frame advance and exit cleanly.
     screen._tick_loading_spinner()
-    assert screen._spinner_frame == (start + 1) % len(_SPINNER_FRAMES)
+    assert screen._spinner_frame == (start + 1) % len(SPINNER_FRAMES)
 
 
 def test_catalog_sync_loading_spinner_exception_path():
@@ -13345,3 +13496,142 @@ async def test_i_returns_to_insert_even_when_the_pill_has_focus():
         await pilot.press("i")
         await pilot.pause()
         assert screen._insert_mode is True
+
+
+async def test_model_swap_locks_input_with_a_reason_until_ready():
+    """While a swap runs the chat input is disabled AND says which model it is
+    waiting on, so a held input is never an unexplained dead box; it returns to
+    the default prompt once the swap finishes."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        inp = screen._chat_input
+
+        screen.swapping_model = True
+        await pilot.pause()
+        assert inp.disabled is True
+        # The placeholder names the target model and explains the wait.
+        assert "unlocks" in inp.placeholder
+        assert msg.CHAT_INPUT_SWITCHING.split("{name}")[0].strip() in inp.placeholder
+
+        screen.swapping_model = False
+        await pilot.pause()
+        assert inp.disabled is False
+        assert inp.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_warms_the_new_model_before_unblocking():
+    """The swap reloads the role, eagerly warms the new model, and only unblocks
+    once it actually serves -- so the input never re-enables in front of a model
+    that has not loaded (which read as 'typing does nothing')."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        calls: list[str] = []
+        services = MagicMock()
+        services.reload_role.side_effect = lambda *a, **k: calls.append("reload")
+
+        def _warm() -> None:
+            calls.append("warm")
+
+        def _wait(**_kw) -> bool:
+            calls.append("wait")
+            return True
+
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", _warm),
+            patch("lilbee.app.placement.wait_chat_ready", _wait),
+            patch("lilbee.app.placement.chat_warm_error", return_value=None),
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        # Warm is requested after the reload and waited out before completing.
+        assert calls == ["reload", "warm", "wait"]
+        assert screen.swapping_model is False
+
+
+async def test_input_reason_says_reloading_during_a_placement_change():
+    """A placement reload holds the input too; the placeholder must explain that
+    case, not just a model swap."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.reloading_placement = True
+        await pilot.pause()
+        assert screen._chat_input.disabled is True
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_RELOADING
+        screen.reloading_placement = False
+        await pilot.pause()
+        assert screen._chat_input.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+
+
+async def test_model_swap_surfaces_a_warm_failure():
+    """A warm that fails must toast the reason and release the input, never leave
+    it locked forever."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: False),
+            patch("lilbee.app.placement.chat_warm_error", return_value="out of VRAM"),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False  # input released
+        assert any("out of VRAM" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_reload_failure_is_toasted():
+    """A reload that raises becomes a toast, never a crashed worker."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        services.reload_role.side_effect = RuntimeError("engine gone")
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is False
+        assert any("engine gone" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_model_swap_worker_returns_quietly_when_cancelled():
+    """A superseded swap (the user picked another model mid-load) must not toast a
+    completion or release the gate: the newer swap owns both."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        services = MagicMock()
+        cancelled_worker = SimpleNamespace(is_cancelled=True)
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch("lilbee.cli.tui.screens.chat._get_worker", return_value=cancelled_worker),
+            patch("lilbee.app.placement.request_engine_warm", lambda: None),
+            patch("lilbee.app.placement.wait_chat_ready", lambda **_kw: True),
+            patch.object(app, "notify") as notify,
+        ):
+            screen.swapping_model = True
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert screen.swapping_model is True  # gate still held by the newer swap
+        assert not any("Now using" in str(c.args[0]) for c in notify.call_args_list)

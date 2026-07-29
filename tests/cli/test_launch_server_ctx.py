@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +16,10 @@ def _health(monkeypatch, body: dict) -> None:
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = body
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    # /api/health needs the token like every other route, and the probe reads
+    # it from server.json, which does not exist under test.
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
 
 
 @pytest.mark.no_warm_default
@@ -138,6 +142,50 @@ def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch
 
     # A 40,960-token trained window caps the 65,536 target.
     assert launch_mod.planned_chat_ctx() == 40960
+
+
+@pytest.mark.no_warm_default
+def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, tmp_path):
+    # The advertised window has to be the one the fleet will serve. Sized against
+    # host memory instead, an 8 GiB card is told to expect the whole trained
+    # window and the client trims history to a window it never gets.
+    import os
+
+    from lilbee.cli.launchers import server as launch_mod
+    from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.fleet import planning as planning_mod
+    from lilbee.providers.fleet.devices import FleetDevice
+
+    gguf = tmp_path / "chat.gguf"
+    gguf.touch()
+    os.truncate(gguf, 2 * 1024**3)
+    meta = {
+        "architecture": "qwen3",
+        "block_count": "36",
+        "head_count": "32",
+        "head_count_kv": "8",
+        "key_length": "128",
+        "value_length": "128",
+        "context_length": "40960",
+    }
+    monkeypatch.setattr(cfg, "chat_model", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 65536)
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+    monkeypatch.setattr(
+        planning_mod._read_device_cache,
+        "get",
+        lambda _b: [FleetDevice("CUDA", 0, "gpu", 8 * 1024**3, 8 * 1024**3)],
+    )
+
+    # 6 GiB budget, less 2 GiB of weights and their 10% buffer, over 147,456 bytes
+    # of KV per token, quantized down: well under the 40,960 the model was trained for.
+    assert launch_mod.planned_chat_ctx() == 27648
 
 
 @pytest.mark.no_warm_default

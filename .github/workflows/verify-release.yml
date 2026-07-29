@@ -65,10 +65,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine-*.whl' --dir engine/
-      - name: Every CUDA engine wheel carries the runtime it links
+      # No --backend here: a released wheel carries the -1.<backend>- build tag, so
+      # each one declares its own flavor.
+      - name: Every engine wheel carries the backend it claims
         shell: bash
-        run: python3 tools/qa/assert_cuda_bundle.py engine/*.whl
-      - name: Every CUDA asset the matrices build is on the release
+        run: python3 tools/qa/assert_engine_bundle.py engine/*.whl
+      - name: Every GPU asset the matrices build is on the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,9 +92,58 @@ jobs:
           lilbee-compat-linux-x86_64-cu124
           lilbee-windows-x86_64-cu124.exe
           lilbee-windows-x86_64-cu125.exe
+          lilbee-linux-x86_64-rocm
           EOF
-          [ "${missing}" -eq 0 ] || { echo "a continue-on-error CUDA build cell dropped its artifact"; exit 1; }
+          [ "${missing}" -eq 0 ] || { echo "a continue-on-error GPU build cell dropped its artifact"; exit 1; }
           echo "every expected CUDA asset is present"
+
+  # The packaging fan-outs are dispatched fire-and-forget and finish after the RC
+  # run this workflow triggers on, so their artifacts are still arriving when the
+  # rest of the verification starts. Nothing else checks they arrived: dev727
+  # promoted-ready at 26 of 29 assets, missing two flatpaks and a snap, because a
+  # dropped fan-out looks exactly like one still in flight. Wait for them, then
+  # fail if any is still absent, so the promotion gate cannot green-light an
+  # incomplete release.
+  verify-channel-assets:
+    needs: [resolve]
+    timeout-minutes: 210
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every channel artifact reached the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          # Generous: the flatpak variants publish one at a time against the
+          # shared repo, behind their own wait for the binaries. A false timeout
+          # here blocks promotion, which is worse than waiting.
+          WAIT_MINUTES: "180"
+        run: |
+          set -uo pipefail
+          expected="lilbee.flatpak lilbee-cuda.flatpak lilbee-rocm.flatpak
+                    lilbee-compat.flatpak
+                    lilbee-linux-x86_64.snap lilbee-linux-x86_64-cu125.snap
+                    lilbee-linux-x86_64-rocm.snap
+                    lilbee-compat-linux-x86_64.snap"
+          deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          while true; do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' > assets.txt 2>/dev/null || : > assets.txt
+            missing=""
+            for name in ${expected}; do
+              # -x: an exact line, so lilbee-linux-x86_64-cu125.snap cannot satisfy
+              # the check for lilbee-linux-x86_64.snap.
+              grep -qxF "${name}" assets.txt || missing="${missing} ${name}"
+            done
+            [ -n "${missing}" ] || { echo "every channel artifact is on the release"; exit 0; }
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::error::channel artifacts still missing after ${WAIT_MINUTES}m:${missing}"
+              echo "a packaging fan-out dropped its artifact; re-run it before promoting"
+              exit 1
+            fi
+            echo "waiting for:${missing}"
+            sleep 60
+          done
 
   verify-executables:
     needs: [resolve]

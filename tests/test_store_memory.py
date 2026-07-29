@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import numpy as np
+import numpy.typing as npt
 import pytest
 
 from lilbee.core.config import MEMORIES_TABLE, cfg
@@ -45,6 +47,13 @@ def store(test_config):
 def _unit_vector(dim: int, axis: int) -> list[float]:
     """A unit vector along *axis* so cosine distance between distinct axes is 1.0."""
     vec = [0.0] * dim
+    vec[axis] = 1.0
+    return vec
+
+
+def _unit_array(dim: int, axis: int) -> npt.NDArray[np.float32]:
+    """:func:`_unit_vector` as the float32 array the embedder hands the store."""
+    vec = np.zeros(dim, dtype=np.float32)
     vec[axis] = 1.0
     return vec
 
@@ -340,8 +349,8 @@ class TestRebuildEmbeddings:
         new_dim = 4
         store._config.embedding_dim = new_dim
 
-        def embed(texts: list[str]) -> list[list[float]]:
-            return [[0.5] * new_dim for _ in texts]
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            return [np.full(new_dim, 0.5, dtype=np.float32) for _ in texts]
 
         count = store.rebuild_memory_embeddings(embed)
         assert count == 1
@@ -353,12 +362,13 @@ class TestRebuildEmbeddings:
         store.add_memory(_memory(store, text="x", axis=0))
         dim = store._config.embedding_dim
 
-        def embed(texts: list[str]) -> list[list[float]]:
-            return [_unit_vector(dim, 3) for _ in texts]
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            return [_unit_array(dim, 3) for _ in texts]
 
         store.rebuild_memory_embeddings(embed)
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.vector[3] == 1.0
+        assert isinstance(got.vector, list)  # the row serializes as JSON, never as an ndarray
 
     def test_snapshot_and_embed_run_under_write_lock(self, store):
         # The read+embed must hold the lock, or a concurrent add_memory
@@ -369,9 +379,9 @@ class TestRebuildEmbeddings:
         dim = store._config.embedding_dim
         locked_during: list[bool] = []
 
-        def embed(texts: list[str]) -> list[list[float]]:
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
             locked_during.append(_write_mutex.locked())
-            return [_unit_vector(dim, 3) for _ in texts]
+            return [_unit_array(dim, 3) for _ in texts]
 
         store.rebuild_memory_embeddings(embed)
         assert locked_during == [True]  # embed ran while the write lock was held

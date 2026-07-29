@@ -15,10 +15,13 @@ _GB = 1024**3
 
 
 def _peak_estimator(peak_for: Callable[[int], int]):
-    """Fake estimate_instance_footprint whose per-device peak is a function of total ctx."""
+    """Fake estimate_instance_footprint whose per-device peak is a function of total ctx.
+
+    Takes the per-slot context and multiplies, as the real estimator does.
+    """
 
     def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
-        peak = peak_for(int(kw["ctx"]))  # type: ignore[arg-type]
+        peak = peak_for(int(kw["ctx"]) * int(kw["slots"]))  # type: ignore[arg-type]
         return GgufVramEstimate(
             vram_bytes=peak, ram_bytes=0, unified_bytes=0, per_device_vram=(peak,)
         )
@@ -35,6 +38,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
         "gpu_layers": -1,
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
+        "kv_cache_type_v": KvCacheType.F16,
         # Large by default so the fit-logic tests are gated by the monkeypatched
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,

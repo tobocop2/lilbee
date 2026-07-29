@@ -1,5 +1,6 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import contextlib
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
@@ -57,7 +59,7 @@ def mock_svc():
     # No entity schema induced unless a test persists one.
     store.entity_schema_state.return_value = None
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.return_value = []
     services = make_mock_services(searcher=searcher, store=store, embedder=embedder)
     svc_mod.set_services(services)
@@ -172,6 +174,25 @@ class TestSync:
         assert "bad.txt" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["sync", "--max-cpus", "3"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 3
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_processes_sets_ingest_processes(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["sync", "--processes", "4"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 4
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_processes_zero_auto_sizes(self, mock_sync, isolated_env):
+        """--processes 0 is the valid auto-size value, unlike --max-cpus (min=1)."""
+        result = runner.invoke(app, ["sync", "--processes", "0"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 0
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_retry_skipped_flag(self, mock_sync):
         """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
         result = runner.invoke(app, ["sync", "--retry-skipped"])
@@ -190,21 +211,29 @@ class TestRebuild:
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["rebuild", "--processes", "2"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 2
+
 
 class TestAdd:
     def test_add_single_file(self, isolated_env, tmp_path):
-        """Adding a single file copies it and ingests it."""
+        """Adding a single file registers it as a root and ingests it in place."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Engine oil capacity is 5 quarts.")
 
         result = runner.invoke(app, ["add", str(src_file)])
         assert result.exit_code == 0
-        assert "Copied 1" in result.output
-        assert (cfg.documents_dir / "manual.txt").exists()
+        assert "Registered 1" in result.output
+        # No copy into documents_dir: the file is tracked where it lives.
+        assert cfg.linked_roots == {"manual.txt": str(src_file.resolve())}
+        assert not (cfg.documents_dir / "manual.txt").exists()
 
     def test_add_directory(self, isolated_env, tmp_path):
-        """Adding a directory recursively copies it."""
+        """Adding a directory registers it as a root; its files index under the label."""
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
         (src_dir / "file1.txt").write_text("Content 1")
@@ -212,8 +241,12 @@ class TestAdd:
 
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
-        assert (cfg.documents_dir / "docs" / "file1.txt").exists()
-        assert (cfg.documents_dir / "docs" / "file2.txt").exists()
+        assert cfg.linked_roots == {"docs": str(src_dir.resolve())}
+        from lilbee.data.ingest import discover_files
+
+        found = discover_files()
+        assert "docs/file1.txt" in found
+        assert "docs/file2.txt" in found
 
     def test_add_multiple_paths(self, isolated_env, tmp_path):
         """Adding multiple paths works."""
@@ -225,34 +258,38 @@ class TestAdd:
 
         result = runner.invoke(app, ["add", str(f1), str(f2)])
         assert result.exit_code == 0
-        assert "Copied 2" in result.output
+        assert "Registered 2" in result.output
 
     def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
 
-    def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
-        """Re-adding a directory with --force updates content."""
-        src_dir = tmp_path / "source" / "docs"
-        src_dir.mkdir(parents=True)
-        (src_dir / "file1.txt").write_text("Version 1")
-
-        runner.invoke(app, ["add", "--force", str(src_dir)])
-
-        # Update content and re-add with --force
-        (src_dir / "file1.txt").write_text("Version 2")
-        result = runner.invoke(app, ["add", "--force", str(src_dir)])
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src), "--max-cpus", "2"])
         assert result.exit_code == 0
-        assert (cfg.documents_dir / "docs" / "file1.txt").read_text() == "Version 2"
+        assert cfg.ingest_workers == 2
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_processes_sets_ingest_processes(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src), "--processes", "2"])
+        assert result.exit_code == 0
+        assert cfg.ingest_processes == 2
 
     def test_add_warns_on_existing(self, isolated_env, tmp_path):
-        """Adding a file that already exists warns without --force."""
+        """Re-adding a source that is already registered warns."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Original content")
 
-        runner.invoke(app, ["add", "--force", str(src_file)])
+        runner.invoke(app, ["add", str(src_file)])
 
         src_file.write_text("New content")
         result = runner.invoke(app, ["add", str(src_file)])
@@ -263,7 +300,7 @@ class TestAdd:
 
 class TestAddIgnoresDirs:
     def test_add_directory_skips_git_and_node_modules(self, isolated_env, tmp_path):
-        """Adding a directory filters out .git/ and node_modules/."""
+        """Adding a directory registers it; discovery filters .git/ and node_modules/."""
         src_dir = tmp_path / "source" / "project"
         src_dir.mkdir(parents=True)
         (src_dir / "readme.txt").write_text("Real content")
@@ -277,11 +314,16 @@ class TestAddIgnoresDirs:
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
 
-        dest = cfg.documents_dir / "project"
-        assert (dest / "readme.txt").exists()
-        assert not (dest / ".git").exists()
-        assert not (dest / "node_modules").exists()
-        assert not (dest / "__pycache__").exists()
+        # The tree is registered as one root; discovery filters the ignored
+        # directories, so they stay on disk but are never indexed.
+        from lilbee.data.ingest import discover_files
+
+        assert cfg.linked_roots == {"project": str(src_dir.resolve())}
+        found = discover_files()
+        assert "project/readme.txt" in found
+        assert not any(name.startswith("project/.git/") for name in found)
+        assert not any("node_modules" in name for name in found)
+        assert not any("__pycache__" in name for name in found)
 
 
 class TestAsk:
@@ -543,7 +585,7 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
         ):
             add_paths([src], con, background=True)
             mock_bg.assert_called_once()
@@ -559,11 +601,11 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
-            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
         ):
             add_paths([src], con, chat_mode=True)
             captured = capsys.readouterr()
-            assert "Copied 1 path(s)" in captured.out
+            assert "Registered 1 source(s)" in captured.out
 
 
 class TestChat:
@@ -1230,6 +1272,12 @@ class TestSearch:
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
 
+    def test_search_rejects_non_positive_top_k(self, mock_svc):
+        for bad in ("0", "-3"):
+            result = runner.invoke(app, ["search", "q", "--top-k", bad])
+            assert result.exit_code != 0
+        mock_svc.searcher.search.assert_not_called()
+
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
         assert result.exit_code != 0
@@ -1446,22 +1494,73 @@ class TestRemove:
         assert "Removed" in result.output
         assert "Not found" in result.output
 
-    def test_remove_with_delete_flag(self, isolated_env, mock_svc):
+    def test_remove_keeps_source_file(self, isolated_env, mock_svc):
+        # Removal is index-only: the source file on disk is never deleted.
         from lilbee.data.store import RemoveResult
 
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt"}]
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["test.txt"], not_found=[]
         )
-        mock_svc.store.remove_documents.side_effect = lambda names, **kw: (
-            doc.unlink() or RemoveResult(removed=["test.txt"], not_found=[])
-            if kw.get("delete_files")
-            else RemoveResult(removed=["test.txt"], not_found=[])
-        )
-        result = runner.invoke(app, ["remove", "--delete", "test.txt"])
+        result = runner.invoke(app, ["remove", "test.txt"])
         assert result.exit_code == 0
-        assert not doc.exists()
+        assert doc.exists()
+
+    def test_remove_folder_expands_to_members(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+            {"filename": "other.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "docs"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"docs/a.txt", "docs/b.txt"}
+
+    def test_remove_folder_confirms_before_removing(self, isolated_env, mock_svc):
+        # Without --yes, a folder that expands to several docs prompts for confirm.
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+        ]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
+        )
+        with mock.patch("typer.confirm", return_value=True) as confirm:
+            result = runner.invoke(app, ["remove", "docs"])
+        assert result.exit_code == 0
+        confirm.assert_called_once()
+
+    def test_remove_glob_pattern(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.log"},
+            {"filename": "b.log"},
+            {"filename": "c.txt"},
+        ]
+        captured: dict = {}
+
+        def _remove(names):
+            captured["names"] = list(names)
+            return RemoveResult(removed=list(names), not_found=[])
+
+        mock_svc.store.remove_documents.side_effect = _remove
+        result = runner.invoke(app, ["remove", "--yes", "*.log"])
+        assert result.exit_code == 0
+        assert set(captured["names"]) == {"a.log", "b.log"}
 
     def test_remove_json(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
@@ -1487,16 +1586,25 @@ class TestRemove:
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
 
-    def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
-        """Path traversal in name with --delete is caught and skipped."""
+    def test_remove_unregisters_a_root_and_keeps_source(self, isolated_env, mock_svc, tmp_path):
+        # A directory registered as a source root: removing it un-registers the
+        # root (discovery stops finding it) and never touches the source bytes.
+        from lilbee.core import settings
         from lilbee.data.store import RemoveResult
 
-        traversal_name = "../../etc/passwd"
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=[traversal_name], not_found=[]
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "a.txt").write_text("keep")
+        settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
+
+        mock_svc.store.get_sources.return_value = [{"filename": "corpus/a.txt"}]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
         )
-        result = runner.invoke(app, ["remove", "--delete", traversal_name])
+        result = runner.invoke(app, ["remove", "--yes", "corpus"])
         assert result.exit_code == 0
+        assert "corpus" not in cfg.linked_roots  # root un-registered
+        assert (source / "a.txt").read_text() == "keep"  # source untouched
 
 
 class TestChunks:
@@ -2273,8 +2381,9 @@ class TestIngestShutdownError:
         import asyncio
         from pathlib import Path
 
-        from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest import ingest_stream
         from lilbee.data.ingest.types import FileToProcess
+        from tests.conftest import one_shard
 
         shutdown_err = RuntimeError("cannot schedule new futures after shutdown")
 
@@ -2284,18 +2393,19 @@ class TestIngestShutdownError:
             failed: dict[str, None] = {}
             skipped: dict[str, None] = {}
             with (
-                mock.patch(
-                    "lilbee.data.ingest.pipeline._produce_records", side_effect=shutdown_err
-                ),
+                mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=shutdown_err),
                 pytest.raises(asyncio.CancelledError),
             ):
-                await ingest_batch(
-                    [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)],
+                await ingest_stream(
+                    one_shard(
+                        [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)]
+                    ),
                     added,
                     updated,
                     failed,
                     skipped,
                     quiet=True,
+                    unindexed_files=0,
                 )
 
         asyncio.run(_run())
@@ -3788,6 +3898,57 @@ class TestSelfCheck:
             setup._download_self_check_model("repo/x", "f.gguf")
         assert not d.exists()
 
+    def test_a_leg_reclaims_its_fleet_when_the_request_is_interrupted(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A SIGTERM handler raises KeyboardInterrupt (below); the leg must tear the
+        # fleet down and remove its temp dir on that exception, not orphan them.
+        from lilbee.cli.commands import setup
+
+        work = tmp_path / "wd"
+        work.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(work))
+        fake_swap = mock.MagicMock()
+        fake_client = mock.MagicMock()
+        fake_client.chat.side_effect = KeyboardInterrupt
+        monkeypatch.setattr(
+            setup, "_self_check_server", lambda *a, **k: (fake_swap, fake_client, work)
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            setup._self_check_chat(tmp_path / "chat.gguf", max_tokens=5)
+
+        fake_swap.shutdown.assert_called_once()
+        assert not work.exists()
+
+    def test_sigterm_becomes_an_interrupt_and_the_handler_is_restored(self) -> None:
+        import signal
+        import sys
+
+        from lilbee.cli.commands import setup
+
+        if sys.platform == "win32":
+            pytest.skip("SIGTERM is not delivered on Windows")
+
+        before = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(KeyboardInterrupt), setup._teardown_on_sigterm():
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is before
+
+    def test_sigterm_handler_converts_to_an_interrupt_without_delivery(self) -> None:
+        """Windows registers the handler but never delivers SIGTERM, so the test
+        above skips there and the handler body goes unexercised. Drive it directly
+        so the conversion that makes teardown run is covered on every platform."""
+        import signal
+
+        from lilbee.cli.commands import setup
+
+        with setup._teardown_on_sigterm():
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            with pytest.raises(KeyboardInterrupt):
+                handler(signal.SIGTERM, None)
+
     def test_self_check_server_cleans_work_dir_on_start_failure(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -3796,11 +3957,26 @@ class TestSelfCheck:
 
         d = tmp_path / "wd"
         d.mkdir()
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"x" * 1024)
         monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
         # The llama-server binary isn't present in CI; stub the resolver so the
         # function reaches the swap.start cleanup path under test.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.planning.resolve_llama_server",
+            lambda: Path("/fake/llama-server"),
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        # Applying the GPU env disables conflicting Vulkan ICDs, which enumerates
+        # adapters in a child process. That child gets 10 seconds and does not
+        # always start inside it on a Windows runner, so the test times out on
+        # work it is not about.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda *a, **k: None
         )
         fake_swap = mock.MagicMock()
         fake_swap.start.side_effect = RuntimeError("engine died")
@@ -3808,7 +3984,7 @@ class TestSelfCheck:
             "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: fake_swap
         )
         with pytest.raises(RuntimeError):
-            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+            setup._self_check_server(WorkerRole.CHAT, model)
         assert not d.exists()
         fake_swap.shutdown.assert_called_once()
 
@@ -3850,6 +4026,8 @@ class TestSelfCheck:
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",
+            "cpu_moe",
+            "n_cpu_moe",
             "main_gpu",
             "gpu_devices",
         }
@@ -4111,22 +4289,24 @@ class TestSelfCheckHelpers:
 
     @staticmethod
     def _patch_fleet_primitives(monkeypatch, *, swap, client) -> None:
-        """Stub binary resolution, metadata, ctx/layer math, argv, SwapManager, client."""
-        from pathlib import Path
+        """Stub the launch the planner would build, plus SwapManager and client.
 
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server",
-            lambda: Path("/bin/llama-server"),
-        )
-        monkeypatch.setattr("lilbee.providers.fleet.binary.llama_server_runtime_env", lambda: {})
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.adapters.build_server_argv",
-            lambda **_k: ["/bin/llama-server"],
-        )
+        One seam rather than six: the self-check no longer assembles a launch, it
+        asks the planner for one, so stubbing the argv builder and the ctx math
+        underneath it would be stubbing machinery this code no longer drives.
+        """
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        def _launch(role, model_path):
+            return InstanceLaunch(
+                role=role,
+                argv=["/bin/llama-server"],
+                env_overrides={},
+                model=str(model_path),
+                ctx=4096,
+            )
+
+        monkeypatch.setattr("lilbee.providers.fleet.planning.build_single_role_launch", _launch)
         swap.endpoint.return_value = "http://127.0.0.1:5800"
         monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
         monkeypatch.setattr(
@@ -4218,17 +4398,29 @@ class TestSelfCheckHelpers:
         from lilbee.cli.commands import setup
         from lilbee.providers.roles import WorkerRole
 
-        self._patch_fleet_primitives(monkeypatch, swap=mock.MagicMock(), client=mock.MagicMock())
+        model = tmp_path / "embed.gguf"
+        model.write_bytes(b"x" * 1024)
+        swap = mock.MagicMock()
+        swap.endpoint.return_value = "http://127.0.0.1:5800"
+        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient",
+            lambda _e, _m, **_k: mock.MagicMock(),
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.planning.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
         )
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.adapters.build_server_argv",
-            lambda **kw: seen.update(kw) or ["/bin/llama-server"],
-        )
-        setup._self_check_server(WorkerRole.EMBED, tmp_path / "embed.gguf")
-        assert seen["spec"].extra_args == ("--embeddings", "--pooling", "last")
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        setup._self_check_server(WorkerRole.EMBED, model)
+        argv = swap.start.call_args[0][0][0].argv
+        assert argv[argv.index("--pooling") + 1] == "last"
 
 
 class TestSelfCheckExtras:
@@ -4432,3 +4624,55 @@ def test_mcp_command_applies_data_dir_then_starts(tmp_path):
     # The override was applied before the server started, not merely parsed: main()
     # observed cfg.data_root already pointing at the alt root.
     assert applied_root == [alt]
+
+
+def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, tmp_path) -> None:
+    """The diagnostic must launch the same command line the fleet would.
+
+    The fleet applies expert offload to every role it launches. When the
+    self-check gated it on the embed role, an MoE embedding model with offload
+    configured got a launch with no --override-tensor from the diagnostic and
+    one with it from the fleet, so the check could fail a full-VRAM load the
+    fleet would have offloaded -- the disagreement this shared-flags work exists
+    to remove.
+    """
+    from lilbee.cli.commands import setup as setup_mod
+    from lilbee.providers.fleet import adapters as adapters_mod
+    from lilbee.providers.roles import WorkerRole
+
+    captured: dict[str, object] = {}
+    real_build = adapters_mod.build_server_argv
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    # planning binds this name at import, so patching the adapters module alone
+    # would leave the real one in the call path.
+    monkeypatch.setattr("lilbee.providers.fleet.planning.build_server_argv", _spy)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.planning.resolve_llama_server",
+        lambda: Path("/fake/llama-server"),
+    )
+    # The launch now comes from the planner, which probes for devices first; the
+    # suppress below would otherwise swallow that and the spy would never fire.
+    monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+    from lilbee.core.config import cfg as real_cfg
+
+    monkeypatch.setattr(real_cfg, "cpu_moe", True, raising=False)
+    monkeypatch.setattr(real_cfg, "n_cpu_moe", None, raising=False)
+
+    model = tmp_path / "embed.gguf"
+    model.write_bytes(b"")
+    with contextlib.suppress(Exception):  # spawning the server is not under test
+        setup_mod._self_check_server(WorkerRole.EMBED, model)
+
+    assert captured, "build_server_argv was never reached; the test proves nothing"
+    assert captured.get("cpu_moe") is True, "embed self-check dropped the fleet's offload"

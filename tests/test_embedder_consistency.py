@@ -44,11 +44,34 @@ class TestQueryIndexConsistency:
         assert query_vec == ingest_vec
 
     def test_both_paths_call_same_provider_with_same_arg(self, embedder, provider):
-        """Both paths hand the identical (truncated) text to the same provider."""
+        """Both document paths hand the identical text to the same provider.
+
+        Prefix families (the default nomic model included) prepend a role
+        prefix, so the invariant is call identity, not the raw input text.
+        """
         text = "shared text"
         embedder.embed(text)
         embedder.embed_batch([text])
-        assert provider.calls == [[text], [text]]
+        assert provider.calls[0] == provider.calls[1]
+        assert provider.calls[0][0].endswith(text)
+
+    def test_query_and_document_prefixes_share_the_payload(self, provider, monkeypatch):
+        """Asymmetric families differ only in the role prefix, never the payload.
+
+        The query path carries a different instruction than the document path
+        (nomic: search_query: vs search_document:), but both must wrap the
+        same text; anything else splits the embedding space. Pinned to nomic
+        so the assertions stay distinguishing even if the default embedder
+        moves to a symmetric family.
+        """
+        monkeypatch.setattr(cfg, "embedding_model", "nomic-ai/nomic-embed-text-v1.5-GGUF/n.gguf")
+        embedder = Embedder(cfg, provider)
+        text = "shared text"
+        embedder.embed_query(text)
+        embedder.embed(text)
+        query_arg, doc_arg = provider.calls[0][0], provider.calls[1][0]
+        assert query_arg == f"search_query: {text}"
+        assert doc_arg == f"search_document: {text}"
 
     def test_both_paths_apply_identical_truncation(self, embedder, provider):
         """No path embeds beyond the shared char budget; truncation is symmetric."""
@@ -61,12 +84,19 @@ class TestQueryIndexConsistency:
         assert len(query_arg) == embedder.embed_char_budget
 
     def test_no_extra_normalization_in_either_path(self, embedder, provider):
-        """Neither path post-processes the provider vector (no silent renorm)."""
+        """Neither path post-processes the provider vector (no silent renorm).
+
+        The expected vector is the echo provider's output for the exact text
+        each path sent (prefix included), so this pins the absence of
+        post-processing, not the input composition.
+        """
         text = "normalize me"
-        raw = provider.embed([text])[0]
-        provider.calls.clear()
-        assert embedder.embed(text) == raw
-        assert embedder.embed_batch([text])[0] == raw
+        single = embedder.embed(text)
+        batched = embedder.embed_batch([text])[0]
+        sent = provider.calls[0][0]
+        assert provider.calls[1][0] == sent
+        assert list(single) == [float(len(sent))] * cfg.embedding_dim
+        assert list(batched) == [float(len(sent))] * cfg.embedding_dim
 
 
 class TestSharedEmbedderInstance:

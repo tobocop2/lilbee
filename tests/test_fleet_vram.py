@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -53,12 +51,12 @@ def _patch_parser(
     """Stub out the gguf-parser binary path and its subprocess invocation."""
     monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+    def fake_run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
         if recorder is not None:
             recorder.append(argv)
-        return SimpleNamespace(stdout=stdout)
+        return stdout, 0
 
-    monkeypatch.setattr(vram_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(vram_mod, "run_bounded", fake_run)
 
 
 class TestFootprint:
@@ -123,7 +121,9 @@ class TestEstimateInstanceFootprint:
             kv_cache_type=KvCacheType.Q8_0,
         )
         argv = calls[0]
-        assert argv[argv.index("--ctx-size") + 1] == "8192"
+        # Per-slot in, total out: the parser's --parallel does not divide the
+        # context, so --ctx-size has to carry all four slots' worth.
+        assert argv[argv.index("--ctx-size") + 1] == "32768"
         assert argv[argv.index("--parallel") + 1] == "4"
         assert argv[argv.index("--gpu-layers") + 1] == "33"
         assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
@@ -228,24 +228,35 @@ class TestEstimateInstanceFootprint:
         estimate_instance_footprint(model_file, **kwargs)
         assert len(calls) == 2
 
-    def test_run_failure_raises_provider_error(
+    def _estimate(self, model_file: Path) -> None:
+        estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+        )
+
+    def test_a_nonzero_exit_raises_provider_error(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+        monkeypatch.setattr(vram_mod, "run_bounded", lambda *a, **k: ("", 1))
+        with pytest.raises(ProviderError, match="failed to run"):
+            self._estimate(model_file)
+
+    def test_a_spawn_or_timeout_failure_raises_provider_error(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-        def boom(argv: list[str], **_kwargs: object) -> SimpleNamespace:
-            raise subprocess.CalledProcessError(1, argv)
+        def boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("no such binary")
 
-        monkeypatch.setattr(vram_mod.subprocess, "run", boom)
+        monkeypatch.setattr(vram_mod, "run_bounded", boom)
         with pytest.raises(ProviderError, match="failed to run"):
-            estimate_instance_footprint(
-                model_file,
-                ctx=2048,
-                slots=1,
-                gpu_layers=-1,
-                flash_attn=True,
-                kv_cache_type=KvCacheType.F16,
-            )
+            self._estimate(model_file)
 
     def test_unparseable_output_raises_provider_error_with_cause(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -367,12 +378,12 @@ class TestProjectorCorrection:
     ) -> None:
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
-        def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        def fake_run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
             if recorder is not None:
                 recorder.append(argv)
-            return SimpleNamespace(stdout=mmproj_json if "--mmproj-path" in argv else base_json)
+            return (mmproj_json if "--mmproj-path" in argv else base_json), 0
 
-        monkeypatch.setattr(vram_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(vram_mod, "run_bounded", fake_run)
 
     def _estimate(self, model_file: Path, mmproj: Path) -> GgufVramEstimate:
         return estimate_instance_footprint(
@@ -449,3 +460,39 @@ class TestProjectorCorrection:
             tensor_split=(1, 1),
         )
         assert est.per_device_vram == (3_000 + 4096, 3_000)
+
+
+def test_the_v_cache_type_reaches_the_estimator_command_line(monkeypatch, tmp_path) -> None:
+    """K and V differ wherever flash attention is left to the engine.
+
+    An estimate that reuses K for V sizes a cache the server will not allocate.
+    """
+    from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.fleet import vram as vram_mod
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 64)
+    captured: list[list[str]] = []
+
+    def _capture(argv, _path):
+        captured.append(argv)
+        return '{"estimate": {}}'
+
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+    monkeypatch.setattr(vram_mod, "_run_parser", _capture)
+    monkeypatch.setattr(vram_mod, "_parse_estimate", lambda *_a: object())
+    vram_mod._cached_footprint.cache_clear()
+
+    vram_mod.estimate_instance_footprint(
+        model,
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.Q8_0,
+        kv_cache_type_v=KvCacheType.F16,
+    )
+
+    (argv,) = captured
+    assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+    assert argv[argv.index("--cache-type-v") + 1] == "f16"

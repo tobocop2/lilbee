@@ -9,12 +9,11 @@ review and remove in ``/memories``.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from lilbee.core.llm_json import first_json_array
 from lilbee.data.store import MemoryKind
 
 log = logging.getLogger(__name__)
@@ -38,8 +37,6 @@ _EXTRACT_SYSTEM_PROMPT = (
 )
 
 _EXTRACT_USER_TEMPLATE = "User said:\n{question}\n\nAssistant replied:\n{answer}"
-
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -78,14 +75,8 @@ def parse_extraction(raw: str) -> list[ExtractedMemory]:
     code fence), keeps only objects with a usable-length ``text``, and decodes
     the kind. Any parse failure yields an empty list.
     """
-    match = _JSON_ARRAY_RE.search(raw)
-    if match is None:
-        return []
-    try:
-        # The regex captures a bracketed span, so a successful parse is always
-        # a list (a malformed span raises and is caught below).
-        items = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    items = first_json_array(raw)
+    if items is None:
         return []
 
     memories: list[ExtractedMemory] = []

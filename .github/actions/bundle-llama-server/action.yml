@@ -25,26 +25,79 @@ inputs:
     description: "GPU toolkit version the caller installed (e.g. the CUDA version); part of the cache key."
     required: false
     default: ""
+  asset-release-tag:
+    description: "Release holding the prebuilt engine mirror. Set empty to skip the mirror and use the Actions cache only."
+    required: false
+    default: "engine-binaries"
 runs:
   using: composite
   steps:
-    # Same key scheme as build-multigpu.yml: pinned sources, so identical keys
-    # mean byte-identical binaries. Hits come from warm-engine-cache.yml on main
-    # or an earlier cell in the same run; a miss builds and saves for the rest
-    # of the run (tag-scoped saves are still restorable across a moved tag).
+    # Identity of a built engine: every source is pinned in engine-versions.env,
+    # so the same key means byte-identical binaries. Shared verbatim with
+    # build-multigpu.yml and with the mirror asset name, so a cache entry and a
+    # mirror asset for the same engine always agree.
+    - name: Resolve the engine key
+      id: engine-key
+      shell: bash
+      env:
+        CACHE_ENV: ${{ inputs.cache-env }}
+        BACKEND: ${{ inputs.backend }}
+        TOOLKIT: ${{ inputs.toolkit-version }}
+        LLCP: ${{ inputs.llama-cpp-version }}
+        SOURCES_HASH: ${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+      run: |
+        set -euo pipefail
+        echo "key=engine-${CACHE_ENV}-${BACKEND}-tk${TOOLKIT}-llcp${LLCP}-${SOURCES_HASH}" >> "$GITHUB_OUTPUT"
+
+    # The durable copy, read before the Actions cache. See ci_mirror.sh for
+    # why these do not belong in the cache at all.
+    - name: Restore the engine from the release mirror
+      id: engine-mirror
+      if: inputs.asset-release-tag != ''
+      shell: bash
+      env:
+        MIRROR_RELEASE_TAG: ${{ inputs.asset-release-tag }}
+      run: |
+        set -uo pipefail
+        if bash tools/wheel-build/ci_mirror.sh fetch \
+          "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Reader with no writer: engines are only ever written to the mirror now, so
+    # this serves entries predating that and goes empty at the 7-day idle expiry.
+    # Kept because a source build behind it is the real backstop, not this.
     - name: Restore the built engine
       id: engine-cache
-      uses: actions/cache@v4
+      if: steps.engine-mirror.outputs.restored != 'true'
+      uses: actions/cache/restore@v4
       with:
         path: packaging/engine-wheel/lilbee_engine/bin
-        key: engine-${{ inputs.cache-env }}-${{ inputs.backend }}-tk${{ inputs.toolkit-version }}-llcp${{ inputs.llama-cpp-version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+        key: ${{ steps.engine-key.outputs.key }}
+
+    - name: Decide whether the engine still needs building
+      id: engine
+      shell: bash
+      env:
+        MIRRORED: ${{ steps.engine-mirror.outputs.restored }}
+        CACHED: ${{ steps.engine-cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        if [ "${MIRRORED}" = "true" ] || [ "${CACHED}" = "true" ]; then
+          echo "needs-build=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "needs-build=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Set up Go (for llama-swap + gguf-parser)
-      if: steps.engine-cache.outputs.cache-hit != 'true'
+      if: steps.engine.outputs.needs-build == 'true'
       uses: actions/setup-go@v5
       with:
         go-version: "1.23"
     - name: Build the self-contained engine
-      if: steps.engine-cache.outputs.cache-hit != 'true'
+      if: steps.engine.outputs.needs-build == 'true'
       shell: bash
       env:
         BACKEND: ${{ inputs.backend }}
@@ -52,6 +105,21 @@ runs:
         # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
         LLAMA_BUILD_DIR: ${{ runner.os == 'Windows' && '/c/lsb' || '/tmp/llama-server-build' }}
       run: bash tools/wheel-build/build_llama_server.sh
+    # The mirror is the only place a built engine is stored. Writing it to the
+    # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
+    # mirror already holds durably, and that cap is what the Nuitka object
+    # caches need: those cannot live on a release, engines can.
+    #
+    # Every non-tag cell that builds an engine contributes it, so the mirror
+    # fills itself in for whatever variants CI actually exercises.
+    - name: Mirror the built engine
+      if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && inputs.asset-release-tag != ''
+      continue-on-error: true
+      uses: ./.github/actions/publish-engine-asset
+      with:
+        engine-key: ${{ steps.engine-key.outputs.key }}
+        release-tag: ${{ inputs.asset-release-tag }}
+        token: ${{ github.token }}
     - name: Install lilbee_engine into the build venv
       shell: bash
       # The wheel carries all three binaries (llama-server self-contained with its

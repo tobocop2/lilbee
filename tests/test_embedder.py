@@ -1,13 +1,15 @@
 """Tests for the embedding wrapper (mocked -- no live server needed)."""
 
+import logging
 from unittest import mock
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.chunk import CHARS_PER_TOKEN
-from lilbee.retrieval.embedder import EMBED_BATCH_TARGET_SEQUENCES, Embedder
+from lilbee.retrieval.embedder import Embedder
 
 
 @pytest.fixture()
@@ -42,9 +44,11 @@ class TestEmbed:
         assert vec == [0.1] * 768
 
     def test_passes_truncated_text(self, embedder, mock_provider):
+        # The default model is nomic-embed, whose documents carry its
+        # required search_document: prefix.
         mock_provider.embed.return_value = [[0.0] * 768]
         embedder.embed("hello")
-        mock_provider.embed.assert_called_once_with(["hello"])
+        mock_provider.embed.assert_called_once_with(["search_document: hello"])
 
     def test_truncates_long_input(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768]
@@ -52,6 +56,21 @@ class TestEmbed:
         embedder.embed(long_text)
         call_args = mock_provider.embed.call_args[0][0]
         assert len(call_args[0]) == embedder.embed_char_budget
+
+    def test_instruction_prefix_counts_against_the_char_budget(self, embedder, mock_provider):
+        """The budget guards the embed model's context, so the prefix has to
+        fit inside it: prepending after truncation ships budget+len(prefix)
+        chars and the engine silently drops the tail the clamp exists to save."""
+        from lilbee.retrieval.embedding_profiles import EmbeddingProfile
+
+        profile = EmbeddingProfile(query_instruction="Instruct: do the thing\nQuery: ")
+        mock_provider.embed.return_value = [[0.0] * 768]
+        long_text = "a" * (embedder.embed_char_budget + 1000)
+        with mock.patch.object(embedder, "_profile", return_value=profile):
+            embedder.embed_query(long_text)
+        sent = mock_provider.embed.call_args[0][0][0]
+        assert sent.startswith(profile.query_instruction)
+        assert len(sent) == embedder.embed_char_budget
 
 
 class TestEmbedBatch:
@@ -66,7 +85,9 @@ class TestEmbedBatch:
     def test_passes_list_as_input(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768, [0.0] * 768]
         embedder.embed_batch(["hello", "world"])
-        mock_provider.embed.assert_called_once_with(["hello", "world"])
+        mock_provider.embed.assert_called_once_with(
+            ["search_document: hello", "search_document: world"]
+        )
 
     def test_batches_large_input(self, embedder, mock_provider):
         """Texts exceeding the batch char budget split into multiple API calls."""
@@ -86,13 +107,13 @@ class TestEmbedBatch:
         """The app-layer cap allows a full packed batch of max-size chunks."""
         assert (
             embedder.batch_char_budget
-            == EMBED_BATCH_TARGET_SEQUENCES * cfg.chunk_size * CHARS_PER_TOKEN
+            == cfg.embed_batch_sequences * cfg.chunk_size * CHARS_PER_TOKEN
         )
 
     def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
         """A typical bulk-ingest batch of default-size chunks lands in one embed request."""
         chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
-        texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
+        texts = ["x" * (chunk_chars // 2) for _ in range(cfg.embed_batch_sequences)]
         mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]
         embedder.embed_batch(texts)
         assert mock_provider.embed.call_count == 1
@@ -103,13 +124,35 @@ class TestEmbedBatch:
         embedder.embed_batch(texts)
         mock_provider.embed.assert_called_once()
         call_input = mock_provider.embed.call_args[0][0]
-        assert call_input[0] == "short"
+        assert call_input[0] == "search_document: short"
         assert len(call_input[1]) == embedder.embed_char_budget
+
+
+class TestVectorType:
+    def test_embed_returns_the_provider_array_unconverted(self, embedder, mock_provider):
+        vector = np.full(768, 0.1, dtype=np.float32)
+        mock_provider.embed.return_value = [vector]
+        assert embedder.embed("test") is vector
+
+    def test_embed_batch_elements_stay_float32_arrays(self, embedder, mock_provider):
+        mock_provider.embed.return_value = [np.zeros(768, dtype=np.float32) for _ in range(2)]
+        vectors = embedder.embed_batch(["a", "b"])
+        assert all(isinstance(v, np.ndarray) and v.dtype == np.float32 for v in vectors)
 
 
 class TestValidateVector:
     def test_valid_vector_passes(self, embedder):
-        embedder.validate_vector([0.1] * 768)
+        embedder.validate_vector(np.full(768, 0.1, dtype=np.float32))
+
+    def test_array_wrong_dim_raises(self, embedder):
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            embedder.validate_vector(np.zeros(2, dtype=np.float32))
+
+    def test_array_invalid_value_raises(self, embedder):
+        vector = np.zeros(768, dtype=np.float32)
+        vector[5] = np.nan
+        with pytest.raises(ValueError, match="invalid value at index 5"):
+            embedder.validate_vector(vector)
 
     def test_embed_wrong_dim_raises(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.1, 0.2]]
@@ -140,6 +183,21 @@ class TestValidateModel:
     def test_validate_returns_false_on_provider_error(self, embedder, mock_provider):
         mock_provider.list_models.side_effect = RuntimeError("no connection")
         assert embedder.validate_model() is False
+
+    def test_validate_warns_when_the_model_is_missing(self, embedder, mock_provider, caplog):
+        """Every production caller invokes this as a bare statement, so a gate
+        that only returned a bool passed silently and the run failed per-file
+        much later. The warning is what makes it a gate."""
+        mock_provider.list_models.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.embedder"):
+            embedder.validate_model()
+        assert cfg.embedding_model in caplog.text
+
+    def test_validate_stays_quiet_when_the_model_is_there(self, embedder, mock_provider, caplog):
+        mock_provider.list_models.return_value = [cfg.embedding_model]
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.embedder"):
+            embedder.validate_model()
+        assert not caplog.text
 
     def test_embedding_available_true(self, embedder, mock_provider):
         mock_provider.list_models.return_value = [cfg.embedding_model]

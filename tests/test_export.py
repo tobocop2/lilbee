@@ -9,6 +9,7 @@ from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.export import (
     DatasetFormat,
+    _source_meta_from_rows,
     build_page_dataset,
     import_dataset,
     load_page_dataset,
@@ -98,6 +99,30 @@ class TestWriteRoundTrip:
             ("a.pdf", 1, "hello"),
             ("a.pdf", 2, "world"),
         ]
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_round_trip_preserves_source_metadata(self, tmp_path, fmt):
+        # The export denormalizes title/authors/created_at onto every page row;
+        # the file round trip must carry them back so import restores the source.
+        table = pa.Table.from_pylist(
+            [
+                {
+                    **_page("a.pdf", 1, "hello"),
+                    "title": "Alpha Paper",
+                    "authors": "Ada, Bob",
+                    "created_at": "2020-01-01",
+                }
+            ]
+        )
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(table, path, fmt)
+        loaded = load_page_dataset(path, fmt)
+        meta = _source_meta_from_rows(loaded, "a.pdf")
+        assert (meta.title, meta.authors, meta.created_at) == (
+            "Alpha Paper",
+            "Ada, Bob",
+            "2020-01-01",
+        )
 
     def test_load_missing_file(self, tmp_path):
         with pytest.raises(ValueError, match="Dataset not found"):
@@ -263,3 +288,47 @@ class TestImportDataset:
         assert legacy == []  # none of the old per-op unlocked writes were used
         # The atomic write still landed the source as IMPORTED.
         assert store.get_sources()[0]["source_type"] == SourceType.IMPORTED
+
+    async def test_import_stamps_stem_title(self, services):
+        # A dataset exported before the metadata columns existed carries none, so
+        # the stem-derived title keeps imported chunks visible to the title arm.
+        store = services
+        await import_dataset(store, [_page("field_notes.pdf", 1, "page body")])
+        chunks = store.get_chunks_by_source("field_notes.pdf")
+        assert chunks and all(c.title == "field notes" for c in chunks)
+        assert store.get_sources()[0]["title"] == "field notes"
+
+    async def test_import_restores_extraction_metadata_from_the_dataset(self, services):
+        """A dataset carrying the metadata columns restores the real extracted
+        title/authors/created_at instead of downgrading to the filename stem."""
+        store = services
+        row = {
+            **_page("report_2021.pdf", 1, "page body"),
+            "title": "Annual Report",
+            "authors": "Ada, Grace",
+            "created_at": "2021-05-01",
+        }
+        await import_dataset(store, [row])
+        chunks = store.get_chunks_by_source("report_2021.pdf")
+        assert chunks and all(c.title == "Annual Report" for c in chunks)
+        source = store.get_sources()[0]
+        assert source["title"] == "Annual Report"
+        assert source["authors"] == "Ada, Grace"
+        assert source["created_at"] == "2021-05-01"
+
+    async def test_export_round_trips_the_metadata_back_out(self, services):
+        """The exported dataset carries each source's metadata on its page rows,
+        so an export/import cycle preserves it instead of losing it."""
+        store = services
+        row = {
+            **_page("report_2021.pdf", 1, "page body"),
+            "title": "Annual Report",
+            "authors": "Ada, Grace",
+            "created_at": "2021-05-01",
+        }
+        await import_dataset(store, [row])
+        exported = build_page_dataset(store).to_pylist()
+        assert exported
+        assert all(r["title"] == "Annual Report" for r in exported)
+        assert all(r["authors"] == "Ada, Grace" for r in exported)
+        assert all(r["created_at"] == "2021-05-01" for r in exported)

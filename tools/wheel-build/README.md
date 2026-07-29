@@ -1,7 +1,7 @@
 # Wheel build scripts
 
 Top-level scripts called by `build-multigpu.yml` (the engine wheel),
-`build-cuda-executables.yml`, and `release.yml` (the standalone executables).
+`build-gpu-executables.yml`, and `release.yml` (the standalone executables).
 Each script runs locally (`bash tools/wheel-build/<script>.sh`) and in CI with
 the same behavior, so a developer can reproduce a CI build off-runner.
 
@@ -10,11 +10,15 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `cmake_args.sh` — emits the per-OS / per-backend `CMAKE_ARGS` string (the
   ggml compile flags). Single source of truth for compile flags.
 - `install_gpu_toolkit.sh` — installs the build-time GPU SDK on the runner
-  (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; no-op on
-  macOS where Metal ships with the OS).
+  (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; ROCm when
+  `BACKEND=rocm`; no-op on macOS where Metal ships with the OS).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
   ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
   package's `bin/` for the requested backend.
+- `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
+  (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside
+  the binary, so an AMD user needs only a kernel driver. Called by
+  `build_llama_server.sh` for the rocm backend; tested on its own.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
   executable, bundling the engine wheel built above.
 

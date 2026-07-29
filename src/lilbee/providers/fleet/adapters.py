@@ -8,12 +8,15 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
 from lilbee.providers.roles import RerankMode, WorkerRole
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
@@ -97,6 +100,8 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 # server can decode concurrently instead of serializing the fan-out.
 LLM_RERANK_CONCURRENCY = 8
 
+_FLAG_MAIN_GPU = "--main-gpu"
+
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
     """Pick the reranker serving mode from the config setting and GGUF arch.
@@ -154,27 +159,94 @@ def embed_spec(meta: dict[str, str] | None) -> RoleServerSpec:
     return replace(base, extra_args=(*base.extra_args, "--pooling", pooling.value))
 
 
+# The expert tensors --cpu-moe/--n-cpu-moe move to system memory, copied from
+# llama.cpp's LLM_FFN_EXPS_REGEX (common/common.h). The estimator is handed the
+# same patterns so its sizing matches what the launch actually offloads; they
+# must stay in step with upstream or the estimate silently drifts from reality.
+EXPERT_TENSOR_REGEX = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
+
+
+def expert_offload_patterns(*, cpu_moe: bool, n_cpu_moe: int | None) -> tuple[str, ...]:
+    """Tensor-name patterns whose experts live in system memory, launch order.
+
+    Mirrors llama.cpp's expansion: ``--cpu-moe`` is one blanket pattern, while
+    ``--n-cpu-moe N`` is one per-block pattern for the first N blocks.
+    """
+    if n_cpu_moe is not None:
+        return tuple(rf"blk\.{i}{EXPERT_TENSOR_REGEX}" for i in range(n_cpu_moe))
+    return (EXPERT_TENSOR_REGEX,) if cpu_moe else ()
+
+
+def _attention_args(
+    flash_attn: str | None, cache_type_k: str | None, cache_type_v: str | None
+) -> list[str]:
+    """Flash-attention and KV cache flags; each stays absent to keep the engine default."""
+    args: list[str] = []
+    if flash_attn is not None:
+        args += ["--flash-attn", flash_attn]
+    if cache_type_k is not None:
+        args += ["--cache-type-k", cache_type_k]
+    if cache_type_v is not None:
+        args += ["--cache-type-v", cache_type_v]
+    return args
+
+
+def _main_gpu_args(devices: tuple[int, ...]) -> list[str]:
+    """``--main-gpu`` for this instance, empty when it does not apply.
+
+    The index is into this instance's own device list, which is the space its
+    visibility pin exposes to the engine, and it is what the setting's help text
+    already describes. llama.cpp ignores the flag with a single device, so it is
+    only emitted where it changes something: which card holds the model under
+    split-mode none, and the intermediate results and KV under split-mode row.
+
+    An index past the end is refused and said out loud. It was previously not
+    emitted at all, so a user could set it, watch it save, and get nothing.
+    """
+    from lilbee.core.config import cfg
+
+    main_gpu = cfg.main_gpu
+    if main_gpu is None or len(devices) <= 1:
+        return []
+    if not 0 <= main_gpu < len(devices):
+        log.warning(
+            "Ignoring main_gpu=%d: this server runs on %d device(s), so the index has "
+            "to be between 0 and %d. It counts within the cards this role was placed "
+            "on, not across every card in the machine.",
+            main_gpu,
+            len(devices),
+            len(devices) - 1,
+        )
+        return []
+    return [_FLAG_MAIN_GPU, str(main_gpu)]
+
+
 def build_server_argv(
     *,
     binary: Path,
     spec: RoleServerSpec,
     model_path: Path,
     devices: tuple[int, ...],
+    device_names: tuple[str, ...] = (),
     n_gpu_layers: int,
     slots: int,
     ctx_per_slot: int,
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
     flash_attn: str | None = None,
-    cache_type: str | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
     batch_size: int | None = None,
-    threads: int | None = None,
     no_mmap: bool = False,
+    cpu_moe: bool = False,
+    n_cpu_moe: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
     ``--ctx-size`` is the per-slot context times the slot count, since
-    llama-server divides total context across parallel slots.
+    llama-server divides total context across parallel slots. ``n_cpu_moe``
+    wins over ``cpu_moe``; the pair would offload the same tensors twice.
+
     """
     argv = [
         str(binary),
@@ -190,20 +262,33 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    if flash_attn is not None:
-        argv += ["--flash-attn", flash_attn]
-    if cache_type is not None:
-        argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
+    argv += _main_gpu_args(devices)
+    argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
-    if threads is not None:
-        argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
-    if len(devices) > 1:
-        ratio = tensor_split or tuple(1 for _ in devices)
-        argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
+    if device_names:
+        # Names as --list-devices prints them, which is the space they were parsed
+        # from. The Vulkan visible-devices variable takes RAW loader indices
+        # instead, so re-emitting parsed ordinals into it silently changes index
+        # space, and setting it also turns off ggml's own type filter, support
+        # check and same-UUID dedup. This keeps all of that active.
+        argv += ["--device", ",".join(device_names)]
+    if len(devices) > 1 and tensor_split:
+        # Only a ratio the planner actually chose. Inventing an even one for a
+        # group that did not choose disables the engine's own fit: it aborts the
+        # fit pass when tensor_split is user-set, and a negative n_gpu_layers
+        # then means every layer. The one group that arrives without a ratio is
+        # the tight placement, whose whole promise is that the engine keeps what
+        # fits and spills the rest, so an invented split turns that promise into
+        # a load-time out-of-memory.
+        argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
         argv += ["--no-mmap"]
+    if n_cpu_moe is not None:
+        argv += ["--n-cpu-moe", str(n_cpu_moe)]
+    elif cpu_moe:
+        argv += ["--cpu-moe"]
     argv += list(spec.extra_args)
     return argv

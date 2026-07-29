@@ -1,0 +1,6 @@
+Using the lilbee knowledge base indexed for this project (search it with the
+lilbee CLI: `lilbee search "your query" --json`, or ask with `lilbee ask`),
+find the name of the configuration setting that controls how many idle minutes
+pass before the engine unloads its model weights. Write a file named
+harness_answer.md in the current directory containing a one-paragraph
+explanation that includes the exact setting name. Then stop.

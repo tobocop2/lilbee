@@ -40,7 +40,7 @@ _STATUS_CLASS: dict[TaskStatus, str] = {
 
 _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
 
-# Pill palette: background color per task type. Sync/add/remove share
+# Pill palette: background color per task type. Sync/add/remove/import share
 # $secondary (data-mutating ops), download uses $accent (network), wiki
 # uses $warning (CPU-heavy generation), crawl uses $primary (external).
 _TASK_TYPE_BG: dict[str, str] = {
@@ -48,6 +48,8 @@ _TASK_TYPE_BG: dict[str, str] = {
     TaskType.SYNC.value: "$secondary",
     TaskType.ADD.value: "$secondary",
     TaskType.REMOVE.value: "$secondary",
+    TaskType.IMPORT.value: "$secondary",
+    TaskType.EXPORT.value: "$primary",
     TaskType.CRAWL.value: "$primary",
     TaskType.WIKI.value: "$warning",
     TaskType.SETUP.value: "$warning-darken-1",

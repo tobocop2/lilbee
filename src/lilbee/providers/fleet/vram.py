@@ -1,7 +1,6 @@
 """gguf-parser-backed, UMA-aware memory estimation for one llama-server instance.
 
-See docs/architecture.md (VRAM estimation) for why this replaced the hand-rolled
-weights + KV-cache math.
+See docs/architecture.md (VRAM estimation).
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
+from lilbee.providers.fleet.proc import run_bounded
 
 # gguf-parser CLI flags (the batch flags are shared with the llama-server argv builder).
 _FLAG_PATH = "--path"
@@ -31,6 +31,8 @@ _FLAG_TENSOR_SPLIT = "--tensor-split"
 _FLAG_SPLIT_MODE = "--split-mode"
 _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
+_FLAG_OVERRIDE_TENSOR = "--override-tensor"
+_BUFFER_TYPE_CPU = "CPU"
 
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
@@ -44,11 +46,32 @@ _KEY_NONUMA = "nonuma"
 
 _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
-_CACHE_SIZE = 64
+# Bounded wait for a timed-out parser to die before abandoning it (matches the
+# device probe): a parser wedged in driver I/O must not hang the warm-up thread.
+_PARSE_KILL_WAIT_S = 5.0
+# Sized for a whole plan on a wide box, not for one sweep. The ratio ladder and
+# the context bisection key separately (the key carries ctx), and slot fitting
+# adds more, so an eight-GPU chat split touches on the order of a hundred keys.
+# Too small and the winning candidate's keys are evicted before the launch reads
+# them back, which spawns gguf-parser again to recompute what was just measured.
+_CACHE_SIZE = 256
 
 # Mirrors vLLM's gpu_memory_utilization default: never charge a GPU past 90% of
 # its free VRAM, leaving headroom for allocator fragmentation and driver overhead.
+# The default for cfg.usable_vram_fraction, which is what callers should read.
 USABLE_VRAM_FRACTION = 0.9
+
+
+def usable_vram_fraction() -> float:
+    """Share of a card placement may charge.
+
+    Configurable because it decides admission rather than merely tuning it: at
+    the default, a host whose chat model lands just over the line is refused chat
+    with no way for its owner to say the card has the room.
+    """
+    from lilbee.core.config import cfg
+
+    return cfg.usable_vram_fraction
 
 
 @dataclass(frozen=True)
@@ -93,9 +116,11 @@ def estimate_instance_footprint(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
+    kv_cache_type_v: KvCacheType | None = None,
     mmproj_path: Path | None = None,
     tensor_split: tuple[int, ...] = (),
     batch_size: int | None = None,
+    expert_offload: tuple[str, ...] = (),
 ) -> GgufVramEstimate:
     """gguf-parser's UMA-aware footprint for one llama-server instance.
 
@@ -114,6 +139,7 @@ def estimate_instance_footprint(
 
     def run(mmproj: Path | None) -> GgufVramEstimate:
         return _cached_footprint(
+            engine_build_identity(),
             str(model_path),
             model_path.stat().st_mtime_ns,
             ctx,
@@ -121,10 +147,12 @@ def estimate_instance_footprint(
             gpu_layers,
             flash_attn,
             kv_cache_type.value,
+            (kv_cache_type_v or kv_cache_type).value,
             str(mmproj) if mmproj is not None else None,
             mmproj.stat().st_mtime_ns if mmproj is not None else 0,
             tensor_split,
             batch_size,
+            expert_offload,
         )
 
     if mmproj_path is None:
@@ -155,8 +183,22 @@ def _corrected_projector_estimate(
     )
 
 
+def engine_build_identity() -> str:
+    """Which engine build these numbers describe.
+
+    Part of the memo key. The estimate prices what one particular llama-server
+    will allocate, and the key held the model, the sizing and the parser's own
+    arguments without a trace of that, so swapping the engine kept the previous
+    engine's answers.
+    """
+    from lilbee.providers.fleet.binary import _engine_build_id
+
+    return _engine_build_id()
+
+
 @lru_cache(maxsize=_CACHE_SIZE)
 def _cached_footprint(
+    _engine_id: str,
     path_str: str,
     _mtime_ns: int,
     ctx: int,
@@ -164,15 +206,18 @@ def _cached_footprint(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: str,
+    kv_cache_type_v: str,
     mmproj: str | None,
     _mmproj_mtime_ns: int,
     tensor_split: tuple[int, ...],
     batch_size: int | None,
+    expert_offload: tuple[str, ...],
 ) -> GgufVramEstimate:
-    """Memoised gguf-parser run keyed on path + mtime + sizing.
+    """Memoised gguf-parser run keyed on engine + path + mtime + sizing.
 
-    The mtime args participate in the cache key only; a re-pulled file at the same
-    path invalidates automatically because its mtime changes.
+    The mtime and engine args participate in the cache key only; a re-pulled file
+    at the same path invalidates automatically because its mtime changes, and a
+    swapped engine invalidates because its build identity does.
     """
     argv = estimator_argv(
         path_str,
@@ -181,9 +226,11 @@ def _cached_footprint(
         gpu_layers=gpu_layers,
         flash_attn=flash_attn,
         kv_cache_type=kv_cache_type,
+        kv_cache_type_v=kv_cache_type_v,
         mmproj=mmproj,
         tensor_split=tensor_split,
         batch_size=batch_size,
+        expert_offload=expert_offload,
     )
     return _parse_estimate(_run_parser(argv, path_str), path_str)
 
@@ -196,17 +243,26 @@ def estimator_argv(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: str,
+    kv_cache_type_v: str,
     mmproj: str | None,
     tensor_split: tuple[int, ...],
     batch_size: int | None,
+    expert_offload: tuple[str, ...] = (),
 ) -> list[str]:
-    """The gguf-parser command line for one instance's sizing parameters."""
+    """The gguf-parser command line for one instance's sizing parameters.
+
+    ``ctx`` is the per-slot context, as it is for the launch argv, and
+    ``--ctx-size`` carries the total across slots. The parser's ``--parallel``
+    does not divide the context the way llama-server's does: the KV estimate is
+    identical for every value of it, so the multiply has to reach the parser
+    through ``--ctx-size`` or the cache is under-reserved by the slot count.
+    """
     argv = [
         str(resolve_gguf_parser()),
         _FLAG_PATH,
         path_str,
         _FLAG_CTX,
-        str(ctx),
+        str(ctx * slots),
         _FLAG_PARALLEL,
         str(slots),
         _FLAG_GPU_LAYERS,
@@ -214,7 +270,7 @@ def estimator_argv(
         _FLAG_CACHE_K,
         kv_cache_type,
         _FLAG_CACHE_V,
-        kv_cache_type,
+        kv_cache_type_v,
         _FLAG_FLASH if flash_attn else _FLAG_NO_FLASH,
         _FLAG_JSON,
     ]
@@ -231,6 +287,14 @@ def estimator_argv(
             _FLAG_SPLIT_MODE,
             _SPLIT_MODE_LAYER,
         ]
+    if expert_offload:
+        # Without these the estimate charges the GPU for experts the launch keeps
+        # in system memory, and the planner sizes slots against a footprint that
+        # never materializes.
+        argv += [
+            _FLAG_OVERRIDE_TENSOR,
+            ",".join(f"{pattern}={_BUFFER_TYPE_CPU}" for pattern in expert_offload),
+        ]
     if mmproj is not None:
         argv += [_FLAG_MMPROJ, mmproj]
     return argv
@@ -238,17 +302,20 @@ def estimator_argv(
 
 def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
+    failed = ProviderError(
+        f"Could not size the model {path_str!r}: the memory estimator failed to run.",
+        provider=_PROVIDER,
+        kind=ProviderErrorKind.SERVER,
+    )
     try:
-        proc = subprocess.run(  # noqa: S603 - argv[0] is the resolved gguf-parser
-            argv, capture_output=True, text=True, timeout=_PARSE_TIMEOUT_S, check=True
+        stdout, returncode = run_bounded(
+            argv, timeout_s=_PARSE_TIMEOUT_S, kill_wait_s=_PARSE_KILL_WAIT_S, label="gguf-parser"
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ProviderError(
-            f"Could not size the model {path_str!r}: the memory estimator failed to run.",
-            provider=_PROVIDER,
-            kind=ProviderErrorKind.SERVER,
-        ) from exc
-    return proc.stdout
+        raise failed from exc
+    if returncode != 0:
+        raise failed
+    return stdout
 
 
 def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:

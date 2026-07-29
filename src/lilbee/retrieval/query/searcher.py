@@ -14,6 +14,8 @@ from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.llm_json import json_reply_format
+from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     MemoryKind,
@@ -52,6 +54,7 @@ from lilbee.retrieval.query.expansion import (
     CONDENSE_PROMPT,
     EXPANSION_MAX_TOKENS,
     EXPANSION_PROMPT,
+    HYDE_MAX_TOKENS,
 )
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
@@ -69,12 +72,15 @@ from lilbee.retrieval.query.intent import (
     AggregateQuery,
     document_references,
     matches_reference,
+    matches_stored_title,
     matches_title,
     parse_aggregate,
     parse_llm_aggregate,
     title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
+from lilbee.retrieval.query.neighbors import expand_neighbors
+from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     StreamToken,
@@ -225,10 +231,16 @@ class StructuredQuery(NamedTuple):
 
 
 class RagContext(NamedTuple):
-    """Grounded context for one turn: the chunks and the prompt built on them."""
+    """Grounded context for one turn: the chunks and the prompt built on them.
+
+    ``base_results`` is the pre-widen selected set. An overflow retry refits from
+    it, not from ``results`` (whose neighbor text is baked in and can no longer
+    be shed), so a tighter fit drops expansion before it drops an original chunk.
+    """
 
     results: list[SearchChunk]
     messages: list[ChatMessage]
+    base_results: list[SearchChunk] | None = None
 
 
 class Searcher:
@@ -281,9 +293,9 @@ class Searcher:
 
     def _apply_guardrails(
         self,
-        variants: list[tuple[str, list[float]]],
-        question_vec: list[float],
-    ) -> list[tuple[str, list[float]]]:
+        variants: list[tuple[str, Vector]],
+        question_vec: Vector,
+    ) -> list[tuple[str, Vector]]:
         """Drop expansion variants whose embedding drifts too far from the question."""
         if not self._config.expansion_guardrails:
             return variants
@@ -321,9 +333,7 @@ class Searcher:
         log.info("Query expansion produced %d variants", len(kept))
         return kept
 
-    def _expand_query(
-        self, question: str, question_vec: list[float]
-    ) -> list[tuple[str, list[float]]]:
+    def _expand_query(self, question: str, question_vec: Vector) -> list[tuple[str, Vector]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
         LLM variants run through ``_apply_guardrails``; concept-graph
@@ -339,7 +349,7 @@ class Searcher:
         short_threshold = self._config.expansion_short_query_tokens
         skip_llm = short_threshold > 0 and len(_tokenize(question)) <= short_threshold
         try:
-            llm_variants: list[tuple[str, list[float]]] = []
+            llm_variants: list[tuple[str, Vector]] = []
             if count > 0 and not skip_llm:
                 llm_texts = list(self._llm_expand(question, count))
                 if llm_texts:
@@ -423,7 +433,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options={"num_predict": EXPANSION_MAX_TOKENS},
+                options={"num_predict": HYDE_MAX_TOKENS},
             )
             # Reasoning models front-load deliberation; embedding it instead
             # of the passage would search for the model's thought process.
@@ -515,7 +525,7 @@ class Searcher:
     def _merge_variant_results(
         self,
         question: str,
-        query_vec: list[float],
+        query_vec: Vector,
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
@@ -612,7 +622,6 @@ class Searcher:
             self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
             if self._config.hyde:
                 self._merge_hyde_results(question, results, seen, top_k, chunk_type)
-        results = self._apply_concept_boost(results, question)
         # Merged variant/HyDE hits arrive appended, not ranked; every consumer
         # of this method (bare search surfaces included) gets one global order
         # over the canonical score rather than insertion order.
@@ -625,6 +634,22 @@ class Searcher:
         # HTTP, and MCP copies of a bare distance cutoff dropped both-arm
         # rows the fusion layer deliberately keeps past max_distance.
         results = filter_results(results, self._config.max_distance)
+        # Drop tables-of-contents and cover pages that only the vector arm
+        # surfaced: they dilute context precision without answering a question.
+        # Filtered from the top_k*2 candidate buffer so enough real passages
+        # remain for the downstream trim. Runs before the concept boost so a
+        # boost cannot promote a structural chunk into the rank-0 exemption.
+        if self._config.filter_structural_chunks:
+            # A lexical (BM25 or title) hit or the top-ranked row is content the
+            # answer may need, whatever its shape, so it is never dropped; only
+            # structural chunks the lexical arms did not support are removed.
+            results = [
+                r
+                for i, r in enumerate(results)
+                if r.bm25_score is not None or i == 0 or not is_structural_chunk(r.chunk)
+            ]
+        results = self._apply_concept_boost(results, question)
+        results = order_by_fusion(results)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
@@ -679,14 +704,14 @@ class Searcher:
         ``on_batch`` hears ``(batch, total)`` before each model call, for progress UI.
         """
         ctx_target = self._config.chat_n_ctx_target
-        plan = plan_compaction(messages, previous_summary, ctx_target=ctx_target)
+        plan = plan_compaction(messages, ctx_target=ctx_target)
         notes: list[str] = []
         condensed = 0
         stranded = plan.stranded
         for index, batch in enumerate(plan.batches):
             if on_batch is not None:
                 on_batch(index + 1, len(plan.batches))
-            note = self._summarize_batch(batch, "")
+            note = self._summarize_batch(batch)
             if note:
                 notes.append(note)
                 condensed += len(batch)
@@ -697,26 +722,29 @@ class Searcher:
         merged = merge_notes(previous_summary, notes)
         cap = summary_cap(ctx_target)
         if estimate_text_tokens(merged) > cap:
-            merged = self._summarize_batch([{"role": "user", "content": merged}], "") or merged
+            merged = self._summarize_batch([{"role": "user", "content": merged}]) or merged
         return CompactionResult(
             summary=merged or previous_summary, condensed=condensed, stranded=stranded
         )
 
-    def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
-        """Fold one batch of dropped turns into *previous_summary*.
+    def _summarize_batch(self, batch: list[ChatMessage]) -> str:
+        """Fold one batch of dropped turns into notes.
+
+        Each batch is summarized on its own, with no carried-forward notes in
+        the prompt: summarize_history merges the per-batch notes instead, which
+        keeps summary depth at one rather than re-summarizing the summary once
+        per batch.
 
         An overflowing batch splits in half and each half folds on its own:
         batch sizing is estimate-based, and the cost of an estimate miss here
         is stranded turns, not a slow call. Depth is log2 of the batch.
 
-        Returns *previous_summary* unchanged on any other failure: older notes
-        beat dropping the turns on the floor.
+        Returns "" on any other failure, so the caller counts the batch as
+        stranded rather than reporting turns it has no notes for.
         """
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
-        previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
         prompt = COMPACT_PROMPT.format(
             words=summary_word_budget(self._config.chat_n_ctx_target),
-            previous=previous,
             transcript=transcript,
         )
         try:
@@ -743,23 +771,23 @@ class Searcher:
             reasoning = split_reasoning(response.text).reasoning.strip()
             if reasoning:
                 return reasoning
-            log.warning("History compaction returned nothing; keeping the previous summary")
+            log.warning("History compaction returned nothing for this batch")
         except ProviderError as exc:
             # A single message too big for the window cannot split; it falls
             # through to the warning below.
             if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
                 mid = len(batch) // 2
-                first = self._summarize_batch(batch[:mid], previous_summary)
-                second = self._summarize_batch(batch[mid:], "")
+                first = self._summarize_batch(batch[:mid])
+                second = self._summarize_batch(batch[mid:])
                 merged = "\n".join(part for part in (first, second) if part.strip())
                 if merged.strip():
                     return merged
-            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+            log.warning("History compaction failed for this batch", exc_info=True)
         except Exception:
             # warning, not debug: the user is told turns were dropped, so the
             # reason must be in the log by default.
-            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
-        return previous_summary
+            log.warning("History compaction failed for this batch", exc_info=True)
+        return ""
 
     def _known_item_results(self, question: str) -> list[SearchChunk]:
         """Resolve a document named in *question* to its own chunks.
@@ -800,15 +828,20 @@ class Searcher:
         return [c.model_copy(update={"score": 1.0}) for c in chunks]
 
     def _resolve_title_filename(self, title: str) -> str | None:
-        """The one source whose stem *title* names token-exactly, or ``None``.
+        """The one source whose stem or stored title *title* names, or ``None``.
 
-        The article-stripped title pre-filters candidates by substring, then
-        the token-exact stem comparison decides; only a unique winner routes,
-        so shared titles fall back to topical retrieval.
+        The article-stripped title pre-filters candidates by substring (over
+        filename and stored title), then the token-exact comparison decides;
+        only a unique winner routes, so shared titles fall back to topical
+        retrieval.
         """
         stripped = query_language().leading_article_pattern.sub("", title.strip())
         candidates = self._store.get_sources(search=stripped, limit=_KNOWN_ITEM_CANDIDATES)
-        matches = [s for s in candidates if matches_title(title, s["filename"])]
+        matches = [
+            s
+            for s in candidates
+            if matches_title(title, s["filename"]) or matches_stored_title(title, s.get("title"))
+        ]
         if len(matches) == 1:
             return str(matches[0]["filename"])
         return None
@@ -916,33 +949,31 @@ class Searcher:
         retrieved set tighter without re-running retrieval or condensation.
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
-        results = self._fit_context_budget(results, system, question, history, scale)
+        base_results = list(results)
+        budget = self._context_budget(system, question, history, scale)
+        results, used = self._fit_to_budget(results, budget)
+        results = self._widen_with_neighbors(results, max(0, budget - used))
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages)
+        return RagContext(results, messages, base_results)
 
     @staticmethod
     def _budget_tokens(text: str) -> int:
         """Conservative token cost for budgeting (see _BUDGET_CHARS_PER_TOKEN)."""
         return max(1, len(text) // _BUDGET_CHARS_PER_TOKEN)
 
-    def _fit_context_budget(
+    def _context_budget(
         self,
-        results: list[SearchChunk],
         system: str,
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
-    ) -> list[SearchChunk]:
-        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
-
-        ``max_context_sources`` caps by count; this caps by tokens so a
-        retrieval-heavy query degrades gracefully instead of erroring with
-        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+    ) -> int:
+        """Token budget left for source passages after the fixed prompt parts.
 
         The ceiling is the engine's ACTUAL per-slot window when known: the
         configured value is a target the dynamic picker aims for, and the
@@ -962,7 +993,21 @@ class Searcher:
             + sum(self._budget_tokens(m["content"]) for m in history or [])
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = int((prompt_token_budget(ctx) - non_source) * scale)
+        return int((prompt_token_budget(ctx) - non_source) * scale)
+
+    def _fit_to_budget(
+        self, results: list[SearchChunk], budget: int
+    ) -> tuple[list[SearchChunk], int]:
+        """Fit *results* into *budget*: the kept sources and the tokens they cost.
+
+        ``max_context_sources`` caps by count; this caps by tokens so a
+        retrieval-heavy query degrades gracefully instead of erroring with
+        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+
+        Returning the spent total lets the caller derive the leftover for
+        neighbor expansion instead of re-deriving the same per-chunk cost, so
+        the two stages cannot drift apart on the accounting.
+        """
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
@@ -977,7 +1022,26 @@ class Searcher:
                 len(kept),
                 len(results),
             )
-        return kept
+        return kept, used
+
+    def _widen_with_neighbors(self, results: list[SearchChunk], leftover: int) -> list[SearchChunk]:
+        """Widen each fitted passage with adjacent same-source chunks.
+
+        Spends only *leftover*, the budget the fit did not use, so a tight
+        window sheds expansion first and never drops an original chunk for a
+        neighbor. Widening keeps each passage's citation number and identity;
+        its text and page/line span do change, so the sources block shows the
+        widened range.
+        """
+        radius = self._config.neighbor_expansion
+        if radius <= 0 or leftover <= 0:
+            return results
+        # With the structural filter on, expansion must not re-import the TOC
+        # and cover text the filter dropped from the results.
+        exclude = is_structural_chunk if self._config.filter_structural_chunks else None
+        return expand_neighbors(
+            results, self._store, radius, leftover, self._budget_tokens, exclude=exclude
+        )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
@@ -1157,7 +1221,10 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": INTENT_CLASSIFY_MAX_TOKENS},
+                options={
+                    "num_predict": INTENT_CLASSIFY_MAX_TOKENS,
+                    "response_format": json_reply_format(),
+                },
             )
         except Exception:
             log.debug("LLM intent classification failed; using pattern result", exc_info=True)
@@ -1258,7 +1325,7 @@ class Searcher:
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
             return AskResult(answer=GROUNDED_REFUSAL, sources=[])
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         opts = options if options is not None else self._config.generation_options()
         try:
             result = self._provider.chat(
@@ -1267,19 +1334,30 @@ class Searcher:
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or not results:
                 raise
-            # The budget estimator is a heuristic; when the engine still
-            # reports overflow, refit the same retrieved set tighter and
-            # retry once instead of hard-failing the question.
+            # The budget estimator is a heuristic; when the engine still reports
+            # overflow, refit tighter and retry once. Refit from the pre-widen
+            # set so the tighter budget sheds neighbor expansion before it drops
+            # an original chunk, not the reverse.
             log.warning("Context overflow despite budgeting; retrying with a tighter fit")
-            results, messages = self._finalize_context(
-                results, question, history, scale=_OVERFLOW_RETRY_SCALE
+            retry = self._finalize_context(
+                rag.base_results if rag.base_results is not None else results,
+                question,
+                history,
+                scale=_OVERFLOW_RETRY_SCALE,
             )
+            results, messages = retry.results, retry.messages
             result = self._provider.chat(
                 self._messages_for_provider(messages), options=opts or None
             )
         raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))
+        # Citations are read off the prose only: a model that echoes its own
+        # Sources list would otherwise mark every retrieved file cited.
+        return AskResult(
+            answer=clean,
+            sources=results,
+            cited_sources=cited_subset(strip_llm_citations(clean), results),
+        )
 
     def ask(
         self,
@@ -1347,10 +1425,10 @@ class Searcher:
         if rag is None:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
-        # been yielded, so the conservative budget in _fit_context_budget is
-        # the streaming path's protection.
+        # been yielded, so the conservative budget the context fit already
+        # applied is the streaming path's protection.
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         events = stream_chat_with_cap(

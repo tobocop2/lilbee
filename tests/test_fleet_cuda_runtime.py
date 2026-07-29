@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import cuda_runtime
+from lilbee.providers.fleet import cuda_runtime, engine_diagnostics
 from lilbee.providers.fleet.cuda_runtime import (
     apply_cuda_runtime_env,
     assert_cuda_devices_usable,
@@ -23,13 +23,13 @@ def _force_linux(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _have_ldd(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cuda_runtime.shutil, "which", lambda _name: "/usr/bin/ldd")
+    monkeypatch.setattr(engine_diagnostics.shutil, "which", lambda _name: "/usr/bin/ldd")
 
 
 def _ldd_returns(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
     _have_ldd(monkeypatch)
     monkeypatch.setattr(
-        cuda_runtime.subprocess,
+        engine_diagnostics.subprocess,
         "run",
         lambda *_a, **_k: SimpleNamespace(stdout=stdout, stderr=""),
     )
@@ -55,7 +55,7 @@ def test_links_cuda_runtime_false_for_non_cuda_build(monkeypatch: pytest.MonkeyP
 
 
 def test_links_cuda_runtime_false_when_ldd_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cuda_runtime.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(engine_diagnostics.shutil, "which", lambda _name: None)
     assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is False
 
 
@@ -106,7 +106,7 @@ def test_assert_devices_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: object, **_k: object) -> None:
         raise AssertionError("must not probe off Linux")
 
-    monkeypatch.setattr(cuda_runtime.subprocess, "run", _boom)
+    monkeypatch.setattr(engine_diagnostics.subprocess, "run", _boom)
     assert_cuda_devices_usable(Path("/bin/llama-server"), [], "")  # no raise
 
 
@@ -136,8 +136,8 @@ def test_assert_devices_passes_when_no_nvidia_gpu(monkeypatch: pytest.MonkeyPatc
 
 
 def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The bb-3xnx failure: a CUDA build + an NVIDIA GPU, but the probe sees nothing.
-    # Must hard-fail, surface the engine's real error, and list causes (not assert one).
+    # A CUDA build plus an NVIDIA GPU, but the probe sees nothing. Must hard-fail,
+    # surface the engine's real error, and list causes rather than assert one.
     _force_linux(monkeypatch)
     _have_ldd(monkeypatch)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
@@ -149,7 +149,8 @@ def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.Monkey
     message = str(exc.value)
     assert "failed to initialize CUDA" in message  # the engine's own diagnostic, surfaced
     assert "nvidia-smi" in message
-    assert "12.4" in message
+    assert "MIG" in message  # the one host shape that reliably produces this symptom
+    assert "nvidia-cuda-runtime" in message  # the wheels to match, major-agnostic
     assert "CUDA_VISIBLE_DEVICES" in message  # causes listed, not one asserted
 
 
@@ -223,31 +224,3 @@ def test_cuda_wheel_lib_dirs_collects_only_installed(monkeypatch: pytest.MonkeyP
     }
     monkeypatch.setattr(cuda_runtime, "_wheel_lib_dir", lambda name: found[name])
     assert cuda_runtime._cuda_wheel_lib_dirs() == [Path("/r/lib"), Path("/n/lib")]
-
-
-def test_ldd_output_none_when_subprocess_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    _have_ldd(monkeypatch)
-
-    def _raise(*_a: object, **_k: object) -> None:
-        raise OSError("not an ELF binary")
-
-    monkeypatch.setattr(cuda_runtime.subprocess, "run", _raise)
-    assert cuda_runtime._ldd_output(Path("/bin/llama-server"), {}) is None
-
-
-def test_device_probe_diagnostic_returns_tail_when_no_error_line() -> None:
-    out = cuda_runtime._device_probe_diagnostic("CUDA0: NVIDIA L40 (45 GiB)\n")
-    assert "NVIDIA L40" in out  # no error marker -> falls through to the output tail
-
-
-def test_device_probe_diagnostic_picks_the_cuda_error_line() -> None:
-    output = "loading backends\nggml_cuda_init: CUDA error: unknown error\ntrailing noise\n"
-    assert (
-        cuda_runtime._device_probe_diagnostic(output) == "ggml_cuda_init: CUDA error: unknown error"
-    )
-
-
-def test_device_probe_diagnostic_when_no_output() -> None:
-    assert (
-        cuda_runtime._device_probe_diagnostic("") == "(the engine's device probe printed nothing)"
-    )

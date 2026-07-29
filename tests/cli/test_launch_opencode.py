@@ -181,7 +181,8 @@ def test_health_ok_returns_true_on_200(monkeypatch):
 
     resp = MagicMock()
     resp.status_code = 200
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.health_ok(8765) is True
 
 
@@ -191,7 +192,8 @@ def test_health_ok_returns_false_on_non_200(monkeypatch):
 
     resp = MagicMock()
     resp.status_code = 503
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.health_ok(8765) is False
 
 
@@ -202,7 +204,8 @@ def test_chat_ready_true_when_health_reports_warm(monkeypatch):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"chat_ready": True}
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.chat_ready(8765) is True
 
 
@@ -213,7 +216,8 @@ def test_chat_ready_false_when_health_reports_cold(monkeypatch):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"chat_ready": False}
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.chat_ready(8765) is False
 
 
@@ -291,7 +295,8 @@ def test_served_chat_ctx_reads_health_window(monkeypatch):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"chat_ready": True, "chat_ctx": 40960}
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.served_chat_ctx(8765) == 40960
 
 
@@ -302,7 +307,8 @@ def test_served_chat_ctx_none_when_window_absent(monkeypatch):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"chat_ready": True}
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.served_chat_ctx(8765) is None
 
 
@@ -695,7 +701,8 @@ def test_wait_for_health_returns_true_on_200(monkeypatch):
 
     resp = MagicMock()
     resp.status_code = 200
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     assert launch_mod.wait_for_health(8765, timeout_s=1.0) is True
 
 
@@ -717,7 +724,8 @@ def test_wait_for_health_returns_false_on_non_200(monkeypatch):
 
     resp = MagicMock()
     resp.status_code = 503
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
     monkeypatch.setattr(launch_mod.time, "sleep", lambda _seconds: None)
     assert launch_mod.wait_for_health(8765, timeout_s=0.05) is False
 
@@ -726,7 +734,7 @@ def test_spawn_server_returns_popen(monkeypatch):
     from lilbee.cli.launchers import server as launch_mod
 
     fake = MagicMock()
-    monkeypatch.setattr(launch_mod.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(launch_mod, "spawn_bound_child", lambda *a, **k: fake)
     out = launch_mod.spawn_server(8765)
     assert out is fake
 

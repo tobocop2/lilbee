@@ -1,11 +1,14 @@
 """Shared test helpers."""
 
 import os
+import shutil
 import sys
 import threading
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 # Opt tests out of the per-role catalog-task validator at import time so
@@ -33,6 +36,10 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.providers.fleet.binary import EngineTool
+
+# Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
+pytest_plugins = ["tests._hang_watchdog"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -45,11 +52,9 @@ def _patch_executor_daemon_threads() -> None:
     non-daemon and block xdist worker process exit. On 3.12+ interpreter
     shutdown handles this correctly.
 
-    LanceDB spawns a non-daemon ``LanceDBBackgroundEventLoop`` tokio thread
-    with no close() API. On ubuntu 3.11 these accumulate across tests in
-    test_store.py and the process wedges shortly after. On 3.12+ interpreter
-    shutdown handles it. Daemonify both at Thread.__init__ so start() runs
-    them as daemons.
+    LanceDB's ``LanceDBBackgroundEventLoop`` thread used to need daemonizing
+    here too, but the pinned lancedb already creates it ``daemon=True``, so only
+    the executor workers remain.
     """
     if sys.version_info >= (3, 12):
         return
@@ -59,7 +64,7 @@ def _patch_executor_daemon_threads() -> None:
 
     def _init_with_daemon(self: threading.Thread, *args: object, **kwargs: object) -> None:
         _real_init(self, *args, **kwargs)  # type: ignore[misc]
-        if getattr(self, "_target", None) is _tmod._worker or "LanceDB" in self.name:
+        if getattr(self, "_target", None) is _tmod._worker:
             self.daemon = True
 
     threading.Thread.__init__ = _init_with_daemon  # type: ignore[assignment]
@@ -67,6 +72,32 @@ def _patch_executor_daemon_threads() -> None:
 
 # Apply at import time so xdist workers get the patch immediately.
 _patch_executor_daemon_threads()
+
+
+def _use_selector_loop_on_windows() -> None:
+    """Run the Windows test process on the selector loop, not the proactor one.
+
+    The proactor loop's transport teardown leaks resources across the many
+    Textual ``run_test`` app cycles this suite drives; they pile up on the
+    xdist worker until it wedges holding the GIL, and the job hangs to
+    timeout-minutes (Windows py3.12/3.13; 3.11 is worse and runs serially).
+    The selector loop that Linux and macOS already use does not accumulate.
+
+    Safe here because the proactor loop's one hard advantage, asyncio
+    subprocess support, is never exercised by the tests: the sole caller
+    (``crawler.bootstrap``) is monkeypatched to a fake in every test that
+    reaches it. Production Windows keeps the proactor loop for real crawler
+    subprocesses; this touches the test process only. Set at import, before
+    any loop is created, so every xdist worker inherits it.
+    """
+    if sys.platform != "win32":
+        return
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_use_selector_loop_on_windows()
 
 
 # Silence stray lancedb thread shutdown errors globally so they can't wedge
@@ -152,6 +183,30 @@ def _assume_litellm_available(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sealed_engine_resolution(request, monkeypatch):
+    """Seal engine-binary resolution so every machine behaves like CI.
+
+    resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
+    empty (always, outside a release build), so a developer with llama-server
+    installed resolves a real binary where CI raises ProviderError. Blocking
+    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
+    override forces a test that needs a binary to plant its own (a tmp-file
+    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
+    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    """
+    if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
+        return
+    monkeypatch.setattr(cfg, "llama_server_path", "")
+    sealed = {tool.value for tool in EngineTool}
+    real_which = shutil.which
+
+    def _engineless_which(cmd, *args, **kwargs):
+        return None if cmd in sealed else real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _engineless_which)
+
+
+@pytest.fixture(autouse=True)
 def _reset_services_after_test():
     """Drop any Services container ``set_services()`` left around.
 
@@ -187,16 +242,23 @@ def _reset_services_after_test():
 
 @pytest.fixture(autouse=True)
 def _join_fleet_background_threads():
-    """Join lingering fleet warm-up / reload daemon threads after each test.
+    """Retire the fleet's background threads after each test.
 
-    ``warm_up_pool`` / ``reload_role`` dispatch fire-and-forget daemon threads; on a
-    host without the engine binary they fail fast and log a warning. Joining them
-    here keeps that warning inside the test that started the thread instead of
-    leaking it into a later test's log capture.
+    Two shapes need retiring. ``warm_up_pool`` / ``reload_role`` dispatch
+    fire-and-forget daemon threads that end on their own once joined; on a host
+    without the engine binary they fail fast, and joining keeps that warning
+    inside the test that started them. The child-guard spawner is different: its
+    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    never ends (it parks waiting for the next spawn), so any test that ran a real
+    probe or launch must close it, or the leak guard flags it against whatever
+    test happens to run next.
     """
     yield
     import threading
 
+    from lilbee.providers.fleet import child_guard
+
+    child_guard._spawner.close()
     for thread in threading.enumerate():
         if thread.name.startswith("fleet-") and thread.is_alive():
             thread.join(timeout=5.0)
@@ -212,6 +274,29 @@ def _ignore_user_global_config(monkeypatch):
     not to add the toml source: env + defaults only.
     """
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+
+
+@pytest.fixture(scope="session")
+def _playwright_browsers_root(tmp_path_factory):
+    """One throwaway browser cache for the whole session.
+
+    Session-scoped on purpose: a per-test directory would mean one mkdir per
+    test, and a temp root holding thousands of sibling directories is slow
+    enough to push the timing-sensitive TUI tests into their timeout.
+    """
+    return tmp_path_factory.mktemp("ms-playwright")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_playwright_browsers_path(_playwright_browsers_root, monkeypatch):
+    """Keep the browser cache out of the developer's real Playwright directory.
+
+    Tests that fake ``chromium_installed() -> False`` drive the install path,
+    which creates and locks the browsers directory. Without this they would
+    reach ``~/Library/Caches/ms-playwright`` on the machine running them.
+    ``_browsers_cache_path`` honors this env var ahead of the platform default.
+    """
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(_playwright_browsers_root))
 
 
 @pytest.fixture
@@ -255,19 +340,37 @@ def _no_leaked_task_workers():
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Safety net: join non-daemon threads that outlive the test.
+    """Join non-daemon threads that outlive the test, warning on any that survive.
 
     Daemon threads (executor workers, litestar QueueListeners) are safe to
     ignore since they won't block process exit. Only non-daemon threads need
     explicit joining to prevent xdist hangs.
+
+    A non-daemon thread still alive after the join is the precondition for the
+    Windows xdist wedge: it survives loop teardown and keeps posting to the
+    closing loop's self-pipe. Warn (naming the test and the threads) rather than
+    fail: several suites -- ingest workers, litellm's executor -- legitimately
+    leave such threads, so a hard failure would just be noise. The warning makes
+    the leakers greppable in CI so a real wedge can be traced to its owner.
     """
     before = set(threading.enumerate())
     yield
+    leaked: list[str] = []
     for thread in threading.enumerate():
         if thread in before or thread is threading.current_thread():
             continue
         if thread.is_alive() and not thread.daemon:
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                leaked.append(thread.name)
+    if leaked:
+        # warnings.warn (not print/stderr, which pytest's capture swallows on a
+        # passing test) so pytest aggregates it into the end-of-run warnings
+        # summary and the leaking thread names stay greppable in CI.
+        warnings.warn(
+            f"_drain_textual_threads: non-daemon thread(s) still alive after a 2s join: {leaked}",
+            stacklevel=2,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -367,10 +470,14 @@ def _default_store_mock():
 
 def _default_embedder_mock():
     embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
-    embedder.embed_query.return_value = [0.1] * 768
-    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    embedder.embed_query_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
+    embedder.embed_query.return_value = np.full(768, 0.1, dtype=np.float32)
+    embedder.embed_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
+    embedder.embed_query_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
     # Production reads embedder.truncated_total to compute the per-sync delta; the
     # mock never truncates, so it must report a real 0 rather than a MagicMock.
     embedder.truncated_total = 0
@@ -585,3 +692,8 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
         ),
     )
     return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
+async def one_shard(files):
+    """Present a known file list to ``ingest_stream`` as a single-shard stream."""
+    yield list(files)

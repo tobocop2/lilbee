@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import signal
 import sys
 import threading
@@ -47,7 +48,11 @@ if TYPE_CHECKING:
     from lilbee.sessions import SessionStore
 
 
+log = logging.getLogger(__name__)
+
 _SIGNAL_EXIT_BASE = 128
+
+_HARD_EXIT_THREAD_NAME = "hard-exit-teardown"
 
 
 def _default_session_store() -> SessionStore:
@@ -154,6 +159,12 @@ class _ServicesState:
         self.override: ContextVar[Services | None] = ContextVar(
             "lilbee_services_override", default=None
         )
+        # Whether this process is an interactive session (the TUI). Recorded by
+        # the interactive entry point before anything builds the container, and
+        # read once at build so the provider it creates holds its fleet resident
+        # for the session. Build-time intent only; the state that matters after
+        # that lives on the provider itself.
+        self.interactive: bool = False
 
 
 _state = _ServicesState()
@@ -164,6 +175,7 @@ def build_services(
     *,
     provider: LLMProvider | None = None,
     registry: ModelRegistry | None = None,
+    interactive: bool = False,
 ) -> Services:
     """Build a full Services container bound to *config*, without caching it.
 
@@ -189,7 +201,7 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = provider or create_provider(config)
+    provider = provider or create_provider(config, hold_warm=interactive)
     registry = registry or ModelRegistry(config.models_dir)
     store = Store(config)
     embedder = Embedder(config, provider)
@@ -245,7 +257,7 @@ def get_services() -> Services:
     # Pin the store width to the embedder before Store(); pass the registry so
     # resolution doesn't re-enter this half-built get_services.
     reconcile_embedding_dim(registry)
-    _state.singleton = build_services(cfg, registry=registry)
+    _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
     # Eager start is the default: pay the spawn cost per role server at TUI mount
     # so the first user action lands on a warm fleet. Roles whose model is unset
     # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -274,6 +286,18 @@ def services_scope(services: Services) -> Iterator[None]:
         _state.override.reset(token)
 
 
+def mark_interactive_session() -> None:
+    """Record that this process is an interactive session before services build.
+
+    The TUI owns the process for its whole lifetime, so the fleet it builds keeps
+    its weights resident rather than idle-unloading under a user who is still in
+    the app; closing lilbee releases it. Called by the interactive entry point
+    before anything touches ``get_services``, so the provider is constructed with
+    that intent; a one-shot CLI or the MCP server never calls it.
+    """
+    _state.interactive = True
+
+
 def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
     _state.singleton = services
@@ -288,8 +312,8 @@ def peek_services() -> Services | None:
     return _state.singleton
 
 
-# Serializes the singleton swap in reset_services: the hard-exit teardown
-# thread and the atexit hook can race, and both tearing down the same container
+# Serializes the singleton swap in reset_services: a signal's teardown thread
+# and an exiting caller's can race, and both tearing down the same container
 # would double-close the store.
 _reset_swap_lock = threading.Lock()
 
@@ -299,10 +323,10 @@ def reset_services() -> None:
 
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
-    locked so concurrent callers (the hard-exit teardown thread plus atexit)
-    tear the container down exactly once. On the shared HTTP daemon every entry
-    point that would call this mid-flight is refused, so it only ever runs
-    single-client (CLI, TUI, stdio MCP).
+    locked so concurrent callers (a signal's teardown thread plus an exiting
+    one) tear the container down exactly once. On the shared HTTP daemon every
+    entry point that would call this mid-flight is refused, so it only ever
+    runs single-client (CLI, TUI, stdio MCP).
     """
     with _reset_swap_lock:
         old = _state.singleton
@@ -387,8 +411,43 @@ class _EngineLifecycle:
         SystemExit unwinds the main thread.
         """
         del frame
-        threading.Thread(target=reset_services, name="hard-exit-teardown").start()
+        threading.Thread(
+            target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
+        ).start()
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
+
+
+def wait_for_hard_exit_teardown() -> None:
+    """Block until any teardown thread (signal-driven or exit-driven) finishes.
+
+    Lets ``serve`` hold its OS locks through the fleet stop, so a successor
+    cannot acquire them while this server's models still occupy memory.
+    """
+    for thread in threading.enumerate():
+        if thread.name == _HARD_EXIT_THREAD_NAME:
+            thread.join()
+
+
+def reset_services_on_exit() -> None:
+    """Tear the container down on a thread no signal reaches, and wait for it.
+
+    Engine release waits on the fleet build lock before it releases anything, so
+    a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
+    singleton is already cleared. The teardown thread is non-daemon and takes no
+    signals, so an interrupt breaks only the join here.
+    """
+    if peek_services() is None:
+        return
+    threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
+    wait_for_hard_exit_teardown()
+
+
+def _teardown_for_signal(signum: int) -> None:
+    """Log the fatal signal, then stop services; runs off the signal handler's thread."""
+    log.info(
+        "Received signal %s; stopping the engine fleet before exit", signal.Signals(signum).name
+    )
+    reset_services()
 
 
 _lifecycle = _EngineLifecycle()
@@ -399,4 +458,4 @@ def install_engine_lifecycle_hooks() -> None:
     _lifecycle.install()
 
 
-atexit.register(reset_services)
+atexit.register(reset_services_on_exit)

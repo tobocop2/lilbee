@@ -1,6 +1,6 @@
 """Tests for ``lilbee.cli.launchers.server.spawn_server`` stdout/stderr wiring.
 
-``subprocess.Popen`` is patched so no real ``lilbee serve`` process is spawned;
+``spawn_bound_child`` is patched so no real ``lilbee serve`` process is spawned;
 the tests assert how the child's stdout/stderr are routed (DEVNULL in quiet
 mode, a size-capped log file otherwise).
 """
@@ -21,7 +21,7 @@ from tests._mock_effects import repeat_last
 
 @pytest.fixture()
 def _capture_popen():
-    """Patch Popen to record the stdout/stderr kwargs without spawning."""
+    """Patch the bound spawn to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
     def fake_popen(cmd, *, stdout, stderr, env=None):
@@ -31,7 +31,7 @@ def _capture_popen():
         captured["env"] = env
         return mock.MagicMock()
 
-    with mock.patch.object(server_mod.subprocess, "Popen", side_effect=fake_popen):
+    with mock.patch.object(server_mod, "spawn_bound_child", side_effect=fake_popen):
         yield captured
 
 
@@ -130,6 +130,36 @@ def test_log_unlink_permission_error_falls_through_to_append(
 
 class TestHealthProbes:
     """chat_ready / served_chat_ctx / wait_for_chat_warm read /api/health."""
+
+    @pytest.fixture(autouse=True)
+    def _token(self, monkeypatch):
+        """/api/health needs the token like every other route; these probes read
+        it from server.json, which does not exist under test."""
+        monkeypatch.setattr(server_mod, "_session_token", lambda: "t")
+
+    def test_no_probe_is_attempted_before_the_token_exists(self, monkeypatch) -> None:
+        """A probe racing startup finds no server.json, which means no server
+        yet; firing a request that can only 401 is pointless."""
+        monkeypatch.setattr(server_mod, "_session_token", lambda: None)
+
+        def _fail(*_a, **_k):
+            raise AssertionError("probed without a token")
+
+        monkeypatch.setattr(server_mod.httpx, "get", _fail)
+        assert server_mod.health_ok(8080) is False
+        assert server_mod.chat_ready(8080) is False
+        assert server_mod.served_chat_ctx(8080) is None
+
+    def test_the_probe_sends_the_bearer_token(self, monkeypatch) -> None:
+        seen: dict[str, object] = {}
+
+        def _capture(url, **kwargs):
+            seen.update(kwargs)
+            return httpx.Response(200, json={"status": "ok"})
+
+        monkeypatch.setattr(server_mod.httpx, "get", _capture)
+        assert server_mod.health_ok(8080) is True
+        assert seen["headers"] == {"Authorization": "Bearer t"}
 
     def test_chat_ready_false_on_non_ok_status(self, monkeypatch) -> None:
         monkeypatch.setattr(

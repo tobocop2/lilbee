@@ -619,6 +619,40 @@ class TestAdoptEmbedder:
         assert fake_manager.pull_calls == []
 
 
+class TestCatalogCommandsNeverWarmTheFleet:
+    """Catalog operations never run inference; none may eager-warm the engine.
+
+    A pull that warms spawns a fleet mid-download; with only some configured
+    models installed yet, that fleet serves a partial contract and poisons
+    the machine slot for every later arrival.
+
+    Covered as a chain: every registered catalog command routes through the
+    override helper (test_every_catalog_command_leaves_the_fleet_cold), and the
+    helper leaves get_services unable to warm (below). Asserting the flag after
+    invoking each command tested neither end -- the commands do not reach
+    get_services under these fixtures, so such a test passes with the helper's
+    suppression removed entirely.
+    """
+
+    def test_the_override_leaves_get_services_unable_to_warm(self, monkeypatch, tmp_path):
+        from unittest import mock
+
+        from lilbee.app.services import get_services, reset_services
+        from lilbee.cli import model as model_mod
+        from lilbee.providers import factory
+
+        provider = mock.MagicMock()
+        monkeypatch.setattr(factory, "create_provider", lambda _config, **_kw: provider)
+        monkeypatch.setattr(model_mod, "apply_overrides", lambda **_kwargs: None)
+        cfg.worker_pool_eager_start = True
+
+        model_mod._apply_catalog_overrides(data_dir=None, use_global=False)
+        reset_services()
+        get_services()
+
+        provider.warm_up_pool.assert_not_called()
+
+
 class TestPullCmd:
     def test_json_stream_emits_done_event(self, fake_manager, native_manifests):
         result = runner.invoke(
@@ -792,3 +826,30 @@ class TestNativeManifestIndex:
             index = model_mod._native_manifest_index()
         assert _CHAT_REF in index
         assert index[_CHAT_REF].task == "chat"
+
+
+def test_every_catalog_command_leaves_the_fleet_cold() -> None:
+    """The invariant was five pasted copies; a new command must not miss it.
+
+    Catalog commands browse, read, download and delete model files and never
+    run inference, so none should pay for a fleet warm. Asserted over the
+    registered commands rather than per call site, so a command added later
+    fails here instead of silently eager-starting.
+    """
+    from lilbee.cli.model import model_app
+
+    for command in model_app.registered_commands:
+        callback = command.callback
+        assert callback is not None
+        assert "_apply_catalog_overrides" in callback.__code__.co_names, (
+            f"{callback.__name__} bypasses the cold-fleet override helper"
+        )
+
+
+def test_apply_catalog_overrides_clears_eager_start(monkeypatch) -> None:
+    from lilbee.cli import model as model_mod
+
+    monkeypatch.setattr(model_mod, "apply_overrides", lambda **_kwargs: None)
+    monkeypatch.setattr(model_mod.cfg, "worker_pool_eager_start", True, raising=False)
+    model_mod._apply_catalog_overrides(data_dir=None, use_global=False)
+    assert model_mod.cfg.worker_pool_eager_start is False

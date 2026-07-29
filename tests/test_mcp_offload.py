@@ -49,24 +49,29 @@ def test_registered_tool_keeps_sync_callable_for_in_process_use() -> None:
 
 
 async def test_registered_tool_schema_preserves_parameters() -> None:
-    tools = {tool.name: tool for tool in await m.mcp.list_tools()}
+    tools = {tool.name: tool for tool in await m.build_mcp_server().list_tools()}
 
     properties = tools["search"].inputSchema["properties"]
 
     assert {"query", "top_k", "scope"} <= set(properties)
 
 
-def test_tool_if_false_leaves_function_unregistered_but_callable() -> None:
-    decorator = m._tool_if(False)
+async def _wire_names() -> set[str]:
+    return {t.name for t in await m.build_mcp_server().list_tools()}
 
-    def handler() -> int:
+
+async def test_tool_if_false_gate_leaves_function_off_the_wire_but_callable() -> None:
+    decorator = m._tool_if(lambda: False)
+
+    def sample_unique_tool_name() -> int:
         return 7
 
-    assert decorator(handler) is handler
+    assert decorator(sample_unique_tool_name) is sample_unique_tool_name
+    assert "sample_unique_tool_name" not in await _wire_names()
 
 
-def test_tool_if_true_registers_and_returns_original() -> None:
-    decorator = m._tool_if(True)
+async def test_tool_if_true_gate_registers_and_returns_original() -> None:
+    decorator = m._tool_if(lambda: True)
 
     def sample_unique_tool_name(value: int) -> int:
         return value
@@ -74,10 +79,27 @@ def test_tool_if_true_registers_and_returns_original() -> None:
     returned = decorator(sample_unique_tool_name)
 
     assert returned is sample_unique_tool_name
+    assert "sample_unique_tool_name" in await _wire_names()
+
+
+async def test_tool_if_gate_is_evaluated_per_build() -> None:
+    # The gate reflects config at server-build time, not import time, so a
+    # server built after a settings change carries the current tool surface.
+    enabled = False
+
+    def gated_probe_tool() -> int:
+        return 7
+
+    m._tool_if(lambda: enabled)(gated_probe_tool)
+
+    assert "gated_probe_tool" not in await _wire_names()
+    enabled = True
+    assert "gated_probe_tool" in await _wire_names()
 
 
 @pytest.fixture(autouse=True)
 def _drop_test_tool() -> None:
-    """Remove any tool the registration tests add so the schema stays stable."""
+    """Drop registrations the tests add so later-built servers keep a stable schema."""
+    registered = len(m._REGISTRATIONS)
     yield
-    m.mcp._tool_manager._tools.pop("sample_unique_tool_name", None)
+    del m._REGISTRATIONS[registered:]

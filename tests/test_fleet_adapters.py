@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from lilbee.providers.fleet.adapters import (
     ROLE_SPECS,
     build_server_argv,
     embed_spec,
+    expert_offload_patterns,
     rerank_spec,
     resolve_rerank_mode,
 )
@@ -72,7 +74,11 @@ def test_build_argv_single_device_has_no_tensor_split() -> None:
     assert argv[argv.index("--parallel") + 1] == "4"
 
 
-def test_build_argv_multi_device_adds_tensor_split() -> None:
+def test_build_argv_multi_device_without_a_ratio_leaves_the_split_to_the_engine() -> None:
+    # A multi-device plan that carries no ratio is the tight placement, which
+    # exists to let the engine keep what fits and spill the rest. The engine
+    # aborts its fit pass when tensor_split is user-set, so inventing an even
+    # split here would force every layer onto the cards and OOM the load.
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.CHAT],
@@ -82,7 +88,7 @@ def test_build_argv_multi_device_adds_tensor_split() -> None:
         slots=2,
         ctx_per_slot=4096,
     )
-    assert argv[argv.index("--tensor-split") + 1] == "1,1"
+    assert "--tensor-split" not in argv
 
 
 def test_build_argv_uses_proportional_tensor_split() -> None:
@@ -136,10 +142,27 @@ def test_build_argv_cache_type_sets_k_and_v() -> None:
         n_gpu_layers=-1,
         slots=4,
         ctx_per_slot=4096,
-        cache_type="q8_0",
+        cache_type_k="q8_0",
+        cache_type_v="q8_0",
     )
     assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
     assert argv[argv.index("--cache-type-v") + 1] == "q8_0"
+
+
+def test_build_argv_quantizes_k_alone_when_asked() -> None:
+    """A quantized V cache needs flash attention; a quantized K cache needs nothing."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        cache_type_k="q8_0",
+    )
+    assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+    assert "--cache-type-v" not in argv
 
 
 def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
@@ -159,7 +182,12 @@ def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
     assert argv[argv.index("--ubatch-size") + 1] == "8192"
 
 
-def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
+def test_build_argv_never_sets_a_thread_count() -> None:
+    """llama-server counts physical math cores and skips efficiency cores itself.
+
+    Any count lilbee computes here is worse informed than that default, so the
+    knob is gone rather than merely unused.
+    """
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.VISION],
@@ -168,10 +196,9 @@ def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
         n_gpu_layers=-1,
         slots=1,
         ctx_per_slot=4096,
-        threads=12,
     )
-    assert argv[argv.index("--threads") + 1] == "12"
-    assert argv[argv.index("--threads-batch") + 1] == "12"
+    assert "--threads" not in argv
+    assert "--threads-batch" not in argv
 
 
 def test_build_argv_omits_optional_flags_by_default() -> None:
@@ -323,3 +350,87 @@ def test_build_argv_defaults_to_mmap() -> None:
         ctx_per_slot=4096,
     )
     assert "--no-mmap" not in argv
+
+
+def _chat_argv(**kwargs) -> list[str]:
+    """A chat command line with the offload knobs under test applied."""
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        **kwargs,
+    )
+
+
+def test_build_argv_has_no_expert_offload_by_default() -> None:
+    argv = _chat_argv()
+    assert "--cpu-moe" not in argv
+    assert "--n-cpu-moe" not in argv
+
+
+def test_build_argv_offloads_every_expert_when_asked() -> None:
+    assert "--cpu-moe" in _chat_argv(cpu_moe=True)
+
+
+def test_build_argv_offloads_a_layer_count_when_asked() -> None:
+    argv = _chat_argv(n_cpu_moe=24)
+    assert argv[argv.index("--n-cpu-moe") + 1] == "24"
+
+
+def test_build_argv_layer_count_wins_over_offload_everything() -> None:
+    # The pair would offload the same tensors twice.
+    argv = _chat_argv(cpu_moe=True, n_cpu_moe=8)
+    assert "--cpu-moe" not in argv
+    assert argv[argv.index("--n-cpu-moe") + 1] == "8"
+
+
+def test_expert_offload_patterns_empty_when_not_configured() -> None:
+    assert expert_offload_patterns(cpu_moe=False, n_cpu_moe=None) == ()
+
+
+def test_expert_offload_patterns_blanket_for_offload_everything() -> None:
+    # One pattern covering every block, matching llama.cpp's --cpu-moe.
+    patterns = expert_offload_patterns(cpu_moe=True, n_cpu_moe=None)
+    assert patterns == (r"\.ffn_(up|down|gate|gate_up)_(ch|)exps",)
+
+
+def test_expert_offload_patterns_are_per_block_for_a_layer_count() -> None:
+    # llama.cpp expands --n-cpu-moe N into one pattern per block below N.
+    patterns = expert_offload_patterns(cpu_moe=False, n_cpu_moe=3)
+    assert patterns == (
+        r"blk\.0\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+        r"blk\.1\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+        r"blk\.2\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+    )
+
+
+def test_expert_offload_patterns_layer_count_wins() -> None:
+    assert expert_offload_patterns(cpu_moe=True, n_cpu_moe=1) == (
+        r"blk\.0\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+    )
+
+
+def test_expert_offload_patterns_compile_as_regexes() -> None:
+    # gguf-parser compiles these with Go's RE2 and llama.cpp with std::regex;
+    # a pattern that only parses in Python would break both.
+    for pattern in expert_offload_patterns(cpu_moe=False, n_cpu_moe=2):
+        re.compile(pattern)
+
+
+def test_build_argv_emits_the_device_names_it_is_given() -> None:
+    """Vulkan and SYCL pin by name, in the space --list-devices printed them."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 2),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        device_names=("Vulkan0", "Vulkan2"),
+    )
+    assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,8 +27,8 @@ _MIB = 1024 * 1024
 
 
 def _fake_run(stdout: str):
-    def _run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    def _run(*_a: object, **_k: object) -> tuple[str, int]:
+        return stdout, 0
 
     return _run
 
@@ -64,7 +66,7 @@ class TestNvlinkTopology:
         assert pairs == {frozenset({0, 1}), frozenset({0, 2}), frozenset({1, 2})}
 
     def test_real_h100_host_has_nvlink(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_REAL_H100))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_REAL_H100))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_parse_finds_nvlink_pair(self) -> None:
@@ -78,33 +80,35 @@ class TestNvlinkTopology:
         assert pairs == set()
 
     def test_lacks_nvlink_true_for_pcie_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_PCIE))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_PCIE))
         assert dev_mod.host_lacks_nvlink() is True
 
     def test_lacks_nvlink_false_when_linked(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_NVLINK))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(_TOPO_NVLINK))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_unparseable_topo_makes_no_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Garbage output parses zero GPU rows: stay silent rather than mis-warn.
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("some unrelated output\n"))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run("some unrelated output\n"))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_single_gpu_host_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         single = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-31\n"
-        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(single))
+        monkeypatch.setattr(dev_mod, "run_bounded", _fake_run(single))
         assert dev_mod.host_lacks_nvlink() is False
 
     def test_probe_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_a: object, **_k: object) -> object:
             raise OSError("no nvidia-smi")
 
-        monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
+        monkeypatch.setattr(dev_mod, "run_bounded", _boom)
         assert dev_mod.host_lacks_nvlink() is False
 
 
-def _fake_listing(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
-    monkeypatch.setattr(dev_mod, "_run_list_devices", lambda _binary, _timeout: output)
+def _fake_listing(monkeypatch: pytest.MonkeyPatch, output: str, returncode: int = 0) -> None:
+    monkeypatch.setattr(
+        dev_mod, "_run_list_devices", lambda _binary, _timeout: (output, returncode)
+    )
 
 
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,12 +177,17 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
 
 
 def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _HealthyProc:
-        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
-            return (_CUDA_LISTING, None)
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: (_CUDA_LISTING, 0))
+    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
 
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
-    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == _CUDA_LISTING
+
+def test_run_list_devices_timeout_raises_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _timeout(*_a: object, **_k: object) -> tuple[str, int]:
+        raise subprocess.TimeoutExpired(cmd="llama-server --list-devices", timeout=1.0)
+
+    monkeypatch.setattr(dev_mod, "run_bounded", _timeout)
+    with pytest.raises(ProviderError, match="did not respond"):
+        dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -194,32 +203,6 @@ def test_probe_timeout_raises_and_kills_the_child(tmp_path: Path) -> None:
     script.chmod(0o755)
     with pytest.raises(ProviderError, match="did not respond"):
         probe_devices(script, timeout_s=0.2)
-
-
-def test_probe_abandons_an_unreapable_child(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A child that survives SIGKILL (uninterruptible driver I/O) is abandoned
-    after a bounded reap instead of blocking the caller forever.
-
-    The POSIX group-kill path is forced (repo pattern: simulate the platform)
-    so the same lines are exercised on every CI host, Windows included.
-    """
-
-    class _WedgedProc:
-        pid = 12345
-
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            raise subprocess.TimeoutExpired(cmd="llama-server", timeout=timeout or 0)
-
-    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _WedgedProc())
-    monkeypatch.setattr(dev_mod.os, "name", "posix")
-    monkeypatch.setattr(dev_mod.os, "killpg", lambda *_a: None, raising=False)
-    monkeypatch.setattr(dev_mod.signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(dev_mod, "_PROBE_KILL_WAIT_S", 0.01)
-    with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="did not respond"):
-        probe_devices(Path("/bin/llama-server"), timeout_s=0.01)
-    assert "abandoned" in caplog.text
 
 
 def test_probe_env_sets_pci_bus_order() -> None:
@@ -242,14 +225,15 @@ def test_visible_env_rocm_emits_single_var_on_clean_env(
     assert env == {"HIP_VISIBLE_DEVICES": "1"}
 
 
-def test_visible_env_vulkan_uses_ggml_var() -> None:
-    assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {"GGML_VK_VISIBLE_DEVICES": "0"}
+def test_visible_env_does_not_pin_vulkan_by_raw_index() -> None:
+    """GGML_VK_VISIBLE_DEVICES indexes the raw loader enumeration, not this list.
 
-
-def test_visible_env_sycl_uses_oneapi_selector(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising=False)
-    env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
-    assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}
+    These indices come from the engine's filtered device list, so re-emitting
+    them into that variable changes index space wherever ggml drops or merges a
+    device, and setting it also disables ggml's type filter, support check and
+    same-UUID dedup. Vulkan is pinned with --device instead.
+    """
+    assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {}
 
 
 def test_visible_env_metal_and_empty_pin_nothing() -> None:
@@ -326,20 +310,617 @@ class TestPresetVisibleDeviceComposition:
         env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
         assert env == {"HIP_VISIBLE_DEVICES": "7"}  # relative 1 -> physical 7
 
-    def test_vulkan_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
-        env = visible_env((FleetDevice("Vulkan", 1, "", 0, 0),))
-        assert env == {"GGML_VK_VISIBLE_DEVICES": "2"}
-
-    def test_sycl_level_zero_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:2,3")
-        env = visible_env((FleetDevice("SYCL", 1, "", 0, 0),))
-        assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:3"}  # relative 1 -> physical 3
-
-    def test_sycl_non_level_zero_parent_emits_absolute(
+    def test_vulkan_leaves_a_parent_restriction_untouched(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Only the level_zero:i,j shape is composable; other shapes pass through.
-        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "opencl:0,1")
-        env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
-        assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}
+        """The probe already enumerated under the parent's restriction.
+
+        Composing into the variable would re-filter an already-filtered list;
+        the --device names are relative to what the engine reports under that
+        same restriction, so the parent's value is inherited as-is.
+        """
+        monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
+        assert visible_env((FleetDevice("Vulkan", 1, "", 0, 0),)) == {}
+
+
+def test_software_rasterizer_is_not_planned_as_a_gpu() -> None:
+    """Mesa's CPU rasterizer enumerates through Vulkan exactly like a GPU.
+
+    It reports system RAM as VRAM, so a host with a real integrated GPU beside
+    lavapipe would be planned as a two-GPU machine and tensor-split across a
+    real adapter and a software renderer -- far slower than either the iGPU
+    alone or plain CPU inference.
+    """
+    from lilbee.providers.fleet.devices import FleetDevice, _select_backend
+
+    igpu = FleetDevice("Vulkan", 0, "Intel(R) Iris(R) Xe Graphics", 8 * 10**9, 7 * 10**9)
+    llvmpipe = FleetDevice("Vulkan", 1, "llvmpipe (LLVM 17.0.6, 256 bits)", 15 * 10**9, 14 * 10**9)
+
+    assert _select_backend([igpu, llvmpipe]) == [igpu]
+
+
+def test_a_software_rasterizer_alone_is_no_gpu_at_all() -> None:
+    """A GPU-less host with mesa Vulkan must plan as CPU-only, not as a big GPU."""
+    from lilbee.providers.fleet.devices import FleetDevice, _select_backend
+
+    lavapipe = FleetDevice("Vulkan", 0, "llvmpipe (LLVM 17.0.6, 256 bits)", 15 * 10**9, 14 * 10**9)
+
+    assert _select_backend([lavapipe]) == []
+
+
+def test_a_paravirtual_adapter_is_dropped_even_though_its_name_looks_real(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a VM ggml falls back to the first non-CPU adapter, which is VIRTUAL_GPU.
+
+    Nothing in "Virtio-GPU Venus (Intel ...)" marks it as not a GPU, so the
+    software-renderer name list walks straight past it; the loader's device
+    type is the only thing that separates it from a real card.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _select_backend
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "Virtio-GPU Venus (Intel(R) Iris(R) Xe Graphics)": gpu_select.VkDeviceType.VIRTUAL_GPU
+        },
+    )
+    venus = FleetDevice(
+        "Vulkan", 0, "Virtio-GPU Venus (Intel(R) Iris(R) Xe Graphics)", 15 * 10**9, 15 * 10**9
+    )
+
+    assert _select_backend([venus]) == []
+
+
+def test_an_adapter_the_loader_cannot_type_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No loader, no opinion: dropping devices on missing evidence would blind working hosts."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _select_backend
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+    card = FleetDevice("Vulkan", 0, "AMD Radeon RX 7900 XTX", 24 * 10**9, 24 * 10**9)
+
+    assert _select_backend([card]) == [card]
+
+
+def test_unified_memory_is_read_by_name_not_by_ordinal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--list-devices numbers survivors; the loader numbers everything it enumerated.
+
+    A host whose loader lists a software rasterizer ahead of its integrated GPU
+    has the iGPU at loader index 1 and at Vulkan0 in the engine's output, so an
+    index comparison reads it as dedicated and hands placement the host's own
+    RAM as GPU headroom.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU,
+            "Intel(R) Iris(R) Xe Graphics": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    parsed = _parse_devices("  Vulkan0: Intel(R) Iris(R) Xe Graphics (15690 MiB, 15690 MiB free)")
+
+    assert [d.unified for d in parsed] == [True]
+
+
+def test_an_amd_apu_on_the_rocm_path_is_not_sized_as_dedicated_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROCm text output has no device type; hipMemGetInfo on an APU returns system RAM.
+
+    The APU also ships a Vulkan driver, so the loader can answer what the ROCm
+    listing cannot: a machine reporting adapters but no discrete one has no
+    discrete card for ROCm to be enumerating.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {"AMD Radeon Graphics (RADV RENOIR)": gpu_select.VkDeviceType.INTEGRATED_GPU},
+    )
+
+    parsed = _parse_devices("  ROCm0: AMD Radeon Graphics (16000 MiB, 15000 MiB free)")
+
+    assert [d.unified for d in parsed] == [True]
+
+
+def test_a_real_mi300x_is_sized_as_dedicated_vram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The line an AMD Instinct MI300X actually printed, engine build 9665.
+
+    It names itself "AMD Radeon Graphics", the same string an APU reports, so the
+    name cannot decide this and the absence of an integrated adapter has to. A
+    headless datacenter card has no Vulkan ICD to ask, which is the case here:
+    192 GiB must be charged as VRAM, not as a shared carveout of host RAM.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices, _select_backend, visible_env
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    (device,) = _parse_devices(
+        "Available devices:\n  ROCm0: AMD Radeon Graphics (196592 MiB, 196054 MiB free)"
+    )
+
+    assert (device.backend, device.index, device.unified) == ("ROCm", 0, False)
+    assert round(device.total_bytes / 1024**3) == 192
+    # HIP_VISIBLE_DEVICES is the var the runtime honours; confirmed on the card,
+    # where setting it to an index the host does not have hides every device.
+    assert visible_env(tuple(_select_backend([device]))) == {"HIP_VISIBLE_DEVICES": "0"}
+
+
+def test_a_discrete_nvidia_host_is_untouched_by_the_apu_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule may only ever add the shared-RAM budget to hosts that have no card."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "NVIDIA GeForce RTX 3090": gpu_select.VkDeviceType.DISCRETE_GPU,
+            "Intel(R) UHD Graphics 770": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    parsed = _parse_devices("  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)")
+
+    assert [d.unified for d in parsed] == [False]
+
+
+def test_no_vulkan_loader_leaves_cuda_devices_dedicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A headless CUDA container has no Vulkan ICD; silence must not read as integrated."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    parsed = _parse_devices("  CUDA0: NVIDIA H100 80GB HBM3 (81559 MiB, 81000 MiB free)")
+
+    assert [d.unified for d in parsed] == [False]
+
+
+class TestAmdPinNeverSetsBothVars:
+    """ROCr filters first and HIP re-indexes within the survivors.
+
+    Writing the same index string to both selects the wrong cards or none:
+    gpu_devices=1 on a two-GPU box exposes physical GPU 1 as index 0 through
+    ROCr, and HIP then asks for index 1 of a one-device list.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_env(self) -> Iterator[None]:
+        # The pin writes os.environ in place, which monkeypatch does not track;
+        # without this the pin leaks into every later test that reads the env.
+        from lilbee.providers.fleet import gpu_env
+
+        snapshot = {name: os.environ.get(name) for name in gpu_env._GPU_VISIBLE_ENV_VARS}
+        try:
+            yield
+        finally:
+            for name, value in snapshot.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, value: str) -> dict[str, str]:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import gpu_env
+
+        monkeypatch.setattr(cfg, "gpu_devices", value)
+        assert gpu_env._apply_gpu_devices_pin() is True
+        return {
+            name: os.environ[name] for name in gpu_env._GPU_VISIBLE_ENV_VARS if name in os.environ
+        }
+
+    def test_a_clean_environment_gets_hip_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert "ROCR_VISIBLE_DEVICES" not in applied
+        assert applied["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_an_environment_already_masked_by_rocr_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert "HIP_VISIBLE_DEVICES" not in applied
+        assert applied["ROCR_VISIBLE_DEVICES"] == "2,3"
+
+    def test_the_pin_still_reaches_the_other_backends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert applied["CUDA_VISIBLE_DEVICES"] == "1"
+        assert applied["GGML_VK_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_dual_vendor_host_plans_onto_the_bigger_card_not_the_later_name() -> None:
+    """A build loading both backends made the rank tie real; "ROCm" > "CUDA" decided it.
+
+    A 4090 beside an RX 6600 planned onto the AMD card and the NVIDIA card
+    idled, with nothing logged to say why.
+    """
+    from lilbee.providers.fleet.devices import _select_backend
+
+    rtx4090 = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+    rx6600 = FleetDevice("ROCm", 0, "AMD Radeon RX 6600", 8 * 10**9, 8 * 10**9)
+
+    assert _select_backend([rtx4090, rx6600]) == [rtx4090]
+
+
+def test_the_dropped_backend_is_named_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
+    """Silently planning half a machine is what made this hard to see."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    rtx4090 = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+    rx6600 = FleetDevice("ROCm", 0, "AMD Radeon RX 6600", 8 * 10**9, 8 * 10**9)
+
+    with caplog.at_level("INFO", logger="lilbee.providers.fleet.devices"):
+        _select_backend([rtx4090, rx6600])
+
+    assert "ROCm" in caplog.text
+    assert "CUDA" in caplog.text
+
+
+def test_equal_memory_still_resolves_to_one_backend_deterministically() -> None:
+    """Mixing index spaces is the hazard; a tie must still leave exactly one backend."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    cuda = FleetDevice("CUDA", 0, "NVIDIA", 16 * 10**9, 16 * 10**9)
+    rocm = FleetDevice("ROCm", 0, "AMD", 16 * 10**9, 16 * 10**9)
+
+    first = _select_backend([cuda, rocm])
+    second = _select_backend([rocm, cuda])
+
+    assert len({d.backend for d in first}) == 1
+    assert first == second
+
+
+def test_a_multi_card_backend_beats_one_bigger_card() -> None:
+    """The fleet is planned across every device of the chosen backend, so sum, not max."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    # Each AMD card is smaller than the NVIDIA one, so only their sum wins.
+    two_amd = [
+        FleetDevice("ROCm", 0, "AMD Radeon RX 7600 XT", 16 * 10**9, 16 * 10**9),
+        FleetDevice("ROCm", 1, "AMD Radeon RX 7600 XT", 16 * 10**9, 16 * 10**9),
+    ]
+    one_nvidia = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+
+    assert _select_backend([one_nvidia, *two_amd]) == two_amd
+
+
+def test_a_listing_without_a_free_figure_asks_the_loader_before_assuming_all_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ggml omits the free column when the driver has no VK_EXT_memory_budget.
+
+    Reading the omission as an empty card is how a desktop holding gigabytes of
+    compositor and browser VRAM was planned as fully free.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select, "vulkan_free_bytes_by_name", lambda: {"AMD Radeon RX 7900 XTX": 21 * 1024**3}
+    )
+
+    (device,) = _parse_devices("  Vulkan0: AMD Radeon RX 7900 XTX (24576 MiB)")
+
+    assert device.total_bytes == 24576 * _MIB
+    assert device.free_bytes == 21 * 1024**3
+
+
+def test_a_listing_free_figure_still_wins_over_the_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's own number describes the process that will allocate."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", lambda: {"AMD": 1})
+
+    (device,) = _parse_devices("  Vulkan0: AMD (24576 MiB, 20000 MiB free)")
+
+    assert device.free_bytes == 20000 * _MIB
+
+
+def test_a_backend_the_loader_cannot_speak_for_keeps_the_heap_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Vulkan loader knows nothing about a CUDA listing's devices."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", lambda: {"NVIDIA H100": 1})
+
+    (device,) = _parse_devices("  CUDA0: NVIDIA H100 (81559 MiB)")
+
+    assert device.free_bytes == device.total_bytes
+
+
+def test_a_rasterizer_only_loader_does_not_make_a_real_card_shared_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mesa reports llvmpipe on any host with it installed, vendor ICD or not.
+
+    That is ordinary on headless CUDA boxes and in containers. Concluding "no
+    discrete GPU" from a list holding only rasterizers marked a real 24 GB card
+    as sharing the host's memory and shrank every budget for it.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {"llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU},
+    )
+
+    (device,) = _parse_devices("  CUDA0: NVIDIA RTX A5000 (24112 MiB, 23899 MiB free)")
+
+    assert device.unified is False
+
+
+def test_an_integrated_adapter_beside_a_rasterizer_still_reads_as_shared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Tiger Lake case: llvmpipe sits next to a real iGPU, which is the signal."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU,
+            "Intel(R) Iris(R) Xe Graphics": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    (device,) = _parse_devices("  ROCm0: AMD Radeon Graphics (16000 MiB)")
+
+    assert device.unified is True
+
+
+class TestAnEngineThatCannotAnswerIsNotTakenAsAuthoritative:
+    """The probe merges stderr into stdout, so "it printed something" is not
+    evidence that it understood the question.
+
+    A build predating --list-devices prints usage text and exits non-zero. Read
+    as an authoritative empty device list, that plans a GPU box as CPU-only.
+    """
+
+    _USAGE = (
+        "error: invalid argument: --list-devices\n"
+        "usage: llama-server [options]\n\n"
+        "general:\n  -h, --help    show this help message and exit\n"
+    )
+
+    def test_usage_text_on_a_nonzero_exit_is_not_a_device_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_listing(monkeypatch, self._USAGE, returncode=1)
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.spoke_protocol is False
+
+    def test_a_clean_run_listing_nothing_is_a_device_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The header prints before the loop, so it survives a host with no GPU."""
+        _fake_listing(monkeypatch, "Available devices:\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.spoke_protocol is True
+
+    def test_a_zero_exit_without_the_header_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Output-format drift: text arrives, no device line parses, and treating
+        that as "no GPUs" plans a GPU box onto the CPU in silence."""
+        _fake_listing(monkeypatch, "ggml_vulkan: no devices found\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.spoke_protocol is False
+
+    def test_a_crash_after_the_header_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An engine that dies partway through enumerating prints the header first.
+
+        Believing the truncated list plans against whatever it managed to name,
+        or against nothing at all, on a host that has GPUs.
+        """
+        _fake_listing(monkeypatch, "Available devices:\n", returncode=-11)
+
+        assert probe_devices(Path("/bin/llama-server")).spoke_protocol is False
+
+    def test_a_probe_that_could_not_run_at_all_claims_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("no such binary")
+
+        monkeypatch.setattr(dev_mod, "_run_list_devices", _boom)
+
+        assert probe_devices(Path("/bin/llama-server")).spoke_protocol is False
+
+
+def test_the_loader_is_asked_once_per_parse_not_once_per_device_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Free memory is read fresh rather than cached, so the per-line cost is
+    back unless the parse samples it once. An N-device listing must not mean N
+    loader inits to answer one question."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    calls: list[int] = []
+
+    def _counting() -> dict[str, int]:
+        calls.append(1)
+        return {}
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", _counting)
+
+    _parse_devices(
+        "  Vulkan0: Card A (16000 MiB)\n"
+        "  Vulkan1: Card B (16000 MiB)\n"
+        "  Vulkan2: Card C (16000 MiB)\n"
+    )
+
+    assert len(calls) == 1, f"asked the Vulkan loader {len(calls)} times for one parse"
+
+
+def test_a_listing_that_reports_free_never_touches_the_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's own figure wins, so the loader is not opened at all."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    def _must_not_run() -> dict[str, int]:
+        raise AssertionError("the loader was consulted despite a free figure being printed")
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", _must_not_run)
+
+    (device,) = _parse_devices("  Vulkan0: Card A (16000 MiB, 9000 MiB free)")
+
+    assert device.free_bytes == 9000 * _MIB
+
+
+class TestRefusingEveryDeviceIsRecorded:
+    """Dropping a device from lilbee's view does not stop the engine using it.
+
+    ggml's own fallback takes the first non-CPU adapter, so a VM whose only
+    adapter is paravirtual gets a CPU-shaped plan and a model offloaded onto the
+    device lilbee just refused.
+    """
+
+    def test_refusing_the_only_listed_gpu_is_recorded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(
+            gpu_select,
+            "vulkan_device_types_by_name",
+            lambda: {"Virtio-GPU Venus": gpu_select.VkDeviceType.VIRTUAL_GPU},
+        )
+        _fake_listing(monkeypatch, "Available devices:\n  Vulkan0: Virtio-GPU Venus (15000 MiB)\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.refused_all is True
+
+    def test_a_host_with_no_gpu_at_all_has_refused_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No device to keep the engine off, so nothing to say."""
+        _fake_listing(monkeypatch, "Available devices:\n  CPU0: host cpu (64000 MiB)\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.refused_all is False
+
+    def test_keeping_a_device_is_not_a_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _fake_listing(monkeypatch, "Available devices:\n  CUDA0: NVIDIA (24268 MiB)\n")
+
+        assert probe_devices(Path("/bin/llama-server")).refused_all is False
+
+
+class TestSyclPinsByNameNotBySelector:
+    """ONEAPI_DEVICE_SELECTOR is a selector over a backend runtime, not the index
+    space --list-devices numbers.
+
+    A device the engine calls SYCL1 need not be Level Zero ordinal 1: OpenCL
+    devices interleave, discarded devices shift the numbering, and multi-tile
+    cards appear as sub-devices. Composing a level_zero ordinal from a SYCL one
+    could pin a different physical card than the probe enumerated.
+    """
+
+    def test_no_selector_is_written(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising=False)
+
+        assert visible_env((FleetDevice("SYCL", 1, "Intel Arc A770", 0, 0),)) == {}
+
+    def test_a_parent_selector_is_left_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The engine enumerated behind it, so its names are already relative to it."""
+        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:2,3")
+
+        assert visible_env((FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0),)) == {}
+
+    def test_the_pin_is_the_name_the_engine_printed(self) -> None:
+        from lilbee.providers.fleet.planning import _device_names
+
+        devices = (
+            FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0),
+            FleetDevice("SYCL", 2, "Intel Arc A770", 0, 0),
+        )
+
+        assert _device_names(devices) == ("SYCL0", "SYCL2")
+
+    def test_cuda_still_pins_through_its_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CUDA's mask and the probe's enumeration do share one space."""
+        from lilbee.providers.fleet.planning import _device_names
+
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        devices = (FleetDevice("CUDA", 1, "NVIDIA", 0, 0),)
+
+        assert _device_names(devices) == ()
+        assert visible_env(devices)["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_device_reporting_no_memory_is_dropped() -> None:
+    """A zero-memory device is not a GPU the fleet can plan onto.
+
+    Some drivers list an adapter before its memory is queryable, and a device
+    with no memory at all cannot hold a model. Kept, it is the smallest card in
+    the fleet, so every budget sized against the smallest collapses to nothing,
+    and a non-empty device list also switches off the shared-memory budget that
+    a host with no usable GPU depends on.
+    """
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    parsed = _parse_devices(
+        "  CUDA0: NVIDIA GeForce RTX 4090 (24564 MiB, 24000 MiB free)\n"
+        "  CUDA1: NVIDIA Graphics Device (0 MiB, 0 MiB free)"
+    )
+    assert [d.index for d in parsed] == [0]

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 
 from pydantic import BaseModel
 
+from lilbee.core.vectors import Vector
+
 if TYPE_CHECKING:
     from lilbee.providers.roles import OcrBackend, WorkerRole
     from lilbee.providers.warm_progress import WarmProgress
@@ -22,10 +24,12 @@ T_co = TypeVar("T_co", covariant=True)
 # client boundary, so every downstream consumer parses one format.
 # What every provider holds back from the context window for the answer it is
 # about to generate, plus a small margin for the chat template's own framing.
-# One owner for both numbers: the fleet ENFORCES this budget and rejects a
-# prompt that exceeds it, while retrieval FITS its context to it. When the two
-# disagreed, retrieval assembled prompts up to the margin larger than the
-# engine would accept, and a grounded turn failed with a 400 the caller could
+# One owner for both numbers: the fleet ENFORCES this default budget (rejecting a
+# prompt that exceeds it), while retrieval FITS its context to it. An explicit
+# over-large output reservation (num_predict past the default) is clamped back to
+# this default rather than rejected, so an agent that over-reserves still fits.
+# When the two disagreed, retrieval assembled prompts up to the margin larger than
+# the engine would accept, and a grounded turn failed with a 400 the caller could
 # do nothing about.
 GENERATION_RESERVE_TOKENS = 1024
 CONTEXT_WINDOW_MARGIN_TOKENS = 128
@@ -73,6 +77,9 @@ class LLMOptions(BaseModel):
     # token budget inside <think> and emit nothing. llama-server maps this
     # to chat_template_kwargs; hosted-API translators drop it.
     think: bool | None = None
+    # Structured-output request for the internal calls that want a bare JSON
+    # value back. Must be listed here or the allowlist above silently drops it.
+    response_format: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only non-None values as a dict."""
@@ -116,6 +123,8 @@ class ProviderErrorKind(StrEnum):
     BAD_REQUEST = "bad_request"
     CONNECTION = "connection"
     SERVER = "server"
+    CAPACITY = "capacity"
+    PORT_CONFLICT = "port_conflict"
     UNKNOWN = "unknown"
 
 
@@ -256,7 +265,7 @@ last, when the backend reports them)."""
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> list[Vector]:
         """Embed a batch of texts, return list of vectors."""
         ...
 

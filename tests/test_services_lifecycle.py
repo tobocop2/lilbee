@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 from unittest.mock import MagicMock
@@ -13,7 +14,9 @@ from lilbee.app.services import (
     install_engine_lifecycle_hooks,
     peek_services,
     reset_services,
+    reset_services_on_exit,
     set_services,
+    wait_for_hard_exit_teardown,
 )
 
 # The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
@@ -157,3 +160,81 @@ def test_install_off_main_thread_is_a_noop():
     thread.start()
     thread.join()
     assert errors == []
+
+
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_hard_exit_logs_the_received_signal(sig, caplog):
+    """server.log must record which signal ended the process, for diagnostics."""
+    _install_stub_services()
+    install_engine_lifecycle_hooks()
+    handler = signal.getsignal(sig)
+    assert callable(handler)
+
+    with caplog.at_level(logging.INFO, logger="lilbee.app.services"):
+        with pytest.raises(SystemExit):
+            handler(sig, None)
+        _join_teardown()
+
+    assert any(signal.Signals(sig).name in rec.message for rec in caplog.records)
+
+
+def test_wait_for_hard_exit_teardown_joins_the_running_thread():
+    """serve's lock release must not outrun a signal-driven fleet stop."""
+    finished = threading.Event()
+
+    def slow_teardown() -> None:
+        finished.wait(timeout=5)
+
+    thread = threading.Thread(target=slow_teardown, name="hard-exit-teardown")
+    thread.start()
+    finished.set()
+    wait_for_hard_exit_teardown()
+    assert not thread.is_alive()
+
+
+def test_wait_for_hard_exit_teardown_without_a_teardown_is_a_noop():
+    wait_for_hard_exit_teardown()
+
+
+def test_exit_teardown_runs_off_the_main_thread():
+    """Only the main thread takes signals, so an exit teardown must leave it."""
+    provider = _install_stub_services()
+    runners: list[threading.Thread] = []
+    provider.shutdown.side_effect = lambda: runners.append(threading.current_thread())
+
+    reset_services_on_exit()
+
+    assert runners
+    assert runners[0] is not threading.main_thread()
+    assert runners[0].daemon is False
+    assert peek_services() is None
+
+
+def test_exit_teardown_finishes_after_the_wait_is_interrupted(monkeypatch):
+    """A second Ctrl-C must abandon only the wait, never the fleet stop."""
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    monkeypatch.setattr(
+        services_mod,
+        "wait_for_hard_exit_teardown",
+        MagicMock(side_effect=KeyboardInterrupt),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        reset_services_on_exit()
+
+    release.set()
+    _join_teardown()
+    provider.shutdown.assert_called_once()
+
+
+def test_exit_teardown_without_services_starts_no_thread(monkeypatch):
+    """Every process exit runs this hook; an unused container costs no thread."""
+    reset_services()
+    spawned = MagicMock()
+    monkeypatch.setattr(services_mod.threading, "Thread", spawned)
+
+    reset_services_on_exit()
+
+    spawned.assert_not_called()

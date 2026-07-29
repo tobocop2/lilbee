@@ -56,6 +56,21 @@ def test_errors_on_nonexistent_device():
         )
 
 
+def test_errors_as_placement_error_when_the_estimate_has_no_per_device_split():
+    """An estimate that does not break down per device is a PlacementError, not a raw zip error.
+
+    gguf-parser returns no ``vrams[]`` breakdown for some models, leaving the
+    per-device vector empty. The auto planner already skips such a candidate; the
+    manual path must refuse in the same currency, so a saved pin degrades to
+    automatic placement instead of taking the fleet down.
+    """
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+    with pytest.raises(PlacementError, match="chat is pinned to 1 device"):
+        placement_from_spec(
+            spec, (WorkerRole.CHAT,), {0: 80 * GIB}, estimate_peak=lambda role, ratio: ()
+        )
+
+
 def test_errors_when_does_not_fit_naming_card():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
     est = _peak({WorkerRole.CHAT: [70]})

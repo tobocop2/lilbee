@@ -1,6 +1,12 @@
-"""Document management route handlers: add, list, remove, sync."""
+"""Document management route handlers: add, list, remove, sync, export.
+
+Every route needs the token, reads included: the listing names the user's
+files and ``/api/export`` serializes the whole corpus.
+"""
 
 from __future__ import annotations
+
+import asyncio
 
 from litestar import Request, Response, get, post
 from litestar.datastructures import UploadFile
@@ -11,7 +17,6 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.models import (
     AddRequest,
     DocumentListResponse,
@@ -24,7 +29,6 @@ class RemoveRequest(BaseModel):
     """Request body for /api/documents/remove."""
 
     names: list[str] = Field(max_length=100)
-    delete_files: bool = False
 
 
 @post("/api/sync")
@@ -75,13 +79,13 @@ async def add_upload_route(
     e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
     ingest its own local files by uploading them straight to the server.
     """
-    files: list[tuple[str, bytes]] = []
-    for upload in data:
-        files.append((upload.filename, await upload.read()))
+    # Names first, bytes second: reading every part before validating cost a
+    # full in-memory copy of a payload that was going to be rejected anyway.
     try:
-        cleaned = handlers.validate_uploads(files)
+        names = handlers.validate_upload_names([upload.filename for upload in data])
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
     return Stream(
         handlers.add_uploads_stream(cleaned),
         media_type="text/event-stream",
@@ -90,10 +94,9 @@ async def add_upload_route(
 
 
 @get("/api/documents")
-@read_only
 async def documents_list_route(
     search: str = Parameter(query="search", default=""),
-    limit: int = Parameter(query="limit", default=50, le=1000),
+    limit: int = Parameter(query="limit", default=50, ge=1, le=1000),
     offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> DocumentListResponse:
     """List indexed documents with metadata, paginated and searchable."""
@@ -103,11 +106,10 @@ async def documents_list_route(
 @post("/api/documents/remove")
 async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
-    return await handlers.delete_documents(data.names, delete_files=data.delete_files)
+    return await handlers.delete_documents(data.names)
 
 
 @get("/api/export")
-@read_only
 async def export_route(
     fmt: str = Parameter(query="format", default=""),
     source: str = Parameter(query="source", default=""),
@@ -116,7 +118,10 @@ async def export_route(
     from lilbee.app.dataset import DatasetError, export_to_bytes
 
     try:
-        payload = export_to_bytes(fmt, source or None)
+        # export_to_bytes serializes the whole per-page dataset into memory;
+        # offload so a large export doesn't stall every other request, matching
+        # get_source_content's own off-loop read.
+        payload = await asyncio.to_thread(export_to_bytes, fmt, source or None)
     except DatasetError as exc:
         raise ValidationException(str(exc)) from exc
     return Response(

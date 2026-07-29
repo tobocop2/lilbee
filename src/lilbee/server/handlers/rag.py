@@ -24,7 +24,11 @@ from lilbee.retrieval.query.compaction import (
     history_budget,
     prompt_history,
 )
-from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
+from lilbee.retrieval.query.formatting import (
+    StreamingCitationFilter,
+    cited_subset,
+    strip_llm_citations,
+)
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -42,7 +46,11 @@ from lilbee.retrieval.reasoning import (
     strip_reasoning,
 )
 from lilbee.runtime.progress import SseErrorCode, SseEvent
-from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
+from lilbee.server.chat_completions_api.errors import (
+    _BACKEND_FAILURE_MESSAGE,
+    _INFRASTRUCTURE_KINDS,
+    CompletionsErrorCode,
+)
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -82,7 +90,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# Unmapped kinds surface as their ProviderErrorKind string; shipped clients branch on it.
+# Unmapped kinds surface as their ProviderErrorKind string; shipped clients branch
+# on it. The kinds that describe the backend keep their code and lose their text
+# (see _classify_stream_error), so a client can still branch without being handed
+# engine internals.
 _STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
     ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,
@@ -100,6 +111,13 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
         if mapped is not None:
             return mapped, str(exc)
         code = None if exc.kind is ProviderErrorKind.UNKNOWN else exc.kind
+        if exc.kind in _INFRASTRUCTURE_KINDS:
+            # Kinds that describe the backend rather than the request. Their text
+            # is built at the fleet boundary and carries the dead engine's stderr,
+            # so it is logged rather than sent, exactly as the completions surface
+            # already does. Both surfaces answer to the same set.
+            log.warning("Backend failure on the stream surface: %s", exc)
+            return code, _BACKEND_FAILURE_MESSAGE
         return code, str(exc)
     return classify_load_error(str(exc))
 
@@ -509,7 +527,7 @@ async def chat(
             return AskResponse(
                 answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
             )
-        sources, messages = rag
+        sources, messages = rag.results, rag.messages
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -526,7 +544,10 @@ async def chat(
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
-        cited_sources=[CleanedChunk(**clean_result(s)) for s in cited_subset(answer, sources)],
+        cited_sources=[
+            CleanedChunk(**clean_result(s))
+            for s in cited_subset(strip_llm_citations(answer), sources)
+        ],
         compaction=compaction,
     )
 
@@ -631,7 +652,7 @@ async def _stream_chat_response(
         yield frame
     if ctx is None:
         return
-    sources, messages = ctx
+    sources, messages = ctx.results, ctx.messages
 
     req = _build_canonical_request(messages, options)
     answer_parts: list[str] = []
@@ -852,7 +873,7 @@ def _resolve_stream_context(
         return _StreamResolution([], None, [frame])
     if rag is None:
         return _StreamResolution([], None, [sse_error("No relevant documents found.")])
-    results, messages = rag
+    results, messages = rag.results, rag.messages
     return _StreamResolution(results, messages, [])
 
 

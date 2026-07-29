@@ -6,6 +6,7 @@ import threading
 import numpy as np
 
 from lilbee.core.config import Config
+from lilbee.core.vectors import Vector
 from lilbee.data.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
@@ -13,12 +14,6 @@ from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedd
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
 log = logging.getLogger(__name__)
-
-# Sequences per embed request, matching the local engine's per-request packing
-# cap so app-level batches feed full server batches. The engine re-splits by
-# exact token counts anyway; for remote SDK providers the resulting char budget
-# (~chunk_size-dependent, ~128 KiB at defaults) stays a safe request-size cap.
-EMBED_BATCH_TARGET_SEQUENCES = 64
 
 
 def _name_base(ref: ProviderModelRef) -> str:
@@ -67,7 +62,6 @@ class Embedder:
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config
         self._provider = provider
-        self.last_batch_truncated = 0
         self._truncated_total = 0
         self._truncated_lock = threading.Lock()
 
@@ -83,8 +77,13 @@ class Embedder:
 
     @property
     def batch_char_budget(self) -> int:
-        """Per-request char cap: a full packed batch of maximum-size chunks."""
-        return EMBED_BATCH_TARGET_SEQUENCES * self._config.chunk_size * CHARS_PER_TOKEN
+        """Per-request char cap: a full packed batch of maximum-size chunks.
+
+        The target sequences-per-request is ``embed_batch_sequences`` (tunable to
+        keep a multi-GPU fleet's batching slots full); the engine still re-splits
+        to its physical batch, so it is an upper bound, not a guarantee.
+        """
+        return self._config.embed_batch_sequences * self._config.chunk_size * CHARS_PER_TOKEN
 
     @property
     def truncated_total(self) -> int:
@@ -92,9 +91,13 @@ class Embedder:
         with self._truncated_lock:
             return self._truncated_total
 
-    def truncate(self, text: str) -> str:
-        """Truncate text to the embed char budget, counting any truncation."""
-        budget = self.embed_char_budget
+    def truncate(self, text: str, reserved: int = 0) -> str:
+        """Truncate text to the embed char budget, counting any truncation.
+
+        *reserved* is charged against the budget so an instruction prefix
+        prepended afterwards still leaves the sent text inside the guard.
+        """
+        budget = max(1, self.embed_char_budget - reserved)
         if len(text) <= budget:
             return text
         log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
@@ -102,7 +105,7 @@ class Embedder:
             self._truncated_total += 1
         return text[:budget]
 
-    def validate_vector(self, vector: list[float]) -> None:
+    def validate_vector(self, vector: Vector) -> None:
         """Validate embedding vector dimension and values."""
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
@@ -116,8 +119,23 @@ class Embedder:
             raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
 
     def validate_model(self) -> bool:
-        """Check if the configured embedding model is available. No side effects."""
-        return self.embedding_available()
+        """Availability gate for the startup and ingest paths: warns when it fails.
+
+        Same probe as :meth:`embedding_available`, but this is the entry-point
+        check whose whole job is to not fail silently -- a missing model here
+        means every chunk of the run ahead will fail to embed, and the operator
+        needs to hear that once, up front, rather than as a per-file error much
+        later. Callers that can genuinely degrade (search falling back to
+        keyword) ask :meth:`embedding_available` and stay quiet.
+        """
+        if self.embedding_available():
+            return True
+        log.warning(
+            "Embedding model %r is not available; embedding will fail. "
+            "Pull it or set a different embedding_model.",
+            self._config.embedding_model,
+        )
+        return False
 
     def embedding_available(self) -> bool:
         """Return True if the embedding model can be resolved.
@@ -131,11 +149,11 @@ class Embedder:
         """Instruction profile for the configured embedder (symmetric if unrecognized)."""
         return resolve_embedding_profile(self._config.embedding_model)
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str) -> Vector:
         """Embed a single document string, return vector."""
         return self._embed_with([text], self._profile().doc_prefix)[0]
 
-    def embed_query(self, text: str) -> list[float]:
+    def embed_query(self, text: str) -> Vector:
         """Embed a single query string, applying the model's query instruction if any."""
         return self._embed_with([text], self._profile().query_instruction)[0]
 
@@ -145,7 +163,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed document texts with adaptive batching, return list of vectors."""
         return self._embed_with(
             texts, self._profile().doc_prefix, source=source, on_progress=on_progress
@@ -157,7 +175,7 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Embed query texts (query instruction applied), adaptive batching."""
         return self._embed_with(
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
@@ -170,22 +188,23 @@ class Embedder:
         *,
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
-    ) -> list[list[float]]:
+    ) -> list[Vector]:
         """Adaptive-batched embed of *texts*, each prefixed (query/document instruction).
 
         Fires ``embed`` progress events per batch when *on_progress* is provided.
         """
         if not texts:
-            self.last_batch_truncated = 0
             return []
-        truncated_before = self.truncated_total
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
-        vectors: list[list[float]] = []
+        vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
-            truncated = prefix + self.truncate(text)
+            # The prefix is charged against the budget: it is part of what the
+            # embed model receives, so counting only the text would ship
+            # budget+len(prefix) chars and lose the tail the clamp protects.
+            truncated = prefix + self.truncate(text, reserved=len(prefix))
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._provider.embed(batch))
@@ -205,5 +224,4 @@ class Embedder:
             )
         for vec in vectors:
             self.validate_vector(vec)
-        self.last_batch_truncated = self.truncated_total - truncated_before
         return vectors

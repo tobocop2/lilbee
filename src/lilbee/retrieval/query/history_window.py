@@ -5,27 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from lilbee.data.chunk import CHARS_PER_TOKEN
+
 if TYPE_CHECKING:
     from lilbee.retrieval.query.searcher import ChatMessage
-
-# Conservative char->token estimator. Matches OpenAI's "4 chars ~= 1 token"
-# rule of thumb for English; under-counts non-ASCII slightly but the
-# budget already leaves headroom for that.
-_CHARS_PER_TOKEN = 4
 
 
 def estimate_text_tokens(text: str) -> int:
     """Cheap char/4 token estimate for a string."""
-    return max(1, len(text) // _CHARS_PER_TOKEN)
+    return max(1, len(text) // CHARS_PER_TOKEN)
 
 
 def chars_for_tokens(tokens: int) -> int:
     """Rough char budget for a token budget: the inverse of estimate_text_tokens.
 
-    Keeps the chars-per-token ratio owned by this module, so callers that need to
-    clip text to a token budget do not import the constant behind its back.
+    The chars-per-token ratio itself is owned by :mod:`lilbee.data.chunk`, the
+    one place it is defined; this is the token->char direction of it.
     """
-    return tokens * _CHARS_PER_TOKEN
+    return tokens * CHARS_PER_TOKEN
 
 
 def estimate_tokens(message: ChatMessage) -> int:
@@ -45,6 +42,11 @@ def windowed_history(
     message; never strands an orphan assistant reply with no preceding user
     turn for the model to anchor to. The newest pair is always kept even
     if it exceeds the budget on its own (caller decides what to do then).
+
+    A non-positive *max_tokens* disables windowing and returns everything,
+    rather than windowing hardest. No production caller can reach it today
+    (the context target has a floor), but a caller deriving a budget that
+    goes non-positive gets the full history, not an empty one.
     """
     if max_tokens <= 0 or not messages:
         return list(messages)

@@ -60,7 +60,7 @@ publish: build  ## Build and upload to PyPI
 release:  ## Bump the beta version, tag, and push; CI builds + publishes
 	bash scripts/release.sh
 
-promote:  ## Re-release an existing tag's source under a new version (FROM=v0.6.90b420.dev719 TO=0.6.90b420)
+promote:  ## Re-release an existing tag's source under a new version (FROM=v0.6.90b420.dev719 TO=0.6.90b420; DRY_RUN=1 to preview)
 	@[ -n "$(FROM)" ] && [ -n "$(TO)" ] || { echo "promote: FROM=v... TO=<new-version> required"; exit 1; }
 	bash scripts/promote_release.sh $(FROM) $(TO)
 
@@ -100,8 +100,10 @@ docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	rm -f openapi.json
 
 docs-site: docs-api  ## Build the full dev portal (coverage + API docs)
-	$(MAKE) test-ci
+	# Tests gate CI and releases, not the site build; the coverage report deploys regardless of the test outcome.
+	-$(MAKE) test-ci
 	cp -r htmlcov site/coverage
+	uv run python tools/update_site_coverage.py
 
 docs: docs-site  ## Alias for docs-site
 

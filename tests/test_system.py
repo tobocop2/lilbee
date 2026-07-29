@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -12,6 +13,7 @@ from lilbee.core.system import (
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_data_dir,
+    default_state_dir,
     find_local_root,
     is_ignored_dir,
     is_network_path,
@@ -67,11 +69,18 @@ class TestNetworkPath:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_uses_raw_path_when_resolve_fails(self, mounts_file, monkeypatch):
         # Path.resolve has no injectable seam, so this one branch patches it.
-        def _raise(self):
-            raise OSError("resolve failed")
+        # Raise only for the path under test; an unconditional patch also hits
+        # the config validator and blows up in fixture teardown.
+        target = Path("/workspace/models/m.gguf")
+        real_resolve = Path.resolve
+
+        def _raise(self, strict=False):
+            if self == target:
+                raise OSError("resolve failed")
+            return real_resolve(self, strict=strict)
 
         monkeypatch.setattr(Path, "resolve", _raise)
-        assert is_network_path(Path("/workspace/models/m.gguf")) is True
+        assert is_network_path(target) is True
 
 
 class TestHelpers:
@@ -97,6 +106,34 @@ class TestHelpers:
         ):
             result = default_data_dir()
             assert result.parts[-3:] == (".local", "share", "lilbee")
+
+    def test_default_state_dir_is_not_a_cache_dir(self, tmp_path):
+        """Live engine records must not sit where a cleaner may wipe them."""
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CACHE_HOME": str(tmp_path / "c")},
+                clear=False,
+            ),
+            mock.patch("sys.platform", "linux"),
+        ):
+            result = default_state_dir()
+            assert result == tmp_path / "state" / "lilbee"
+
+    def test_default_state_dir_linux_fallback(self):
+        filtered = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+        with (
+            mock.patch.dict(os.environ, filtered, clear=True),
+            mock.patch("sys.platform", "linux"),
+        ):
+            result = default_state_dir()
+            assert result.parts[-3:] == (".local", "state", "lilbee")
+
+    def test_default_state_dir_darwin_avoids_purgeable_caches(self):
+        with mock.patch("sys.platform", "darwin"):
+            result = default_state_dir()
+            assert "Caches" not in str(result)
+            assert "Application Support" in str(result)
 
     def test_default_data_dir_windows(self, tmp_path):
         with (
@@ -244,3 +281,85 @@ class TestStderrSuppressed:
             original_stat.st_dev,
             original_stat.st_ino,
         )
+
+
+def test_stderr_suppressed_can_nest():
+    """A suppressed block can re-enter this, directly or via a native helper
+    that wraps its own stderr. A plain Lock self-deadlocked there."""
+    from lilbee.core.system import stderr_suppressed
+
+    with stderr_suppressed(), stderr_suppressed():
+        pass
+
+
+class TestCgroupCappedMemory:
+    """Host introspection answers for this process, not for the machine."""
+
+    def test_the_ctx_target_tiers_on_the_container_cap(self, monkeypatch, tmp_path):
+        # A 4 GiB container on a 64 GiB host. Tiered against the host it asks for a
+        # 24576-token window nothing in the container can back.
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text(f"{4 * 1024**3}\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 8192
+
+    def test_an_uncapped_host_still_tiers_on_its_own_ram(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path / "absent")
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 24576
+
+    def test_a_v1_limit_and_usage_are_read_too(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        v1 = tmp_path / "memory"
+        v1.mkdir()
+        (v1 / "memory.limit_in_bytes").write_text(f"{4 * 1024**3}\n")
+        (v1 / "memory.usage_in_bytes").write_text(f"{1024**3}\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() == 4 * 1024**3
+        assert sys_mod.cgroup_memory_used() == 1024**3
+
+    def test_unlimited_is_reported_as_no_limit(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text("max\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() is None
+
+    def test_an_unreadable_limit_is_reported_as_no_limit(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        (tmp_path / "memory.max").write_text("not-a-number\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        assert sys_mod.cgroup_memory_limit() is None
+
+    def test_absent_cgroup_files_report_nothing(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path / "absent")
+        assert sys_mod.cgroup_memory_limit() is None
+        assert sys_mod.cgroup_memory_used() is None
+
+    def test_a_v1_sentinel_limit_does_not_shrink_the_ctx_target(self, monkeypatch, tmp_path):
+        # cgroup v1 spells unlimited as a near-int64 sentinel rather than a word.
+        from lilbee.core import system as sys_mod
+
+        v1 = tmp_path / "memory"
+        v1.mkdir()
+        (v1 / "memory.limit_in_bytes").write_text("9223372036854771712\n")
+        monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.scaled_chat_ctx_target_default() == 24576

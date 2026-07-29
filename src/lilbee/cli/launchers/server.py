@@ -23,6 +23,8 @@ from lilbee.cli.commands.servers import port_file
 from lilbee.cli.launchers.warm_render import render_warm
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.parent_monitor import PARENT_PID_ENV
+from lilbee.providers.fleet.child_guard import spawn_bound_child
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.server.auth import server_json_path
 
@@ -74,14 +76,38 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _session_token() -> str | None:
+    """The bearer token from server.json, or None if it is not readable yet."""
+    try:
+        data = json.loads(server_json_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
 def _probe_health(port: int) -> dict[str, object] | None:
     """GET ``/api/health`` once; return the parsed body on 200, else None.
 
     The single place the probe URL, timeout, error handling, and status check
     live, so the three public probes below stay consistent.
+
+    Health needs the token like every other route: it reports the chat
+    engine's last error, which carries model paths and loader failures. The
+    token is re-read per attempt rather than captured once, because these
+    probes poll a server that is still starting and server.json does not exist
+    until its lifespan has run. No token yet means no server yet, which is the
+    same answer a refused connection gives.
     """
+    token = _session_token()
+    if token is None:
+        return None
     try:
-        resp = httpx.get(f"http://{LOOPBACK}:{port}{_HEALTH_PATH}", timeout=_HEALTH_PROBE_TIMEOUT_S)
+        resp = httpx.get(
+            f"http://{LOOPBACK}:{port}{_HEALTH_PATH}",
+            timeout=_HEALTH_PROBE_TIMEOUT_S,
+            headers={"Authorization": f"Bearer {token}"},
+        )
     except httpx.HTTPError:
         return None
     if resp.status_code != _HTTP_OK:
@@ -132,9 +158,9 @@ def planned_chat_ctx() -> int | None:
 
     Mirrors the fleet's own single-GPU chat sizing, so it answers before the
     engine is up: the same ``cfg.num_ctx`` short-circuit, then the same
-    :func:`resolve_chat_ctx` against the same memory read the fleet's plan
-    snapshot holds (both scale total VRAM by ``cfg.gpu_memory_fraction``, so
-    neither moves with what is currently resident).
+    :func:`resolve_chat_ctx` against the same budget the fleet sizes with, which
+    is the memory the GPU reports rather than the host's (see
+    :func:`lilbee.providers.fleet.planning.plan_sizing_budget`).
 
     A tensor-split chat is sized by the fleet against per-device headroom
     instead, so this can over-report there; it is only a fallback for a chat
@@ -143,6 +169,7 @@ def planned_chat_ctx() -> int | None:
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
+    from lilbee.providers.fleet.planning import plan_sizing_budget
     from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.model_ref import parse_model_ref
 
@@ -153,7 +180,9 @@ def planned_chat_ctx() -> int | None:
         return cfg.num_ctx
     try:
         path = resolve_model_path(ref)
-        return resolve_chat_ctx(path, read_gguf_metadata(path))
+        return resolve_chat_ctx(
+            path, read_gguf_metadata(path), available_bytes=plan_sizing_budget()
+        )
     except (ProviderError, OSError, ValueError):
         # Sizing needs the model file and its GGUF header; an absent or unreadable
         # one leaves the window unknown rather than failing the launch.
@@ -281,13 +310,12 @@ def spawn_server(
         stdout = log_file
         stderr = subprocess.STDOUT
 
-    # None inherits the parent environment; a dict replaces it wholesale, so
-    # merge the overrides onto a copy of os.environ to keep PATH and the rest.
-    child_env = {**os.environ, **env_overrides} if env_overrides else None
+    # LILBEE_PARENT_PID arms serve's parent-death watcher, so a hard-killed
+    # launcher (whose finally never runs) does not orphan serve holding server_lock.
+    child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
     try:
-        # Only caller-controlled value is the validated integer port; no shell.
-        return subprocess.Popen(  # noqa: S603
+        return spawn_bound_child(
             cmd,
             stdout=stdout,
             stderr=stderr,

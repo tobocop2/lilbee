@@ -60,7 +60,7 @@ def test_atomic_write_leaves_no_litter_on_failure(tmp_path, monkeypatch):
     def _boom(*_a, **_k):
         raise OSError("rename failed")
 
-    monkeypatch.setattr(config_file.os, "replace", _boom)
+    monkeypatch.setattr("lilbee.core.security.os.replace", _boom)
     with pytest.raises(OSError):
         config_file.atomic_write_text(path, "new")
     assert path.read_text() == "original"

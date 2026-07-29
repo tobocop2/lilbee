@@ -50,10 +50,12 @@ def _completion_request(model: str = "ollama/m") -> CompletionRequest:
     )
 
 
-def _embedding_request(model: str = "ollama/m") -> EmbeddingRequest:
+def _embedding_request(
+    model: str = "ollama/m", inputs: list[str] | None = None
+) -> EmbeddingRequest:
     return EmbeddingRequest(
         ref=parse_model_ref(model),
-        inputs=["x"],
+        inputs=inputs if inputs is not None else ["x"],
         api_base="http://localhost:11434",
     )
 
@@ -291,8 +293,34 @@ class TestEmbedReturnsEmbeddingResult:
             "model": "x",
         }
         with mock.patch.dict(sys.modules, {"litellm": fake}):
-            result = backend.embed(_embedding_request())
+            result = backend.embed(_embedding_request(inputs=["x", "y"]))
         assert result.vectors == [[0.0], [1.0]]
+
+    def test_short_embedding_batch_is_refused(self, backend: LlmSdkBackend) -> None:
+        """A dropped item still sorts cleanly but breaks the positional pairing.
+
+        Every later chunk would be stored against the wrong vector, silently
+        corrupting the index, so the batch is refused instead.
+        """
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {"data": [{"embedding": [0.0], "index": 0}], "model": "x"}
+        with mock.patch.dict(sys.modules, {"litellm": fake}), pytest.raises(ProviderError) as err:
+            backend.embed(_embedding_request(inputs=["x", "y"]))
+        assert "incomplete or misindexed" in str(err.value)
+
+    def test_duplicate_embedding_index_is_refused(self, backend: LlmSdkBackend) -> None:
+        """A repeated index yields the right count and the wrong pairing."""
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {
+            "data": [
+                {"embedding": [0.0], "index": 0},
+                {"embedding": [1.0], "index": 0},
+            ],
+            "model": "x",
+        }
+        with mock.patch.dict(sys.modules, {"litellm": fake}), pytest.raises(ProviderError) as err:
+            backend.embed(_embedding_request(inputs=["x", "y"]))
+        assert "incomplete or misindexed" in str(err.value)
 
     def test_embed_error_is_wrapped(self, backend: LlmSdkBackend) -> None:
         fake = mock.MagicMock()
@@ -435,3 +463,23 @@ class TestPullModel:
     def test_refused_for_read_only_lm_studio(self, backend: LlmSdkBackend) -> None:
         with pytest.raises(ProviderError, match="LM Studio"):
             backend.pull_model("m", base_url="http://localhost:1234/v1")
+
+
+def test_response_format_is_sent_best_effort(backend: LlmSdkBackend) -> None:
+    """A provider without structured-output support must drop the field and
+    answer normally rather than refuse the call: callers parse the reply
+    defensively either way, so refusing would cost an answer to gain nothing."""
+    req = CompletionRequest(
+        ref=parse_model_ref("ollama/m"),
+        messages=[{"role": "user", "content": "hi"}],
+        api_base="http://localhost:11434",
+        options={"response_format": {"type": "json_object"}},
+    )
+    kwargs = backend._completion_kwargs(req, stream=False)
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["drop_params"] is True
+
+
+def test_drop_params_is_not_set_without_response_format(backend: LlmSdkBackend) -> None:
+    kwargs = backend._completion_kwargs(_completion_request(), stream=False)
+    assert "drop_params" not in kwargs

@@ -1,9 +1,28 @@
 name: CI
 
+# Full CI only runs when the app, its tests, or their toolchain change;
+# docs/site edits skip it. release.yml re-runs lint+test itself when a tag
+# has no green CI run, so a skipped push never strands a release.
 on:
   push:
     branches: [main]
+    paths: &ci-paths
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+      - '.coveragerc-windows'
+      - 'engine-versions.env'
+      - 'scripts/check_style_rules.py'
+      - 'tools/qa/**'
+      - 'tools/wheel-build/**'
+      - 'packaging/tools/**'
+      - 'scripts/qa/**'
+      - '.github/workflows/ci.yml'
+      - '.github/actions/restore-ci-models/**'
   pull_request:
+    paths: *ci-paths
   workflow_call:
   workflow_dispatch:
 
@@ -111,6 +130,31 @@ jobs:
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          # Backstop for the xdist worker wedge (ProactorEventLoop /
+          # reactive-timing thread-accumulation), which pytest-timeout's thread
+          # method cannot break on Windows: its callback is Python and never runs
+          # while the GIL is held. Above the 60s per-test pytest-timeout so this
+          # only fires when that fails; faulthandler's C watchdog dumps every
+          # thread and _exits the worker, so a wedge fails fast with a traceback
+          # instead of hanging to timeout-minutes. See tests/_hang_watchdog.py.
+          LILBEE_TEST_HANG_DUMP_S: "90"
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+
+      - name: Surface hang-watchdog stack dumps
+        # Runs even when the test step failed/was killed: the wedged worker
+        # cannot print its own dump. Empty dirs/files mean no wedge fired.
+        if: always()
+        shell: bash
+        run: |
+          dir="${{ runner.temp }}/hang-dumps"
+          found=""
+          for f in "$dir"/hang-*.txt; do
+            [ -s "$f" ] || continue
+            found=1
+            echo "===== $f ====="
+            cat "$f"
+          done
+          [ -n "$found" ] || echo "no hang-watchdog dumps (no worker wedged)"
 
   integration:
     timeout-minutes: 120
@@ -119,6 +163,12 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      # Pin ollama instead of installing latest every run. The warm-up
+      # ('ollama run qwen3:0.6b') intermittently segfaults in ollama's own
+      # runner on the unpinned latest (0.32.x); pin to the last 0.31 stable so
+      # the version stops drifting and a bad release can't land mid-run. Bump
+      # deliberately after checking a release is stable.
+      OLLAMA_PIN: "0.31.2"
     strategy:
       fail-fast: false
       matrix:
@@ -188,12 +238,18 @@ jobs:
           # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
           # /c/... form, or Python's shutil.which won't find the binary. cygpath
           # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
+          #
+          # PATH only, deliberately no loader variable: llama-server and every
+          # library it pulls in carry RUNPATH $ORIGIN on Linux and LC_RPATH
+          # @loader_path on macOS, so the engine resolves its own libraries. A
+          # GITHUB_ENV export would apply to every later step in the job, and
+          # ollama's bundled runner links the same libggml/libllama SONAMEs this
+          # tarball ships, so it would load these instead of its own and
+          # segfault on the model warm-up.
           if command -v cygpath >/dev/null 2>&1; then
             cygpath -w "${bindir}" >> "${GITHUB_PATH}"
           else
             echo "${bindir}" >> "${GITHUB_PATH}"
-            echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
-            echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
           fi
 
       # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
@@ -230,13 +286,10 @@ jobs:
             echo "${helperdir}" >> "${GITHUB_PATH}"
           fi
 
-      - name: Restore Ollama binary cache (Windows)
-        if: runner.os == 'Windows'
-        id: ollama-bin-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-v1
+      # No cache for C:\ollama: the extracted tree (ollama plus its CUDA/ROCm
+      # runner DLLs) was 1.4 GB, the largest entry in the repo, to save a ~1 min
+      # download. Against a hard 10 GB cap it was evicting engine caches worth
+      # ~50 min apiece to a release build.
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
@@ -259,13 +312,15 @@ jobs:
           echo "spacy model install failed after 5 attempts" >&2
           exit 1
 
+      # Keyed on the browser revision, not uv.lock: the browsers do not change when
+      # an unrelated dependency does, and hashing the lock minted a fresh ~300 MB
+      # entry per OS on every bump while the old ones sat on the cap until evicted.
       - name: Restore Playwright cache
         id: pw-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: playwright-${{ runner.os }}-
+          key: playwright-${{ runner.os }}-chromium-v1
 
       - name: Install Playwright for crawl4ai
         if: steps.pw-cache.outputs.cache-hit != 'true'
@@ -280,16 +335,17 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          key: playwright-${{ runner.os }}-chromium-v1
 
-      - name: Cache HuggingFace models
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/huggingface/hub
-          key: hf-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: hf-models-${{ runner.os }}-
+      # GGUF models come from the ci-models release (restore-ci-models below), so
+      # nothing ever wrote ~/.cache/huggingface/hub. The cache block that used to
+      # sit here only churned a key off pyproject.toml and consumed the cap.
 
+      # Linux only, deliberately. The pull is ~2 min; the entry is ~750 MB per OS,
+      # and the repo cache sits against a hard 10 GB cap where every GB evicts an
+      # engine cache worth ~50 min to a release build. Windows/macOS re-pull.
       - name: Cache Ollama models
+        if: runner.os == 'Linux'
         uses: actions/cache@v6
         with:
           path: ~/.ollama/models
@@ -298,30 +354,23 @@ jobs:
 
       - name: Install Ollama (Linux)
         if: runner.os == 'Linux'
-        run: curl -fsSL https://ollama.com/install.sh | sh
+        run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${OLLAMA_PIN}" sh
 
       - name: Install Ollama (macOS)
         if: runner.os == 'macOS'
         run: |
-          curl -fsSL https://ollama.com/download/Ollama-darwin.zip -o /tmp/ollama.zip
+          curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_PIN}/Ollama-darwin.zip" -o /tmp/ollama.zip
           unzip -q /tmp/ollama.zip -d /tmp/ollama
           sudo mv /tmp/ollama/Ollama.app /Applications/
           sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
 
       - name: Install Ollama (Windows)
-        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://ollama.com/download/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
+          Invoke-WebRequest -Uri "https://github.com/ollama/ollama/releases/download/v$env:OLLAMA_PIN/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
           Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
-
-      - name: Save Ollama binary cache (Windows)
-        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: C:\ollama
-          key: ollama-bin-${{ runner.os }}-v1
 
       # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
       # past ollama's 5-minute default unload, and a cold reload plus first

@@ -7,8 +7,8 @@ import json
 import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -47,6 +47,12 @@ class _FakeProc:
 
 
 def _fake_response(*, status: int = 200, payload: object = None) -> object:
+    # A live llama-swap answers /running with a {"running": [...]} body; default to
+    # the empty-but-valid shape so "engine answers" fakes pass the identity check
+    # (state_is_healthy/_proxy_answers now validate the payload, not just the status).
+    if payload is None:
+        payload = {"running": []}
+
     class _Resp:
         status_code = status
 
@@ -58,13 +64,29 @@ def _fake_response(*, status: int = 200, payload: object = None) -> object:
 
 def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: proc)
     # Isolate lifecycle tests from the real process-tree teardown.
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
 
+class _FakeProbeClient:
+    """Stands in for the shared probe client; probes call .get on it."""
+
+    def __init__(self, responder) -> None:
+        self._responder = responder
+
+    def get(self, url, timeout=None):
+        return self._responder(url)
+
+
 def _patch_http(monkeypatch: pytest.MonkeyPatch, responder) -> None:
-    monkeypatch.setattr(sm.httpx, "get", lambda url, timeout=None: responder(url))
+    # The probes share one lru_cached httpx.Client (avoids rebuilding an SSL
+    # context per poll), so patch the factory rather than httpx.get.
+    monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(responder))
+
+
+def _raise_connect_error(url):
+    raise httpx.ConnectError("refused", request=None)
 
 
 def _launch(role: WorkerRole) -> InstanceLaunch:
@@ -109,7 +131,7 @@ class TestStart:
             return _FakeProc(poll_result=None)
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-        monkeypatch.setattr(sm.subprocess, "Popen", _capturing_popen)
+        monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
@@ -126,6 +148,25 @@ class TestStart:
         # shutdown releases the captured handle.
         mgr.shutdown()
         assert mgr._log_file is None
+
+    def test_bind_lifetime_is_forwarded_to_the_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A keep-warm fleet spawns with the death binding off so it outlives lilbee."""
+        captured: dict[str, object] = {}
+
+        def _capturing_popen(*_args: object, **kwargs: object) -> _FakeProc:
+            captured.update(kwargs)
+            return _FakeProc(poll_result=None)
+
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+
+        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)], bind_lifetime=False)
+
+        assert captured["bind_lifetime"] is False
 
     def test_raises_when_process_exits_before_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -152,6 +193,94 @@ class TestStart:
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError, match="did not start in time"):
             SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+
+
+class TestBootFailureLog:
+    """A boot failure's error carries the tail of the captured llama-swap output."""
+
+    def _spawn_writing(
+        self, monkeypatch: pytest.MonkeyPatch, proc: _FakeProc, output: bytes
+    ) -> None:
+        """Patch the spawn so the fake child writes *output* to its stdout handle,
+        as llama-swap would before dying."""
+
+        def _spawn(*_args: object, **kwargs: Any) -> _FakeProc:
+            kwargs["stdout"].write(output)
+            kwargs["stdout"].flush()
+            return proc
+
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        monkeypatch.setattr(sm, "spawn_bound_child", _spawn)
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+
+    def test_exit_before_ready_carries_the_boot_log_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spawn_writing(
+            monkeypatch, _FakeProc(poll_result=1), b"bind: address already in use\n"
+        )
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        message = str(excinfo.value)
+        assert "exited before it was ready" in message
+        assert "bind: address already in use" in message
+        assert str(tmp_path / "logs" / "llama-swap-chat.log") in message
+
+    def test_tail_covers_only_the_current_boot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log_path = tmp_path / "logs" / "llama-swap-chat.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"old boot noise\n")
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), b"fresh boot output\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert "fresh boot output" in str(excinfo.value)
+        assert "old boot noise" not in str(excinfo.value)
+
+    def test_tail_is_capped_to_the_most_recent_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = b"EARLIEST-LINE\n" + b"x" * 3000 + b"\nFINAL-LINE\n"
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), output)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert "FINAL-LINE" in str(excinfo.value)
+        assert "EARLIEST-LINE" not in str(excinfo.value)
+
+    def test_empty_log_keeps_the_plain_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=1))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        assert str(excinfo.value) == "The local model engine exited before it was ready."
+
+    def test_timeout_failure_also_carries_the_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spawn_writing(monkeypatch, _FakeProc(poll_result=None), b"still loading the model\n")
+
+        def _refuse(_url: str) -> object:
+            raise httpx.ConnectError("refused")
+
+        _patch_http(monkeypatch, _refuse)
+        monkeypatch.setattr(sm.time, "sleep", lambda _s: None)
+        clock = itertools.count(0.0, 10.4)
+        monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
+        with pytest.raises(ProviderError) as excinfo:
+            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        message = str(excinfo.value)
+        assert "did not start in time" in message
+        assert "still loading the model" in message
+
+    def test_unreadable_log_reads_as_empty(self, tmp_path: Path) -> None:
+        # No start() ran, so the log file does not exist.
+        assert SwapManager(tmp_path, _GROUP)._boot_log_tail() == ""
 
 
 class TestEndpoint:
@@ -238,6 +367,22 @@ class TestLifecycle:
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
 
+    def test_shutdown_releases_the_stopped_engines_death_pipe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stopping the engine must free its death pipe, or reloads accumulate one
+        parked watcher and one fd per model switch on the pipe-bound platforms."""
+        proc = _FakeProc(poll_result=None)
+        _patch_spawn(monkeypatch, proc)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        released: list[int] = []
+        monkeypatch.setattr(sm, "release_death_pipe", released.append)
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.shutdown()
+        assert released == [proc.pid]
+
 
 class _FakeChild:
     """A stand-in psutil.Process that records the signals it receives."""
@@ -298,7 +443,6 @@ class TestProcessTeardown:
         proc = _FakeProc(poll_result=None)
         monkeypatch.setattr(sm.sys, "platform", "win32")
         monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [proc])
-        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
         monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
         monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
@@ -311,7 +455,6 @@ class TestProcessTeardown:
         proc = _FakeProc(poll_result=None)
         monkeypatch.setattr(sm.sys, "platform", "linux")
         monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [proc])
-        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
         monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
         groups: list[object] = []
@@ -319,24 +462,6 @@ class TestProcessTeardown:
         monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
         sm._stop_own_fleet(self._CFG, ())
         assert groups == [proc]
-
-    def test_stop_own_fleet_spares_live_sibling_swap(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A swap a live OTHER owner recorded (a concurrent sibling lilbee at the
-        # same data_dir) must never be reaped, even though it shares the config.
-        ours = _FakeProc(poll_result=None)
-        ours.pid = 100
-        sibling = _FakeProc(poll_result=None)
-        sibling.pid = 200
-        terminated: list[int] = []
-        monkeypatch.setattr(sm.sys, "platform", "linux")
-        monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [ours, sibling])
-        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: {200})
-        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
-        monkeypatch.setattr(sm, "_terminate_proc_group", lambda p: terminated.append(p.pid))
-        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
-        sm._stop_own_fleet(self._CFG, ())
-        assert terminated == [100]  # ours reaped, the sibling's swap spared
 
     def test_stop_own_fleet_reaps_children_and_port_servers(
         self, monkeypatch: pytest.MonkeyPatch
@@ -349,7 +474,6 @@ class TestProcessTeardown:
         reaped: list[object] = []
         monkeypatch.setattr(sm.sys, "platform", "linux")
         monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [_FakeProc(poll_result=None)])
-        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [child])
         monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [port_server])
         monkeypatch.setattr(sm, "_terminate_proc_group", lambda p: None)
@@ -367,6 +491,7 @@ class TestProcessTeardown:
             def __init__(self, pid: int, argv: list[str]) -> None:
                 self.pid = pid
                 self._argv = argv
+                self.info = {"name": Path(next(iter(argv), "")).name}
 
             def cmdline(self) -> list[str]:
                 return self._argv
@@ -379,7 +504,33 @@ class TestProcessTeardown:
         ours = _Proc(10, [swap_bin, "-config", our_cfg, "-listen", "x"])
         other = _Proc(11, [swap_bin, "-config", other_cfg])
         notswap = _Proc(12, ["/x/bin/python", "-config", our_cfg])
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: [ours, other, notswap])
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: [ours, other, notswap])
+        result = sm._swaps_for_config(Path("/data/llama-swap.json"))
+        assert [p.pid for p in result] == [10]
+
+    def test_swaps_for_config_reads_no_cmdline_for_unrelated_processes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The scan walks the whole process table; cmdline() is the expensive call
+        # (and on macOS blocks on entitlement-protected binaries), so a process
+        # whose name is not llama-swap must be filtered on name alone.
+        class _Exploding:
+            pid = 99
+            info: ClassVar[dict[str, str]] = {"name": "Google Chrome Helper"}
+
+            def cmdline(self) -> list[str]:
+                raise AssertionError("cmdline() paid for an unrelated process")
+
+        our_cfg = str(Path("/data/llama-swap.json"))
+
+        class _Ours:
+            pid = 10
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
+
+            def cmdline(self) -> list[str]:
+                return ["/x/bin/llama-swap", "-config", our_cfg]
+
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: [_Exploding(), _Ours()])
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [10]
 
@@ -388,163 +539,35 @@ class TestProcessTeardown:
     ) -> None:
         # A process can exit (or deny access) between enumeration and cmdline();
         # the scan must skip it, not abort, or a busy box could never be reaped.
+        swap_bin = "/x/bin/llama-swap"
+        our_cfg = str(Path("/data/llama-swap.json"))
+
         class _GoneProc:
             pid = 20
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 raise sm.psutil.NoSuchProcess(self.pid)
 
         class _DeniedProc:
             pid = 21
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 raise sm.psutil.AccessDenied(self.pid)
 
-        swap_bin = "/x/bin/llama-swap"
-        our_cfg = str(Path("/data/llama-swap.json"))
-
         class _LiveProc:
             pid = 22
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 return [swap_bin, "-config", our_cfg]
 
         monkeypatch.setattr(
-            sm.psutil, "process_iter", lambda: [_GoneProc(), _DeniedProc(), _LiveProc()]
+            sm.psutil, "process_iter", lambda *a, **k: [_GoneProc(), _DeniedProc(), _LiveProc()]
         )
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [22]
-
-    def test_live_sibling_swap_pids_protects_only_live_other_owner(self, tmp_path: Path) -> None:
-        # Only a swap recorded by a LIVE OTHER owner is protected: our own record
-        # is excluded (we reap our own), and a dead owner's record is not spared.
-        def _write(owner_pid: int, owner_created_at: float, swap_pid: int) -> None:
-            (tmp_path / sm._state_filename(owner_pid, _GROUP)).write_text(
-                json.dumps(
-                    {
-                        "pid": swap_pid,
-                        "pgid": swap_pid,
-                        "owner_pid": owner_pid,
-                        "owner_created_at": owner_created_at,
-                        "created_at": None,
-                        "member_ports": [],
-                    }
-                )
-            )
-
-        other_pid = os.getppid()  # a real live process that is not us
-        other_created = sm.psutil.Process(other_pid).create_time()
-        _write(os.getpid(), sm.psutil.Process().create_time(), 111)  # ours -> excluded
-        _write(other_pid, other_created, 222)  # live other -> protected
-        _write(999_999, 1.0, 333)  # dead owner -> not protected
-        assert sm._live_sibling_swap_pids(tmp_path) == {222}
-
-    def test_reap_survivors_kills_after_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        stubborn = _FakeChild(running=True)
-        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], [stubborn]))
-        sm._reap_survivors([stubborn])
-        assert stubborn.terminated is True
-        assert stubborn.killed is True
-
-    def test_reap_survivors_waits_for_killed_processes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # A TERM-ignoring server gets KILLed; the reap must then wait for it to
-        # actually exit (VRAM teardown) before the caller probes free memory.
-        stubborn = _FakeChild(running=True)
-        waits: list[tuple[list, float]] = []
-        results = iter([([], [stubborn]), ([stubborn], [])])
-
-        def _wait_procs(procs: list[object], timeout: float) -> tuple[list, list]:
-            waits.append((list(procs), timeout))
-            return next(results)
-
-        monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
-        sm._reap_survivors([stubborn])
-        assert stubborn.killed is True
-        assert waits == [
-            ([stubborn], sm._ORPHAN_STOP_TIMEOUT_S),
-            ([stubborn], sm._KILL_WAIT_TIMEOUT_S),
-        ]
-
-    def test_reap_survivors_warns_when_sigkill_is_survived(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        immortal = _FakeChild(running=True)
-        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], [immortal]))
-        with caplog.at_level(logging.WARNING, logger=sm.__name__):
-            sm._reap_survivors([immortal])
-        assert "survived SIGKILL" in caplog.text
-
-    def test_reap_survivors_skips_already_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        dead = _FakeChild(running=False)
-        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
-        sm._reap_survivors([dead])
-        assert dead.terminated is False
-
-    def test_live_children_empty_when_process_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _gone(_pid: int) -> object:
-            raise sm.psutil.NoSuchProcess(_pid)
-
-        monkeypatch.setattr(sm.psutil, "Process", _gone)
-        assert sm._live_children(12345) == []
-
-    def test_live_children_finds_spawned_child(self) -> None:
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        try:
-            assert proc.pid in [child.pid for child in sm._live_children(os.getpid())]
-        finally:
-            proc.kill()
-            proc.wait()
-
-    def test_hard_stop_proc_kills_on_timeout(self) -> None:
-        class _Stuck(_FakeProc):
-            def wait(self, timeout: float | None = None) -> int:
-                raise sm.psutil.TimeoutExpired(timeout or 0)
-
-        proc = _Stuck(poll_result=None)
-        sm._hard_stop_proc(proc)
-        assert proc.killed is True
-
-
-def _own_state_path(tmp_path: Path) -> Path:
-    """The state file this process's SwapManager writes for itself."""
-    return tmp_path / sm._state_filename(os.getpid(), _GROUP)
-
-
-def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm._SwapState:
-    """A minimal _SwapState for swap-liveness checks."""
-    return sm._SwapState(
-        pid=pid, pgid=None, owner_pid=None, owner_created_at=None, created_at=created_at
-    )
-
-
-def _write_state(
-    tmp_path: Path,
-    *,
-    pid: int = 7777,
-    pgid: int | None = 7777,
-    created_at: float | None = None,
-    owner_pid: int | None = None,
-    owner_created_at: float | None = None,
-    member_ports: list[int] | None = None,
-    filename: str = "llama-swap.state.json",
-) -> Path:
-    state_path = tmp_path / filename
-    state_path.write_text(
-        json.dumps(
-            {
-                "pid": pid,
-                "pgid": pgid,
-                "created_at": created_at,
-                "owner_pid": owner_pid,
-                "owner_created_at": owner_created_at,
-                "member_ports": member_ports,
-                "name": "llama-swap",
-            }
-        )
-    )
-    return state_path
 
 
 class _FakePsProcess:
@@ -597,6 +620,40 @@ def _patch_psutil_process(monkeypatch: pytest.MonkeyPatch, table: dict[int, obje
     monkeypatch.setattr(sm.psutil, "Process", _process)
 
 
+def _write_state(
+    tmp_path: Path,
+    *,
+    pid: int = 7777,
+    pgid: int | None = 7777,
+    created_at: float | None = None,
+    member_ports: list[int] | None = None,
+    filename: str = "llama-swap.state.json",
+) -> Path:
+    state_path = tmp_path / filename
+    state_path.write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "pgid": pgid,
+                "created_at": created_at,
+                "member_ports": member_ports,
+                "name": "llama-swap",
+            }
+        )
+    )
+    return state_path
+
+
+def _own_state_path(tmp_path: Path) -> Path:
+    """The state file this process's SwapManager writes for itself."""
+    return tmp_path / sm._state_filename(os.getpid(), _GROUP)
+
+
+def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm.SwapState:
+    """A minimal SwapState for swap-liveness checks."""
+    return sm.SwapState(pid=pid, pgid=None, created_at=created_at)
+
+
 class TestCrossRunReaping:
     def test_start_writes_a_state_file_with_the_swap_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -640,7 +697,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap", "-config", "x.json"])
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
@@ -720,7 +777,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777, created_at=42.0)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -731,7 +788,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777, created_at=None)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -747,18 +804,6 @@ class TestCrossRunReaping:
         SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
         assert json.loads(_own_state_path(tmp_path).read_text())["created_at"] == 777.0
 
-    def test_start_records_the_owner_lilbee_pid(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
-        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
-        state = json.loads(_own_state_path(tmp_path).read_text())
-        assert state["owner_pid"] == os.getpid()
-        assert state["owner_created_at"] == pytest.approx(
-            sm.psutil.Process(os.getpid()).create_time()
-        )
-
     def test_start_records_the_swap_pgid_on_posix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -770,94 +815,34 @@ class TestCrossRunReaping:
         SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
         assert json.loads(_own_state_path(tmp_path).read_text())["pgid"] == 999
 
-    def test_live_owner_leaves_swap_running_and_state_file_intact(
+    def test_healthy_engine_is_spared_whoever_started_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A second lilbee at the same data_dir (e.g. `lilbee sync` beside the
-        # running server) must not kill the live owner's healthy swap.
-        state_path = _write_state(tmp_path, pid=7777, owner_pid=999)
+        # Reap must never disagree with bind: an engine answering on its proxy
+        # is in use (a reload's own groups, or a bindable sibling engine).
+        state_path = _write_state(tmp_path, pid=7777)
         original = state_path.read_text()
-        owner = _FakePsProcess(999, cmdline=["/usr/bin/python3", "-m", "lilbee"])
-        swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
-        _patch_psutil_process(monkeypatch, {999: owner, 7777: swap})
+        monkeypatch.setattr(sm, "state_is_healthy", lambda _state: True)
         stopped: list[object] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert stopped == []
-        assert state_path.read_text() == original  # the live owner still needs it
+        assert state_path.read_text() == original
 
     def test_dead_owner_swap_is_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999)
+        _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
         assert [state.pid for state in stopped] == [7777]
 
-    def test_zombie_owner_counts_as_dead(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999)
-        zombie = _FakePsProcess(999, cmdline=[], status=sm.psutil.STATUS_ZOMBIE)
-        swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
-        _patch_psutil_process(monkeypatch, {999: zombie, 7777: swap})
-        stopped: list[sm._SwapState] = []
-        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP).reap_stale()
-        assert [state.pid for state in stopped] == [7777]
-
-    def test_owner_alive_false_for_missing_owner_pid(self) -> None:
-        # Old-format state files carry no owner pid; reap as before.
-        assert sm._owner_alive(None, None) is False
-
-    def test_owner_alive_false_on_access_denied(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The pid was reused by another user's process; our owner could be read.
-        def _denied(pid: int) -> object:
-            raise sm.psutil.AccessDenied(pid)
-
-        monkeypatch.setattr(sm.psutil, "Process", _denied)
-        assert sm._owner_alive(999, None) is False
-
-    def test_owner_alive_false_when_create_time_differs(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # A live process at the owner pid born at a different time is pid reuse.
-        impostor = _FakePsProcess(999, cmdline=["sleep"], create_time=5000.0)
-        _patch_psutil_process(monkeypatch, {999: impostor})
-        assert sm._owner_alive(999, 100.0) is False
-
-    def test_owner_alive_true_when_create_time_matches(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        owner = _FakePsProcess(999, cmdline=["lilbee"], create_time=100.0)
-        _patch_psutil_process(monkeypatch, {999: owner})
-        assert sm._owner_alive(999, 100.0) is True
-
-    def test_owner_pid_reused_by_other_process_is_reaped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _write_state(
-            tmp_path,
-            pid=7777,
-            owner_pid=999,
-            owner_created_at=100.0,
-            filename=sm._state_filename(999, _GROUP),
-        )
-        impostor = _FakePsProcess(999, cmdline=["sleep"], create_time=5000.0)
-        swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
-        _patch_psutil_process(monkeypatch, {999: impostor, 7777: swap})
-        stopped: list[sm._SwapState] = []
-        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP).reap_stale()
-        assert [state.pid for state in stopped] == [7777]
-        assert not (tmp_path / sm._state_filename(999, _GROUP)).exists()
-
-    def test_two_owners_coexist_without_clobbering_state(
+    def test_two_writers_records_coexist_while_healthy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A live owner's per-pid file survives a second instance's start.
@@ -866,11 +851,11 @@ class TestCrossRunReaping:
         a_path = _write_state(
             tmp_path,
             pid=7777,
-            owner_pid=999,
-            owner_created_at=100.0,
             filename=sm._state_filename(999, _GROUP),
         )
         original = a_path.read_text()
+        # A's engine answers on its proxy, so B's reap must spare it.
+        monkeypatch.setattr(sm, "state_is_healthy", lambda _state: True)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr_b = SwapManager(tmp_path, _GROUP)
@@ -884,12 +869,10 @@ class TestCrossRunReaping:
     def test_dead_owner_per_pid_state_file_is_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        state_path = _write_state(
-            tmp_path, pid=7777, owner_pid=999, filename=sm._state_filename(999, _GROUP)
-        )
+        state_path = _write_state(tmp_path, pid=7777, filename=sm._state_filename(999, _GROUP))
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -899,10 +882,10 @@ class TestCrossRunReaping:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Pre-per-owner format: the single shared file is still scanned and reaped.
-        legacy = _write_state(tmp_path, pid=7777, owner_pid=999)
+        legacy = _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -921,9 +904,7 @@ class TestStopStaleSwap:
         monkeypatch.setattr(
             sm.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)), raising=False
         )
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=8888, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=8888))
         assert signals == [(8888, sm.signal.SIGTERM)]
 
     def test_escalates_to_sigkill_when_term_is_ignored(
@@ -943,9 +924,7 @@ class TestStopStaleSwap:
             return ([], [])
 
         monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=8888, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=8888))
         assert signals == [sm.signal.SIGTERM, sm._SIGKILL]
         # The KILLed swap is awaited so its VRAM is free before the next probe.
         assert [stale] in waits
@@ -954,17 +933,13 @@ class TestStopStaleSwap:
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert stale.signals == [sm.signal.SIGTERM]
 
     def test_noop_when_process_died_between_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_psutil_process(monkeypatch, {})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )  # must not raise
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))  # must not raise
 
     def test_reaps_surviving_servers_of_the_stale_swap(
         self, monkeypatch: pytest.MonkeyPatch
@@ -976,16 +951,37 @@ class TestStopStaleSwap:
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [survivor])
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert survivor.terminated is True
+
+    def test_reaps_member_port_servers_the_descendant_snapshot_missed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A server that was reparented away from the swap, or respawned after
+        # the snapshot, is no longer a descendant; only the recorded member
+        # ports find it. Every caller unlinks the record straight after, so a
+        # miss here strands it with nothing left to match it against.
+        port_server = _FakeChild(running=True)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        swept: list[tuple[int, ...]] = []
+        monkeypatch.setattr(
+            sm,
+            "_find_orphan_servers",
+            lambda ports: swept.append(ports) or [port_server],
+        )
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None, member_ports=(9101, 9102)))
+        assert swept == [(9101, 9102)]
+        assert port_server.terminated is True
 
 
 class TestAtomicStateWrite:
-    def test_write_state_lands_via_replace_with_no_tmp_leftovers(
+    def test_config_and_state_both_land_via_replace_with_no_tmp_leftovers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A truncating write leaves llama-swap a config it cannot start from."""
         replaced: list[str] = []
         real_replace = os.replace
 
@@ -997,7 +993,8 @@ class TestAtomicStateWrite:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
-        assert replaced == [str(_own_state_path(tmp_path))]
+        config_path = tmp_path / f"llama-swap-{_GROUP.value}.{os.getpid()}.json"
+        assert replaced == [str(config_path), str(_own_state_path(tmp_path))]
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
         assert [path for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
 
@@ -1040,6 +1037,7 @@ class _FakeServerProc:
         self._parent_name = parent_name
         self.terminated = False
         self.killed = False
+        self.info = {"name": Path(next(iter(cmdline), "")).name}
 
     def cmdline(self) -> list[str]:
         if self._cmdline_raises:
@@ -1082,17 +1080,17 @@ class TestOrphanServerReaping:
     ) -> None:
         # The servers outlive a SIGKILLed swap in their own process groups; the
         # sweep must stop exactly the ones on the recorded ports.
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _write_state(tmp_path, pid=7777, member_ports=[5001, 5002])
         _patch_psutil_process(monkeypatch, {})  # owner and swap are both gone
         orphan = _FakeServerProc(1, ["/opt/llama-server", "-m", "x.gguf", "--port", "5001"])
         recycled = _FakeServerProc(2, ["/usr/bin/python3", "serve.py", "--port", "5002"])
         other_port = _FakeServerProc(3, ["/opt/llama-server", "--port", "9999"])
         no_port = _FakeServerProc(4, ["/opt/llama-server"])
-        vanished = _FakeServerProc(5, [], cmdline_raises=True)
+        vanished = _FakeServerProc(5, ["/opt/llama-server"], cmdline_raises=True)
         monkeypatch.setattr(
             sm.psutil,
             "process_iter",
-            lambda: iter([orphan, recycled, other_port, no_port, vanished]),
+            lambda *a, **k: iter([orphan, recycled, other_port, no_port, vanished]),
         )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
@@ -1107,14 +1105,14 @@ class TestOrphanServerReaping:
     ) -> None:
         # A current run can reuse a stale record's port; its server still has a
         # live llama-swap parent, so the sweep must not touch it.
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001])
+        _write_state(tmp_path, pid=7777, member_ports=[5001])
         _patch_psutil_process(monkeypatch, {})
         adopted = _FakeServerProc(
             1,
             ["/opt/llama-server", "--port", "5001"],
             parent_name="llama-swap",
         )
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([adopted]))
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: iter([adopted]))
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert adopted.terminated is False
@@ -1123,7 +1121,7 @@ class TestOrphanServerReaping:
     def test_server_with_a_foreign_parent_is_still_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _write_state(tmp_path, pid=7777, member_ports=[5001, 5002])
         _patch_psutil_process(monkeypatch, {})
         orphan = _FakeServerProc(
             1,
@@ -1135,7 +1133,9 @@ class TestOrphanServerReaping:
             ["/opt/llama-server", "--port", "5002"],
             parent_name=_PARENT_RAISES,
         )
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([orphan, parent_vanished]))
+        monkeypatch.setattr(
+            sm.psutil, "process_iter", lambda *a, **k: iter([orphan, parent_vanished])
+        )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert orphan.terminated is True
@@ -1144,7 +1144,7 @@ class TestOrphanServerReaping:
     def test_legacy_state_without_ports_sweeps_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999)
+        _write_state(tmp_path, pid=7777)
         _patch_psutil_process(monkeypatch, {})
 
         def _forbidden() -> object:
@@ -1214,8 +1214,9 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
         monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.httpx.get",
-            lambda url, timeout: _fake_response(status=200),
+            sm,
+            "_probe_client",
+            lambda: _FakeProbeClient(lambda _url: _fake_response(status=200)),
         )
         assert mgr.is_live() is True
 
@@ -1239,10 +1240,10 @@ class TestIsLive:
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
 
-        def boom(url: str, timeout: float) -> object:
+        def boom(_url: str) -> object:
             raise OSError("connection refused")
 
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.get", boom)
+        monkeypatch.setattr(sm, "_probe_client", lambda: _FakeProbeClient(boom))
         assert mgr.is_live() is False
 
     def test_false_and_no_raise_when_proc_alive_but_port_not_yet_set(self, tmp_path: Path) -> None:
@@ -1300,47 +1301,17 @@ class TestPerGroupNaming:
         assert not dead.exists()  # dead owner's orphan config removed
 
 
-class TestSweepOwned:
-    def test_sweeps_only_this_owners_group_configs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        swept: list[Path] = []
-        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: swept.append(cfg))
-        pid = os.getpid()
-        (tmp_path / sm._config_filename(pid, "chat")).write_text("{}")
-        (tmp_path / sm._config_filename(pid, "embed")).write_text("{}")
-        # A sibling lilbee's config (a different owner pid) must never be swept here.
-        (tmp_path / sm._config_filename(pid + 1, "chat")).write_text("{}")
-        # State files share the "llama-swap" stem but not the config glob: never swept.
-        (tmp_path / "llama-swap.state.chat.1.json").write_text("{}")
-        sm.sweep_owned(tmp_path)
-        assert sorted(path.name for path in swept) == sorted(
-            [sm._config_filename(pid, "chat"), sm._config_filename(pid, "embed")]
-        )
-
-    def test_noop_when_no_group_configs_exist(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        swept: list[Path] = []
-        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: swept.append(cfg))
-        sm.sweep_owned(tmp_path)
-        assert swept == []
-
-
 class TestStateFilePersistenceKeys:
-    def test_round_trips_proxy_port_version_and_detached(
+    def test_round_trips_proxy_port_and_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
         mgr.start([_launch(WorkerRole.CHAT)])
-        mgr._write_state(detached=True)
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.proxy_port == mgr._port
-        assert state.lilbee_version
-        assert state.detached is True
 
     def test_start_writes_an_owned_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1350,7 +1321,7 @@ class TestStateFilePersistenceKeys:
         mgr = SwapManager(tmp_path, _GROUP)
         mgr.start([_launch(WorkerRole.CHAT)])
         state = sm._load_state(mgr._state_path)
-        assert state is not None and state.detached is False
+        assert state is not None and state.pid == 4321
 
     def test_old_format_files_parse_with_defaults(self, tmp_path: Path) -> None:
         legacy = tmp_path / "legacy.json"
@@ -1358,92 +1329,258 @@ class TestStateFilePersistenceKeys:
         state = sm._load_state(legacy)
         assert state is not None
         assert state.proxy_port is None
-        assert state.lilbee_version is None
-        assert state.detached is False
+        assert state.engine_pin is None
 
 
-class TestReapSparesDetached:
-    def _write_detached_state(self, tmp_path: Path, *, detached: bool) -> Path:
+class TestLiveStateLaunchContract:
+    """Live state files must carry the serving contract, so a guest lilbee can
+    bind to a running sibling's fleet without reverse-engineering /running."""
+
+    def test_start_records_the_launch_contract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert len(state.launches) == 1
+        assert state.launches[0]["role"] == "chat"
+        assert state.launches[0]["model"] == "chat-model"
+
+
+class TestEnginePinInState:
+    def test_start_records_the_engine_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "engine_pin", lambda: "llama-cpp-1.2.3+swap-v9+gguf-v1")
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.engine_pin == "llama-cpp-1.2.3+swap-v9+gguf-v1"
+
+    def test_legacy_state_without_a_pin_parses_as_none(self, tmp_path: Path) -> None:
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}))
+        state = sm._load_state(legacy)
+        assert state is not None
+        assert state.engine_pin is None
+
+
+class TestBindToLiveEngine:
+    """A second lilbee binds to a healthy running engine instead of building one."""
+
+    def _live_state(self, tmp_path: Path, *, pin: str = "pin-a", model: str = "chat-model") -> Path:
         path = tmp_path / sm._state_filename(999_999, _GROUP.value)
+        payload = _launch(WorkerRole.CHAT).to_state()
+        payload["model"] = model
         path.write_text(
             json.dumps(
                 {
                     "pid": 999_998,
-                    "owner_pid": 999_999,
                     "member_ports": [4000],
-                    "detached": detached,
+                    "proxy_port": 4100,
+                    "launches": [payload],
+                    "engine_pin": pin,
                 }
             )
         )
         return path
 
-    def test_detached_is_spared_while_warm_is_on(self, tmp_path: Path) -> None:
-        path = self._write_detached_state(tmp_path, detached=True)
-        sm.reap_stale(tmp_path, keep_detached=True)
-        assert path.exists()
-
-    def test_detached_is_reaped_once_warm_is_off(self, tmp_path: Path) -> None:
-        path = self._write_detached_state(tmp_path, detached=True)
-        sm.reap_stale(tmp_path, keep_detached=False)
-        assert not path.exists()
-
-    def test_dead_owner_without_marker_is_reaped_regardless(self, tmp_path: Path) -> None:
-        path = self._write_detached_state(tmp_path, detached=False)
-        sm.reap_stale(tmp_path, keep_detached=True)
-        assert not path.exists()
-
-
-class TestDetachAdoptUnits:
-    def test_detach_marks_state_and_keeps_the_process(
+    def test_binds_to_a_healthy_matching_engine(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        proc = _FakeProc(poll_result=None)
-        _patch_spawn(monkeypatch, proc)
+        state_path = self._live_state(tmp_path)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
-        mgr.detach([{"role": "chat"}])
-        state = sm._load_state(mgr._state_path)
-        assert state is not None and state.detached is True
-        assert state.launches == ({"role": "chat"},)
-        assert proc.terminated is False and proc.killed is False  # never signaled
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert mgr.endpoint() == "http://127.0.0.1:4100"
+        assert mgr.bound is True
 
-    def test_adopt_rejects_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
+    def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
         mgr = SwapManager(tmp_path, _GROUP)
-        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
-        assert mgr.adopt(state, tmp_path / "x.json") is False
+        state = sm.SwapState(pid=1, pgid=None)
+        assert mgr.bind(state) is False
+        assert mgr.bound is False
 
-    def test_adopt_probes_the_real_proxy_endpoint(
+    def test_bind_refuses_an_unreachable_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, _raise_connect_error)
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is False
+        assert mgr.bound is False
+
+    def test_bind_never_writes_a_state_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert not mgr._state_path.exists()
+        assert state_path.exists()  # the engine's own record is untouched
+
+    def test_bound_shutdown_never_signals_engine_processes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        stopped: list[object] = []
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda *a: stopped.append(a))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        mgr.shutdown()
+        assert stopped == []
+        assert state_path.exists()
+        assert mgr._port is None  # binding dropped, manager reusable
+
+    def test_bind_carries_the_contract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert mgr._launches_payload[0]["model"] == "chat-model"
+
+
+class TestStopEngine:
+    """The unconditional off switch: stop whatever the dir's state files record."""
+
+    def test_stops_every_recorded_swap_and_unlinks_states(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for group, pid in (("chat", 7001), ("embed", 7002)):
+            path = tmp_path / sm._state_filename(999_999, group)
+            path.write_text(json.dumps({"pid": pid, "member_ports": [4000]}))
+        stopped: list[int] = []
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: True)  # both alive
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state.pid))
+        result = sm.stop_engine(tmp_path)
+        assert sorted(stopped) == [7001, 7002]
+        assert sorted(result) == ["chat", "embed"]  # both reported as actually stopped
+        assert not list(tmp_path.glob(sm._STATE_FILE_GLOB))
+
+    def test_empty_dir_is_a_noop(self, tmp_path: Path) -> None:
+        sm.stop_engine(tmp_path)  # no states, no error
+
+    def test_unparseable_state_is_left_alone(self, tmp_path: Path) -> None:
+        junk = tmp_path / sm._state_filename(1, "chat")
+        junk.write_text("not json{{{")
+        sm.stop_engine(tmp_path)
+        assert junk.exists()
+
+    def test_reaps_orphan_servers_when_the_swap_is_dead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The chaos case: llama-swap is dead but its llama-servers (own process
+        # groups) survive on the recorded ports. The off switch must reap them by
+        # port, not silently drop the record and leave them holding VRAM.
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(json.dumps({"pid": 999_998, "member_ports": [4000, 4001]}))
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)  # swap dead
+        reaped: list[tuple[int, ...]] = []
+        monkeypatch.setattr(
+            sm, "_find_orphan_servers", lambda ports: reaped.append(ports) or ["srv"]
+        )
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
+        result = sm.stop_engine(tmp_path)
+        assert reaped == [(4000, 4001)]  # orphans looked up by the recorded ports
+        assert result == ["chat"]  # reported as actually stopped (orphans existed)
+        assert not path.exists()
+
+    def test_cleans_stale_config_files(self, tmp_path: Path, monkeypatch) -> None:
+        # stop_engine leaves the dir as clean as a reap: a dead owner's config file
+        # is removed, not stranded for a future ladder reap to find.
+        dead_config = tmp_path / sm._config_filename(999_998, "chat")
+        dead_config.write_text("{}")
+        monkeypatch.setattr(sm.psutil, "pid_exists", lambda _pid: False)  # owner dead
+        sm.stop_engine(tmp_path)
+        assert not dead_config.exists()
+
+
+class TestLiveStateHelpers:
+    def test_find_live_state_returns_the_newest_for_the_group(self, tmp_path: Path) -> None:
+        old = tmp_path / sm._state_filename(111, _GROUP.value)
+        old.write_text(json.dumps({"pid": 1, "member_ports": [], "created_at": 100.0}))
+        new = tmp_path / sm._state_filename(222, _GROUP.value)
+        new.write_text(json.dumps({"pid": 2, "member_ports": [], "created_at": 200.0}))
+        state = sm.find_live_state(tmp_path, _GROUP)
+        assert state is not None and state.pid == 2
+
+    def test_find_live_state_none_when_group_absent(self, tmp_path: Path) -> None:
+        assert sm.find_live_state(tmp_path, _GROUP) is None
+
+    def test_find_live_state_skips_unparseable_files(self, tmp_path: Path) -> None:
+        junk = tmp_path / sm._state_filename(1, _GROUP.value)
+        junk.write_text("not json{{{")
+        assert sm.find_live_state(tmp_path, _GROUP) is None
+
+    def test_state_is_healthy_probes_the_proxy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP)
-        state = sm._SwapState(
-            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
-        )
-        old = tmp_path / "old-state.json"
-        old.write_text("{}")
-        assert mgr.adopt(state, old) is True
-        assert not old.exists()
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is True
 
-    def test_adopt_unbinds_when_the_proxy_is_dead(
+    def test_state_without_a_port_is_unhealthy(self) -> None:
+        state = sm.SwapState(pid=1, pgid=None)
+        assert sm.state_is_healthy(state) is False
+
+    def test_refused_probe_is_unhealthy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _refuse(_url, **_kw):
-            raise OSError("refused")
+        _patch_http(monkeypatch, _raise_connect_error)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
 
-        monkeypatch.setattr(sm.httpx, "get", _refuse)
-        mgr = SwapManager(tmp_path, _GROUP)
-        state = sm._SwapState(
-            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
-        )
-        assert mgr.adopt(state, tmp_path / "x.json") is False
-        assert mgr._port is None
+    def test_error_status_is_unhealthy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A proxy that answers but errors (llama-swap starting up, or a foreign
+        # service refusing the path) is not a live engine.
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
 
-    def test_find_detached_state_skips_owned_files(self, tmp_path: Path) -> None:
-        owned = tmp_path / sm._state_filename(1, _GROUP.value)
-        owned.write_text(json.dumps({"pid": 2, "detached": False}))
-        assert sm.find_detached_state(tmp_path, _GROUP) is None
+    def test_recycled_port_responder_is_not_our_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A dead engine's port taken over by an unrelated service that 200s an
+        # unknown path (no {"running": [...]} body) must NOT read as healthy, or
+        # inference clients would bind to a non-engine endpoint forever.
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200, payload={"ok": True}))
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
+
+    def test_non_json_responder_is_not_our_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A 200 with a non-JSON body (a plain HTTP server) also fails the shape check.
+        def _html(_url):
+            resp = _fake_response(status=200)
+            resp.json = lambda: (_ for _ in ()).throw(ValueError("not json"))
+            return resp
+
+        _patch_http(monkeypatch, _html)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
 
 
 @pytest.mark.parametrize(
@@ -1463,11 +1600,216 @@ def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch, leak)
     from lilbee.providers.fleet import swap_manager
 
     config_path = Path("/tmp/x.json")
+    # name() is cheap and readable; only cmdline() (KERN_PROCARGS2) is protected,
+    # so both pass the name pre-filter and the leak surfaces at cmdline().
     denied = mock.MagicMock()
+    denied.info = {"name": "llama-swap"}
     denied.cmdline.side_effect = leak
     visible = mock.MagicMock()
+    visible.info = {"name": "llama-swap"}
     visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", str(config_path)]
-    monkeypatch.setattr(psutil, "process_iter", lambda: [denied, visible])
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: [denied, visible])
 
     swaps = swap_manager._swaps_for_config(config_path)
     assert swaps == [visible]
+
+
+class TestTeardownHelpers:
+    """Direct coverage for the process-teardown primitives every stop path uses."""
+
+    def test_live_children_empty_for_a_dead_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _gone(pid: int):
+            raise sm.psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(sm.psutil, "Process", _gone)
+        assert sm._live_children(999_999) == []
+
+    def test_reap_survivors_terminates_then_kills_the_stubborn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Child:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+
+            def is_running(self) -> bool:
+                return True
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def kill(self) -> None:
+                self.killed = True
+
+        child = _Child()
+        # First wait: the child survives SIGTERM; second wait (in _await_killed):
+        # it is gone.
+        waits = iter([([], [child]), ([child], [])])
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: next(waits))
+        sm._reap_survivors([child])
+        assert child.terminated and child.killed
+
+    def test_hard_stop_proc_escalates_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _Proc:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float) -> None:
+                raise sm.psutil.TimeoutExpired(timeout)
+
+            def kill(self) -> None:
+                self.killed = True
+
+        proc = _Proc()
+        sm._hard_stop_proc(proc)
+        assert proc.terminated and proc.killed
+
+    def test_live_children_lists_a_real_processes_children(self) -> None:
+        """A list-shaped return proves nothing: every stop path reaps by pid.
+
+        _live_children feeds the orphan reaping for llama-servers that outlive
+        their llama-swap, so a version returning [] unconditionally would leave
+        those holding VRAM while the suite stayed green.
+        """
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            assert proc.pid in [child.pid for child in sm._live_children(os.getpid())]
+        finally:
+            proc.terminate()
+            proc.wait(timeout=30)
+
+    def test_live_children_of_an_exited_process_is_empty(self) -> None:
+        """The reaper asks about pids that may already be gone."""
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait(timeout=30)
+        assert sm._live_children(proc.pid) == []
+
+    def test_await_killed_warns_for_a_sigkill_survivor(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class _Immortal:
+            pid = 424_242
+
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], [_Immortal()]))
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            sm._await_killed([_Immortal()])
+        assert any("survived SIGKILL" in record.message for record in caplog.records)
+
+
+def test_stale_config_tmp_of_a_dead_writer_is_swept(tmp_path: Path) -> None:
+    """The sweep must see config leftovers too, not just state ones."""
+    dead = tmp_path / ".llama-swap-chat.999999.json.tmp"
+    dead.write_text("half")
+    live = tmp_path / f".llama-swap-chat.{os.getpid()}.json.tmp"
+    live.write_text("in flight")
+    sm._clean_stale_tmp_files(tmp_path)
+    assert not dead.exists()
+    assert live.exists()  # a live writer's file in flight is never touched
+
+
+def test_probe_client_is_shared_across_calls() -> None:
+    """The engine probes reuse one client: httpx.get would build a fresh Client --
+    and a fresh SSL context, loading the system CA bundle -- on every poll, which
+    the task bar runs at up to 10 Hz."""
+    sm._probe_client.cache_clear()
+    client = sm._probe_client()
+    try:
+        assert sm._probe_client() is client
+    finally:
+        # Close before dropping the cache entry so the pool is not leaked.
+        client.close()
+        sm._probe_client.cache_clear()
+
+
+class TestEstimateReadback:
+    """A newly-ready engine is compared to what placement charged it, once."""
+
+    @staticmethod
+    def _manager(tmp_path):
+        from lilbee.providers.fleet.groups import SwapGroup
+        from lilbee.providers.fleet.swap_manager import SwapManager
+
+        return SwapManager(tmp_path, SwapGroup.CHAT)
+
+    @staticmethod
+    def _launch(est: int):
+        from lilbee.providers.fleet.launch import InstanceLaunch
+        from lilbee.providers.roles import WorkerRole
+
+        return InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="org/chat.gguf",
+            est_vram_bytes=est,
+        )
+
+    def test_a_ready_engine_is_checked_against_its_estimate(self, tmp_path, caplog) -> None:
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors:  CUDA0 model buffer size =  8192.00 MiB\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert "planned for 4.0 GiB" in caplog.text
+
+    def test_it_does_not_repeat_on_every_readiness_poll(self, tmp_path, caplog) -> None:
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors:  CUDA0 model buffer size =  8192.00 MiB\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+            manager._check_estimates({"chat-0"})
+        assert caplog.text.count("planned for") == 1
+
+    def test_an_unsized_model_is_skipped(self, tmp_path, caplog) -> None:
+        # A model the estimator could not size is enrolled at 0; there is nothing
+        # to compare it to, and a warning about the comparison would be noise.
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(0)}
+        log_dir = manager._log_path.parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        engine_log_path(log_dir, "chat-0").write_text(
+            "load_tensors: CUDA0 model buffer size = 1.00 MiB\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert caplog.text == ""
+
+    def test_a_ready_engine_that_wrote_no_log_says_so(self, tmp_path, caplog) -> None:
+        # The engine is up, so an absent log is not "too early": it means the
+        # build never accepted the settings that produce one. Silent, that reads
+        # as a passing check forever, which is how a wrong variable name hid.
+        manager = self._manager(tmp_path)
+        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        manager._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert "wrote no log" in caplog.text
+
+    def test_an_unknown_model_id_is_skipped(self, tmp_path, caplog) -> None:
+        manager = self._manager(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"ghost-0"})
+        assert caplog.text == ""

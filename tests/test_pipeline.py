@@ -350,12 +350,14 @@ class TestMaxConcurrent:
         assert pipeline._max_concurrent() == 4
 
     def test_scales_to_embed_replicas_when_no_vision(self, monkeypatch) -> None:
-        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest import offload, pipeline
 
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
         monkeypatch.setattr(cfg, "vision_model", "")
         monkeypatch.setattr(cfg, "embed_replicas", 8)
-        assert pipeline._max_concurrent() == 8
+        # No vision: admission scales with the embed fleet at ~8 in-flight per
+        # replica, so 8 replicas admit far past the 2-core cpu quota.
+        assert pipeline._max_concurrent() == 8 * offload._EMBED_INFLIGHT_PER_REPLICA
 
     def test_auto_embed_replicas_fans_out_to_gpu_count(self, monkeypatch) -> None:
         # embed_replicas=0 (the auto default) must fan out to one slot per GPU so

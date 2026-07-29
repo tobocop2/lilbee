@@ -12,37 +12,38 @@
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/tutorial">Tutorial reels</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a> &nbsp;·&nbsp; <a href="https://web.libera.chat/#lilbee">Chat (#lilbee)</a></p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?label=release&logo=github&logoColor=white" alt="Latest release"></a>
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=white" alt="lilbee on PyPI"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2C3E50" alt="License: MIT"></a>
-  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-7c3aed?logo=obsidian&logoColor=white" alt="Obsidian community plugin"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?label=release&logo=github&logoColor=c4a7e7&style=flat-square&labelColor=191724&color=c4a7e7" alt="Latest release"></a>
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="lilbee on PyPI"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-9ccfd8?logo=python&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Python 3.11+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-6e6a86?style=flat-square&labelColor=191724" alt="License: MIT"></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tobocop2/lilbee/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="CI"></a>
+  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-31748f?style=flat-square&labelColor=191724" alt="Coverage"></a>
+  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-c4a7e7?style=flat-square&labelColor=191724" alt="Typed"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square" alt="Ruff"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-908caa?style=flat-square&labelColor=191724" alt="Platforms">
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-9ccfd8?logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Install from PyPI"></a>
+  <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-f6c177?logo=homebrew&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Homebrew tap"></a>
+  <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/badge/AUR-package-c4a7e7?logo=archlinux&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="lilbee on the AUR"></a>
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-c4a7e7?logo=nixos&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Nix flake"></a>
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-908caa?logo=windows&logoColor=908caa&style=flat-square&labelColor=191724" alt="Scoop bucket"></a>
+  <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-9ccfd8?logo=docker&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Docker image on GHCR"></a>
+  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-9ccfd8?logo=flatpak&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Flatpak repo"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-f6c177?logo=snapcraft&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Snap package"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypistats.org/packages/lilbee"><img src="https://img.shields.io/pypi/dm/lilbee?label=downloads&logo=python&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="PyPI downloads per month"></a>
   <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
-  <a href="https://web.libera.chat/#lilbee"><img src="https://img.shields.io/badge/IRC-%23lilbee%20on%20Libera.Chat-5865F2?logo=liberadotchat&logoColor=white" alt="#lilbee on Libera.Chat"></a>
+  <a href="https://mcptoplist.com/server/glama%2Ftobocop2%2Flilbee"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fmcptoplist.com%2Fbadge%2Fglama%252Ftobocop2%252Flilbee.svg&search=Top%20(%5B0-9%5D%2B%25%20of%20%5B0-9,%5D%2B)&replace=Top%20%241&label=MCP%20Toplist&labelColor=191724&color=ebbcba&style=flat-square" alt="MCP Toplist rank"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tobocop2/lilbee/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white" alt="CI"></a>
-  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-2EA043" alt="Coverage"></a>
-  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-2A6DB2" alt="Typed"></a>
-  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
-  <a href="https://pepy.tech/project/lilbee"><img src="https://img.shields.io/pepy/dt/lilbee?label=downloads&logo=python&logoColor=white&color=3776AB" alt="PyPI downloads"></a>
-  <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total?label=release%20downloads&logo=github&logoColor=white&color=2C3E50" alt="GitHub release downloads"></a>
-</p>
-
-<p align="center">
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-3775A9?logo=pypi&logoColor=white" alt="Install from PyPI"></a>
-  <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white" alt="Homebrew tap"></a>
-  <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/aur/version/lilbee?logo=archlinux&logoColor=white&label=AUR" alt="lilbee on the AUR"></a>
-  <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white" alt="Docker image on GHCR"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white" alt="Nix flake"></a>
-  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-4A90D9?logo=flatpak&logoColor=white" alt="Flatpak repo"></a>
-  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-82BEA0?logo=snapcraft&logoColor=white" alt="Snap package"></a>
-  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
+  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-c4a7e7?logo=obsidian&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Obsidian community plugin"></a>
+  <a href="https://web.libera.chat/#lilbee"><img src="https://img.shields.io/badge/IRC-%23lilbee%20on%20Libera.Chat-f6c177?logo=liberadotchat&logoColor=f6c177&style=flat-square&labelColor=191724" alt="#lilbee on Libera.Chat"></a>
 </p>
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
@@ -87,26 +88,22 @@ Two recommended ways to use lilbee, depending on whether you're the one driving:
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
 - **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
 
-Defaults are sane for chatting with code, documentation, crawled sites, and long PDFs. Every retrieval setting is writable from the TUI Settings screen, the `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When answers feel thin or noisy, the usual knobs are `top_k`, `max_distance`, or `diversity_max_per_source`.
-
-CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless runs, and custom integrations. See the [usage guide](docs/usage.md).
+Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, MCP, env vars, or `config.toml`. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
 
 ## Highlights
 
-- **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
-- **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
-- **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you straight into chat.
-- **Reads almost anything you point it at.** Documents, scanned pages, spreadsheets, ebooks, web pages, and source code: [90+ formats and 150+ languages](#supported-formats) in all. Whatever you give it becomes searchable.
-- **Splits it into pieces that stand on their own.** [Prose and code are chunked differently](#documents-code-and-scanned-images), so each piece keeps its meaning instead of getting cut mid-thought. A search engine is only as good as the chunks underneath it, and this is where most of the quality lives.
-- **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the best match comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
-- **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
-- **A model too big for one card runs across all of them.** lilbee sizes each role with gguf-parser and tensor-splits your chat model across the fewest GPUs that fit, placing the embedder, reranker, and vision models alongside it behind a load-balancing router. It happens automatically, or you can pin each role to the cards you choose. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
-- **Already on Ollama or LM Studio? Keep them.** You don't need either one: lilbee's own manager handles everything, across the same [model families](#tested-model-families) they run. But lilbee also works with both, so you never have to switch. Their models show up in the same catalog and role pickers, alongside lilbee's own.
-- **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
-- **Per-project libraries.** Keep one library for everything, or give each project its own.
-- **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
-- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
-- **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
+- **Answers cite the source line.** Click a citation, jump to the file at the exact line; when the answer isn't in your library, lilbee says so instead of inventing one.
+- **It works, and the demos prove it.** Every GIF and reel here is recorded live on real hardware, nothing staged, backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
+- **One command to running.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
+- **Reads almost anything:** [90+ formats and 150+ languages](#supported-formats) across documents, scanned pages, spreadsheets, ebooks, web pages, and source code.
+- **Chunks that stand on their own.** [Prose and code are split differently](#documents-code-and-scanned-images) so each piece keeps its meaning, which is where most of the retrieval quality lives.
+- **A real [search engine](docs/architecture.md#search-pipeline) on top,** ranking every result by how well it answers you, with 50+ [tunable knobs](docs/usage.md#settings-screen) and sane defaults.
+- **It brings and runs the models itself,** on Metal, Vulkan, or CUDA, with no server to point at and no cloud account. Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, rerank).
+- **A model too big for one card runs across all of them,** sized with gguf-parser and tensor-split automatically, or pinned by hand. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
+- **Already on Ollama or LM Studio? Keep them.** lilbee's own manager handles everything across the same [model families](#tested-model-families) they run, and their models also show up in the same pickers.
+- **One install, many surfaces:** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
+- **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
+- **Per-project libraries.** One library for everything, or one per project.
 
 ## Why lilbee
 
@@ -157,17 +154,20 @@ Of the four, lilbee is the only one built around retrieval, and the only one tha
 
 ### Install size (single-file download, models excluded)
 
-Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked.
+Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked. lilbee and Ollama measured 2026-07-25 from their release APIs (lilbee v0.6.90b420.dev726, Ollama v0.32.4).
 
 | | macOS | Windows | Linux | What you get |
 |---|---|---|---|---|
-| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 286 MB | 303 MB | 422 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
-| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 633 MB | 1.20 GB | the same whole stack, with the faster CUDA runtime |
-| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | 1.43 GB (CUDA bundled) | 1.44 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 317 MB | 333 MB | 478 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 666 MB | 1.25 GB | the same whole stack, with the faster CUDA runtime |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (ROCm, opt-in for AMD) | n/a | n/a | 854 MB* | the same whole stack, with the faster ROCm runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 181 MB | 1.56 GB (CUDA bundled) | 1.42 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
 | [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
 | [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
 
 Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
+
+\* ROCm is the one figure not yet from a release: it is the binary CI builds today, measured, and lands here unchanged at the first release that carries it.
 
 </details>
 
@@ -185,10 +185,6 @@ Ask it something with a real answer at stake and you get the answer, not a parap
 
 ![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
 
-### Already using an MCP-aware agent? Hand setup to it.
-
-If you've already got an MCP-aware coding agent running, it can do the setup: browse the catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs are obvious to them. See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the workflow and example prompts.
-
 ### Launch your coding agent on local models
 
 `lilbee launch opencode` and `lilbee launch hermes` set up lilbee's local models in your agent in one command. lilbee registers itself as a provider and an MCP server in the agent's own config, leaves your existing setup intact, warms a model, and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
@@ -199,11 +195,7 @@ These reels show each agent, launched on a local model, doing real work on lilbe
 
 ![hermes, launched on a local lilbee model, adds a launch-list subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
 
-It tunes itself, too. Give a small local model a thin first result and tell it to widen lilbee's search, and the second pass returns full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
-
-![hermes running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
-
-In this demo a small local model is told: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) to teach your own model the pattern.
+It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
 ![agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
@@ -238,6 +230,10 @@ Retrieval returns things that make sense on their own, not fragments cut through
 ### Pick and tune your models
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
+
+### Tested GPUs and backends
+
+Placement reads what the engine reports about your hardware, and every backend words that differently, so each is checked on real silicon rather than inferred from the last one. CUDA from an RTX 3090 up to H200, and up to eight A100s at once, Vulkan on NVIDIA and Intel, ROCm on an AMD Instinct MI300X, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) lists every machine and what each run settled. Captures from hardware not listed are welcome.
 
 ### Tested model families
 
@@ -358,7 +354,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 | Resource              | Minimum                        | Recommended                                                                                                                                               |
 | --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **RAM**               | 8 GB                           | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
-| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA driver (opt-in CUDA wheels, runtime bundled, see [Install](#install))                           |
+| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · faster vendor builds with the runtime bundled: CUDA on NVIDIA, ROCm on AMD (see [Install](#install))                           |
 | **Disk**              | 2 GB                           | 10+ GB for multiple models                                                                                                                                |
 
 </details>
@@ -370,17 +366,17 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Uses the Python and tooling you already have, picks the fastest CPU code path for your machine at runtime, and upgrades like any other package. Recommended if you have Python.
 - **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
 
-Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default Vulkan path. Skip to [On NVIDIA hardware](#on-nvidia-hardware).
+Have a discrete GPU? The default Vulkan build already uses it. There are faster vendor builds too: [NVIDIA (CUDA)](#on-nvidia-hardware) and [AMD (ROCm)](#on-amd-hardware).
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
 | How                   | Command                                                                                  | Notes                                                                                                                                                                                                                 |
 | --------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**               | `pip install --pre lilbee`                                                               | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/` ([browse wheels](https://lilbee.sh/cpu/lilbee/)). |
+| **pip**               | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`             | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. The `engine` extra is the bundled llama-server, published on lilbee.sh rather than PyPI, which is why the index is needed. Faster vendor builds: [CUDA](#on-nvidia-hardware), [ROCm](#on-amd-hardware). |
 | **uv**                | `uv tool install --prerelease=allow lilbee`                                              | Same wheel as pip; fetches a Python for you if you need one.                                                                                                                                                          |
 | **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you.                                                                                                                                  |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
-| **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there.                                                                                                                  |
+| **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. `:cuda` and `:rocm` tags carry the vendor builds.                                                                 |
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS.                                                                                 |
 | **Flatpak**           | `flatpak remote-add --if-not-exists lilbee https://tobocop2.github.io/flatpak-lilbee/lilbee.flatpakrepo && flatpak install lilbee io.github.tobocop2.lilbee` | Linux x86_64, any distro with flatpak. Needs the [Flathub remote](https://flathub.org/setup) for the runtime. Run with `flatpak run io.github.tobocop2.lilbee` (worth an alias); `flatpak update` picks up new releases. Data lives under `~/.var/app/io.github.tobocop2.lilbee/`. |
 | **Snap**              | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap && sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; rerun the same command to upgrade. |
@@ -397,7 +393,7 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 
 |              | Command                                                                                                                                                                      |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/`                                                                                                        |
+| **pip**      | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                                                        |
 | **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/cu125/`                                                                                       |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda`                                                                                                                                   |
 | **AUR**      | `paru -S lilbee-cuda`                                                                                                                                                        |
@@ -406,6 +402,27 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 | **Binary**   | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 
 Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
+
+</details>
+
+### On AMD hardware
+
+The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn't set up. There's also a dedicated ROCm build that's faster. It bundles the ROCm userspace, so you need only the amdgpu kernel driver.
+
+<details>
+<summary>ROCm install commands</summary>
+
+|              | Command                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/`                                                 |
+| **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/`                                |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-rocm`                                                                           |
+| **AUR**      | `paru -S lilbee-rocm`                                                                                                |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-rocm`                                                                         |
+| **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
+| **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
+
+Same `lilbee` command after install. Linux only. Cards: MI100, MI200, MI300, MI350, RDNA2, RDNA3, RDNA3.5 APUs and RDNA4. ROCm 7 ships no GEMM kernels for the MI50, so it needs the Vulkan build. Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
 
 </details>
 
@@ -427,7 +444,7 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 
 |              | Command                                                                                                                                                                                  |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre lilbee 'lancedb==0.33.0+compat' --extra-index-url https://lilbee.sh/compat/`                                                                          |
+| **pip**      | `pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/`                                                                          |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-compat`                                                                                                                                            |
 | **AUR**      | `paru -S lilbee-compat`                                                                                                                                                                 |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-compat`                                                                                                                                          |
@@ -586,12 +603,6 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
 
 ## FAQ
-
-**What is lilbee, in one line?** A local AI search engine: it runs the models and searches your files, code, and the web, with answers that cite the source.
-
-**Is it really one program?** Yes. The model runtime (llama.cpp) and the index (LanceDB) run inside lilbee. No separate model server, no vector database, no container.
-
-**Is lilbee a model manager?** Yes, a complete one. It browses Hugging Face, downloads models, assigns roles, runs them on Metal, Vulkan, or CUDA, and places large models across multiple GPUs, so you do not need a separate model runner. Already use Ollama or LM Studio? Point lilbee at them instead.
 
 **Does my data leave my machine?** No. Your files stay on disk and search runs locally. A cloud model is used only when you pick one.
 

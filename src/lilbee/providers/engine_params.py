@@ -73,7 +73,15 @@ _VISION_PAGE_CTX_CAP = 32768
 image tokens plus prompt, while keeping a long-context VLM placeable beside a chat giant."""
 
 _N_GPU_LAYERS_AUTO = -1
-"""llama.cpp's "offload every layer" sentinel for n_gpu_layers."""
+"""llama.cpp's "fit as many layers as the device holds" value for n_gpu_layers.
+
+The engine measures free VRAM at load and picks the count itself, spilling the
+rest to system memory. That is a better answer than any number lilbee can
+compute ahead of time, because it is taken on the real device after every other
+tenant, so the planner passes this rather than a layer count of its own.
+"""
+# llama.cpp's "offload nothing"; the user's CPU-only opt-out rather than a budget.
+_N_GPU_LAYERS_NONE = 0
 
 
 def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -145,9 +153,12 @@ def resolve_chat_ctx(
     ceiling, so a long-context model can grow past the target if the host has
     the RAM to back it. A multi-GPU tensor-split chat is sized separately by the
     fleet against its per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
-    ``available_bytes`` overrides the live memory read: the fleet planner passes
-    its clean-box snapshot so a reload sizes ctx like the boot did, not against
-    VRAM its own loaded fleet is holding.
+    ``available_bytes`` overrides the live host-memory read, and every caller
+    that is sizing a real launch passes it: the fleet and the surfaces that
+    mirror it hand over
+    :func:`lilbee.providers.fleet.planning.plan_sizing_budget`, which reports the
+    memory of the GPU that will run the model and holds a clean-box snapshot so
+    a reload sizes ctx like the boot did.
     """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
@@ -171,7 +182,18 @@ def resolve_chat_ctx(
 
 
 def resolve_n_gpu_layers(*, embedding: bool) -> int:
-    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama.cpp's offload integer."""
+    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama.cpp's offload integer.
+
+    Zero is honoured for every role. It is not a layer budget but the way a user
+    says "run this on the CPU", and the search roles used to take the
+    full-offload sentinel before the setting was read, so embed, rerank and
+    vision kept loading onto the GPU that had just been excluded.
+
+    Any other value is a chat-shaped budget and says nothing useful about a small
+    embedding model, which still offloads fully.
+    """
+    if cfg.n_gpu_layers == _N_GPU_LAYERS_NONE:
+        return _N_GPU_LAYERS_NONE
     if embedding or cfg.n_gpu_layers is None:
         return _N_GPU_LAYERS_AUTO
     return cfg.n_gpu_layers

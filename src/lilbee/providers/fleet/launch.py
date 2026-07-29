@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -29,9 +29,26 @@ class InstanceLaunch:
     ctx: int = 0  # per-slot context the server runs with; what a client should fit to
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
+    # GPU bytes placement charged this instance. Carried so the engine's own
+    # startup report can be checked against it once the server is up; 0 for a
+    # model the estimator could not size, where there is nothing to compare.
+    est_vram_bytes: int = 0
+    # What placement charged each card this instance runs on, keyed by the name
+    # the engine prints for it. The scalar above cannot distinguish a split that
+    # landed 50/50 from one that landed 80/20, and the second is the one that
+    # overruns a card.
+    est_vram_by_device: dict[str, int] = field(default_factory=dict)
+    est_unreported_bytes: int = 0
+    """Estimated bytes the engine allocates but never reports in its buffer lines.
+
+    A vision projector's weights are the case: llama.cpp allocates them without
+    emitting a "buffer size" line, so the readback total is short by exactly this
+    much and the self-check would warn on a load that was sized correctly.
+    """
 
     def to_state(self) -> dict:
-        """JSON-safe form persisted in a detached fleet's state file."""
+        """JSON-safe form written into every engine state file so a guest lilbee
+        can read the serving contract and bind."""
         return {
             "role": self.role.value,
             "argv": list(self.argv),
@@ -43,6 +60,9 @@ class InstanceLaunch:
             "ctx": self.ctx,
             "replica": self.replica,
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
+            "est_vram_bytes": self.est_vram_bytes,
+            "est_vram_by_device": dict(self.est_vram_by_device),
+            "est_unreported_bytes": self.est_unreported_bytes,
         }
 
     @classmethod
@@ -57,6 +77,11 @@ class InstanceLaunch:
             token_cap=payload.get("token_cap"),
             weights_bytes=int(payload.get("weights_bytes") or 0),
             slots=int(payload.get("slots") or 1),
+            est_vram_bytes=int(payload.get("est_vram_bytes") or 0),
+            est_unreported_bytes=int(payload.get("est_unreported_bytes") or 0),
+            est_vram_by_device={
+                str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
+            },
             ctx=int(payload.get("ctx") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,

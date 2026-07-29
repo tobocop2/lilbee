@@ -13,8 +13,11 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from lilbee.providers.fleet.readback import engine_log_env
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from lilbee.providers.fleet.launch import InstanceLaunch
 
@@ -54,6 +57,7 @@ def build_swap_config(
     *,
     swap: bool = False,
     ttl_seconds: int = 0,
+    engine_log_dir: Path | None = None,
 ) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
@@ -65,6 +69,12 @@ def build_swap_config(
     timer per member; 0 keeps weights loaded forever. Ports are allocated fresh per start (never
     llama-swap's fixed ``startPort`` range) so a previous instance's lingering
     server can't collide with the new fleet's bind.
+
+    ``engine_log_dir`` points each engine at its own log there, at the verbosity
+    that reports what it allocated. llama-swap forwards none of the upstream's
+    output, so that file is the only place those numbers exist, and reading them
+    back is what tells the planner whether its estimate held
+    (:mod:`lilbee.providers.fleet.readback`).
     """
     models: dict[str, object] = {}
     for launch in launches:
@@ -74,8 +84,11 @@ def build_swap_config(
             _KEY_PROXY: _PROXY_URL_TEMPLATE.format(port=port),
             _KEY_TTL: ttl_seconds,
         }
-        if launch.env_overrides:
-            entry[_KEY_ENV] = [f"{key}={value}" for key, value in launch.env_overrides.items()]
+        env = dict(launch.env_overrides)
+        if engine_log_dir is not None:
+            env.update(engine_log_env(engine_log_dir, launch.model_id))
+        if env:
+            entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
         models[launch.model_id] = entry
     config: dict[str, object] = {
         _KEY_HEALTH_TIMEOUT: _health_check_timeout_s(launches),

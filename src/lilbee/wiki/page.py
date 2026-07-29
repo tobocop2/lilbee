@@ -149,9 +149,8 @@ def build_frontmatter(
     the generator and the extraction method from config, so a bad page
     is auditable without re-running the pipeline.
     """
-    # JSON-serialize the list: a JSON array is valid YAML flow syntax and escapes
-    # quotes/backslashes/unicode, so a filename like ``a"b\c.txt`` can't corrupt
-    # the frontmatter (the hand-rolled per-name quoting did).
+    # A JSON array is valid YAML flow syntax and escapes quotes/backslashes/
+    # unicode, so a filename like ``a"b\c.txt`` cannot corrupt the frontmatter.
     sources_yaml = json.dumps(sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     provenance_block = render_provenance(config, chunks) if chunks is not None else ""

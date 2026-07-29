@@ -1,0 +1,36 @@
+app-id: io.github.tobocop2.lilbee.rocm
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: lilbee
+finish-args:
+  # Model downloads, `lilbee serve`, and MCP clients on localhost.
+  - --share=network
+  # Vaults live anywhere on disk, same reach as the other channels.
+  - --filesystem=host
+  # --device=all, not --device=dri: ROCm needs /dev/kfd, and dri covers only the
+  # DRM render nodes. No driver extension, unlike CUDA: the ROCm userspace is in
+  # the binary and only the amdgpu kernel driver is the host's.
+  - --device=all
+modules:
+  - name: lilbee
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 lilbee.sh /app/bin/lilbee
+      - install -Dm755 apply_extra.sh /app/bin/apply_extra
+      - install -Dm644 io.github.tobocop2.lilbee.rocm.metainfo.xml -t /app/share/metainfo
+    sources:
+      # url/sha256/size rendered per release by render_flatpak_manifest.sh;
+      # extra-data keeps the binary out of the OSTree repo. The ROCm binary is the
+      # largest: it carries the ROCm userspace and per-gfx rocBLAS kernels.
+      - type: extra-data
+        filename: lilbee-bin
+        url: https://github.com/tobocop2/lilbee/releases/download/v0.0.0/lilbee-linux-x86_64-rocm
+        sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+        size: 0
+      - type: file
+        path: lilbee.sh
+      - type: file
+        path: apply_extra.sh
+      - type: file
+        path: io.github.tobocop2.lilbee.rocm.metainfo.xml

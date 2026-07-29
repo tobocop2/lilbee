@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -11,6 +12,8 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
+
+log = logging.getLogger(__name__)
 
 
 class CompletionsErrorCode(StrEnum):
@@ -24,6 +27,8 @@ class CompletionsErrorCode(StrEnum):
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
 
+
+_FALLBACK_ERROR_TYPE = "invalid_request_error"
 
 COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
     CompletionsErrorCode.INVALID_REQUEST: "invalid_request_error",
@@ -41,7 +46,9 @@ def completions_error_body(code: CompletionsErrorCode, message: str) -> dict[str
     return {
         "error": {
             "message": message,
-            "type": COMPLETIONS_ERROR_TYPES[code],
+            # .get, not a subscript: this map is hand-maintained alongside the
+            # enum, and a missing entry would turn a handled 4xx into a 500.
+            "type": COMPLETIONS_ERROR_TYPES.get(code, _FALLBACK_ERROR_TYPE),
             "code": str(code),
         }
     }
@@ -66,7 +73,25 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.RATE_LIMIT: (429, CompletionsErrorCode.RATE_LIMIT_EXCEEDED),
     ProviderErrorKind.CONNECTION: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.CAPACITY: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
+
+
+# Kinds describing the backend, not the caller's request. Their text is built
+# at the fleet boundary and carries up to 600 bytes of upstream body plus the
+# dead server's stderr (loopback ports, engine paths), so it is logged rather
+# than returned. The client-input kinds stay pass-through.
+_INFRASTRUCTURE_KINDS = frozenset(
+    {
+        ProviderErrorKind.CONNECTION,
+        ProviderErrorKind.SERVER,
+        ProviderErrorKind.CAPACITY,
+        ProviderErrorKind.PORT_CONFLICT,
+    }
+)
+
+_BACKEND_FAILURE_MESSAGE = "The model backend is unavailable. Check the server logs for details."
 
 
 def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
@@ -84,5 +109,8 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
         mapped = _PROVIDER_KIND_CLASSIFICATIONS.get(exc.kind)
         if mapped is not None:
             status, code = mapped
+            if exc.kind in _INFRASTRUCTURE_KINDS:
+                log.warning("Chat backend failure (%s)", exc.kind, exc_info=exc)
+                return ClassifiedError(status, code, _BACKEND_FAILURE_MESSAGE)
             return ClassifiedError(status, code, str(exc))
     return None

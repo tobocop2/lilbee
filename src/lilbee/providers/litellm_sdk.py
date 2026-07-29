@@ -515,6 +515,11 @@ class LitellmSdkBackend:
             kwargs["api_key"] = request.api_key
         if request.options:
             kwargs.update(request.options)
+        if "response_format" in kwargs:
+            # Best-effort: a provider without structured-output support should
+            # drop the field and answer normally, not refuse the call. Callers
+            # that send it parse the reply defensively either way.
+            kwargs["drop_params"] = True
         return kwargs
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
@@ -538,7 +543,23 @@ class LitellmSdkBackend:
         # to inputs positionally, so a reorder would silently mis-pair every chunk
         # with the wrong vector. ``index`` is required (always present in a
         # spec-conforming response), mirroring the rerank path's direct read.
-        vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
+        ordered = sorted(data, key=_embedding_index)
+        # Reordering is not the only way the positional zip breaks. A gateway that
+        # drops an item, or repeats an index, yields a batch that still sorts
+        # cleanly but no longer corresponds one-to-one with the inputs, and the
+        # consumer would pair every later chunk with the wrong vector and store it.
+        # A spec-conforming response carries exactly one item per input, indexed
+        # 0..n-1, so anything else is refused rather than silently mis-paired.
+        expected = len(request.inputs)
+        if [_embedding_index(item) for item in ordered] != list(range(expected)):
+            raise ProviderError(
+                f"Embedding response does not match the request: expected {expected} "
+                f"vectors indexed 0-{expected - 1}, got {len(ordered)}. The endpoint "
+                "returned an incomplete or misindexed batch.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.SERVER,
+            )
+        vectors = [_embedding_vector(item) for item in ordered]
         return EmbeddingResult(vectors=vectors, model=_response_model(response))
 
     def rerank(self, request: RerankRequest) -> RerankResult:

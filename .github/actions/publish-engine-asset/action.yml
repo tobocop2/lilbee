@@ -1,0 +1,31 @@
+name: Publish an engine to the mirror release
+description: >-
+  Upload a freshly built engine bin/ directory to the engine mirror release under
+  its content-addressed asset name, so later builds restore it in ~2 min instead
+  of compiling it for ~50. Soft-fails throughout: a source build sits behind it.
+
+inputs:
+  engine-key:
+    description: "The engine cache key. Mapped to an asset name by tools/wheel-build/ci_mirror.sh."
+    required: true
+  engine-dir:
+    description: "Directory holding the built engine binaries."
+    required: false
+    default: packaging/engine-wheel/lilbee_engine/bin
+  release-tag:
+    description: "Release holding the mirror."
+    required: false
+    default: engine-binaries
+  token:
+    description: "Token with contents: write on this repo."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload the engine to the mirror release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: bash tools/wheel-build/ci_mirror.sh publish "${{ inputs.engine-key }}" "${{ inputs.engine-dir }}"

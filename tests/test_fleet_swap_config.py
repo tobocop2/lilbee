@@ -212,8 +212,8 @@ class TestHealthCheckTimeoutScaling:
 
 
 class TestWarmTtlSeconds:
-    def test_warm_keeps_weights_resident_regardless_of_ttl(self, monkeypatch) -> None:
-        # keep_engine_warm means resident: ttl 0, so llama-swap never idle-unloads.
+    def test_keep_engine_warm_pins_weights_resident(self, monkeypatch) -> None:
+        # keep_engine_warm means the model stays ready, so the idle unload is off.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
 
@@ -221,8 +221,21 @@ class TestWarmTtlSeconds:
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
         assert _warm_ttl_seconds() == 0
 
+    def test_interactive_session_pins_weights_resident(self, monkeypatch) -> None:
+        # A provider serving an interactive session (the TUI) holds the engine warm
+        # for its whole lifetime, regardless of the idle window or keep_engine_warm.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
+        # A provider not serving one still unloads on the idle window.
+        assert _warm_ttl_seconds() == 900
+
     def test_on_demand_unloads_after_idle_ttl(self, monkeypatch) -> None:
-        # Warm off: the fleet releases its weights after the idle window.
+        # No interactive session and no keep_engine_warm: the fleet releases its
+        # weights after the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
 

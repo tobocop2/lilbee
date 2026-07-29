@@ -45,16 +45,23 @@ class TestCharBudgetCoversChunkBudget:
 
 
 class TestTruncationIsSurfaced:
-    """Over-budget input is counted and the count reaches the caller."""
+    """Over-budget input is counted and the count reaches the caller.
 
-    def test_embed_batch_reports_truncated_count(self, embedder):
+    The count the pipeline surfaces is the delta of the lock-protected
+    cumulative counter across the run, which is the only reading that stays
+    correct while several ingest threads embed through the shared Embedder.
+    """
+
+    def test_embed_batch_counts_truncations(self, embedder):
         over = "x" * (embedder.embed_char_budget + 500)
+        before = embedder.truncated_total
         embedder.embed_batch(["short", over, over])
-        assert embedder.last_batch_truncated == 2
+        assert embedder.truncated_total - before == 2
 
-    def test_no_truncation_reports_zero(self, embedder):
+    def test_no_truncation_counts_nothing(self, embedder):
+        before = embedder.truncated_total
         embedder.embed_batch(["short", "also short"])
-        assert embedder.last_batch_truncated == 0
+        assert embedder.truncated_total - before == 0
 
 
 class TestSyncResultCarriesTruncation:

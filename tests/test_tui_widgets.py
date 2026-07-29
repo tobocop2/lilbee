@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Never
 from unittest import mock
 
 import pytest
@@ -561,16 +561,19 @@ class TestTaskBar:
             assert out == "Starting chat, embed workers..."
 
     def test_warm_detail_phases(self) -> None:
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.task_bar import _warm_detail
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         assert _warm_detail(None) is None
         assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
-        # Each active phase carries a progress bar plus the phase word.
+        # Indeterminate phases carry a moving sweep bar plus the phase word: a
+        # multi-second load has to read as working, not stalled.
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
-        assert "starting" in starting and "▓" in starting
+        assert msg.TASKBAR_WARM_STARTING in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "loading the engine" in loading and ("▓" in loading or "░" in loading)
+        assert msg.TASKBAR_WARM_LOADING in loading and "▓" in loading
+        # Reading weights: a determinate byte bar, then the phase word with %.
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
@@ -599,7 +602,8 @@ class TestTaskBar:
             await pilot.pause()
             bar = app.query_one(TaskBar)
             warm = bar._warm_line()
-            assert warm.startswith("warming up chat · ")
+            # model_ref is None here, so the line uses the fallback name.
+            assert "warming up chat · " in warm
             assert "reading weights 25%" in warm and "▓" in warm
             bar._refresh_display()
             await pilot.pause()
@@ -612,6 +616,15 @@ class TestTaskBar:
         assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
         assert len({*frames}) > 1  # the lit window moves, so frames differ
         assert all("▓" in f for f in frames)  # always shows a lit window
+
+    def test_spinner_frames_cycle_from_rich(self) -> None:
+        from lilbee.cli.tui.spinner import SPINNER_FRAMES, spinner_frame
+
+        assert len(SPINNER_FRAMES) > 1  # sourced from Rich's "dots" spinner
+        assert spinner_frame(0) == SPINNER_FRAMES[0]
+        assert spinner_frame(len(SPINNER_FRAMES)) == SPINNER_FRAMES[0]  # wraps
+        distinct = {spinner_frame(t) for t in range(len(SPINNER_FRAMES))}
+        assert len(distinct) == len(SPINNER_FRAMES)  # every frame is used
 
     async def test_warm_line_none_when_not_warming(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2755,15 +2768,21 @@ class TestGetCompletions:
         assert any("testfile.txt" in x for x in r)
 
     def test_path_exists_swallows_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A path the OS refuses to stat must read as missing, not raise."""
-        from pathlib import Path as P
+        """A path the OS refuses to stat reads as missing, not raise.
 
+        Patches this module's Path, not pathlib.Path.expanduser: a global patch
+        also hits the config validator and blows up in fixture teardown.
+        """
         from lilbee.cli.tui.widgets import autocomplete
 
-        def _boom(self: P) -> P:
-            raise OSError("bad path")
+        class _BoomPath:
+            def __init__(self, *_args: object) -> None:
+                pass
 
-        monkeypatch.setattr(P, "expanduser", _boom)
+            def expanduser(self) -> Never:
+                raise OSError("bad path")
+
+        monkeypatch.setattr(autocomplete, "Path", _BoomPath)
         assert autocomplete._path_exists("~oops") is False
 
     def test_add_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
@@ -2813,6 +2832,39 @@ class TestGetCompletions:
         monkeypatch.chdir(d)
         r = get_completions("/add ./")
         assert any("beta.txt" in x for x in r)
+
+    def test_import_arg_completions_offer_paths(self, tmp_path: object) -> None:
+        """``/import`` takes a dataset path, so Tab completes filesystem entries."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "pages.parquet").touch()
+        r = get_completions(f"/import {d}/")
+        assert any("pages.parquet" in x for x in r)
+
+    def test_export_arg_completions_offer_paths(self, tmp_path: object) -> None:
+        """``/export`` takes an output path, so Tab completes filesystem entries."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "out.parquet").touch()
+        r = get_completions(f"/export {d}/")
+        assert any("out.parquet" in x for x in r)
+
+    def test_import_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
+        """A fully-typed existing dataset path yields no completions so Enter submits."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "pages.parquet").touch()
+        assert get_completions(f"/import {d}/pages.parquet") == []
+        assert any("pages.parquet" in x for x in get_completions(f"/import {d}/"))
 
 
 class TestPathCompletionPrefix:
@@ -3731,7 +3783,7 @@ class TestRunTuiKeyboardInterrupt:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor"),
-                mock.patch("lilbee.cli.tui.reset_services"),
+                mock.patch("lilbee.cli.tui.reset_services_on_exit"),
             ):
                 from lilbee.cli.tui import run_tui
 
@@ -3743,7 +3795,7 @@ class TestRunTuiKeyboardInterrupt:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor") as mock_shutdown,
-                mock.patch("lilbee.cli.tui.reset_services") as mock_reset,
+                mock.patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
             ):
                 from lilbee.cli.tui import run_tui
 
@@ -7055,3 +7107,56 @@ def test_size_variant_strip_disambiguates_same_quant_families():
         SizeVariant(label="8B Q5_K_M", quant="Q5_K_M", size_gb=5.7, ref="r/q5"),
     ]
     assert str(_build_size_variant_strip(distinct)) == "Q4_K_M · Q5_K_M"
+
+
+async def test_warm_line_survives_an_active_background_task() -> None:
+    """A chat warm holds the user's input disabled, so its line must show even
+    while an unrelated task (a document sync) is running. Hiding it behind the
+    task summary left the user staring at a dead input with no explanation."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.role_ready.return_value = False
+    services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.LOADING_ENGINE, model_ref=None
+    )
+    set_services(services)
+
+    app = _TaskBarApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        warm = bar._warm_line()
+        assert warm is not None
+        # Not idle: a task is active, yet the warm line still wins the summary.
+        _dot, summary = bar._status_line([mock.MagicMock()], [], [], 0, warm, idle=False)
+        assert summary == warm
+
+
+async def test_warm_line_names_the_model_being_loaded() -> None:
+    """The line carries the model's display label, not the raw ref, so a swap says
+    which model the wait is for."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    services = mock.MagicMock()
+    services.provider.role_ready.return_value = False
+    services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.LOADING_ENGINE, model_ref=TEST_LOCAL_REF
+    )
+    set_services(services)
+
+    app = _TaskBarApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        warm = app.query_one(TaskBar)._warm_line()
+        assert warm is not None
+        assert "chat ·" not in warm  # not the fallback name
+        assert "warming up " in warm

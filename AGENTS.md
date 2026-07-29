@@ -24,7 +24,7 @@ The full rules follow; this block is the part that gets skipped under time
 pressure, so it leads.
 
 ## Project
-The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`).
 
 **Framing:** Lead with "the whole local AI stack in one executable". Two pillars, always both: it runs and manages the models (its own model manager, no Ollama or LM Studio needed, works with both), and it is a search engine you can talk to (cited answers). "RAG" and "local-first" are properties, not the identity. lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
@@ -145,7 +145,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Use literal unicode chars (`★`) not escapes (`\u2605`); extract to named constants
 - **No filterwarnings** without explicit user approval; fix warnings at the source
 - **Docstrings describe what the code IS, not how it got there.** Drop iteration-tracking phrasing like "Accepts X so callers don't have to import Y", "Used by Z as the on_complete callback", "Moved here because…", "Replaces the previous getattr fallback". That information is the *change description*, not the function's contract. Default to one-line docstrings; add detail only for non-obvious invariants (Big-O bounds, ordering guarantees, error semantics). The `grep -rnE "so callers don'?t|used by .* as the|replaces the|moved here because|previously" src/` sweep should return zero new hits in a diff.
-- **Inline comments state what, not a story.** A comment names a non-obvious invariant or constraint in one line. Cut the narration and justification: not "Best-effort convenience: a rejected swap must never be fatal, log it and keep the ref so the app boots", just "A rejected swap must not be fatal at startup". Not "the task is reclassified so the pick agrees with the validator that runs on the subsequent swap; a wrong-task model would be rejected downstream"; just "tasks are reclassified so the pick matches the role validator". Multi-sentence comment blocks that walk through the reasoning behind the code are the smell. Default to no comment; let names carry the meaning.
+- **Inline comments state what, not a story. This applies to every language here, including YAML, shell, and Dockerfiles, not just Python.** A comment names a non-obvious invariant or constraint in one line. Cut the narration and justification: not "Best-effort convenience: a rejected swap must never be fatal, log it and keep the ref so the app boots", just "A rejected swap must not be fatal at startup". Not "the task is reclassified so the pick agrees with the validator that runs on the subsequent swap; a wrong-task model would be rejected downstream"; just "tasks are reclassified so the pick matches the role validator". Multi-sentence comment blocks that walk through the reasoning behind the code are the smell. Default to no comment; let names carry the meaning.
 
 ### Type-System Hygiene
 - **Don't fight the type system with `# type: ignore` for owned attributes.** A `# type: ignore[attr-defined]` on `self.app.task_bar` means mypy can't see `task_bar`. Fix the source: declare `app: LilbeeApp` on the host class, declare `task_bar: TaskBarController` on LilbeeApp's `__init__`, and the ignore goes away. The ignore was the symptom; the missing declaration was the bug.
@@ -411,14 +411,6 @@ Run this mentally or explicitly before claiming work is done:
 11. **No new owned-attribute reflection** — `git diff` for added `getattr(self, "X"` and `# type: ignore[attr-defined]` lines. Each must have a written justification in the PR body or be removed.
 12. **Run the Code-Smell Triggers section grep set** — every entry above. Compare counts vs `main`. The number must not increase.
 
-### Behavior Learning (floop)
-- `floop` captures corrections and learned behaviors across sessions
-- Hooks run automatically via `~/.claude/settings.json` (session-start, dynamic-context, detect-correction)
-- `floop active` — show behaviors active in current context
-- `floop learn` — manually capture a correction/behavior
-- `floop list` — list all learned behaviors
-- `floop prompt` — generate prompt section from active behaviors
-
 ### Build & Release Artifacts
 The release ships standalone executables (Nuitka onefile) and pip wheels, each
 carrying the out-of-process `llama-server` engine and its native library
@@ -447,8 +439,36 @@ closure. These rules exist because each one shipped a broken artifact once.
   the driver, so `build_llama_server.sh` copies them beside the binary on Linux and
   Windows and fails the build when one is missing. The exec gate above proves nothing
   here — a driverless runner never loads the CUDA backend — so read the artifact
-  instead: `tools/qa/assert_cuda_bundle.py` checks the wheel in the build cells and
+  instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
+- **A ROCm build bundles its ROCm runtime too, discovered not listed.**
+  `bundle_rocm_runtime.sh` walks `DT_NEEDED` and keeps what resolves inside the ROCm
+  tree, because SONAMEs move between releases. It also carries `rocblas/library`,
+  which rocBLAS loads as data: omit it and the engine dies on the first matmul.
+  Separate script because it is the one part of the build testable without a GPU
+  (`tests/test_bundle_rocm_runtime.py`).
+- **The ROCm bundle is proved in a container, not beside the build.** Any machine
+  that can build ROCm has ROCm, so a loader check on the runner passes a bundle that
+  would fail for a user. `assert_rocm_bundle_loads.sh` runs it through a real `ld.so`
+  in `ubuntu:22.04` with no ROCm. Its `host_packages` is the wheel's host contract.
+- **A wheel carries the backend its flavor claims.** `assert_engine_bundle.py` checks
+  every cell, not just CUDA: cmake caches an unknown `-D` instead of failing, which is
+  how the published rocm wheel shipped as a CPU build. A new flavor needs its library
+  name added there or the gate asserts nothing for it.
+- **A new publish workflow needs both ends wired.** A `publish-*.yml` is invoked by a
+  dispatch job in `release-candidate.yml`, and its assets belong in
+  `verify-release.yml`. Adding the gate without the dispatcher makes every release
+  unpromotable: the wait loop burns its full timeout, then promotion refuses.
+- **A new gate must be proven to fail.** Run it against the input it is supposed to
+  reject before trusting it. A loader check that counted glob matches passed a bundle
+  with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
+  dynamic executable" as success.
+- **`echo x=y >> $GITHUB_OUTPUT` does not create a shell variable.** Reading `$x` back
+  in the same step gets nothing, or fails under `set -u`. Assign the shell variable
+  first, then emit it.
+- **Renaming a workflow file breaks `workflow_dispatch` until the rename is on the
+  default branch.** GitHub resolves the workflow by its default-branch path. Reach a
+  renamed workflow through a caller that still exists there.
 - **Every release channel has a real-inference gate.** `tools/qa/artifact_smoke.sh`
   runs `self-check` (real chat + embedding), ingest, search, a RAG ask, and an
   http crawl, sourcing models from the `ci-models` mirror (no HuggingFace).

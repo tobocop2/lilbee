@@ -9,13 +9,18 @@ import io
 import logging
 import math
 from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+import anyio.to_thread
+from anyio import CapacityLimiter
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
+from lilbee.crawler.markdown import base_url_for, html_to_markdown
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -55,6 +60,84 @@ def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
         verbose=verbose,
     )
     return AsyncWebCrawler(config=config, verbose=verbose)
+
+
+def _conversion_limiter() -> CapacityLimiter | None:
+    """How many pages may convert off the event loop at once, or ``None`` for on it.
+
+    Read once per crawl, so a crawl keeps the setting it started with.
+    """
+    workers = cfg.crawl_convert_workers
+    return CapacityLimiter(workers) if workers >= 1 else None
+
+
+def _silent_markdown_generator() -> Any | None:
+    """A generator that produces nothing, or ``None`` when crawl4ai's base is absent.
+
+    crawl4ai converts every page inside its own async call stack, with no setting
+    to skip it. Handing it a generator that returns immediately leaves the HTML
+    for :func:`html_to_markdown` to convert where lilbee can await it.
+    """
+    try:
+        from crawl4ai.markdown_generation_strategy import MarkdownGenerationStrategy
+        from crawl4ai.models import MarkdownGenerationResult
+    except (ImportError, AttributeError):
+        return None
+
+    class _SilentMarkdownGenerator(MarkdownGenerationStrategy):  # type: ignore[misc]
+        def generate_markdown(self, *args: Any, **kwargs: Any) -> Any:
+            return MarkdownGenerationResult(
+                raw_markdown="",
+                markdown_with_citations="",
+                references_markdown="",
+                fit_markdown="",
+                fit_html="",
+            )
+
+    return _SilentMarkdownGenerator()
+
+
+@dataclass(frozen=True)
+class _Conversion:
+    """The markdown seam for one crawl: crawl4ai's own generator silenced so lilbee re-converts.
+
+    ``generator`` is the silent generator handed to crawl4ai, or ``None`` when its markdown
+    base class is unavailable and the crawl converts itself. ``limiter`` bounds how many pages
+    convert on the thread pool at once, or ``None`` to convert inline on the loop.
+    """
+
+    generator: Any | None
+    limiter: CapacityLimiter | None
+
+    @property
+    def config_kwargs(self) -> dict[str, Any]:
+        """``CrawlerRunConfig`` kwargs that install the silent generator, if there is one."""
+        return {} if self.generator is None else {"markdown_generator": self.generator}
+
+    async def markdown_for(self, result: Any) -> str:
+        """The page's markdown, re-converted off the loop only when the backend was silenced.
+
+        An un-silenced backend already converted the page, so re-converting would
+        duplicate the work this exists to move. Converts ``cleaned_html`` only, the
+        same source crawl4ai's own generator uses, so an empty cleaned page stays
+        empty rather than turning raw nav/boilerplate into content.
+        """
+        html = result.cleaned_html or ""
+        if self.generator is None or not html:
+            return str(result.markdown or "")
+        base_url = base_url_for(result.html or "", result.url, result.redirected_url)
+        if self.limiter is None:
+            return html_to_markdown(html, base_url)
+        return await anyio.to_thread.run_sync(
+            html_to_markdown, html, base_url, limiter=self.limiter
+        )
+
+
+def _new_conversion() -> _Conversion:
+    """Build the conversion seam for one crawl, reading ``crawl_convert_workers`` once."""
+    generator = _silent_markdown_generator()
+    limiter = _conversion_limiter() if generator is not None else None
+    return _Conversion(generator, limiter)
 
 
 def _build_rate_limited_dispatcher(
@@ -267,10 +350,11 @@ class Crawl4aiFetcher:
         """Fetch a single URL via crawl4ai's ``arun``."""
         from crawl4ai import CrawlerRunConfig
 
-        config = CrawlerRunConfig(page_timeout=int(timeout * 1000))
+        conversion = _new_conversion()
+        config = CrawlerRunConfig(page_timeout=int(timeout * 1000), **conversion.config_kwargs)
         async with _open_crawler(quiet=self._quiet, render_mode=self._render_mode) as crawler:
             result = await crawler.arun(url=url, config=config)
-        markdown = (result.markdown or "").strip()
+        markdown = (await conversion.markdown_for(result)).strip()
         if markdown:
             return FetchedPage(url=url, markdown=markdown, success=True)
         return FetchedPage(
@@ -320,6 +404,7 @@ class Crawl4aiFetcher:
             should_cancel=_should_cancel,
             filter_chain=filter_chain,
         )
+        conversion = _new_conversion()
         config = CrawlerRunConfig(
             deep_crawl_strategy=strategy,
             page_timeout=int(timeout * 1000),
@@ -327,6 +412,7 @@ class Crawl4aiFetcher:
             max_range=concurrency.max_delay_range,
             semaphore_count=concurrency.semaphore_count,
             stream=True,
+            **conversion.config_kwargs,
         )
 
         dispatcher = _build_rate_limited_dispatcher(concurrency, self._render_mode)
@@ -347,7 +433,7 @@ class Crawl4aiFetcher:
                         strategy_cancelled = True
                         break
                     if cr.success:
-                        yield FetchedPage(url=cr.url, markdown=cr.markdown or "")
+                        yield FetchedPage(url=cr.url, markdown=await conversion.markdown_for(cr))
                     else:
                         yield FetchedPage(
                             url=cr.url,

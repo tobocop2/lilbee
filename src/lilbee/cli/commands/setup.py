@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import shutil
+import signal
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
@@ -111,6 +114,8 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "flash_attention": cfg.flash_attention,
         "kv_cache_type": cfg.kv_cache_type.value,
         "n_gpu_layers": cfg.n_gpu_layers,
+        "cpu_moe": cfg.cpu_moe,
+        "n_cpu_moe": cfg.n_cpu_moe,
         "main_gpu": cfg.main_gpu,
         "gpu_devices": cfg.gpu_devices,
     }
@@ -122,58 +127,18 @@ def _self_check_server(
     """Start a one-model llama-swap for *model_path* in *role* and return its
     manager plus an OpenAI client.
 
-    Builds the launch with the fleet's per-role argv builder (ctx, gpu-layers,
-    and -- for chat -- the flash-attn / KV-cache flags) so the check exercises the
-    same binary and flags a real request drives. The upstream loads on the first
-    request; the caller shuts the manager down.
+    Asks the planner for the launch it would build rather than assembling one
+    beside it, so the check exercises the slots, context, pinning and flags a
+    real request drives. The upstream loads on the first request; the caller
+    shuts the manager down.
     """
-    from lilbee.core.config.enums import KvCacheType
-    from lilbee.providers.engine_params import (
-        resolve_chat_ctx,
-        resolve_embed_ctx,
-        resolve_n_gpu_layers,
-    )
-    from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv, embed_spec
-    from lilbee.providers.fleet.binary import (
-        llama_server_runtime_env,
-        resolve_llama_server,
-    )
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
-    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.planning import build_single_role_launch
     from lilbee.providers.fleet.swap_manager import SwapManager
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    meta = read_gguf_metadata(model_path)
-    is_embed = role is WorkerRole.EMBED
-    if is_embed:
-        ctx = resolve_embed_ctx(meta, model_path)
-    else:
-        ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
-    spec = embed_spec(meta) if is_embed else ROLE_SPECS[role]
-    argv = build_server_argv(
-        binary=resolve_llama_server(),
-        spec=spec,
-        model_path=model_path,
-        devices=(),
-        n_gpu_layers=resolve_n_gpu_layers(embedding=is_embed),
-        slots=1,
-        ctx_per_slot=ctx,
-        # Chat mirrors the fleet's chat flags; embed runs f16 KV with a full-ctx batch.
-        flash_attn=None if is_embed else ("off" if cfg.flash_attention is False else "on"),
-        cache_type=(
-            None if is_embed or cfg.kv_cache_type is KvCacheType.F16 else cfg.kv_cache_type.value
-        ),
-        batch_size=ctx if is_embed else None,
-    )
+    launch = build_single_role_launch(role, model_path)
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
-    launch = InstanceLaunch(
-        role=role,
-        argv=argv,
-        env_overrides=llama_server_runtime_env(),
-        model=str(model_path),
-        token_cap=ctx if is_embed else None,
-    )
     swap = SwapManager(work_dir, SwapGroup(role.value))
     try:
         swap.start([launch])
@@ -243,6 +208,30 @@ def _self_check_leg(
     return result, model_path
 
 
+@contextlib.contextmanager
+def _teardown_on_sigterm() -> Iterator[None]:
+    """Convert SIGTERM into an exception so the self-check teardown runs.
+
+    Each leg tears its fleet down and removes its temp dir in a ``finally``. The
+    default SIGTERM disposition ends the interpreter without unwinding, orphaning
+    the engine; raising instead runs the same cleanup a ctrl-c (SIGINT) does.
+    No-op off the main thread and where SIGTERM is not delivered (Windows).
+    """
+
+    def _raise(_signum: int, _frame: FrameType | None) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise)
+    except ValueError:  # pragma: no cover - not the main thread
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def self_check_cmd(
     chat_model_path: Path | None = _self_check_chat_path_option,
     embed_model_path: Path | None = _self_check_embed_path_option,
@@ -268,31 +257,32 @@ def self_check_cmd(
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
-    text, chat_path = _self_check_leg(
-        chat_model_path,
-        _SELF_CHECK_CHAT_REPO,
-        _SELF_CHECK_CHAT_FILE,
-        "chat",
-        lambda p: _self_check_chat(p, max_tokens),
-    )
-
-    if not text.strip():
-        _self_check_emit_failure("empty inference response")
-        raise typer.Exit(1)
-
-    embedding_dims: int | None = None
-    if not skip_embedding:
-        embedding_dims, _ = _self_check_leg(
-            embed_model_path,
-            _SELF_CHECK_EMBED_REPO,
-            _SELF_CHECK_EMBED_FILE,
-            "embedding",
-            _self_check_embed,
+    with _teardown_on_sigterm():
+        text, chat_path = _self_check_leg(
+            chat_model_path,
+            _SELF_CHECK_CHAT_REPO,
+            _SELF_CHECK_CHAT_FILE,
+            "chat",
+            lambda p: _self_check_chat(p, max_tokens),
         )
 
-        if not embedding_dims:
-            _self_check_emit_failure("empty embedding vector")
+        if not text.strip():
+            _self_check_emit_failure("empty inference response")
             raise typer.Exit(1)
+
+        embedding_dims: int | None = None
+        if not skip_embedding:
+            embedding_dims, _ = _self_check_leg(
+                embed_model_path,
+                _SELF_CHECK_EMBED_REPO,
+                _SELF_CHECK_EMBED_FILE,
+                "embedding",
+                _self_check_embed,
+            )
+
+            if not embedding_dims:
+                _self_check_emit_failure("empty embedding vector")
+                raise typer.Exit(1)
 
     provider_kwargs = _resolved_provider_kwargs()
     if cfg.json_mode:

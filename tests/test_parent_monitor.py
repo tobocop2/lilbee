@@ -262,7 +262,7 @@ class TestMcpMainIntegration:
         monkeypatch.setenv(PARENT_PID_ENV, "888888")
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
             mcp_mod.main()
@@ -274,7 +274,7 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
             mcp_mod.main()
@@ -286,8 +286,49 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
         ):
             mcp_mod.main()
         assert "MCP pre-warm failed" in caplog.text
+
+
+def test_mcp_parent_death_releases_services_before_hard_exit(monkeypatch):
+    """os._exit skips atexit, so the handler must release engine membership itself."""
+    import lilbee.mcp_server as mcp_mod
+
+    order: list[str] = []
+    monkeypatch.setattr("lilbee.mcp_server.reset_services", lambda: order.append("reset"))
+    monkeypatch.setattr(mcp_mod.os, "_exit", lambda code: order.append(f"exit:{code}"))
+    mcp_mod._exit_on_parent_death()
+    assert order == ["reset", "exit:0"]
+
+
+def test_mcp_parent_death_time_boxes_a_wedged_cleanup(monkeypatch):
+    """A peer holding an engine build lock must not keep the orphan alive.
+
+    The release runs on a daemon thread joined with a deadline; if it wedges, the
+    watchdog still exits promptly (its one contract), leaving the engine to the
+    peers' reap and idle TTL.
+    """
+    import time
+
+    import lilbee.mcp_server as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "_PARENT_DEATH_CLEANUP_S", 0.2)
+    started = threading.Event()
+
+    def _wedged() -> None:
+        started.set()
+        time.sleep(30)  # a peer holds the build lock; cleanup cannot finish
+
+    monkeypatch.setattr("lilbee.mcp_server.reset_services", _wedged)
+    exited: list[int] = []
+    monkeypatch.setattr(mcp_mod.os, "_exit", lambda code: exited.append(code))
+
+    start = time.monotonic()
+    mcp_mod._exit_on_parent_death()
+
+    assert started.is_set()  # cleanup was attempted
+    assert exited == [0]  # but the watchdog exited anyway
+    assert time.monotonic() - start < 5  # promptly, not after the 30s wedge

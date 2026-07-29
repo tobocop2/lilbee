@@ -18,6 +18,7 @@ from lilbee.core.config.enums import (
     RerankerType,
     WikiEntityMode,
 )
+from lilbee.core.config.model import FTS_LANGUAGES
 
 
 class RenderStyle(StrEnum):
@@ -136,6 +137,40 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
+    ),
+    "ingest_workers": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
+    ),
+    "ingest_processes": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Worker processes for extracting and embedding a large corpus. 1 (default)"
+            " = off; 0 = auto-size; N = explicit. Only helps a small/fast embedder that"
+            " one process cannot use to fill a multi-GPU fleet"
+        ),
+    ),
+    "mcp_tool_threads": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.LOCAL_SERVERS,
+        help_text=(
+            "Threads for synchronous MCP tool handlers; the ceiling on how many agents"
+            " one daemon serves before retrieval calls queue"
+        ),
+    ),
+    "crawl_convert_workers": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Crawled pages converted to markdown on worker threads at once, so a crawl"
+            " does not block request handling; 0 converts on the event loop"
+        ),
     ),
     "auto_sync": SettingDef(
         bool,
@@ -272,6 +307,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "positive int = partial offload for tight VRAM."
         ),
     ),
+    "cpu_moe": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Keep a mixture-of-experts model's expert weights in system memory so "
+            "it fits a smaller GPU. No effect on dense models."
+        ),
+    ),
+    "n_cpu_moe": SettingDef(
+        int,
+        nullable=True,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Offload only the first N layers' experts to system memory. Takes "
+            "precedence over the offload-everything setting; smaller N stays faster."
+        ),
+    ),
     "gpu_devices": SettingDef(
         str,
         nullable=True,
@@ -376,6 +429,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Blend reranker scores with retrieval fusion (off = pure reranker order)",
+    ),
+    "rerank_min_score": SettingDef(
+        float,
+        nullable=True,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Drop candidates whose raw reranker score is below this (unset = off)",
     ),
     "show_reasoning": SettingDef(
         bool,
@@ -795,13 +854,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Keep the engine running after quit so the next launch starts warm",
+        help_text=(
+            "Let the engine outlive lilbee for warm launches; off stops it on last "
+            "exit unless another lilbee sharing the engine asked to keep it"
+        ),
     ),
     "engine_idle_ttl_minutes": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Idle minutes before a warm engine unloads its weights; 0 keeps them loaded",
+        help_text="Idle minutes before the engine unloads its weights; 0 keeps them loaded",
     ),
     "agent_mcp_enabled": SettingDef(
         bool,
@@ -839,6 +901,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
     ),
+    "usable_vram_fraction": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Share of a GPU placement may fill, leaving room for fragmentation and driver "
+            "overhead (0.5-1.0). Raise it if a model that should fit is being refused; "
+            "lower it if loads fail near the top of the card."
+        ),
+    ),
+    "system_memory_reserve_gb": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "RAM held back for the OS in GiB when serving from system memory (no discrete "
+            "GPU). Capped at a quarter of total RAM either way."
+        ),
+    ),
     "embed_replicas": SettingDef(
         int,
         nullable=False,
@@ -856,6 +937,61 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
+    ),
+    "title_search": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Match queries against document titles as a third hybrid-search arm",
+    ),
+    "title_search_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
+    ),
+    "lexical_fusion_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="BM25 arm weight in fusion (1.0 = equal to vector; lower to favor dense)",
+    ),
+    "adaptive_fusion": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Scale the BM25 weight per query by vector-arm confidence, not a fixed value",
+    ),
+    "adaptive_fusion_margin": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Vector-similarity margin at which adaptive fusion fully silences the BM25 arm",
+    ),
+    "filter_structural_chunks": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Drop tables-of-contents and classification-banner cover pages from results",
+    ),
+    "fts_language": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        choices=tuple(sorted(FTS_LANGUAGES)),
+        help_text="Stemmer/stop-word language for BM25 indexes (rebuild to apply)",
+    ),
+    "embed_titles": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Prefix document titles to chunk embeddings (rebuild to apply)",
+    ),
+    "contextual_enrichment": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="LLM context sentence per chunk embedding (slow ingest; rebuild to apply)",
     ),
     "history_rewrite": SettingDef(
         bool,
@@ -902,6 +1038,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum unique sources contributing chunks to a single answer",
+    ),
+    "neighbor_expansion": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Adjacent chunks merged into each retrieved passage per side (0 = off)",
     ),
     "diversity_max_per_source": SettingDef(
         int,

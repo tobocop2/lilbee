@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
+from lilbee.core.vectors import Vector
 
 from .types import SearchChunk
 
 
-def cosine_sim(a: list[float], b: list[float]) -> float:
+def cosine_sim(a: Vector | Sequence[float], b: Vector | Sequence[float]) -> float:
     """Cosine similarity between two vectors."""
     arr_a = np.asarray(a, dtype=np.float64)
     arr_b = np.asarray(b, dtype=np.float64)
@@ -21,7 +24,7 @@ def cosine_sim(a: list[float], b: list[float]) -> float:
 
 
 def mmr_rerank(
-    query_vector: list[float],
+    query_vector: Vector,
     results: list[SearchChunk],
     top_k: int,
     mmr_lambda: float | None = None,
@@ -33,7 +36,7 @@ def mmr_rerank(
 
     ``mmr_lambda`` controls the relevance/diversity tradeoff:
     0.0 = maximum diversity, 1.0 = pure relevance.
-    Defaults to ``cfg.mmr_lambda`` (0.5).
+    Defaults to the active config's ``mmr_lambda`` (0.5).
 
     Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
     of dimension D. Each outer iteration updates a running max-redundancy
@@ -44,7 +47,10 @@ def mmr_rerank(
     since sub-float32 differences are below retrieval signal.
     """
     if mmr_lambda is None:
-        mmr_lambda = cfg.mmr_lambda
+        # active_config(), not the process-global cfg: under the library API
+        # a config_scope binding is the caller's config, and every sibling in
+        # the data path resolves through the scope.
+        mmr_lambda = active_config().mmr_lambda
     if len(results) <= top_k:
         return results
 
@@ -64,9 +70,10 @@ def mmr_rerank(
     available = np.ones(n, dtype=bool)
     selected: list[SearchChunk] = []
 
-    for picks in range(top_k):
-        redundancy_term = max_redundancy if picks > 0 else np.zeros(n, dtype=np.float32)
-        score = mmr_lambda * relevance - (1.0 - mmr_lambda) * redundancy_term
+    for _ in range(top_k):
+        # max_redundancy starts at zeros, so the first pass is pure relevance
+        # without needing a special case for it.
+        score = mmr_lambda * relevance - (1.0 - mmr_lambda) * max_redundancy
         # Mask already-picked candidates so argmax skips them.
         score = np.where(available, score, -np.inf)
         best = int(np.argmax(score))

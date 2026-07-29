@@ -103,6 +103,23 @@ class Reranker:
         if scores is None:
             return results
 
+        floor = self._config.rerank_min_score
+        if floor is not None:
+            # Absolute floor on the raw provider score: min-max normalization
+            # erases calibration, so without this a uniformly irrelevant pool
+            # still yields a 1.0-scored "best" candidate.
+            kept = [(s, c) for s, c in zip(scores, to_rerank, strict=True) if s >= floor]
+            if len(kept) < len(to_rerank):
+                log.info(
+                    "Reranker dropped %d of %d candidates below rerank_min_score",
+                    len(to_rerank) - len(kept),
+                    len(to_rerank),
+                )
+            if not kept:
+                return remainder
+            scores = [s for s, _ in kept]
+            to_rerank = [c for _, c in kept]
+
         norm_scores = normalize_scores(scores)
         if self._config.rerank_blend:
             fusion_norms = compute_fusion_norms(to_rerank)
@@ -121,14 +138,31 @@ class Reranker:
 
 
 def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] | None:
-    """Call the active provider's rerank; return None on error after logging."""
+    """Call the active provider's rerank; return None on error after logging.
+
+    A provider that returns the wrong number of scores is contained here
+    like any other failure: the scores cannot be paired with the candidates,
+    so the pass is skipped and retrieval order stands.
+    """
     # circular: services -> reranker via Searcher; deferred so test-time
-    # monkeypatching of ``lilbee.services.get_services`` stays effective.
+    # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
     from lilbee.app.services import get_services
 
     try:
         provider = get_services().provider
-        return provider.rerank(query, [c.chunk for c in to_rerank])
+        # Title-prefixed passages: a cross-encoder cannot judge a chunk whose
+        # relevance depends on its parent document from the bare text.
+        scores = provider.rerank(
+            query, [f"{c.title}\n{c.chunk}" if c.title else c.chunk for c in to_rerank]
+        )
     except Exception as exc:
         log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
         return None
+    if len(scores) != len(to_rerank):
+        log.warning(
+            "Reranker returned %d scores for %d candidates; skipping rerank pass",
+            len(scores),
+            len(to_rerank),
+        )
+        return None
+    return scores

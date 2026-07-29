@@ -43,6 +43,31 @@ log = logging.getLogger(__name__)
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
 
+# Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping);
+# hardcoded so config validation does not import lancedb.
+FTS_LANGUAGES = frozenset(
+    {
+        "Arabic",
+        "Danish",
+        "Dutch",
+        "English",
+        "Finnish",
+        "French",
+        "German",
+        "Greek",
+        "Hungarian",
+        "Italian",
+        "Norwegian",
+        "Portuguese",
+        "Romanian",
+        "Russian",
+        "Spanish",
+        "Swedish",
+        "Tamil",
+        "Turkish",
+    }
+)
+
 
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
@@ -59,6 +84,12 @@ class Config(BaseSettings):
     # Writable so plugin-managed servers can pivot storage to a vault path on
     # first boot; rebuild the index after migrating.
     documents_dir: Path = ConfigField(default=Path(), writable=True)
+    # External source roots ``add`` registered, mapping label -> absolute path.
+    # lilbee indexes the files where they live (no copy, no symlink); the label
+    # prefixes their source keys so a root at /data/corpus keys as ``corpus/…``.
+    # Managed by ``add`` / ``remove``, so it is writable (persisted to
+    # config.toml) but not surfaced in the settings UI.
+    linked_roots: dict[str, str] = ConfigField(default_factory=dict, writable=True, public=False)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
@@ -90,15 +121,39 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
+    # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
+    # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
+    # not the GPU-fed extract/embed batch.
+    ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    # Worker PROCESSES for the extract/embed fan-out (distinct from ingest_workers,
+    # which sizes the planning pass's threads). Default 1 (off): multiprocess only
+    # pays when one process cannot saturate the fleet -- a small/fast embedder on
+    # several GPUs. A large/GPU-bound embedder ties single-process because the shared
+    # parent collect/write drain caps throughput regardless of process count (see
+    # docs/architecture.md, "Three ceilings"). 0 = auto-size, N = explicit opt-in.
+    ingest_processes: int = ConfigField(default=1, ge=0, writable=True)
+    # Passages packed into one embed request. Larger batches keep a GPU's
+    # continuous-batching slots full: small per-passage requests leave the card
+    # batch-starved (~96% util, low throughput). The engine still re-splits to
+    # its physical batch, so raising this only helps up to the server's --batch.
+    embed_batch_sequences: int = ConfigField(default=64, ge=1, writable=True)
+    # Files allowed in their compute phase at once during ingest. 0 = auto: the
+    # ceiling scales with the detected embed fleet (replicas x per-replica
+    # in-flight) so a multi-GPU box is kept fed without a manual cap, falling back
+    # to the CPU quota on a single card. Set a positive value only to override the
+    # auto sizing. Sizes the extract+embed fan-out, not the plan pass.
+    ingest_max_inflight: int = ConfigField(default=0, ge=0, writable=True)
     # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
-    # Abstention floor against the canonical [0, 1] relevance score
-    # (0.0 = no filtering). When every retrieved chunk falls below it, ask
-    # refuses instead of feeding noise as context. On the fused reciprocal-rank
-    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
+    # Abstention floor against the [0, 1] fused relevance score (0.0 = no
+    # filtering). When every retrieved chunk falls below it, ask refuses instead
+    # of feeding noise as context. The fused score normalizes against the
+    # configured weight budget (a constant), so an arm's top hit scores a stable
+    # share of it; useful floors start around 0.4. Tune against your own corpus.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
@@ -144,6 +199,14 @@ class Config(BaseSettings):
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
+    # that may run off the event loop at once. The ceiling on agents one daemon
+    # serves before their calls queue.
+    mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
+    # Crawled pages converted to markdown on anyio's thread pool at once. The
+    # conversion is synchronous, so this keeps it off the event loop that serves
+    # requests. 0 converts inline on the loop.
+    crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
@@ -194,6 +257,67 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 gives the two arms equal voice; lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
+    # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
+    # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
+    # lexical, a flat one keeps it). OFF by default, pending a benchmark run to
+    # confirm it beats the fixed weight. lexical_fusion_weight is the ceiling the
+    # rule scales down from. Set adaptive_fusion=true to enable it.
+    adaptive_fusion: bool = ConfigField(default=False, writable=True)
+
+    # Vector-similarity margin at which the lexical arm is fully silenced; smaller
+    # = more aggressive downweighting. 0 disables adaptation entirely (the lexical
+    # arm keeps its full fixed weight).
+    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+
+    # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
+    # name ("English", "German", "French", ...). Applied when an index is
+    # (re)built, so changing it needs `lilbee rebuild` on an existing store.
+    # Validated against FTS_LANGUAGES: a bad name would otherwise fail index
+    # creation quietly and hybrid search would degrade to vector-only.
+    fts_language: str = ConfigField(default="English", min_length=1, writable=True, reindex=True)
+
+    @field_validator("fts_language", mode="after")
+    @classmethod
+    def _validate_fts_language(cls, value: str) -> str:
+        normalized = value.strip().title()
+        if normalized not in FTS_LANGUAGES:
+            raise ValueError(f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}")
+        return normalized
+
+    # Prefix each chunk's document title to its embedding input (the stored
+    # chunk text is unchanged). Changes the embedding space: toggling it needs
+    # `lilbee rebuild`, so it ships off.
+    embed_titles: bool = ConfigField(default=False, writable=True, reindex=True)
+
+    # Contextual retrieval: prepend one LLM-written sentence situating each
+    # chunk in its document to the embedding input. One generation per chunk,
+    # so ingest slows substantially; stored text and citations stay verbatim.
+    # Toggling needs `lilbee rebuild`.
+    contextual_enrichment: bool = ConfigField(default=False, writable=True, reindex=True)
+
+    # Drop tables-of-contents and classification-banner cover/title pages from
+    # search results. OFF by default; validate per corpus, since the cover-page
+    # heuristic can also fire on short banner-carrying body pages. A query-matched
+    # or top-ranked page is never dropped, so removal is limited to structural
+    # chunks the query did not hit.
+    filter_structural_chunks: bool = ConfigField(default=False, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
@@ -242,6 +366,15 @@ class Config(BaseSettings):
 
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
+
+    # Adjacent chunks pulled from the same source on each side of every
+    # selected chunk and merged into one contiguous passage, so a hit that
+    # lands mid-argument regains the text before and after it. 0 disables.
+    # Capped: it is a small chunk radius (useful values are single digits), and
+    # the merged text is token-budget-bounded anyway, so a large value only
+    # inflates per-query fetch cost -- and a misread as a token count (e.g.
+    # 50000) would build a megabyte-long IN-predicate per source.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, le=100, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
@@ -299,6 +432,11 @@ class Config(BaseSettings):
     # Off = the cross-encoder's own ordering stands unblended, which isolates
     # the reranker's effect when measuring it.
     rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
+
+    # Drop candidates whose RAW reranker score falls below this; unset = off.
+    # The scale is provider/model specific (bge logits can be negative, hosted
+    # rerankers use 0..1), so set it against observed scores.
+    rerank_min_score: float | None = ConfigField(default=None, writable=True, public=True)
 
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
@@ -375,6 +513,18 @@ class Config(BaseSettings):
     # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
+    # Share of a card placement may charge, leaving room for allocator
+    # fragmentation and driver overhead. Tunable because it decides admission: at
+    # the default, a 16 GB machine whose chat model needs 12-13 GB can be refused
+    # chat entirely, and the owner is the one who knows whether that card has the
+    # room. Raising it trades safety margin for the ability to serve at all.
+    usable_vram_fraction: float = ConfigField(default=0.9, ge=0.5, le=1.0, writable=True)
+
+    # RAM held back for the OS when placing against system memory, in GiB. Capped
+    # at a quarter of total RAM either way, so a small host keeps its proportional
+    # reserve however this is set.
+    system_memory_reserve_gb: float = ConfigField(default=4.0, ge=0.0, le=64.0, writable=True)
+
     # Data-parallel replicas of the embed / vision role across GPUs: N independent
     # servers, round-robined, so large-scale ingest fans the embedding / OCR work
     # across the whole box. 0 means "auto": one replica per detected GPU, capped by
@@ -397,15 +547,13 @@ class Config(BaseSettings):
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
     # On keeps the engine resident: it never idle-unloads and survives app close
-    # for the next launch to adopt. Off (default) is on-demand: the engine loads
-    # per launch, releases its weights after an idle window, and reloads on the
-    # next prompt.
+    # so the next launch binds instantly. Off (default): the engine stops when
+    # the last lilbee process exits, leaving the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before an on-demand (not-warm) fleet unloads its weights
-    # (llama-swap ttl), so it never holds VRAM past this window. 0 keeps weights
-    # loaded until the app tears the fleet down. Read only when keep_engine_warm
-    # is off (a warm fleet stays resident regardless).
+    # Idle minutes before the engine unloads its weights (llama-swap ttl), in
+    # every mode: even a persistent engine naps when unused. 0 keeps weights
+    # loaded until the engine stops.
     engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
@@ -459,6 +607,15 @@ class Config(BaseSettings):
     # layers, 0 = CPU only, positive int = partial offload. Useful when a
     # discrete GPU has less VRAM than the model needs.
     n_gpu_layers: int | None = ConfigField(default=None, writable=True)
+
+    # Keep a MoE model's expert weights in system memory, attention and shared
+    # layers on the GPU. Lets a sparse model run on a card too small to hold it.
+    # No effect on dense models, which have no expert tensors.
+    cpu_moe: bool = ConfigField(default=False, writable=True)
+
+    # Offload only the first N layers' experts. Takes precedence over cpu_moe;
+    # a smaller N keeps more of the model resident.
+    n_cpu_moe: int | None = ConfigField(default=None, writable=True)
 
     # GPU device picker for dual-GPU machines (typical laptop case:
     # discrete NVIDIA + integrated Intel/AMD). The Vulkan backend
@@ -757,7 +914,11 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                pass  # fall through to bool() coercion below for unrecognised strings
+                # bool() on a non-empty string is True, so falling through here
+                # turned an unparseable value into "on". Warn and auto-detect,
+                # matching the sibling validators.
+                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
+                return None
         return bool(v)
 
     @field_validator("flash_attention", mode="before")
@@ -973,11 +1134,20 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import (
+            canonical_data_root,
+            canonical_models_dir,
+            default_data_dir,
+            find_local_root,
+        )
 
         if not isinstance(data, dict):
             return data
 
+        # An empty LILBEE_DATA_ROOT (delivered as "") must fall through to default
+        # resolution like an unset one, not become Path(".") = the process cwd.
+        if isinstance(data.get("data_root"), str) and not data["data_root"].strip():
+            data["data_root"] = None
         if data.get("data_root") in (None, _UNSET_PATH):
             data_env = os.environ.get("LILBEE_DATA", "").strip()
             if data_env:
@@ -985,7 +1155,11 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # Every child path below derives from this, and the server lock keys on
+        # those, so canonicalizing here is what makes one directory key one lock.
+        # Also coerces a raw string (LILBEE_DATA_ROOT) to Path.
+        root = canonical_data_root(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):
@@ -1006,15 +1180,19 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import default_data_dir, find_local_root
+        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-        data_env = os.environ.get("LILBEE_DATA", "")
+        # .strip() to match _resolve_defaults; a padded value would otherwise
+        # send the root and its config.toml to different directories.
+        data_env = os.environ.get("LILBEE_DATA", "").strip()
         if data_env:
             toml_dir = Path(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
-        toml_path = toml_dir / "config.toml"
+        # Same call as the root itself, so this looks where the root resolves to;
+        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+        toml_path = canonical_data_root(toml_dir) / "config.toml"
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]

@@ -47,6 +47,28 @@ Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
 command palette, and `/help` for the slash-command catalog. Every action lilbee
 can take is reachable from one of those three.
 
+### Terminal recommendations
+
+The TUI is a full-screen Textual app, so it looks its best in a terminal with
+24-bit "true color" and a monospaced font that covers box-drawing and
+block/braille glyphs. Anything current handles both: iTerm2, kitty, WezTerm,
+Alacritty, or Ghostty on macOS and Linux; Windows Terminal on Windows; the
+built-in GNOME and KDE terminals. An 8/256-color terminal still runs everything,
+just with a flatter palette.
+
+- **Give it room.** The model bar and layout want about 100 columns; narrower
+  and panels start to wrap.
+- **Over SSH is fine,** but redraws are only as fast as the link, so a laggy
+  connection makes scrolling and model switches feel heavier than they are.
+- **One multiplexer layer, not two.** tmux and screen work well. Nested tmux (a
+  local tmux, then SSH into a second tmux on the remote) is the one setup to
+  avoid: two multiplexers fight over the same escape sequences and mangle
+  box-drawing and the cursor. Attach to the remote session directly, or start
+  lilbee outside the inner tmux.
+- **Colors look washed out?** The terminal is probably in 256-color mode. Pick a
+  truecolor `TERM` such as `xterm-256color`; most terminals then export
+  `COLORTERM=truecolor` and the full palette comes back.
+
 ### First run
 
 The welcome screen walks you through:
@@ -277,35 +299,43 @@ background the moment the app opens. Ask something before it's ready and the
 answer bubble carries the load until your answer streams. Nothing freezes and
 nothing is silently queued.
 
-By default the engine lives and dies with lilbee: launch starts it, quit frees
-all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
-while lilbee is closed, but it means the first answer of a session waits out the
-engine load. If you relaunch lilbee often, opt into a persistent engine in
-Settings:
+One engine serves every lilbee process on the machine: open a second TUI, point
+a coding agent at `lilbee mcp`, or run `lilbee serve` alongside, and they all
+bind to the same loaded models instead of building their own. The engine stops
+when the last lilbee process exits, so the machine is left clean by default; no
+VRAM, RAM, or stray processes are held while nothing is running. Two knobs
+adjust that:
 
-- **Keep engine warm** leaves the engine running when you quit, and the next
-  session's first answer skips the load entirely.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
-  five minutes by default (the same idea as Ollama's keep_alive). The memory
-  frees itself after that many idle minutes; a small proxy process stays behind,
-  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
-- **`lilbee engine stop`** frees everything immediately from any terminal, no
-  TUI needed.
+- **Keep engine warm** lets the engine outlive lilbee entirely, so the next
+  session's first answer skips the load. Recommended if you relaunch often or
+  use lilbee mainly through coding agents, whose sessions come and go.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory in
+  every mode, warm included, five minutes by default (the same idea as Ollama's
+  keep_alive). The memory frees itself after that many idle minutes; a small
+  proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
+  loaded until the engine stops.
+- **`lilbee engine stop`** frees the shared engine immediately from any
+  terminal, no TUI needed, whichever process started it. It reaches the machine
+  slot and this project root's own overflow engine; a private overflow engine
+  built for a different project root is stopped by running the command from
+  that root.
 
-Turning the setting off returns to the on-demand default and stops the engine at
-the next opportunity. Both knobs live in the TUI Settings screen,
-MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
-launch after a reboot is always a cold one.
+Both knobs live in the TUI Settings screen, MCP `lilbee_settings_set`, the HTTP
+config API, and `config.toml`. Changing a model takes effect on your next
+prompt, from whichever surface you changed it. If no one else is using the
+engine it restarts on the new configuration; if other lilbee processes are
+serving from it, theirs keeps running and yours either rebinds, when the
+running engine already serves what you asked for, or starts its own alongside
+it. The first launch after a reboot is always a cold one.
 
-To stop a warm engine without opening the TUI:
+To stop the engine without opening the TUI:
 
 ```bash
 lilbee engine stop
 ```
 
 It reports whether anything was running, frees the GPU immediately, and is safe
-to run at any time. Turning **Keep engine warm** off also cleans the engine up
-at the next launch of any lilbee command.
+to run at any time.
 
 ## Memory
 
@@ -375,6 +405,24 @@ See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for the full MCP
 tool list and workflows. Non-MCP agents can use the [JSON CLI
 fallback](#json-cli-fallback) below.
 
+### Serving a large agent fleet
+
+One daemon serves many agents at once, and two limits bite before the GPU does.
+Synchronous work is run off the event loop in a thread pool sized by
+`mcp_tool_threads` (40 by default, which is what the async runtime uses when
+nothing says otherwise); past that, retrieval calls queue while the disk and CPU
+sit idle, so raise it when a lot of agents search at the same time. Each
+connected agent also holds a socket, and macOS still defaults to 256 open files
+(most Linux distributions to 1024), which shows up as connection failures rather
+than slowness. Raise it in the shell you start the server from:
+
+```bash
+ulimit -n 4096
+lilbee serve
+```
+
+The server logs the current limit at startup when it is low enough to matter.
+
 ### Agent memory
 
 Agents get their own [memory](#memory) through the `lilbee_memory_remember` and
@@ -432,12 +480,13 @@ lilbee --json self-check                       # runtime + model self-check
 **Write (LLM calls or long ops):**
 
 ```bash
-lilbee --json add ~/docs ~/notes               # copy files / dirs in, indexes in one call
+lilbee --json add ~/docs ~/notes               # register files / dirs, index them in place
 lilbee --json add https://example.com/page     # URL becomes a markdown source
 lilbee --json sync                             # re-index after edits to the documents directory
 lilbee --json rebuild                          # nuke the index and re-ingest everything
-lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
-lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
+lilbee --json remove manual.pdf                # drop chunks (source files are always kept)
+lilbee --json remove reports/2024              # a folder: remove everything indexed beneath it
+lilbee --json remove '**/*.log'                # a glob: remove every matching source
 lilbee --json ask "question"                   # full local RAG (local llama-server fleet or remote backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
@@ -593,8 +642,9 @@ lilbee ask "Explain this" --model qwen3
 
 | Command | Description |
 |---------|-------------|
-| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
-| `lilbee remove manual.pdf --delete` | Remove and delete the source file |
+| `lilbee remove manual.pdf` | Remove from the index (source files are always kept) |
+| `lilbee remove reports/2024` | Remove every document indexed under a folder |
+| `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
@@ -670,13 +720,25 @@ lilbee serve --port 8080               # fixed port
 lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1)
 ```
 
-The surface covers search (with SSE streaming variants for `ask` and `chat`),
+One server runs per data dir: a second `lilbee serve` against the same
+`--data-dir` waits up to fifteen seconds for the first to exit, then stops with an
+error (exit code 3) instead of competing for the port file and the model engine. A supervisor
+that manages several data dirs (the Obsidian plugin's shared root) can pass
+`LILBEE_EXCLUSIVE_SCOPE=<dir>` to extend the same guarantee across all of them;
+the refusal then names the data dir the running server is serving. To replace a
+running server, ask it to stop with `POST /api/shutdown` (token-authed): it
+shuts down exactly as an external SIGTERM would, and its locks release the
+moment it exits.
+
+Every route needs the session token, reads included, `GET /api/health` among
+them; the daemon writes the token to `server.json` (mode `0600`) next to the
+port file, and `lilbee agent-config` hands it to local clients. The surface
+covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary; reads work with a read-only token,
-writes need a full one), configuration (including a defaults endpoint
-that powers per-setting reset), and status/health. The
+delete, and the compaction summary), configuration (including a defaults
+endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the
@@ -814,10 +876,21 @@ something feels off.
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
+| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks. Documents indexed before this feature existed have no stored title; run `lilbee rebuild` to make them title-searchable |
+| `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
+| `LILBEE_LEXICAL_FUSION_WEIGHT` | `1.0` | BM25 arm weight in rank fusion (1.0 = equal to the vector arm; lower it when a strong embedder should dominate a corpus where the lexical arm adds noise) |
+| `LILBEE_ADAPTIVE_FUSION` | `false` | Scale the BM25 arm's weight per query by how confident the vector arm is (a peaked dense ranking quiets lexical, a flat one keeps it) instead of using a fixed `LILBEE_LEXICAL_FUSION_WEIGHT`. That weight becomes the ceiling the adaptive rule scales down from. Off pending retrieval-quality evaluation |
+| `LILBEE_ADAPTIVE_FUSION_MARGIN` | `0.15` | Vector-similarity margin (top hit minus a fixed window of runners-up) at which adaptive fusion quiets the lexical arms to their floor; smaller values downweight lexical more aggressively. `0` disables adaptation, leaving the lexical arm at its full fixed weight |
+| `LILBEE_FTS_LANGUAGE` | `English` | Stemmer/stop-word language for the BM25 indexes (a tantivy language name such as `German` or `French`). Applied when an index is built; run `lilbee rebuild` after changing it |
+| `LILBEE_EMBED_TITLES` | `false` | Prefix each chunk's document title to its embedding input (stored chunk text is unchanged). Changes the embedding space, so toggling needs `lilbee rebuild` |
+| `LILBEE_CONTEXTUAL_ENRICHMENT` | `false` | Ask the chat model for one sentence situating each chunk in its document and embed it with the chunk (contextual retrieval). One generation per chunk makes ingest much slower; toggling needs `lilbee rebuild` |
+| `LILBEE_RERANK_MIN_SCORE` | unset | Drop rerank candidates whose raw cross-encoder score falls below this, so a uniformly irrelevant pool can come back empty instead of confidently ranked. Unset disables; the scale is reranker-model specific (bge logits can be negative) |
+| `LILBEE_FILTER_STRUCTURAL_CHUNKS` | `false` | Drop tables-of-contents and banner-style cover/title pages from search results. TOC detection requires ordered page numbers (data pages with dot leaders stay), the cover gate counts whole banner lines rather than words (acronym-heavy prose stays), and a query-matched or top-ranked page is never dropped. Still off by default pending retrieval-quality evaluation |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
 | `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
 | `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
 | `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
@@ -843,6 +916,7 @@ effect on already-indexed material.
 | `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
 | `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
 | `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
+| `LILBEE_INGEST_PROCESSES` | `1` | Worker **processes** for extract/embed. Off by default. Turn it on (an explicit `N`, or `0` to auto-size) only when one process cannot keep a multi-GPU fleet busy: a large corpus with a small, fast embedder and GPUs to spare. A large or GPU-bound embedder (e.g. an 8B) ties single-process no matter the count, because the parent that writes the one index is serial, so leave it off there. For a one-off run, `lilbee sync --processes N` (also on `add` and `rebuild`) overrides the config value. See [architecture](architecture.md) |
 
 ### Generation
 
@@ -861,6 +935,8 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
+| `LILBEE_CPU_MOE` | `false` | Keep a mixture-of-experts model's expert weights in system memory so it fits a smaller GPU. Only the ~3B active parameters stay on the card, which is what lets an 80B MoE run on a single consumer GPU. No effect on dense models, which have no expert tensors |
+| `LILBEE_N_CPU_MOE` | *(none)* | Offload only the first N layers' experts instead of all of them. Takes precedence over `LILBEE_CPU_MOE`; a smaller N keeps more of the model on the GPU, so tune it up until the model fits |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 | `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
 
@@ -872,6 +948,8 @@ Only relevant when running the HTTP server.
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
+| `LILBEE_EXCLUSIVE_SCOPE` | *(none)* | Directory that at most one server may serve at a time, on top of the per-data-dir lock. A second `lilbee serve` pointed at the same scope waits up to fifteen seconds, then exits with an error naming the data dir the running server is serving. Managed supervisors set this (the Obsidian plugin passes its shared root) |
+| `LILBEE_ENGINE_DIR` | *(platform default)* | Where the shared engine slot lives. Every lilbee on the machine binds the engine recorded here rather than starting its own, so pointing two installs at the same path makes them share one fleet. Set this when the default lands on a filesystem without working file locks, where lilbee declines to share and logs that it is doing so |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
@@ -1144,6 +1222,37 @@ If a pinned placement no longer fits the card it names (after a hardware
 change, for example), lilbee surfaces an error naming the card rather than
 starting in a broken state. `lilbee placement clear` returns to automatic
 placement in that case.
+
+### Memory budget
+
+How much of each card, and of host RAM, the planner is allowed to promise.
+Defaults suit most machines; these exist for the cases where they don't.
+
+| Setting | Env var | Default | Description |
+|---------|---------|---------|-------------|
+| `usable_vram_fraction` | `LILBEE_USABLE_VRAM_FRACTION` | `0.9` | Fraction of a card's **free** VRAM the planner may fill. The rest absorbs driver overhead and allocator fragmentation, which the engine's own report does not include. Range 0.5–1.0 |
+| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. Range 0–64 |
+| `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `0.75` | Fraction of the card chat sizes its KV cache against. Keep it at or below `usable_vram_fraction`; raising it past that only shrinks what chat is charged |
+
+Raise `usable_vram_fraction` toward `1.0` on a dedicated box with nothing else
+on the card. Lower it if loads fail with out-of-memory despite the planner
+reporting the model fits.
+
+Lower `system_memory_reserve_gb` on a machine with a lot of RAM and nothing else
+running, if a model that offloads to host memory is being refused.
+
+Both are writable at runtime through `/settings`, `lilbee config set`, and MCP.
+
+**If a model is refused for memory it looks like it should have:** run
+`lilbee placement preview` to see what the planner budgeted. The planner charges
+free VRAM rather than the card's total, so another process holding memory shows
+up here. On a partially offloaded model, check `system_memory_reserve_gb` too:
+the host side is budgeted separately from the card.
+
+**If a load dies of out-of-memory,** lilbee re-plans that role smaller and
+retries rather than respawning the same launch. Repeated shrink-and-retry
+messages for one model mean the estimate is too optimistic for that card;
+lowering `usable_vram_fraction` fixes it more directly than pinning placement.
 
 ---
 

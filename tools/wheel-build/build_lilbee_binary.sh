@@ -106,10 +106,20 @@ if [ -n "${CHARDET_MODELS}" ]; then
         CHARDET_FLAGS+=(--include-data-files="${_f}=chardet/models/$(basename "${_f}")")
     done
 fi
-# Spawned via `python -m`, never statically imported, so Nuitka's import
-# following misses it; include it explicitly or the splash subprocess dies.
-SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
+# Spawned via `python -m`, so Nuitka's import following can miss them; include
+# them explicitly or the subprocess dies in the frozen build only. The splash
+# runner is never statically imported at all; the Vulkan probe is imported for
+# its JSON decoder but is entered as a module, and a probe that cannot start
+# reads as "the loader has no opinion", which would degrade GPU classification
+# silently on exactly the builds users install.
+CHILD_MODULE_FLAGS=(
+    --include-module=lilbee.runtime._splash_runner
+    --include-module=lilbee.providers.fleet.vulkan_probe
+)
 
+# litellm.proxy is not trimmable, despite nothing in lilbee importing it:
+# litellm/__init__.py pulls in 9 of its modules on a bare import, so
+# --nofollow-import-to=litellm.proxy is an ImportError at startup.
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
@@ -153,7 +163,7 @@ uv run --no-sync python -m nuitka \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
     --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
-    "${SPLASH_FLAGS[@]}" \
+    "${CHILD_MODULE_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
     "${CHARDET_FLAGS[@]}" \
     "${LLAMA_SERVER_FLAGS[@]}" \
