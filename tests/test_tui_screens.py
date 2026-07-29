@@ -9198,9 +9198,16 @@ class TestWikify:
             from lilbee.cli.tui.screens.wiki import start_wikify
 
             app.task_bar.queue.enqueue(lambda: None, msg.TASK_NAME_WIKI, TaskType.WIKI.value)
-            with patch.object(app, "notify") as notify:
+            with (
+                patch.object(app, "notify") as notify,
+                patch.object(app.task_bar, "start_task") as start_task,
+            ):
                 start_wikify(app)
             notify.assert_called_once_with(msg.WIKI_ALREADY_ACTIVE, severity="warning")
+            # The refusal has to stop the build, not merely warn about it. The
+            # queued-task count cannot show that: a build starts through
+            # start_task, so the count stays at one either way.
+            start_task.assert_not_called()
 
     async def test_a_pending_single_page_write_does_not_block_a_corpus_build(self, tmp_path):
         """Writing one page is a WIKI task too, under its own name. The guard
@@ -9217,12 +9224,10 @@ class TestWikify:
             app.task_bar.queue.enqueue(
                 lambda: None, msg.WIKI_STUB_TASK.format(label="Ford"), TaskType.WIKI.value
             )
-            with patch.object(app, "notify") as notify:
+            with patch.object(app.task_bar, "start_task") as start_task:
                 start_wikify(app)
-            assert notify.call_args_list == [] or (
-                notify.call_args.args[0] != msg.WIKI_ALREADY_ACTIVE
-            )
-            assert len(app.task_bar.queue.queued_tasks) == 1
+            start_task.assert_called_once()
+            assert start_task.call_args.args[0] == msg.TASK_NAME_WIKI
 
     @staticmethod
     def _wikify_target(app):
