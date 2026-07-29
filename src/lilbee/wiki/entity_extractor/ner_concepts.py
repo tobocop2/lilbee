@@ -13,7 +13,7 @@ import re
 import threading
 from typing import TYPE_CHECKING, Any
 
-from lilbee.core.text import is_valid_label, make_slug
+from lilbee.core.text import collapse_whitespace, is_valid_label, make_slug
 from lilbee.wiki.entity_extractor.base import (
     ChunkRef,
     EntityKind,
@@ -140,7 +140,7 @@ def _accumulate_doc_entities(
         # Collapse first: spaCy spans cross wrapped lines constantly in PDF
         # text, and the label is interpolated raw into a single-line marker.
         # Rejecting the wrapped form instead would lose the mention entirely.
-        surface = _WHITESPACE_RE.sub(" ", ent.text.strip())
+        surface = collapse_whitespace(ent.text)
         if not is_valid_label(surface):
             funnel["label_sanity_dropped_entities"] += 1
             if debug_enabled:

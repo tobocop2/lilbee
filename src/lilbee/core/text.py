@@ -5,14 +5,24 @@ from __future__ import annotations
 import re
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
-_SLUG_WHITESPACE_RE = re.compile(r"\s+")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def collapse_whitespace(text: str) -> str:
+    """Fold every whitespace run to one space and strip the ends.
+
+    The one place this is defined. A label reaches a heading, a slug and a
+    single-line marker comment, so producers collapse the surface they got
+    before anything downstream sees it.
+    """
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
 
 # Characters that signal markdown-structural noise in a concept label.
 # Single source of truth for both ``is_valid_label`` (membership check)
 # and ``clean_label_for_display`` (regex strip).
 _STRUCTURAL_CHARS = frozenset("|#>")
 _DISPLAY_STRUCTURAL_RE = re.compile(f"[{re.escape(''.join(_STRUCTURAL_CHARS))}]+")
-_DISPLAY_WHITESPACE_RE = re.compile(r"\s+")
 
 LABEL_SANITY_MIN_LEN = 3
 LABEL_SANITY_MIN_ALNUM_RATIO = 0.5
@@ -33,7 +43,7 @@ def make_slug(label: str) -> str:
     """
     # ``--`` is the reserved encoding for ``/``, so collapse whitespace first:
     # a double space would produce it and collide two entities onto one page.
-    slug = _SLUG_WHITESPACE_RE.sub(" ", label.lower()).strip()
+    slug = _WHITESPACE_RE.sub(" ", label.lower()).strip()
     slug = slug.replace("/", "--").replace(" ", "-")
     slug = _SLUG_CLEAN_RE.sub("", slug)
     return slug.strip("-")
@@ -69,10 +79,11 @@ def is_valid_label(label: str) -> bool:
     # A label is one line: it becomes a heading, a slug, and part of the
     # single-line marker comments the drafts surface classifies by. An
     # extractor span crossing a line break would truncate a marker mid-comment,
-    # leaving a file no reader recognises as a placeholder. Only line breaks are
-    # rejected, not every exotic space: PDF text is full of non-breaking and
-    # thin spaces, and those do not split a line.
-    if "\n" in stripped or "\r" in stripped:
+    # leaving a file no reader recognises as a placeholder. Tested with
+    # splitlines because that is what those readers use, so the gate and they
+    # agree on what a line break is. A non-breaking or thin space is not one,
+    # and PDF text is full of both.
+    if len(stripped.splitlines()) > 1:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False
@@ -97,4 +108,4 @@ def clean_label_for_display(label: str) -> str:
     title-cases lowercase common nouns on its own.
     """
     clean = _DISPLAY_STRUCTURAL_RE.sub("", label)
-    return _DISPLAY_WHITESPACE_RE.sub(" ", clean).strip()
+    return collapse_whitespace(clean)

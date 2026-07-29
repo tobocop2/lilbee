@@ -189,6 +189,17 @@ class TestMarkerReadersAgree:
         )
         assert _parse_origin_subdir(marker) == WikiSubdir.CONCEPTS
 
+    def test_a_filename_containing_origin_does_not_hijack_the_field(self):
+        """Source names are interpolated ahead of the real origin field, so the
+        last one on the line has to win."""
+        from lilbee.wiki.drafts import _parse_origin_subdir
+
+        marker = (
+            "<!-- PENDING: concept slug collision with source drafts/brakes.md, "
+            "content from Origin: Species.pdf held for review; origin: concepts -->"
+        )
+        assert _parse_origin_subdir(marker) == WikiSubdir.CONCEPTS
+
 
 class TestAcceptDraft:
     def test_accepts_into_published_subdir_when_match_exists(self, tmp_path: Path) -> None:

@@ -249,6 +249,34 @@ class TestReturnRecordShape:
         assert labels == {"Ford"}
 
 
+class TestWrappedSurfaces:
+    """spaCy spans cross wrapped lines constantly in PDF text."""
+
+    def test_a_wrapped_span_still_becomes_an_entity(self) -> None:
+        """The label gate rejects a line break, so without collapsing first the
+        mention is lost entirely and the subject can fall under the floor."""
+        doc = _FakeDoc(ents=[_FakeSpan("Henry\nFord", "PERSON")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"Henry Ford founded it": doc}):
+            result = extractor.extract([_chunk("hist.txt", 0, "Henry Ford founded it")])
+        assert [e.label for e in result] == ["Henry Ford"]
+
+    def test_a_wrapped_span_folds_into_its_unwrapped_mentions(self) -> None:
+        """Same subject, so the counts must add up rather than split in two."""
+        docs = {
+            "a": _FakeDoc(ents=[_FakeSpan("Henry\nFord", "PERSON")]),
+            "b": _FakeDoc(ents=[_FakeSpan("Henry Ford", "PERSON")]),
+            "c": _FakeDoc(ents=[_FakeSpan("Henry Ford", "PERSON")]),
+        }
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline(docs):
+            result = extractor.extract(
+                [_chunk("hist.txt", i, name) for i, name in enumerate("abc")]
+            )
+        assert len(result) == 1
+        assert len(result[0].chunk_refs) == 3
+
+
 class TestLabelSanityRejection:
     def test_rejects_pipe_delimited_ner_entity(self) -> None:
         doc = _FakeDoc(

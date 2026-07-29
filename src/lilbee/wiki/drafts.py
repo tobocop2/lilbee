@@ -61,6 +61,8 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 _DRIFT_MARKER_RE = re.compile(
+    # Keeps the stricter tail: this marker interpolates only a percentage, a
+    # subdir name and a hex hash, never a raw source name that could hold ">".
     r"<!--\s*DRIFT:\s*(?P<pct>\d+)%\s*content changed[^>]*-->",
     re.IGNORECASE,
 )
@@ -202,10 +204,11 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
 
 
 _ORIGIN_MARKER_RE = re.compile(
-    # Non-greedy like the PENDING patterns: a collision marker carries raw
-    # source names between the keyword and the origin field, and one of those
-    # may contain ">".
-    r"<!--.*?origin:\s*(?P<subdir>\w+).*?-->",
+    # The head stays greedy so the LAST "origin:" wins: a collision marker
+    # interpolates raw source names ahead of the real field, and a filename can
+    # contain the literal "origin:". The tail is non-greedy so a ">" inside the
+    # comment does not stop the match.
+    r"<!--.*origin:\s*(?P<subdir>\w+).*?-->",
     re.IGNORECASE,
 )
 
