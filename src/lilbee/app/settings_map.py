@@ -590,6 +590,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.WIKI,
         help_text="Minimum chunk mentions before an entity or concept gets its own page",
     ),
+    "wiki_stub_max_chunk_refs": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.WIKI,
+        help_text=(
+            "How many source chunks a page kept for lazy generation draws on. "
+            "Caps the browse index's size; already more than one page's context "
+            "budget admits, so raising it rarely changes what a page says"
+        ),
+    ),
     "wiki_ingest_update_cap": SettingDef(
         int,
         nullable=False,

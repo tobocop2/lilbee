@@ -801,6 +801,7 @@ class Config(BaseSettings):
     # Minimum distinct chunk mentions before an entity or concept earns
     # its own wiki page. Filters one-off noise.
     wiki_entity_min_mentions: int = ConfigField(default=3, ge=1, writable=True)
+    wiki_stub_max_chunk_refs: int = ConfigField(default=50, ge=1, writable=True)
 
     # Auto-update cap: if a single sync touches more than this many
     # concept or entity pages, skip the per-slug regeneration and tell
