@@ -229,6 +229,10 @@ CHAT_COMPACTED_STRANDED_TOAST = (
 )
 CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
+CMD_WIKI_GENERATE_NO_EVIDENCE = (
+    "Nothing left in the index for {slug}; its sources are gone. "
+    "Run `lilbee wiki index` to refresh."
+)
 CMD_WIKI_WIPE_NEEDS_YES = "Use --yes to confirm wiping the wiki in JSON mode"
 CMD_WIKI_WIPE_WARNING = (
     "This deletes every generated wiki page and its indexed rows.\n  Pages: {path}"

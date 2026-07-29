@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import threading
 import time
@@ -891,18 +892,36 @@ async def _run_post_ingest_passes(
 
 
 async def _update_wiki(changed_sources: set[str], config: Config) -> None:
-    """Regenerate the wiki pages this sync touched, when auto-update is enabled.
+    """Refresh the wiki index, and regenerate pages when auto-update is on.
+
+    The index refresh runs whenever the wiki is enabled, because it spends no
+    LLM call and it is what lets the browse tree list a page the moment its
+    document lands. Regeneration is the expensive half and stays behind
+    wiki_auto_update.
 
     Best effort: the ingest itself already succeeded and `lilbee wiki update`
     re-runs the regeneration, so a wiki failure must not skip the post-ingest
     entity pass or the reconciliation guard.
     """
-    if not (config.wiki and config.wiki_auto_update):
+    if not config.wiki:
         return
     # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
     # post-ingest hook stays function-local at this boundary.
     from lilbee.wiki.ingest import incremental_update
+    from lilbee.wiki.stubs import refresh_stub_index
 
+    try:
+        await to_ingest_thread(
+            functools.partial(
+                refresh_stub_index, get_services().store, config, sources=changed_sources
+            ),
+            None,
+        )
+    except Exception:
+        log.warning("Wiki index refresh failed after sync", exc_info=True)
+
+    if not config.wiki_auto_update:
+        return
     try:
         await incremental_update(changed_sources, config)
     except Exception:

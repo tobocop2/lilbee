@@ -452,6 +452,64 @@ def wiki_prune(
     console.print(table)
 
 
+@wiki_app.command(name="index")
+def wiki_index(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Rebuild the browse index of pages the corpus could have.
+
+    Spends no LLM call. A sync refreshes this for you; run it to repair an
+    index that was deleted or written by an older version.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    stubs = refresh_stub_index(get_services().store)
+    if cfg.json_mode:
+        json_output({"command": "wiki_index", "entries": len(stubs)})
+    else:
+        console.print(f"Wiki index: {len(stubs)} page(s) the corpus names")
+
+
+@wiki_app.command(name="generate")
+def wiki_generate(
+    slug: str = typer.Argument(..., help="Indexed page slug, as `wiki list` shows it."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Generate one indexed page. Costs a single LLM call and is GPU-heavy."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+
+    try:
+        with _wiki_progress():
+            path = generate_stub_page(slug, get_services().store)
+    except UnknownStubError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(str(exc))
+        raise typer.Exit(1) from exc
+
+    if path is None:
+        message = msg.CMD_WIKI_GENERATE_NO_EVIDENCE.format(slug=slug)
+        if cfg.json_mode:
+            json_output({"error": message})
+        else:
+            console.print(message)
+        raise typer.Exit(1)
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_generate", "slug": slug, "path": str(path)})
+    else:
+        console.print(f"Wrote {path}")
+
+
 @wiki_app.command(name="wipe")
 def wiki_wipe(
     data_dir: Path | None = data_dir_option,

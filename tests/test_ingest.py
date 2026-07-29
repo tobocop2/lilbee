@@ -393,6 +393,61 @@ class TestSync:
 
         assert hook.called is auto_update
 
+    @pytest.mark.parametrize("auto_update", [False, True], ids=["off", "on"])
+    async def test_index_refresh_runs_regardless_of_auto_update(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """The index spends no LLM call and is what lets a page appear in the
+        browse tree as soon as its document lands, so it is not gated on the
+        setting that governs generation."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "indexed.txt").write_text("Content the index would name entities in.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", mock.AsyncMock())
+        refresh = mock.MagicMock(return_value={})
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+
+        await sync(quiet=True)
+
+        assert refresh.called
+
+    async def test_index_refresh_is_skipped_when_the_wiki_is_off(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "unindexed.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", False)
+        refresh = mock.MagicMock(return_value={})
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+
+        await sync(quiet=True)
+
+        refresh.assert_not_called()
+
+    async def test_a_failing_index_refresh_does_not_stop_the_sync(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The ingest already succeeded; a wiki failure must not swallow it."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "resilient.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", False)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.refresh_stub_index",
+            mock.MagicMock(side_effect=RuntimeError("spacy exploded")),
+        )
+
+        result = await sync(quiet=True)
+
+        assert "resilient.txt" in result.added
+
     async def test_wiki_hook_receives_the_config_the_gate_read(
         self, mock_extract_file, isolated_env, monkeypatch
     ):

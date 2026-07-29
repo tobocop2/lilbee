@@ -257,6 +257,14 @@ never churns existing concept slugs. A sync that touches more than
 tells you to run `lilbee wiki update` yourself, so a bulk import cannot fire
 hundreds of LLM calls behind your back.
 
+A build writes every page at once and spends one LLM call per source document,
+so its cost tracks how large your library is rather than how much of it you
+read. The browse index is the cheap half: `lilbee wiki index` (and every sync)
+extracts the names your documents mention with no LLM call at all, so the tree
+lists a page as soon as its document lands. `lilbee wiki generate <slug>` then
+writes one of those pages for one call, drawing on that subject's chunks across
+every source naming it, which is more evidence than a build gives it.
+
 Turning the wiki back off stops new pages being written, but the pages already
 generated stay on disk and their rows stay in the index. Remove them with
 `lilbee wiki wipe`, the **Delete wiki** command in the TUI palette (or `W` on
@@ -542,6 +550,8 @@ lilbee --json wiki drafts list                 # pending drafts with drift + fai
 lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
 lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee --json wiki drafts reject <slug>        # discard a draft
+lilbee --json wiki index                       # rebuild the browse index (no LLM call)
+lilbee --json wiki generate <slug>             # write one indexed page (one LLM call)
 lilbee --json wiki prune                       # archive stale pages
 lilbee --json wiki wipe --yes                  # delete every generated page and its rows
 ```
@@ -697,6 +707,8 @@ lilbee wiki synthesize                 # generate cross-source synthesis pages
 lilbee wiki drafts list                # list pending drafts
 lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee wiki drafts reject <slug>       # discard a draft
+lilbee wiki index                      # rebuild the browse index (no LLM call)
+lilbee wiki generate <slug>            # write one indexed page (one LLM call)
 lilbee wiki prune                      # move stale pages to archive/
 lilbee wiki wipe                       # delete every generated page and its rows
 ```

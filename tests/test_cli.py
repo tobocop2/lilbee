@@ -3610,6 +3610,96 @@ class TestWikiStatus:
         assert "does not exist yet" in result.output
 
 
+class TestWikiIndexAndGenerate:
+    """The index is free and explicit; generating a page costs one call."""
+
+    def test_index_reports_what_the_corpus_names(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        with mock.patch("lilbee.wiki.stubs.refresh_stub_index", return_value={"a": 1, "b": 2}):
+            result = runner.invoke(app, ["wiki", "index"])
+        assert result.exit_code == 0
+        assert "2 page" in result.output
+
+    def test_index_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        with mock.patch("lilbee.wiki.stubs.refresh_stub_index") as refresh:
+            result = runner.invoke(app, ["wiki", "index"])
+        assert result.exit_code == 1
+        refresh.assert_not_called()
+
+    def test_index_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.stubs.refresh_stub_index", return_value={"a": 1}):
+            result = runner.invoke(app, ["--json", "wiki", "index"])
+        assert json.loads(result.output)["entries"] == 1
+
+    def test_generate_writes_the_page(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        with mock.patch("lilbee.wiki.lazy.generate_stub_page", return_value=Path("w/ford.md")):
+            result = runner.invoke(app, ["wiki", "generate", "ford"])
+        assert result.exit_code == 0
+        assert "ford.md" in result.output
+
+    def test_generate_reports_an_unknown_slug(self, mock_svc, isolated_env):
+        from lilbee.wiki.lazy import UnknownStubError
+
+        cfg.wiki = True
+        with mock.patch(
+            "lilbee.wiki.lazy.generate_stub_page", side_effect=UnknownStubError("no indexed page")
+        ):
+            result = runner.invoke(app, ["wiki", "generate", "nope"])
+        assert result.exit_code == 1
+        assert "no indexed page" in result.output
+
+    def test_generate_reports_a_stale_index_entry(self, mock_svc, isolated_env):
+        """Its sources are gone, so there is nothing to write and the exit code
+        must say so rather than reporting a page that was never created."""
+        cfg.wiki = True
+        with mock.patch("lilbee.wiki.lazy.generate_stub_page", return_value=None):
+            result = runner.invoke(app, ["wiki", "generate", "ford"])
+        assert result.exit_code == 1
+        assert "sources are gone" in result.output
+
+    def test_generate_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.lazy.generate_stub_page", return_value=Path("w/ford.md")):
+            result = runner.invoke(app, ["--json", "wiki", "generate", "ford"])
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_generate"
+        assert data["slug"] == "ford"
+
+    @pytest.mark.parametrize(
+        ("side_effect", "return_value", "needle"),
+        [(None, None, "sources are gone"), ("unknown", None, "no indexed page")],
+        ids=["stale-entry", "unknown-slug"],
+    )
+    def test_generate_failures_are_json_errors_in_json_mode(
+        self, mock_svc, isolated_env, side_effect, return_value, needle
+    ):
+        from lilbee.wiki.lazy import UnknownStubError
+
+        cfg.wiki = True
+        cfg.json_mode = True
+        patched = mock.patch(
+            "lilbee.wiki.lazy.generate_stub_page",
+            side_effect=UnknownStubError("no indexed page") if side_effect else None,
+            return_value=return_value,
+        )
+        with patched:
+            result = runner.invoke(app, ["--json", "wiki", "generate", "ford"])
+        assert result.exit_code == 1
+        assert needle in json.loads(result.output)["error"]
+
+    def test_generate_refuses_when_the_wiki_is_disabled(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        with mock.patch("lilbee.wiki.lazy.generate_stub_page") as gen:
+            result = runner.invoke(app, ["wiki", "generate", "ford"])
+        assert result.exit_code == 1
+        gen.assert_not_called()
+
+
 class TestWikiWipe:
     """``wiki wipe`` deletes generated pages and rows, and stays available with
     the wiki disabled: turning the setting off is when the leftovers matter."""
