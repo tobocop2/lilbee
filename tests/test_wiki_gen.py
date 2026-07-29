@@ -218,11 +218,17 @@ class TestTruncateChunksToBudget:
         assert len(chunks_to_text(kept)) <= budget_chars
 
     def test_budget_floors_at_a_quarter_of_the_window(self):
-        """An output cap larger than the whole window still leaves chunks room."""
-        cfg.num_ctx = 512
-        cfg.wiki_summary_max_tokens = 4096
-        chunks = [_make_chunk("x" * 400, chunk_index=i) for i in range(10)]
-        assert len(truncate_chunks_to_budget(chunks, cfg)) == 1
+        """An output cap larger than the whole window still leaves chunks room.
+
+        The window has to be wide enough that the floor holds many chunks. With
+        a small one the floor fits a single chunk, and so does a budget of
+        zero, because the keep-at-least-one guard takes over: the assertion
+        lands on the same number whether the floor exists or not.
+        """
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 8192
+        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(20)]
+        assert len(truncate_chunks_to_budget(chunks, cfg)) > 1
 
     def test_the_floor_never_raises_a_positive_budget(self):
         """A budget between zero and a quarter of the window is honest and small.
@@ -376,7 +382,13 @@ class TestResolveCitations:
         assert records[0]["excerpt"] == ""
 
     def test_excerpt_not_found_gets_zero_locations(self):
-        chunks = [_make_chunk("Different text entirely")]
+        """The chunk carries a page of its own, so the zeros can only be the
+        not-found fallback. Against a chunk whose page is also 0, a lookup that
+        wrongly treated the excerpt as found would return the same zeros and
+        this would pass; a citation stamped with a real page for a quote that
+        is not in the source reads as located and verified when it is neither.
+        """
+        chunks = [_make_chunk("Different text entirely", page_start=5, page_end=5)]
         parsed = [ParsedCitation("src1", 'doc.md, excerpt: "Not in any chunk"', 1)]
         records = _resolve_citations(parsed, "doc.md", "hash", chunks)
         assert records[0]["page_start"] == 0
@@ -1508,8 +1520,13 @@ class TestDeleteDriftDraftIfPresent:
         assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"]) is False
 
     def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
+        """The draft names the same sources the publish does, so the
+        other-source guard cannot be what saves it: only the drift-marker check
+        stands between a human's pending low-score proposal and an unlink.
+        Omitting sources would leave ownership unmatched and the file would
+        survive on that alone, whatever the marker check did."""
         draft = tmp_path / "x.md"
-        draft.write_text("---\nfaithfulness_score: 0.2\n---\n\nbody\n")
+        draft.write_text('---\nfaithfulness_score: 0.2\nsources: ["a.md"]\n---\n\nbody\n')
         assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is False
         assert draft.is_file()
 

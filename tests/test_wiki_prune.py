@@ -439,15 +439,27 @@ class TestReconcileOrphanRows:
         store.delete_by_source.assert_not_called()
 
     @pytest.mark.parametrize(
-        "wiki_source",
+        ("wiki_source", "on_disk"),
         [
-            "wiki/summaries/gone.md",  # page deleted or never archived cleanly
-            "wiki/archive/summaries/old.md",  # archived page, outside the content subdirs
-            "malformed",  # no subdir component at all
+            ("wiki/summaries/gone.md", False),  # page deleted or never archived cleanly
+            ("wiki/archive/summaries/old.md", True),  # archived, outside the content subdirs
+            ("malformed", True),  # no subdir component at all
         ],
+        ids=["deleted-page", "archived-page", "malformed-source"],
     )
-    def test_orphaned_rows_are_deleted_and_recorded(self, tmp_path: Path, wiki_source: str):
+    def test_orphaned_rows_are_deleted_and_recorded(
+        self, tmp_path: Path, wiki_source: str, on_disk: bool
+    ):
+        """The last two are reconciled while their file is still on disk, which
+        is the state _archive_page leaves behind. Only a page under a content
+        subdir keeps its rows. With every case's file absent the is_file() half
+        decides all three alone and the subdir classification could be deleted
+        outright, letting archived pages serve from search forever."""
         write_wiki_page(tmp_path, "summaries", "keeper", "# Keeper\n")
+        if on_disk:
+            page = tmp_path / "wiki" / wiki_source.removeprefix("wiki/")
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text("# Retired\n")
         store = self._store({wiki_source})
 
         report = prune_wiki(store)

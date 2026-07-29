@@ -18,10 +18,15 @@ def isolated_env(wiki_isolated_env: Path):
     yield wiki_isolated_env
 
 
-def _store(*, sources: set[str] | None = None, deleted: bool = True) -> MagicMock:
+def _store(
+    *,
+    sources: set[str] | None = None,
+    citation_sources: set[str] | None = None,
+    deleted: bool = True,
+) -> MagicMock:
     store = MagicMock()
     store.wiki_chunk_sources.return_value = sources or set()
-    store.wiki_citation_sources.return_value = set()
+    store.wiki_citation_sources.return_value = citation_sources or set()
     store.delete_all_wiki_rows.return_value = deleted
     return store
 
@@ -41,13 +46,20 @@ class TestWipeWiki:
         assert not (isolated_env / cfg.wiki_dir).exists()
 
     def test_deletes_the_store_rows(self, isolated_env: Path):
-        store = _store(sources={"wiki/concepts/a.md", "wiki/concepts/b.md"})
+        """The count spans both row kinds. A page whose citation rows landed
+        while its chunk rows did not appears in one set and not the other, and
+        the count is the only number a user gets back to check a wipe against.
+        """
+        store = _store(
+            sources={"wiki/concepts/a.md", "wiki/concepts/b.md"},
+            citation_sources={"wiki/concepts/b.md", "wiki/drafts/c.md"},
+        )
         write_wiki_page(isolated_env, str(WikiSubdir.CONCEPTS), "a", "# A\n")
 
         report = wipe_wiki(store)
 
         store.delete_all_wiki_rows.assert_called_once_with()
-        assert report.sources_cleared == 2
+        assert report.sources_cleared == 3
         assert report.rows_deleted is True
 
     def test_reports_a_failed_row_delete(self, isolated_env: Path):

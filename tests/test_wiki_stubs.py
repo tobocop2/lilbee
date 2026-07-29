@@ -146,11 +146,31 @@ class TestRefresh:
 
     @staticmethod
     def _run(entities, store=None, sources=None):
+        """Refresh with the extractor reading the chunks it is actually handed.
+
+        The store serves one chunk per source an entity names, and the
+        extractor returns only the entities whose sources are represented in
+        its argument. An extractor answering with a fixed list regardless of
+        input would leave the refresh's chunk gathering unobserved: replacing
+        it with an empty list would still merge the same entities and every
+        case in this class would pass.
+        """
+        by_source: dict[str, list[MagicMock]] = {}
+        for entity in entities:
+            for ref in entity.chunk_refs:
+                chunk = MagicMock()
+                chunk.source = ref.source
+                by_source.setdefault(ref.source, []).append(chunk)
+
+        def _extract(chunks):
+            served = {chunk.source for chunk in chunks}
+            return [e for e in entities if any(r.source in served for r in e.chunk_refs)]
+
         extractor = MagicMock()
-        extractor.extract.return_value = entities
+        extractor.extract.side_effect = _extract
         store = store or MagicMock()
-        store.get_sources.return_value = []
-        store.get_chunks_by_source.return_value = []
+        store.get_sources.return_value = [{"filename": name} for name in sorted(by_source)]
+        store.get_chunks_by_source.side_effect = lambda name: by_source.get(name, [])
         with (
             patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
             patch("lilbee.wiki.stubs.get_services"),
