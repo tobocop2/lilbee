@@ -11,16 +11,11 @@ set -uo pipefail
 : "${LILBEE_DATA:=/root/msmarco/data}"
 : "${CHECKPOINT_REPO:=beeberg/msmarco-ingest-checkpoint}"
 : "${PYBIN:=/root/lilbee_venv/bin/python}"
-: "${SHARD_INDEX:=0}"
-: "${SHARD_COUNT:=1}"
 
-# Must match the slot checkpoint.sh pushes to, or a shard restores another
-# shard's index and the merge silently loses a slice of the corpus.
-if [ "$SHARD_COUNT" -gt 1 ]; then
-  CKPT_PATH="shard-${SHARD_INDEX}of${SHARD_COUNT}/checkpoint-latest.tar"
-else
-  CKPT_PATH="checkpoint-latest.tar"
-fi
+# CKPT_PATH must be the slot checkpoint.sh pushes to, or a shard restores
+# another shard's index and the merge silently loses a slice of the corpus.
+# shellcheck source=evals/infra/shard_env.sh
+. "$(dirname "$0")/shard_env.sh" || exit 1
 
 log() { printf '[restore %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 

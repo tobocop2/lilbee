@@ -60,7 +60,10 @@ resources:
 file_mounts:
   /opt/evals: ./evals
 envs:
-  BRANCH: kz5-fleet-merge
+  # main, not a feature branch: the measured ingest config depends on the
+  # ctx-slots, multiprocess and streaming-plan fixes, and the mounted evals/
+  # code reads lilbee's table-name constants, so the two must not drift.
+  BRANCH: main
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
   DATASET_ID: msmarco-passage

@@ -50,13 +50,26 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 
+# Table names come from lilbee rather than string literals here. A rename on
+# lilbee's side would otherwise reclassify a table silently: a renamed concept
+# table would fall through to the concat branch and glue shard-local clusters,
+# which is the failure this tool exists to prevent. Importing the names is safe
+# before LILBEE_DATA is set; only Config construction reads the environment.
+from lilbee.core.config import (
+    CHUNK_CONCEPTS_TABLE,
+    CONCEPT_EDGES_TABLE,
+    CONCEPT_NODES_TABLE,
+    ENTITY_SCHEMA_TABLE,
+    META_TABLE,
+)
+
 MANIFEST_NAME = "shard_manifest.json"
 
 # One row by contract; see the store's get_meta/entity_schema_state readers.
-SINGLETON_TABLES = ("_meta", "_entity_schema")
+SINGLETON_TABLES = (META_TABLE, ENTITY_SCHEMA_TABLE)
 
 # Cluster ids are assigned per shard, so these cannot be concatenated.
-CORPUS_WIDE_TABLES = ("concept_nodes", "concept_edges", "chunk_concepts")
+CORPUS_WIDE_TABLES = (CONCEPT_NODES_TABLE, CONCEPT_EDGES_TABLE, CHUNK_CONCEPTS_TABLE)
 
 # Rows per streamed batch. Bounds peak memory at batch_rows x row width.
 DEFAULT_BATCH_ROWS = 4096
@@ -90,8 +103,8 @@ def _lancedb_dir(root: str) -> str:
 def _table_names(db) -> list[str]:
     """Table names, unwrapping the ListTablesResponse newer LanceDB returns.
 
-    Mirrors the store's own helper; this script cannot import lilbee before it
-    has pointed LILBEE_DATA at the merged root.
+    Duplicates the store's private helper of the same name rather than
+    importing across the package boundary for three lines.
     """
     result = db.list_tables()
     try:
@@ -143,9 +156,9 @@ def observed_counts(db) -> dict[str, int]:
 
 def meta_identity(db) -> tuple[str, int, int] | None:
     """(model, dim, schema_version) from a shard's own _meta row, newest wins."""
-    if "_meta" not in _table_names(db):
+    if META_TABLE not in _table_names(db):
         return None
-    rows = db.open_table("_meta").search().limit(None).to_list()
+    rows = db.open_table(META_TABLE).search().limit(None).to_list()
     if not rows:
         return None
     row = max(rows, key=lambda r: r["updated_at"])

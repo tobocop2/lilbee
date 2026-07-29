@@ -20,28 +20,17 @@ set -uo pipefail
 : "${LILBEE_DATA:=/root/msmarco/data}"
 : "${CHECKPOINT_REPO:=beeberg/msmarco-ingest-checkpoint}"
 : "${CHECKPOINT_TOTAL:=8841823}"        # GLOBAL corpus size (or SMOKE_N when smoking)
-: "${SHARD_INDEX:=0}"
-: "${SHARD_COUNT:=1}"
 : "${PYBIN:=/root/lilbee_venv/bin/python}"
 : "${LOG_DIR:=/root/bench/logs}"
 : "${CHECKPOINT_POLL_S:=120}"           # how often to read the row count
 mkdir -p "$LOG_DIR"
 
-# Milestones are a fraction of what THIS host ingests, which on a sharded run is
-# its slice and not the whole corpus. Keying them off the global size means a
-# 2-shard host tops out near 50%, so the 75% and 100% milestones never fire, the
-# final checkpoint is never pushed and the watcher never exits. This is the same
-# count ingest.sh materialises: the global indices i with i % COUNT == INDEX.
-SHARD_TOTAL=$(( (CHECKPOINT_TOTAL + SHARD_COUNT - 1 - SHARD_INDEX) / SHARD_COUNT ))
-
-# Each shard needs its own slot in the repo. Every host pushing to one rolling
-# path means the last writer wins and a pod loss restores another shard's index.
-# A single-host run keeps the original path so existing checkpoints still load.
-if [ "$SHARD_COUNT" -gt 1 ]; then
-  CKPT_PATH="shard-${SHARD_INDEX}of${SHARD_COUNT}/checkpoint-latest.tar"
-else
-  CKPT_PATH="checkpoint-latest.tar"
-fi
+# CKPT_PATH (this shard's slot) and SHARD_TOTAL (what this host will ingest).
+# Milestones are a fraction of THIS host's slice: keying them off the global
+# corpus means a 2-shard host tops out near 50%, so the 75% and 100% milestones
+# never fire, the final checkpoint is never pushed and the watcher never exits.
+# shellcheck source=evals/infra/shard_env.sh
+. "$(dirname "$0")/shard_env.sh" || exit 1
 CKPT_LOG="$LOG_DIR/checkpoint.log"
 
 log() { printf '[ckpt %s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$CKPT_LOG"; }

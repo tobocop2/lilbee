@@ -11,13 +11,13 @@ test is the merge, and embedding identity is already covered by the guardrails.
 """
 
 import contextlib
-import json
 import math
 import os
 
 import lancedb
 import pytest
-from evals.infra.merge_shards import merge
+from evals.infra import shard_manifest
+from evals.infra.merge_shards import merge, read_manifest
 
 pytest.importorskip("lilbee.data.store")
 
@@ -91,26 +91,8 @@ def build_store(root, doc_indices: list[int], model: str = MODEL) -> None:
 
 
 def write_manifest(root, *, shard_index: int, shard_count: int) -> None:
-    """The manifest ingest.sh writes, built the same way: read back from _meta."""
-    db = lancedb.connect(str(root / "data" / "lancedb"))
-    result = db.list_tables()
-    names = list(getattr(result, "tables", result))
-    identity = max(
-        db.open_table("_meta").search().limit(None).to_list(),
-        key=lambda r: r["updated_at"],
-    )
-    (root / "shard_manifest.json").write_text(
-        json.dumps(
-            {
-                "shard_index": shard_index,
-                "shard_count": shard_count,
-                "embedding_model": identity["embedding_model"],
-                "embedding_dim": int(identity["embedding_dim"]),
-                "schema_version": int(identity["schema_version"]),
-                "table_rows": {n: db.open_table(n).count_rows() for n in names},
-            }
-        )
-    )
+    """Exactly what ingest.sh runs, so producer and consumer stay in step."""
+    shard_manifest.write_manifest(root, shard_index=shard_index, shard_count=shard_count)
 
 
 @pytest.fixture
@@ -246,3 +228,31 @@ def test_the_merged_store_carries_the_shard_config(sharded):
     # config.toml is how lilbee learns the embedder on a fresh process.
     if os.path.exists(os.path.join(roots[0], "config.toml")):
         assert (merged_root / "config.toml").exists()
+
+
+def test_the_manifest_writer_produces_what_the_merge_reader_expects(tmp_path):
+    # The writer runs on the pod and the reader runs at merge time. A field
+    # renamed on one side would only surface as a refused merge after the GPU
+    # hours were already spent, so pin the round trip here.
+    build_store(tmp_path / "s0", [0, 2, 4])
+    written = shard_manifest.write_manifest(
+        tmp_path / "s0", shard_index=0, shard_count=2, dataset_id="msmarco-passage", smoke_n=80000
+    )
+    parsed = read_manifest(str(tmp_path / "s0"))
+
+    assert parsed.shard_index == 0
+    assert parsed.shard_count == 2
+    assert parsed.embedding_model == written["embedding_model"] == MODEL
+    assert parsed.embedding_dim == written["embedding_dim"] == DIM
+    assert parsed.table_rows == written["table_rows"]
+    assert parsed.table_rows["chunks"] == 3
+
+
+def test_a_shard_whose_ingest_never_wrote_meta_cannot_claim_an_embedder(tmp_path):
+    # An empty _meta means the ingest did not finish. Emitting a manifest anyway
+    # would hand the merge a shard with no verifiable identity.
+    root = tmp_path / "empty"
+    (root / "data" / "lancedb").mkdir(parents=True)
+    lancedb.connect(str(root / "data" / "lancedb"))
+    with pytest.raises(RuntimeError, match=r"did not complete"):
+        shard_manifest.write_manifest(root, shard_index=0, shard_count=2)

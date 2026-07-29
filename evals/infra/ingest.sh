@@ -133,32 +133,9 @@ log "RESULT: input_docs=$DOCS landed_sources=${SRC:-0} pages=${PAGES:-0} | ${DPS
 # not actually built with. Without this file the merge refuses the shard.
 log "writing shard manifest"
 LILBEE_DATA="$LILBEE_DATA" SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" \
-  DATASET_ID="$DATASET_ID" SMOKE_N="$SMOKE_N" "$PYBIN" - <<'PY' \
+  DATASET_ID="$DATASET_ID" SMOKE_N="$SMOKE_N" \
+  "$PYBIN" "$(dirname "$0")/shard_manifest.py" \
   || log "WARN: manifest write failed; merge_shards.py will refuse this shard until it is rewritten"
-import json, os, pathlib, lancedb
-root = os.environ["LILBEE_DATA"]
-db = lancedb.connect(os.path.join(root, "data/lancedb"))
-result = db.list_tables()
-names = list(getattr(result, "tables", result))
-rows = db.open_table("_meta").search().limit(None).to_list()
-identity = max(rows, key=lambda r: r["updated_at"])
-manifest = {
-    "shard_index": int(os.environ["SHARD_INDEX"]),
-    "shard_count": int(os.environ["SHARD_COUNT"]),
-    "dataset_id": os.environ["DATASET_ID"],
-    "smoke_n": int(os.environ["SMOKE_N"]),
-    "embedding_model": identity["embedding_model"],
-    "embedding_dim": int(identity["embedding_dim"]),
-    "schema_version": int(identity["schema_version"]),
-    "table_rows": {n: db.open_table(n).count_rows() for n in names},
-}
-pathlib.Path(root, "shard_manifest.json").write_text(json.dumps(manifest, indent=2))
-print(
-    f"manifest: shard {manifest['shard_index']} of {manifest['shard_count']}, "
-    f"{manifest['embedding_model']} {manifest['embedding_dim']}d, "
-    f"rows={manifest['table_rows']}"
-)
-PY
 
 # ---------------------------------------------------------------- finalize
 # The lilbeekreuzbergstein pattern: snapshot the whole index to the network
