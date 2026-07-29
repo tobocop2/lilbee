@@ -4254,9 +4254,12 @@ async def test_command_provider_wikify_action():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        assert "Wikify" in [c[0] for c in provider._get_commands()]
+        # Invoke the action off the tuple the label was found in. Asserting the
+        # label and calling the handler separately leaves the third element,
+        # the only thing that makes the row do what it says, unasserted.
+        action = next(c[2] for c in provider._get_commands() if c[0] == "Wikify")
         with patch("lilbee.cli.tui.screens.wiki.start_wikify") as start:
-            provider._action_wikify()
+            action()
             start.assert_called_once_with(app)
 
 
@@ -4273,9 +4276,9 @@ async def test_command_provider_wipe_wiki_action_with_wiki_off(tmp_path):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        assert "Delete wiki" in [c[0] for c in provider._get_commands()]
+        action = next(c[2] for c in provider._get_commands() if c[0] == "Delete wiki")
         with patch("lilbee.cli.tui.screens.wiki.confirm_wiki_wipe") as confirm:
-            provider._action_wipe_wiki()
+            action()
             confirm.assert_called_once_with(app)
 
 
@@ -8639,11 +8642,19 @@ class TestWikiStubs:
             assert not any("not written" in label for label in labels)
 
     async def test_opening_a_stub_asks_instead_of_generating(self, tmp_path):
-        stub = self._index(tmp_path)
+        """Selection is driven by the slug the rendered tree stored on the leaf,
+        not one the test supplies. Fabricating the event hands the lookup the
+        key it needs and never reads what the tree builder wrote, so a leaf
+        carrying the wrong slug would still pass."""
+        self._index(tmp_path)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            leaf = next(n for n in _descendants(tree.root) if "not written" in str(n.label))
             with patch("lilbee.cli.tui.screens.wiki.start_stub_generation") as start:
-                app.screen._on_node_selected(_stub_node_event(stub.wiki_slug))
+                app.screen._on_node_selected(_stub_node_event(leaf.data))
                 await _pilot.pause()
                 start.assert_not_called()
                 await _pilot.press("y")
@@ -8683,11 +8694,33 @@ class TestWikiStubs:
         assert _describe_sources(stub) == expected
 
     async def test_the_ask_names_the_cost_and_the_way_out(self, tmp_path):
+        """The copy has to reach the dialog, not merely exist. Reading the
+        constants alone asserts nothing about what confirm_stub_generation
+        pushes, so the dialog could say anything and this would pass."""
+        from unittest.mock import MagicMock
+
         from lilbee.cli.tui import messages as m
+        from lilbee.cli.tui.screens.wiki import confirm_stub_generation
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
 
         assert "GPU-heavy" in m.WIKI_STUB_CONFIRM_MESSAGE
         assert "turn the wiki off" in m.WIKI_STUB_CONFIRM_MESSAGE
         assert "not been written" in m.WIKI_STUB_DETAIL
+
+        stub = WikiStub(
+            slug="ford",
+            label="Ford",
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            source_mentions=(("a.md", 1),),
+            chunk_refs=(("a.md", 0),),
+        )
+        app = MagicMock()
+        confirm_stub_generation(app, stub)
+        dialog = app.push_screen.call_args.args[0]
+        assert "GPU-heavy" in dialog._message
+        assert "turn the wiki off" in dialog._message
 
 
 class TestStartStubGeneration:
@@ -8839,7 +8872,9 @@ class TestStartWikiWipe:
 
         target, fake_app = self._capture_target()
         with (
-            patch("lilbee.wiki.wipe.wipe_wiki", return_value=WipeReport(2, 2, rows_deleted=True)),
+            # Different numbers: the toast reports pages removed, and with both
+            # fields equal it would read the same off either one.
+            patch("lilbee.wiki.wipe.wipe_wiki", return_value=WipeReport(2, 5, rows_deleted=True)),
             patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
         ):
             target(MagicMock())
@@ -9166,6 +9201,27 @@ class TestWikify:
             with patch.object(app, "notify") as notify:
                 start_wikify(app)
             notify.assert_called_once_with(msg.WIKI_ALREADY_ACTIVE, severity="warning")
+
+    async def test_a_pending_single_page_write_does_not_block_a_corpus_build(self, tmp_path):
+        """Writing one page is a WIKI task too, under its own name. The guard
+        has to match on the name as well as the type, or one pending stub write
+        would refuse a corpus build until that page finished."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui import messages as msg
+            from lilbee.cli.tui.screens.wiki import start_wikify
+
+            app.task_bar.queue.enqueue(
+                lambda: None, msg.WIKI_STUB_TASK.format(label="Ford"), TaskType.WIKI.value
+            )
+            with patch.object(app, "notify") as notify:
+                start_wikify(app)
+            assert notify.call_args_list == [] or (
+                notify.call_args.args[0] != msg.WIKI_ALREADY_ACTIVE
+            )
             assert len(app.task_bar.queue.queued_tasks) == 1
 
     @staticmethod

@@ -1820,6 +1820,41 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert phase in drained
 
+    async def test_wiki_phase_lands_with_nothing_left_to_shed(self):
+        """A queue holding only undroppable events offers no victim. A phase
+        event classed as droppable would be discarded here and the client's
+        progress would stall; the previous case cannot see that, because a
+        queue full of sheddable pages lets either path find room."""
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(2):
+            queue.put_event_nowait(
+                f'event: crawl_done\ndata: {{"i": {i}}}\n\n', EventType.CRAWL_DONE
+            )
+        phase = 'event: wiki_phase\ndata: {"phase": "index"}\n\n'
+        queue.put_event_nowait(phase, EventType.WIKI_PHASE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert phase in drained
+
+    async def test_eviction_scans_past_an_undroppable_head(self):
+        """The head is undroppable and a sheddable page sits behind it. Checking
+        only the head would report nothing to shed and drop the incoming page,
+        which is the regression the scan was written for."""
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        head = 'event: crawl_done\ndata: {"i": 0}\n\n'
+        queue.put_event_nowait(head, EventType.CRAWL_DONE)
+        queue.put_event_nowait('event: wiki_page\ndata: {"i": 1}\n\n', EventType.WIKI_PAGE)
+        newest = 'event: wiki_page\ndata: {"i": 2}\n\n'
+        queue.put_event_nowait(newest, EventType.WIKI_PAGE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert head in drained
+        assert newest in drained
+
     async def test_callback_routes_progress_through_shedding_path(self):
         from lilbee.runtime.progress import EventType, FileDoneEvent
         from lilbee.server.handlers import SseStream

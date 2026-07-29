@@ -495,19 +495,29 @@ class TestSync:
     async def test_wiki_hook_receives_the_config_the_gate_read(
         self, mock_extract_file, isolated_env, monkeypatch
     ):
-        """The auto-update gate and the regeneration must consult one config."""
-        from lilbee.core.config import active_config, cfg
+        """The auto-update gate and the regeneration must consult one config.
+
+        Run under a bound scope, so the scoped config and the process-global
+        are different objects. Without a scope active_config() returns the
+        global itself, and a hook handed the global instead of the config the
+        gate read would satisfy the assertion. The library API binds a scope
+        around the whole pipeline, so this is the shape a Lilbee(config=...)
+        caller actually runs in."""
+        from lilbee.core.config import cfg, config_scope
         from lilbee.data.ingest import sync
 
         (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
-        monkeypatch.setattr(cfg, "wiki", True)
-        monkeypatch.setattr(cfg, "wiki_auto_update", True)
+        monkeypatch.setattr(cfg, "wiki", False)
+        scoped = cfg.model_copy()
+        scoped.wiki = True
+        scoped.wiki_auto_update = True
         hook = mock.AsyncMock()
         monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
 
-        await sync(quiet=True)
+        with config_scope(scoped):
+            await sync(quiet=True)
 
-        assert hook.call_args.args[1] is active_config()
+        assert hook.call_args.args[1] is scoped
 
     async def test_wiki_failure_does_not_skip_post_ingest_verification(
         self, mock_extract_file, isolated_env, monkeypatch, caplog

@@ -3337,6 +3337,10 @@ class TestWikiRunProgress:
 
     @pytest.mark.usefixtures("wiki_enabled")
     def test_json_mode_leaves_stdout_a_single_document(self, mock_svc, isolated_env, monkeypatch):
+        """FORCE_COLOR makes rich treat the captured stream as a terminal. The
+        spinner emits nothing to a non-terminal, so without it the suppression
+        this test is named for is unobservable and the flag could be dropped."""
+        monkeypatch.setenv("FORCE_COLOR", "1")
         cfg.json_mode = True
         monkeypatch.setattr("lilbee.wiki.run_full_build", self._emitting_run([]))
         result = runner.invoke(app, ["--json", "wiki", "build"])

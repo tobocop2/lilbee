@@ -263,8 +263,13 @@ class TestDeleteAllWikiRows:
 
 class TestWikiChunkSources:
     def test_returns_only_wiki_row_sources(self, store):
+        """The raw row carries a source of its own. Reusing a wiki row's source
+        would leave the filter nothing to remove, and an implementation
+        returning every source in the table would answer identically. Prune
+        feeds this set to delete_by_source for anything with no page on disk,
+        so an unfiltered answer deletes the raw corpus."""
         store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
-        store.add_chunks(_make_records(1, chunk_type="raw"))
+        store.add_chunks(_make_records(3, chunk_type="raw")[2:])
         assert store.wiki_chunk_sources() == {"doc0.md", "doc1.md"}
 
     def test_empty_store_returns_empty_set(self, store):
