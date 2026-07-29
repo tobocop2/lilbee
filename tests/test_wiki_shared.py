@@ -167,6 +167,17 @@ class TestIsValidLabel:
     def test_accepts_hyphenated_label(self):
         assert is_valid_label("E-mail") is True
 
+    @pytest.mark.parametrize(
+        "label",
+        ["Model\nController", "Model\tController", "Model\rController"],
+        ids=["newline", "tab", "carriage-return"],
+    )
+    def test_rejects_a_label_carrying_a_line_break(self, label: str):
+        """A label becomes a heading, a slug, and part of a single-line marker
+        comment. One crossing a line break truncates that comment, leaving a
+        file no reader classifies as a placeholder."""
+        assert is_valid_label(label) is False
+
     def test_strips_whitespace_before_checking(self):
         assert is_valid_label("  ab  ") is False
         assert is_valid_label("  Chevrolet  ") is True
