@@ -61,8 +61,16 @@ def is_valid_label(label: str) -> bool:
       ``70-l`` after punctuation cleanup),
     - hyphen-prefixed fragments (``-answers``: trailing text from
       markdown bracket-link extraction),
-    - labels carrying a line break, which an extractor span can pick up
-      across a wrapped line.
+    - labels carrying a line break.
+
+    The line-break rule is defensive only: no current caller can trip it.
+    Both extractors run :func:`collapse_whitespace` first, which folds every
+    separator to a space rather than rejecting the label, because a spaCy span
+    crossing a wrapped line is the same entity as its unwrapped form and
+    dropping it would lose the mention. The third caller, the heading check in
+    :mod:`lilbee.wiki.quality`, takes its heading out of ``splitlines`` and so
+    cannot produce one either. The rule stays because this is a shared
+    validator and a future caller may hand over raw text.
 
     Requires the first non-whitespace character to be a Unicode letter
     so any non-alpha prefix (digit, bracket, hyphen, punctuation) is
@@ -77,12 +85,10 @@ def is_valid_label(label: str) -> bool:
     if not stripped[0].isalpha():
         return False
     # A label is one line: it becomes a heading, a slug, and part of the
-    # single-line marker comments the drafts surface classifies by. An
-    # extractor span crossing a line break would truncate a marker mid-comment,
-    # leaving a file no reader recognises as a placeholder. Tested with
+    # single-line marker comments the drafts surface classifies by. Tested with
     # splitlines because that is what those readers use, so the gate and they
-    # agree on what a line break is. A non-breaking or thin space is not one,
-    # and PDF text is full of both.
+    # agree on what counts as a second line. A non-breaking or thin space does
+    # not, and PDF text is full of both.
     if len(stripped.splitlines()) > 1:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):

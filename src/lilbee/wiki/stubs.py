@@ -369,9 +369,6 @@ def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
         return True
     draft = wiki_root / WikiSubdir.DRAFTS / f"{stub.slug}.md"
     return draft.is_file() and not _is_placeholder(draft)
-    # Prune moved it here when its sources went. Offering it as unwritten would
-    # regenerate what prune just retired, on the next sync and every one after.
-    return (wiki_root / WikiSubdir.ARCHIVE / f"{stub.wiki_slug}.md").is_file()
 
 
 def drop_sources_from_index(names: set[str], config: Config | None = None) -> None:

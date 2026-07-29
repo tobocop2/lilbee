@@ -109,17 +109,14 @@ class TestIncrementalWikiUpdate:
     async def test_entity_whose_sources_are_unchanged_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
-        """A page held in drafts for review is not a missing page: re-queueing it on
-        every sync burns LLM calls and overwrites content awaiting review."""
+        """Only a changed source queues a rebuild. An entity whose chunk trail
+        names none of them is dropped from ``touched``, and an empty ``touched``
+        returns before any page is generated."""
         held = _entity("braking", EntityKind.CONCEPT, ["other.txt"])
-        drafts = _isolated_wiki / "wiki" / "drafts"
-        drafts.mkdir(parents=True)
-        (drafts / "braking.md").write_text("<!-- DRIFT: 40% content changed -->\n")
         _install_service_stubs(monkeypatch, [held])
         with patch("lilbee.wiki.build_wiki") as build:
             await incremental_update({"changed.txt"})
         build.assert_not_called()
-        assert "DRIFT" in (drafts / "braking.md").read_text()
 
     @pytest.mark.asyncio
     async def test_cap_exceeded_skips_regeneration_and_logs_hint(
