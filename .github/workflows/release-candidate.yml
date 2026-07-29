@@ -229,13 +229,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # engine_os is the runner the build-multigpu cpu cell used, which names
-        # its artifact. The Linux rows there are pinned to ubuntu-22.04, so it is
-        # not the same as the runner this smoke test happens to run on.
-        include:
-          - {os: ubuntu-latest,  engine_os: ubuntu-22.04}
-          - {os: macos-latest,   engine_os: macos-latest}
-          - {os: windows-latest, engine_os: windows-latest}
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -252,7 +246,7 @@ jobs:
       - name: Download the cpu engine wheel
         uses: actions/download-artifact@v8
         with:
-          name: wheel-multigpu-${{ matrix.engine_os }}-cpu
+          name: wheel-multigpu-${{ matrix.os }}-cpu
           path: engine/
       - name: Restore CI models (inference smoke)
         uses: ./.github/actions/restore-ci-models
@@ -394,23 +388,6 @@ jobs:
                   name, ver, rest = whl.name.split("-", 2)
                   shutil.copy(whl, out / f"{name}-{ver}-1.{backend}-{rest}")
           PY
-      # These cells are continue-on-error, so a build that produces nothing is
-      # invisible in the run conclusion. The linux vulkan wheel was missing for
-      # days that way. List what actually arrived so a gap is legible.
-      - name: Report which multi-gpu wheels arrived
-        shell: bash
-        run: |
-          {
-            echo "### Multi-gpu wheels attached"
-            echo
-            for d in multigpu-wheels-staging/wheel-multigpu-*; do
-              [ -d "$d" ] || continue
-              echo "- ${d##*/wheel-multigpu-}"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-          count=$(find multigpu-wheels -name '*.whl' | wc -l | tr -d ' ')
-          echo "::notice::multi-gpu wheels attached: ${count}"
-
       - name: Attach multi-gpu wheels to the release
         uses: softprops/action-gh-release@v3
         with:

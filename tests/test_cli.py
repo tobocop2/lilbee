@@ -3223,6 +3223,20 @@ class TestWikiStatus:
         assert result.exit_code == 0
         assert "1" in result.output  # summaries count
 
+    def test_status_reports_lint_issues(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        with mock.patch(
+            "lilbee.wiki.lint.lint_all",
+            return_value=mock.MagicMock(error_count=2, warning_count=1),
+        ):
+            result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "error(s)" in result.output and "warning(s)" in result.output
+
     def test_status_json_output(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
