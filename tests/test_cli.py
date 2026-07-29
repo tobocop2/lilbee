@@ -3641,9 +3641,13 @@ class TestWikiIndexAndGenerate:
     def test_index_json_output(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.json_mode = True
-        with mock.patch("lilbee.wiki.stubs.refresh_stub_index", return_value={"a": 1}):
+        # Three, not one: this is the scripted surface, and with a single entry
+        # the count reads the same as a hardcoded 1 whatever the corpus holds.
+        with mock.patch(
+            "lilbee.wiki.stubs.refresh_stub_index", return_value={"a": 1, "b": 2, "c": 3}
+        ):
             result = runner.invoke(app, ["--json", "wiki", "index"])
-        assert json.loads(result.output)["entries"] == 1
+        assert json.loads(result.output)["entries"] == 3
 
     def test_generate_writes_the_page(self, mock_svc, isolated_env):
         cfg.wiki = True

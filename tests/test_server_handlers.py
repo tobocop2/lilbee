@@ -1820,23 +1820,27 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert phase in drained
 
-    async def test_wiki_phase_lands_with_nothing_left_to_shed(self):
-        """A queue holding only undroppable events offers no victim. A phase
-        event classed as droppable would be discarded here and the client's
-        progress would stall; the previous case cannot see that, because a
-        queue full of sheddable pages lets either path find room."""
+    @pytest.mark.parametrize(
+        "event_type",
+        ["DONE", "CRAWL_DONE", "WIKI_PHASE"],
+    )
+    async def test_an_undroppable_event_lands_with_nothing_left_to_shed(self, event_type):
+        """A queue holding only undroppable events offers no victim, so a type
+        wrongly classed as sheddable is discarded here. Filling with progress
+        instead lets either path find room, which is why the sibling cases
+        cannot tell the two classifications apart. DONE is the one that hangs a
+        client forever if it goes."""
         from lilbee.runtime.progress import EventType
         from lilbee.server.handlers.sse import SseEventQueue
 
+        kind = getattr(EventType, event_type)
         queue = SseEventQueue(max_events=2)
         for i in range(2):
-            queue.put_event_nowait(
-                f'event: crawl_done\ndata: {{"i": {i}}}\n\n', EventType.CRAWL_DONE
-            )
-        phase = 'event: wiki_phase\ndata: {"phase": "index"}\n\n'
-        queue.put_event_nowait(phase, EventType.WIKI_PHASE)
+            queue.put_nowait(f'event: token\ndata: {{"i": {i}}}\n\n')
+        payload = f"event: {kind.value}\ndata: {{}}\n\n"
+        queue.put_event_nowait(payload, kind)
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
-        assert phase in drained
+        assert payload in drained
 
     async def test_eviction_scans_past_an_undroppable_head(self):
         """The head is undroppable and a sheddable page sits behind it. Checking

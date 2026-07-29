@@ -513,10 +513,17 @@ class TestSync:
         scoped.wiki_auto_update = True
         hook = mock.AsyncMock()
         monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+        refresh = mock.MagicMock(return_value={})
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
 
         with config_scope(scoped):
             await sync(quiet=True)
 
+        # Both calls, not just the regeneration. The index refresh is the one
+        # that always runs when the wiki is on, since regeneration sits behind
+        # wiki_auto_update, and it falls back to the process-global when handed
+        # None.
+        assert refresh.call_args.args[1] is scoped
         assert hook.call_args.args[1] is scoped
 
     async def test_wiki_failure_does_not_skip_post_ingest_verification(

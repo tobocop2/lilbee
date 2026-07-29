@@ -4239,8 +4239,9 @@ async def test_command_provider_open_wiki_action():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
+        action = next(c[2] for c in provider._get_commands() if c[0] == "Open wiki")
         with patch.object(app, "switch_view") as mock_switch:
-            provider._action_open_wiki()
+            action()
             mock_switch.assert_called_once_with("Wiki")
 
 

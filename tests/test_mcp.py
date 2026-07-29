@@ -1244,12 +1244,19 @@ class TestWikiPrune:
                     action=PruneAction.ARCHIVED,
                     reason="every source it cited is gone",
                 ),
+                PruneRecord(
+                    wiki_source="wiki/entities/ford.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="every source it cited is gone",
+                ),
             ]
         )
         monkeypatch.setattr("lilbee.wiki.prune.prune_wiki", lambda *a, **kw: report)
         result = wiki_prune()
+        # Different counts. At one apiece the two could be crossed and an agent
+        # gating on pages retired would read the swept-rows number instead.
         assert result["reconciled"] == 1
-        assert result["archived"] == 1
+        assert result["archived"] == 2
 
 
 class TestWikiIndexAndGenerate:
