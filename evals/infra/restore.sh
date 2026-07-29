@@ -11,6 +11,16 @@ set -uo pipefail
 : "${LILBEE_DATA:=/root/msmarco/data}"
 : "${CHECKPOINT_REPO:=beeberg/msmarco-ingest-checkpoint}"
 : "${PYBIN:=/root/lilbee_venv/bin/python}"
+: "${SHARD_INDEX:=0}"
+: "${SHARD_COUNT:=1}"
+
+# Must match the slot checkpoint.sh pushes to, or a shard restores another
+# shard's index and the merge silently loses a slice of the corpus.
+if [ "$SHARD_COUNT" -gt 1 ]; then
+  CKPT_PATH="shard-${SHARD_INDEX}of${SHARD_COUNT}/checkpoint-latest.tar"
+else
+  CKPT_PATH="checkpoint-latest.tar"
+fi
 
 log() { printf '[restore %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -19,20 +29,21 @@ if [ -d "$LILBEE_DATA/data/lancedb" ]; then
   exit 0
 fi
 
-log "checking $CHECKPOINT_REPO for a checkpoint"
-TAR=$(CHECKPOINT_REPO="$CHECKPOINT_REPO" "$PYBIN" - <<'PY'
+log "checking $CHECKPOINT_REPO for a checkpoint at $CKPT_PATH"
+TAR=$(CHECKPOINT_REPO="$CHECKPOINT_REPO" CKPT_PATH="$CKPT_PATH" "$PYBIN" - <<'PY'
 import os
 from huggingface_hub import HfApi, hf_hub_download
 api = HfApi()
 repo = os.environ["CHECKPOINT_REPO"]
+path = os.environ["CKPT_PATH"]
 try:
     files = api.list_repo_files(repo, repo_type="dataset")
 except Exception:
     files = []
-if "checkpoint-latest.tar" not in files:
+if path not in files:
     print("")  # nothing to restore
 else:
-    print(hf_hub_download(repo, "checkpoint-latest.tar", repo_type="dataset"))
+    print(hf_hub_download(repo, path, repo_type="dataset"))
 PY
 )
 

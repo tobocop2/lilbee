@@ -80,35 +80,9 @@ if [ -f "$MARKER" ]; then
   log "passages already materialised (SMOKE_N=$SMOKE_N shard=$SHARD_INDEX/$SHARD_COUNT), skipping"
 else
   log "materialising $DATASET_ID shard $SHARD_INDEX of $SHARD_COUNT into $DOCS_DIR (SMOKE_N=$SMOKE_N; 0=full)"
-  DATASET_ID="$DATASET_ID" SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" "$PYBIN" - <<'PY'
-import os, pathlib, time
-import ir_datasets
-docs = pathlib.Path(os.environ["DOCS_DIR"]); smoke = int(os.environ["SMOKE_N"])
-si = int(os.environ["SHARD_INDEX"]); sc = int(os.environ["SHARD_COUNT"])
-ds = ir_datasets.load(os.environ["DATASET_ID"])
-started = time.time(); gi = 0; n = 0
-for d in ds.docs_iter():
-    text = (getattr(d, "text", "") or "").strip()
-    if not text:
-        continue
-    # gi = deterministic global index over non-empty passages; smoke caps the
-    # GLOBAL corpus first, then this shard takes its slice of that same set.
-    if smoke and gi >= smoke:
-        break
-    idx = gi
-    gi += 1
-    if sc > 1 and idx % sc != si:
-        continue
-    shard = docs / f"{n // 1000:05d}"
-    if n % 1000 == 0:
-        shard.mkdir(parents=True, exist_ok=True)
-    # The stem is the doc_id the qrels join on; nothing else recovers it.
-    (shard / f"{d.doc_id}.txt").write_text(text)
-    n += 1
-    if n % 100000 == 0:
-        print(f"  shard {si}/{sc}: {n:,} written ({gi:,} scanned) @ {n / (time.time() - started):,.0f}/s", flush=True)
-print(f"  shard {si}/{sc}: wrote {n:,} of {gi:,} scanned in {time.time() - started:.0f}s", flush=True)
-PY
+  DOCS_DIR="$DOCS_DIR" DATASET_ID="$DATASET_ID" SMOKE_N="$SMOKE_N" \
+    SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" \
+    "$PYBIN" "$(dirname "$0")/materialise.py" || { log "FATAL: materialise failed"; exit 1; }
   touch "$MARKER"
 fi
 DOCS=$(find "$DOCS_DIR" -type f -name '*.txt' | wc -l)
@@ -151,6 +125,41 @@ PAGES=$(grep -oE "PAGES: [0-9]+" "$LOG_DIR/counts.txt" | awk '{print $2}')
 DPS=$(python3 -c "print(f'{${SRC:-0} / max($SECS,1):.1f}')" 2>/dev/null || echo "?")
 log "RESULT: input_docs=$DOCS landed_sources=${SRC:-0} pages=${PAGES:-0} | ${DPS} docs/sec first-pass (${SECS}s)"
 
+# ---------------------------------------------------------------- manifest
+# What merge_shards.py checks before it will combine this shard with the others:
+# which slice of the corpus this is, what embedded it, and the row counts it
+# finished with. Identity is read back from the index's own _meta row rather
+# than from EMBED_MODEL, so a manifest cannot claim an embedder the shard was
+# not actually built with. Without this file the merge refuses the shard.
+log "writing shard manifest"
+LILBEE_DATA="$LILBEE_DATA" SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" \
+  DATASET_ID="$DATASET_ID" SMOKE_N="$SMOKE_N" "$PYBIN" - <<'PY' \
+  || log "WARN: manifest write failed; merge_shards.py will refuse this shard until it is rewritten"
+import json, os, pathlib, lancedb
+root = os.environ["LILBEE_DATA"]
+db = lancedb.connect(os.path.join(root, "data/lancedb"))
+result = db.list_tables()
+names = list(getattr(result, "tables", result))
+rows = db.open_table("_meta").search().limit(None).to_list()
+identity = max(rows, key=lambda r: r["updated_at"])
+manifest = {
+    "shard_index": int(os.environ["SHARD_INDEX"]),
+    "shard_count": int(os.environ["SHARD_COUNT"]),
+    "dataset_id": os.environ["DATASET_ID"],
+    "smoke_n": int(os.environ["SMOKE_N"]),
+    "embedding_model": identity["embedding_model"],
+    "embedding_dim": int(identity["embedding_dim"]),
+    "schema_version": int(identity["schema_version"]),
+    "table_rows": {n: db.open_table(n).count_rows() for n in names},
+}
+pathlib.Path(root, "shard_manifest.json").write_text(json.dumps(manifest, indent=2))
+print(
+    f"manifest: shard {manifest['shard_index']} of {manifest['shard_count']}, "
+    f"{manifest['embedding_model']} {manifest['embedding_dim']}d, "
+    f"rows={manifest['table_rows']}"
+)
+PY
+
 # ---------------------------------------------------------------- finalize
 # The lilbeekreuzbergstein pattern: snapshot the whole index to the network
 # volume as ONE sequential tar (MooseFS handles large sequential I/O fine), so
@@ -162,7 +171,9 @@ EXPORTS=/root/exports
 mkdir -p "$EXPORTS"
 if [ -d "$WORKSPACE" ]; then
   log "snapshotting index -> $WORKSPACE/msmarco-index.tar (this is large; sequential)"
-  tar -C "$LILBEE_DATA" -cf "$WORKSPACE/msmarco-index.tar" data \
+  # config.toml and the manifest travel with the index: a shard restored from
+  # this tar has to carry the identity and slice the merge verifies.
+  tar -C "$LILBEE_DATA" -cf "$WORKSPACE/msmarco-index.tar" data config.toml shard_manifest.json \
     && log "index tar: $(du -h "$WORKSPACE/msmarco-index.tar" | cut -f1)" \
     || log "WARN: index tar to volume failed"
 else

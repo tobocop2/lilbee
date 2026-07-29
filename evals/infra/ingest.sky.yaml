@@ -71,6 +71,13 @@ envs:
   INGEST_MAX_INFLIGHT: "0"
   EMBED_BATCH_SEQUENCES: "64"
   LILBEE_POD_HOURLY_USD: "3.20"
+  # Partitioned run: this host takes the global passage indices i where
+  # i %% SHARD_COUNT == SHARD_INDEX, and merge_shards.py combines the shards
+  # afterwards. SHARD_COUNT=1 is the single-host run. Launch shard k with
+  # --env SHARD_INDEX=k --env SHARD_COUNT=n; every shard needs the same
+  # SHARD_COUNT or the merge refuses the set.
+  SHARD_INDEX: "0"
+  SHARD_COUNT: "1"
 setup: |
   set -euo pipefail
   export PATH="$HOME/.local/bin:$PATH"
@@ -130,6 +137,7 @@ run: |
   export WORK_DIR=/root MIN_DISK_GB=120
   export LILBEE_BIN=/root/lilbee_venv/bin/lilbee PYBIN=/root/lilbee_venv/bin/python
   export EMBED_MODEL DATASET_ID SMOKE_N BACKEND INGEST_MAX_INFLIGHT EMBED_BATCH_SEQUENCES
+  export SHARD_INDEX SHARD_COUNT
   # One embed server per detected card. Pinned to the real count (not lilbee's
   # VRAM auto-guess, which reserves room for a query fleet this run never calls).
   export LILBEE_EMBED_REPLICAS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
@@ -143,7 +151,11 @@ run: |
   # Milestone checkpoint of the growing index to a private HF dataset (insurance
   # against pod loss on the volume-free run); backgrounded for the whole sync.
   # Uses HF_TOKEN from the launch secret to upload.
+  # SMOKE_N caps the GLOBAL corpus, so it is the total the milestones divide by
+  # when set; checkpoint.sh then takes this shard's share of it.
   LILBEE_DATA="$LILBEE_DATA" PYBIN="$PYBIN" LOG_DIR="$LOG_DIR" \
     CHECKPOINT_REPO="beeberg/msmarco-ingest-checkpoint" \
+    CHECKPOINT_TOTAL="$([ "$SMOKE_N" -gt 0 ] && echo "$SMOKE_N" || echo 8841823)" \
+    SHARD_INDEX="$SHARD_INDEX" SHARD_COUNT="$SHARD_COUNT" \
     nohup bash /opt/evals/infra/checkpoint.sh > "$LOG_DIR/checkpoint.log" 2>&1 &
   bash /opt/evals/infra/ingest.sh

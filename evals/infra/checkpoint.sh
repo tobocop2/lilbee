@@ -19,11 +19,29 @@ set -uo pipefail
 
 : "${LILBEE_DATA:=/root/msmarco/data}"
 : "${CHECKPOINT_REPO:=beeberg/msmarco-ingest-checkpoint}"
-: "${CHECKPOINT_TOTAL:=8841823}"        # MS MARCO passage count; % thresholds key off it
+: "${CHECKPOINT_TOTAL:=8841823}"        # GLOBAL corpus size (or SMOKE_N when smoking)
+: "${SHARD_INDEX:=0}"
+: "${SHARD_COUNT:=1}"
 : "${PYBIN:=/root/lilbee_venv/bin/python}"
 : "${LOG_DIR:=/root/bench/logs}"
 : "${CHECKPOINT_POLL_S:=120}"           # how often to read the row count
 mkdir -p "$LOG_DIR"
+
+# Milestones are a fraction of what THIS host ingests, which on a sharded run is
+# its slice and not the whole corpus. Keying them off the global size means a
+# 2-shard host tops out near 50%, so the 75% and 100% milestones never fire, the
+# final checkpoint is never pushed and the watcher never exits. This is the same
+# count ingest.sh materialises: the global indices i with i % COUNT == INDEX.
+SHARD_TOTAL=$(( (CHECKPOINT_TOTAL + SHARD_COUNT - 1 - SHARD_INDEX) / SHARD_COUNT ))
+
+# Each shard needs its own slot in the repo. Every host pushing to one rolling
+# path means the last writer wins and a pod loss restores another shard's index.
+# A single-host run keeps the original path so existing checkpoints still load.
+if [ "$SHARD_COUNT" -gt 1 ]; then
+  CKPT_PATH="shard-${SHARD_INDEX}of${SHARD_COUNT}/checkpoint-latest.tar"
+else
+  CKPT_PATH="checkpoint-latest.tar"
+fi
 CKPT_LOG="$LOG_DIR/checkpoint.log"
 
 log() { printf '[ckpt %s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$CKPT_LOG"; }
@@ -49,13 +67,15 @@ push_checkpoint() {
     || { log "WARN: tar failed for ${tag}"; return 1; }
   log "milestone ${tag}: tar=$(du -h "$tar" | cut -f1); uploading to ${CHECKPOINT_REPO}"
   CKPT_TAR="$tar" CKPT_TAG="$tag" CKPT_ROWS="$n" CHECKPOINT_REPO="$CHECKPOINT_REPO" \
-    "$PYBIN" - <<'PY' 2>>"$CKPT_LOG" && log "milestone ${tag}: uploaded" || log "WARN: upload failed for ${tag}"
+    CKPT_PATH="$CKPT_PATH" \
+    "$PYBIN" - <<'PY' 2>>"$CKPT_LOG" && log "milestone ${tag}: uploaded to ${CKPT_PATH}" || log "WARN: upload failed for ${tag}"
 import os
 from huggingface_hub import HfApi
 api = HfApi()
 api.upload_file(
     path_or_fileobj=os.environ["CKPT_TAR"],
-    path_in_repo="checkpoint-latest.tar",   # single rolling slot: newest wins, storage stays bounded
+    # One rolling slot per shard: newest wins, storage stays bounded.
+    path_in_repo=os.environ["CKPT_PATH"],
     repo_id=os.environ["CHECKPOINT_REPO"],
     repo_type="dataset",
     commit_message=f"checkpoint {os.environ['CKPT_TAG']} at {os.environ['CKPT_ROWS']} rows",
@@ -64,12 +84,13 @@ PY
   rm -f "$tar"
 }
 
-log "checkpoint watcher up: repo=${CHECKPOINT_REPO} total=${CHECKPOINT_TOTAL} poll=${CHECKPOINT_POLL_S}s"
+log "checkpoint watcher up: repo=${CHECKPOINT_REPO} shard=${SHARD_INDEX}/${SHARD_COUNT} \
+target=${SHARD_TOTAL} of global ${CHECKPOINT_TOTAL} poll=${CHECKPOINT_POLL_S}s"
 done_25=0 done_50=0 done_75=0 done_100=0
 while :; do
   N=$(rows); N=${N:-0}
-  PCT=$(( N * 100 / CHECKPOINT_TOTAL ))
-  log "progress: ${N}/${CHECKPOINT_TOTAL} (${PCT}%)"
+  PCT=$(( N * 100 / SHARD_TOTAL ))
+  log "progress: ${N}/${SHARD_TOTAL} (${PCT}%)"
   if [ "$done_25" = 0 ] && [ "$PCT" -ge 25 ]; then push_checkpoint "25pct" "$N"; done_25=1; fi
   if [ "$done_50" = 0 ] && [ "$PCT" -ge 50 ]; then push_checkpoint "50pct" "$N"; done_50=1; fi
   if [ "$done_75" = 0 ] && [ "$PCT" -ge 75 ]; then push_checkpoint "75pct" "$N"; done_75=1; fi
