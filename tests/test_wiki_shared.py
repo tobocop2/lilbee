@@ -168,15 +168,21 @@ class TestIsValidLabel:
         assert is_valid_label("E-mail") is True
 
     @pytest.mark.parametrize(
-        "label",
-        ["Model\nController", "Model\tController", "Model\rController"],
-        ids=["newline", "tab", "carriage-return"],
+        ("label", "valid"),
+        [
+            ("Model\nController", False),
+            ("Model\rController", False),
+            ("Chevrolet\u00a0Caprice", True),
+            ("Chevrolet\u2009Caprice", True),
+        ],
+        ids=["newline", "carriage-return", "non-breaking-space", "thin-space"],
     )
-    def test_rejects_a_label_carrying_a_line_break(self, label: str):
-        """A label becomes a heading, a slug, and part of a single-line marker
-        comment. One crossing a line break truncates that comment, leaving a
-        file no reader classifies as a placeholder."""
-        assert is_valid_label(label) is False
+    def test_only_a_line_break_disqualifies_a_label(self, label: str, valid: bool):
+        """A label crossing a line break truncates the single-line marker comment
+        it gets interpolated into, leaving a file no reader classifies as a
+        placeholder. Exotic spaces do not split a line, and PDF text is full of
+        them, so rejecting those would drop real entities."""
+        assert is_valid_label(label) is valid
 
     def test_strips_whitespace_before_checking(self):
         assert is_valid_label("  ab  ") is False

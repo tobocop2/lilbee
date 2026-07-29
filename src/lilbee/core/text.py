@@ -51,8 +51,8 @@ def is_valid_label(label: str) -> bool:
       ``70-l`` after punctuation cleanup),
     - hyphen-prefixed fragments (``-answers``: trailing text from
       markdown bracket-link extraction),
-    - labels carrying a line break or tab, which an extractor span can pick
-      up across a wrapped line.
+    - labels carrying a line break, which an extractor span can pick up
+      across a wrapped line.
 
     Requires the first non-whitespace character to be a Unicode letter
     so any non-alpha prefix (digit, bracket, hyphen, punctuation) is
@@ -69,8 +69,10 @@ def is_valid_label(label: str) -> bool:
     # A label is one line: it becomes a heading, a slug, and part of the
     # single-line marker comments the drafts surface classifies by. An
     # extractor span crossing a line break would truncate a marker mid-comment,
-    # leaving a file no reader recognises as a placeholder.
-    if any(ch.isspace() and ch != " " for ch in stripped):
+    # leaving a file no reader recognises as a placeholder. Only line breaks are
+    # rejected, not every exotic space: PDF text is full of non-breaking and
+    # thin spaces, and those do not split a line.
+    if "\n" in stripped or "\r" in stripped:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False
