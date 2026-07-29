@@ -96,19 +96,26 @@ class TestRoundTrip:
         path.write_text(payload, encoding="utf-8")
         assert load_stub_index() == {}
 
-    def test_an_index_whose_rows_are_all_unusable_reads_as_unreadable(self):
-        """It claims entries and none survived parsing, so it is damaged, not a
-        corpus that names nothing. Reporting it empty would let an incremental
-        refresh build on it and drop everything else."""
+    @pytest.mark.parametrize(
+        ("payload", "readable"),
+        [
+            ({"version": 2, "stubs": [{"slug": "broken"}, {"nope": 1}]}, False),
+            ({"version": 2}, False),
+            ({"version": 2, "stubs": "garbage"}, False),
+            ({"version": 2, "stubs": []}, True),
+        ],
+        ids=["all-rows-bad", "no-stubs-key", "stubs-not-a-list", "genuinely-empty"],
+    )
+    def test_damaged_and_empty_indexes_are_told_apart(self, payload: dict, readable: bool):
+        """Only an explicit empty list describes a corpus that names nothing.
+        The rest are damaged, and calling them empty would let an incremental
+        refresh build on them and drop everything the sync did not touch."""
         from lilbee.wiki.stubs import _read_stub_index
 
         path = stub_index_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"version": 2, "stubs": [{"slug": "broken"}, {"nope": 1}]}),
-            encoding="utf-8",
-        )
-        assert _read_stub_index() is None
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert (_read_stub_index() is not None) is readable
 
     def test_a_bad_row_is_dropped_without_losing_the_rest(self):
         path = stub_index_path()

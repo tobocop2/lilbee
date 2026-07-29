@@ -142,12 +142,17 @@ def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None
     if not isinstance(payload, dict) or payload.get("version") != _INDEX_VERSION:
         log.info("Wiki stub index version mismatch")
         return None
-    rows = payload.get("stubs", [])
+    rows = payload.get("stubs")
+    if not isinstance(rows, list):
+        # Every index this code writes carries a stubs list, so one without it
+        # is damaged rather than describing a corpus that names nothing.
+        log.warning("Wiki stub index has no stubs list")
+        return None
     parsed = [_stub_from_dict(row) for row in rows if isinstance(row, dict)]
     if rows and not any(stub is not None for stub in parsed):
-        # The file claims entries but none survived parsing, so it is damaged
-        # rather than describing a corpus that names nothing. Reporting it as
-        # empty would let an incremental refresh build on it and drop the rest.
+        # It claims entries and none survived parsing. Reporting that as empty
+        # would let an incremental refresh build on it and drop everything the
+        # current sync did not touch.
         log.warning("Wiki stub index holds no usable rows")
         return None
     return {stub.slug: stub for stub in parsed if stub is not None}
