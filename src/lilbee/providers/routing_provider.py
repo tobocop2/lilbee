@@ -22,9 +22,8 @@ from lilbee.providers.base import (
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
-from lilbee.providers.roles import ROLE_REGISTRY, OcrBackend, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-from lilbee.vision import PageText
 
 if TYPE_CHECKING:
     from lilbee.providers.warm_progress import WarmProgress
@@ -86,6 +85,10 @@ class RoutingProvider(LLMProvider):
     def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(cfg.embedding_model)
         return self._pick_backend(ref).embed(texts)
+
+    def count_tokens(self, text: str) -> int:
+        ref = parse_model_ref(cfg.embedding_model)
+        return self._pick_backend(ref).count_tokens(text)
 
     @overload
     def chat(
@@ -176,33 +179,6 @@ class RoutingProvider(LLMProvider):
         """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
         ref = parse_model_ref(model)
         return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
-
-    def pdf_ocr(
-        self,
-        path: Path,
-        *,
-        backend: OcrBackend,
-        model: str = "",
-        per_page_timeout_s: float | None = None,
-        quiet: bool = True,
-        on_progress: Callable[..., None] | None = None,
-    ) -> list[PageText]:
-        """Dispatch by ``model``'s ref prefix, same rules as :meth:`vision_ocr`.
-
-        Hosted refs reach :class:`SdkLLMProvider`, which raises
-        ``NotImplementedError`` for PDF OCR; native refs reach the
-        local llama-server engine. ``model`` is empty when the caller wants
-        the configured ``cfg.vision_model`` to drive the dispatch.
-        """
-        ref = parse_model_ref(model or cfg.vision_model)
-        return self._pick_backend(ref).pdf_ocr(
-            path,
-            backend=backend,
-            model=model,
-            per_page_timeout_s=per_page_timeout_s,
-            quiet=quiet,
-            on_progress=on_progress,
-        )
 
     def vision_slot_capacity(self) -> int | None:
         """Delegate to the local fleet, but never build it just to size the fan-out."""

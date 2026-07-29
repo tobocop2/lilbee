@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import os
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
 
 if TYPE_CHECKING:
-    from kreuzberg import ChunkingConfig
+    from xberg import ChunkingConfig, ChunkSizing, EmbeddingConfig, TableChunkingMode
 
 # Char->token ratio for English.
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
-# Kreuzberg silently falls back to a non-semantic path when embedding is None.
-_SEMANTIC_EMBEDDING_PRESET = "fast"
-_DISABLE_PROGRESS_ENV = "HF_HUB_DISABLE_PROGRESS_BARS"
 
 
 def _char_budget() -> tuple[int, int]:
@@ -28,35 +25,86 @@ def _char_budget() -> tuple[int, int]:
     return max_chars, max_overlap
 
 
-def _show_download_progress() -> bool:
-    """Honor lilbee's global progress-bar suppression (set for quiet/JSON modes).
+def _size_params() -> tuple[int, int, ChunkSizing | None]:
+    """Return (max, overlap, sizing) for the plain and heading chunkers.
 
-    lilbee defaults ``HF_HUB_DISABLE_PROGRESS_BARS`` on in ``__init__``; mirroring
-    it here keeps the embedding-model download silent instead of hardcoding a bar
-    that would corrupt JSON output.
+    With ``cfg.token_sizing`` on, the budget is a raw token count and ``sizing``
+    routes to lilbee's registered tokenizer backend, so ``chunk_size`` is a real
+    token ceiling. Otherwise the character heuristic with no sizing (xberg's default
+    character sizer). The semantic chunker does not use this -- it sizes by
+    characters and ignores ChunkSizing."""
+    config = active_config()
+    if config.token_sizing:
+        from xberg import ChunkSizing
+
+        from lilbee.data.ingest.types import TokenizerBackendName
+
+        overlap = min(config.chunk_overlap, config.chunk_size // 2)
+        return (
+            config.chunk_size,
+            overlap,
+            ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE),
+        )
+    max_chars, max_overlap = _char_budget()
+    return max_chars, max_overlap, None
+
+
+def _semantic_embedding_config() -> EmbeddingConfig:
+    """EmbeddingConfig for semantic chunking. Boundary-detection embeddings route to
+    lilbee's embedder, registered as xberg's plugin backend in
+    ``lilbee.data.xberg_backends`` (embedding binding), so the model that vectorizes chunks for
+    retrieval is the one that decides where they split."""
+    from xberg import EmbeddingConfig, EmbeddingModelType
+
+    # Lazy: importing ingest.types at module scope cycles back through chunk.py.
+    from lilbee.data.ingest.types import EmbeddingBackendName
+
+    model = EmbeddingModelType.plugin(EmbeddingBackendName.LILBEE)
+    return EmbeddingConfig(model=model)
+
+
+def _table_chunking() -> TableChunkingMode | None:
+    """Header-repeating table splits when table extraction is on, else None for
+    xberg's default.
+
+    REPEAT_HEADER carries the header row into every piece of a long table, so
+    no chunk holds headerless rows.
     """
-    return os.environ.get(_DISABLE_PROGRESS_ENV, "0").lower() not in ("1", "true")
+    config = active_config()
+    if not config.table_extraction:
+        return None
+    from xberg import TableChunkingMode
+
+    return TableChunkingMode.REPEAT_HEADER
 
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
-    """Build a kreuzberg ChunkingConfig from the current cfg."""
-    from kreuzberg import ChunkingConfig, EmbeddingConfig, EmbeddingModelType
-
-    max_chars, max_overlap = _char_budget()
+    """Build an xberg ChunkingConfig from the current cfg."""
+    from xberg import ChunkingConfig
 
     config = active_config()
     if use_semantic and config.semantic_chunking:
-        return ChunkingConfig(
+        # The semantic chunker sizes by characters and ignores ChunkSizing, so it
+        # stays on the character budget regardless of cfg.token_sizing.
+        max_chars, max_overlap = _char_budget()
+        chunking = ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
-            embedding=EmbeddingConfig(
-                model=EmbeddingModelType.preset(_SEMANTIC_EMBEDDING_PRESET),
-                show_download_progress=_show_download_progress(),
-            ),
+            embedding=_semantic_embedding_config(),
             topic_threshold=config.topic_threshold,
-            max_chars=max_chars,
-            max_overlap=max_overlap,
+            max_characters=max_chars,
+            overlap=max_overlap,
         )
-    return ChunkingConfig(max_chars=max_chars, max_overlap=max_overlap)
+    else:
+        max_size, max_overlap, sizing = _size_params()
+        chunking = ChunkingConfig(
+            max_characters=max_size,
+            overlap=max_overlap,
+            sizing=sizing,
+        )
+    # table_chunking has no "unset" value on xberg's frozen ChunkingConfig, so the
+    # field is left at its default rather than overwritten with None.
+    mode = _table_chunking()
+    return chunking if mode is None else replace(chunking, table_chunking=mode)
 
 
 def chunk_text(
@@ -70,21 +118,24 @@ def chunk_text(
     if not text or not text.strip():
         return []
 
-    from kreuzberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
+    from xberg import ChunkingConfig, ExtractionConfig
+
+    from lilbee.data.xberg_extract import extract_document
 
     if heading_context:
-        max_chars, max_overlap = _char_budget()
+        max_size, max_overlap, sizing = _size_params()
         chunking = ChunkingConfig(
-            max_chars=max_chars,
-            max_overlap=max_overlap,
+            max_characters=max_size,
+            overlap=max_overlap,
+            sizing=sizing,
             chunker_type=_MARKDOWN_CHUNKER,
-            prepend_heading_context=True,  # type: ignore[call-arg]
+            prepend_heading_context=True,
         )
     else:
         chunking = build_chunking_config(use_semantic=use_semantic)
 
     config = ExtractionConfig(chunking=chunking)
-    result = extract_bytes_sync(text.encode("utf-8"), mime_type, config=config)
-    if result.chunks:
-        return [c.content for c in result.chunks]
+    doc = extract_document(text.encode("utf-8"), mime_type, config=config)
+    if doc.chunks:
+        return [c.content for c in doc.chunks]
     return []
