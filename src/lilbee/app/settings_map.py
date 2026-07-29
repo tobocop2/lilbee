@@ -619,6 +619,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Must keep {topic}, {source_list}, and {chunks_text}."
         ),
     ),
+    "wiki_entity_page_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group=SettingGroup.WIKI,
+        help_text=(
+            "Prompt for a single page generated on demand from one subject's "
+            "chunks across every source naming it. "
+            "Must keep {topic}, {source_list}, and {chunks_text}."
+        ),
+    ),
     "wiki_entity_batch_prompt": SettingDef(
         str,
         nullable=False,

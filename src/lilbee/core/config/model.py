@@ -827,6 +827,32 @@ class Config(BaseSettings):
     # {source}, {entity_list}, {chunks_text}, {concept_instruction}.
     # {concept_instruction} is filled with a concept-curation paragraph
     # when concepts are requested, or the empty string otherwise.
+    # Single-entity page written on demand from that entity's chunks across
+    # every source naming it. The batched prompt above cannot serve this: it
+    # writes every section for one source in one call.
+    wiki_entity_page_prompt: str = ConfigField(
+        writable=True,
+        default=(
+            "You are a knowledge compiler. Given source chunks that mention "
+            "ONE subject, write a wiki page about that subject in markdown.\n\n"
+            "Rules:\n"
+            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+            "3. Write only what the chunks support. Mark anything you infer with "
+            "[*inference*].\n"
+            "4. Use blockquotes (>) for directly cited facts.\n"
+            "5. When sources disagree, say so and cite both.\n"
+            "6. End with a citation block in this format:\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+            '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+            "Subject: {topic}\n\n"
+            "Sources:\n{source_list}\n\n"
+            "Chunks:\n{chunks_text}\n\n"
+            "Write the page now. Start with a heading naming the subject."
+        ),
+    )
     wiki_entity_batch_prompt: str = ConfigField(
         writable=True,
         default=(
