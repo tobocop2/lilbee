@@ -1017,13 +1017,21 @@ class TestWikiLint:
                     message="unmarked claim",
                     issue_type=IssueType.UNMARKED_CLAIM,
                 ),
+                LintIssue(
+                    wiki_source="wiki/concepts/gearbox.md",
+                    severity=IssueSeverity.WARNING,
+                    message="unmarked claim",
+                    issue_type=IssueType.UNMARKED_CLAIM,
+                ),
             ]
         )
         monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
         result = wiki_lint()
-        assert result["total"] == 2
+        # One error and two warnings, not one apiece: equal counts could be
+        # crossed and an agent gating on errors would read the warning total.
+        assert result["total"] == 3
         assert result["errors"] == 1
-        assert result["warnings"] == 1
+        assert result["warnings"] == 2
 
     def test_lint_single_page(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
