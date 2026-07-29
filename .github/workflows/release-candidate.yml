@@ -388,6 +388,23 @@ jobs:
                   name, ver, rest = whl.name.split("-", 2)
                   shutil.copy(whl, out / f"{name}-{ver}-1.{backend}-{rest}")
           PY
+      # These cells are continue-on-error, so a build that produces nothing is
+      # invisible in the run conclusion. The linux vulkan wheel was missing for
+      # days that way. List what actually arrived so a gap is legible.
+      - name: Report which multi-gpu wheels arrived
+        shell: bash
+        run: |
+          {
+            echo "### Multi-gpu wheels attached"
+            echo
+            for d in multigpu-wheels-staging/wheel-multigpu-*; do
+              [ -d "$d" ] || continue
+              echo "- ${d##*/wheel-multigpu-}"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          count=$(find multigpu-wheels -name '*.whl' | wc -l | tr -d ' ')
+          echo "::notice::multi-gpu wheels attached: ${count}"
+
       - name: Attach multi-gpu wheels to the release
         uses: softprops/action-gh-release@v3
         with:

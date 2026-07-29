@@ -16,12 +16,39 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/../../engine-versions.env"
 
 linux_install_vulkan() {
-  # spirv-headers provides <spirv/unified1/spirv.hpp> (the `spv` namespace);
-  # ggml-vulkan.cpp needs it to patch SPIR-V, and apt's libvulkan-dev does
-  # not pull it in. The LunarG SDK bundles it, which is why Windows builds
-  # without this. Without it the build fails: "'spv' has not been declared".
+  # The SDK, not apt: jammy carries no glslc (shaderc lands in the archive only
+  # from noble), and apt's libvulkan-dev does not pull in spirv-headers, which
+  # ggml-vulkan.cpp needs for the `spv` namespace ("'spv' has not been declared").
+  # The LunarG SDK carries both, which is why the manylinux and Windows cells
+  # already build against it.
+  local version="${ENGINE_VULKAN_SDK_VERSION:?ENGINE_VULKAN_SDK_VERSION is required}"
   sudo apt-get update
-  sudo apt-get install -y libvulkan-dev libvulkan1 glslc spirv-headers
+  sudo apt-get install -y libvulkan1
+  # Download into a runner-writable directory the workflow can cache; /opt needs
+  # sudo, which actions/cache cannot restore into. The unpack is cheap, the
+  # download is not.
+  local cache_dir="${VULKAN_SDK_CACHE_DIR:-${HOME}/.cache/lilbee}"
+  local tarball="${cache_dir}/vulkansdk-linux-x86_64-${version}.tar.xz"
+  mkdir -p "${cache_dir}"
+  if [ ! -s "${tarball}" ]; then
+    curl -fL -o "${tarball}" \
+      "https://sdk.lunarg.com/sdk/download/${version}/linux/vulkansdk-linux-x86_64-${version}.tar.xz"
+  fi
+  sudo mkdir -p /opt/vulkan
+  sudo tar -xf "${tarball}" -C /opt/vulkan --strip-components=1
+  # Fail here rather than at the cmake step, where a missing glslc reads as a
+  # shader-compilation error instead of a toolchain one.
+  [ -x /opt/vulkan/x86_64/bin/glslc ] || {
+    echo "vulkan sdk ${version} unpacked without glslc" >&2
+    exit 1
+  }
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "VULKAN_SDK=/opt/vulkan/x86_64"
+      echo "LD_LIBRARY_PATH=/opt/vulkan/x86_64/lib:${LD_LIBRARY_PATH:-}"
+    } >> "${GITHUB_ENV}"
+    echo "/opt/vulkan/x86_64/bin" >> "${GITHUB_PATH}"
+  fi
 }
 
 linux_install_cuda() {
