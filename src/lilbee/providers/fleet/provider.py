@@ -1672,7 +1672,7 @@ class FleetProvider:
         return [_VisionReplica(client, fallback_slots) for client in clients]
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision
-    # backend (see data.ingest.vision_ocr_backend); this provider only exposes
+    # backend (see data.extract.backends.vision_ocr); this provider only exposes
     # single-image vision_ocr, which that backend calls.
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:

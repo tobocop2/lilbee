@@ -33,7 +33,7 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
-from lilbee.data import xberg_extract as _xberg_extract
+from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
@@ -320,7 +320,7 @@ def _reset_xberg_extract_globals():
     """Start every test with the real extraction functions.
 
     ``extract_document`` (sync) resolves ``aextract_document`` via module-global
-    lookup, so a ``mock.patch`` of ``lilbee.data.xberg_extract.aextract_document``
+    lookup, so a ``mock.patch`` of ``lilbee.data.extract.xberg.aextract_document``
     intercepts both the async and the sync path -- and the sync path is what
     ``chunk_text`` uses. The ingest/handler suites patch that global heavily; under
     the parallel run a patch occasionally stays active into an unrelated test, and

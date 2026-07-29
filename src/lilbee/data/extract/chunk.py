@@ -52,8 +52,8 @@ def _size_params() -> tuple[int, int, ChunkSizing | None]:
 def _semantic_embedding_config() -> EmbeddingConfig:
     """EmbeddingConfig for semantic chunking. Boundary-detection embeddings route to
     lilbee's embedder, registered as xberg's plugin backend in
-    ``lilbee.data.xberg_backends`` (embedding binding), so the model that vectorizes chunks for
-    retrieval is the one that decides where they split."""
+    ``lilbee.data.extract.backends.registry`` (embedding binding), so the model that
+    vectorizes chunks for retrieval is the one that decides where they split."""
     from xberg import EmbeddingConfig, EmbeddingModelType
 
     # Lazy: importing ingest.types at module scope cycles back through chunk.py.
@@ -120,7 +120,7 @@ def chunk_text(
 
     from xberg import ChunkingConfig, ExtractionConfig
 
-    from lilbee.data.xberg_extract import extract_document
+    from .xberg import extract_document
 
     if heading_context:
         max_size, max_overlap, sizing = _size_params()

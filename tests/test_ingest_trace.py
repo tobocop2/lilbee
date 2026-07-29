@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from lilbee.data.ingest.trace import (
+from lilbee.data.extract.trace import (
     ExtractionTrace,
     configure_from_env,
     trace_extraction,

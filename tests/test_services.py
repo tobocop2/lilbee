@@ -29,7 +29,7 @@ class TestSyncVisionOcrBackend:
         return reg, unreg
 
     def test_registers_when_model_set_and_absent(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
         reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
@@ -43,7 +43,7 @@ class TestSyncVisionOcrBackend:
         ``reset_services`` shuts the old provider down; if sync left the prior
         registration in place, xberg would keep routing OCR to the dead provider.
         """
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
@@ -52,7 +52,7 @@ class TestSyncVisionOcrBackend:
         reg.assert_called_once()
 
     def test_unregisters_when_model_cleared(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "vision_model", "")
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
@@ -61,7 +61,7 @@ class TestSyncVisionOcrBackend:
         reg.assert_not_called()
 
     def test_noop_when_no_model_and_absent(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "vision_model", "")
         reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
@@ -95,7 +95,7 @@ class TestSyncEmbeddingBackend:
         return reg, unreg
 
     def test_registers_when_absent(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         reg, unreg = self._patch_xberg(monkeypatch, listed=[])
         sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
@@ -105,7 +105,7 @@ class TestSyncEmbeddingBackend:
     def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
         """A rebuilt provider must replace the stale binding: unregister then re-register,
         else xberg keeps embedding through the shut-down provider after reset_services."""
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
         sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
@@ -114,7 +114,7 @@ class TestSyncEmbeddingBackend:
 
     def test_registered_backend_routes_to_provider_embed(self, monkeypatch):
         """The registered backend must call provider.embed and report cfg.embedding_dim."""
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
         monkeypatch.setattr(cfg, "embedding_dim", 7)
@@ -144,7 +144,7 @@ class TestSyncTokenizerBackend:
         return reg, unreg
 
     def test_registers_when_enabled_and_absent(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, unreg = self._patch_xberg(monkeypatch, listed=[])
@@ -155,7 +155,7 @@ class TestSyncTokenizerBackend:
     def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
         """A rebuilt provider must replace the stale binding: unregister then re-register,
         else xberg keeps counting through the shut-down provider after reset_services."""
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
@@ -164,7 +164,7 @@ class TestSyncTokenizerBackend:
         reg.assert_called_once()
 
     def test_unregisters_when_disabled(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", False)
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
@@ -173,7 +173,7 @@ class TestSyncTokenizerBackend:
         reg.assert_not_called()
 
     def test_noop_when_disabled_and_absent(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", False)
         reg, unreg = self._patch_xberg(monkeypatch, listed=[])
@@ -182,7 +182,7 @@ class TestSyncTokenizerBackend:
         unreg.assert_not_called()
 
     def test_registered_backend_routes_to_provider_count_tokens(self, monkeypatch):
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, _unreg = self._patch_xberg(monkeypatch, listed=[])

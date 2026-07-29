@@ -13,11 +13,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
-from lilbee.data.chunk import build_chunking_config, chunk_text
-from lilbee.data.ingest.batch_extract import active_extract_batcher
 from lilbee.data.ingest.offload import to_ingest_thread
 from lilbee.data.ingest.title import derive_title, source_meta_from_extraction
-from lilbee.data.ingest.trace import ExtractionTrace, trace_extraction, trace_log
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -26,7 +23,6 @@ from lilbee.data.ingest.types import (
     ExtractMode,
     OcrBackendName,
 )
-from lilbee.data.ingest.vision_ocr_backend import backend_options_for, ocr_request
 from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -34,6 +30,11 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     noop_callback,
 )
+
+from .backends.vision_ocr import backend_options_for, ocr_request
+from .batch import active_extract_batcher
+from .chunk import build_chunking_config, chunk_text
+from .trace import ExtractionTrace, trace_extraction, trace_log
 
 if TYPE_CHECKING:
     from xberg import (
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
         PdfConfig,
     )
 
-    from lilbee.data.ingest.batch_extract import ExtractBatcher
+    from .batch import ExtractBatcher
 
 log = logging.getLogger(__name__)
 
@@ -321,8 +322,8 @@ def make_extract_batcher() -> ExtractBatcher | None:
     config = active_config()
     if not config.batch_extraction:
         return None
-    from lilbee.data.ingest.batch_extract import ExtractBatcher
-    from lilbee.data.xberg_extract import aextract_batch
+    from .batch import ExtractBatcher
+    from .xberg import aextract_batch
 
     return ExtractBatcher(
         size=config.batch_extraction_size,
@@ -343,7 +344,7 @@ async def extract_batching() -> AsyncGenerator[None]:
     if batcher is None:
         yield
         return
-    from lilbee.data.ingest.batch_extract import reset_active_batcher, set_active_batcher
+    from .batch import reset_active_batcher, set_active_batcher
 
     token = set_active_batcher(batcher)
     try:
@@ -468,7 +469,7 @@ async def ingest_document(
     extraction title/authors/date and is derived even when extraction yields nothing.
     """
     del quiet
-    from lilbee.data.xberg_extract import aextract_document
+    from .xberg import aextract_document
 
     page_seen = 0
 

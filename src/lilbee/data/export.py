@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from lilbee.data.ingest.extract import _title_scope, chunk_and_embed_pages
+from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.ingest.title import derive_title
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback

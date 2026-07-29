@@ -280,7 +280,7 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
     if "vision_model" in changed_role_fields:
         # Register/unregister lilbee's xberg OCR backend on any vision-model
         # change (REST/MCP/TUI/CLI all funnel here), not just the REST route.
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         sync_xberg_backend(BackendKind.OCR, services.provider)
     role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
@@ -329,7 +329,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         # toggled (via any settings path), so chunk sizing picks up the change
         # without waiting for a services rebuild.
         from lilbee.app.services import peek_services
-        from lilbee.data.xberg_backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         services = peek_services()
         if services is not None:

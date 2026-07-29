@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
-from lilbee.data.xberg_backends import BackendKind, XbergBinding, register_binding
 from lilbee.vision import resolve_ocr_prompt
+
+from .registry import BackendKind, XbergBinding, register_binding
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

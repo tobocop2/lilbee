@@ -72,7 +72,7 @@ _LLM_RERANK_NO_VERDICT_ERROR = (
 _EMBED_N_SEQ_MAX = 64
 # Estimate a chunk's token count from its character length so the bulk embed
 # path packs sub-batches without a /tokenize round-trip per input. The factor is
-# held below the corpus average (data.chunk.CHARS_PER_TOKEN, 4 for Latin text)
+# held below the corpus average (data.extract.chunk.CHARS_PER_TOKEN, 4 for Latin text)
 # so the estimate over-counts tokens and a sub-batch never packs past the
 # server's n_batch (== token_cap). Rerank does not estimate: its
 # query</s></s>candidate pairs are token-dense (the separator is several tokens

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
-from lilbee.data.code_chunker import is_code_file
+from lilbee.data.extract.code_chunker import is_code_file
 from lilbee.data.ingest.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE
 
 log = logging.getLogger(__name__)

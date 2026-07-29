@@ -19,7 +19,7 @@ import contextvars
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from lilbee.data.xberg_extract import BatchItem
+from .xberg import BatchItem
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

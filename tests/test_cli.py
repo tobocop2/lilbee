@@ -3729,7 +3729,7 @@ class TestTemporaryOcrConfig:
     def test_ocr_timeout_override(self):
         """temporary_ocr_config overrides the effective timeout without mutating cfg."""
         from lilbee.app.ingest import temporary_ocr_config
-        from lilbee.data.ingest.extract import _effective_ocr_timeout
+        from lilbee.data.extract.document import _effective_ocr_timeout
 
         original = cfg.ocr_timeout
         with temporary_ocr_config(ocr_timeout=99.0):

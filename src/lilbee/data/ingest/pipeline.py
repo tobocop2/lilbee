@@ -27,6 +27,13 @@ from rich.progress import (
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
+from lilbee.data.extract.document import (
+    extract_batching,
+    ingest_document,
+    ingest_markdown,
+    warn_if_table_model_ignored,
+)
+from lilbee.data.extract.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.adaptive import (
     AdaptiveController,
     ResizableGate,
@@ -37,12 +44,6 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
-from lilbee.data.ingest.extract import (
-    extract_batching,
-    ingest_document,
-    ingest_markdown,
-    warn_if_table_model_ignored,
-)
 from lilbee.data.ingest.offload import (
     embed_inflight_target,
     max_workers,
@@ -56,7 +57,6 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_reasons,
 )
 from lilbee.data.ingest.title import derive_title
-from lilbee.data.ingest.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,

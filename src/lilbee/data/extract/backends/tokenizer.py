@@ -14,7 +14,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from lilbee.data.ingest.types import TokenizerBackendName
-from lilbee.data.xberg_backends import BackendKind, XbergBinding, register_binding
+
+from .registry import BackendKind, XbergBinding, register_binding
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -189,7 +189,7 @@ def build_services(
     done here.
 
     Side effect: binds *provider* into xberg's process-global OCR, embedding and
-    tokenizer backends (see :mod:`lilbee.data.xberg_backends`) so scanned-page OCR,
+    tokenizer backends (see :mod:`lilbee.data.extract.backends.registry`) so scanned-page OCR,
     semantic-chunk boundary detection, and token-budgeted chunk sizing route through
     it. xberg's registry is a single global slot, so the most recently built container
     wins; this is why binding lives here (every container, singleton or per-instance
@@ -213,7 +213,7 @@ def build_services(
     # OCR, semantic-chunk boundary detection and token-budgeted sizing route through it.
     # Bound here (not only in get_services) so the library API's per-instance containers
     # bind too; each backend reads live cfg and re-binds when the provider is rebuilt.
-    from lilbee.data.xberg_backends import sync_xberg_backends
+    from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)
     registry = registry or ModelRegistry(config.models_dir)
