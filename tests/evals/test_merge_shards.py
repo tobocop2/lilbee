@@ -440,3 +440,143 @@ def test_the_merge_never_materialises_a_whole_table(tmp_path, monkeypatch):
     whole_tables = [name for name, _ in materialised if name not in SINGLETON_TABLES]
     assert not whole_tables, f"merge read these tables whole instead of streaming: {whole_tables}"
     assert all(n <= 1 for _, n in materialised)
+
+
+# ------------------------------------------------- malformed shard descriptions
+
+
+def test_a_corrupt_manifest_refuses_rather_than_being_half_read(tmp_path):
+    # A truncated upload or an interrupted write leaves valid-looking JSON on
+    # disk. Refusing beats guessing which half is trustworthy.
+    roots = two_shards(tmp_path)
+    (Path(roots[1]) / "shard_manifest.json").write_text('{"shard_index": 1, "shard_c')
+    with pytest.raises(MergeRefusedError, match="unreadable manifest"):
+        check(roots)
+
+
+def test_a_manifest_missing_a_required_field_refuses(tmp_path):
+    # An older ingest.sh wrote fewer fields. Merging on the ones present would
+    # skip whichever guardrail the missing field feeds.
+    roots = two_shards(tmp_path)
+    path = Path(roots[1]) / "shard_manifest.json"
+    manifest = json.loads(path.read_text())
+    del manifest["embedding_dim"]
+    del manifest["schema_version"]
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(MergeRefusedError, match="missing embedding_dim, schema_version"):
+        check(roots)
+
+
+def test_a_shard_index_outside_the_declared_set_refuses(tmp_path):
+    # shard 3 of a 2-shard set cannot be a real slice of anything.
+    roots = two_shards(tmp_path)
+    path = Path(roots[1]) / "shard_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["shard_index"] = 3
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(MergeRefusedError, match=r"shard_index 3 outside 0\.\.1"):
+        check(roots)
+
+
+def test_a_shard_with_no_meta_table_at_all_refuses(tmp_path):
+    # Distinct from a _meta that disagrees: here there is nothing to check the
+    # manifest's claim against, so the claim cannot be trusted.
+    roots = two_shards(tmp_path)
+    db = lancedb.connect(os.path.join(roots[1], "data", "lancedb"))
+    db.drop_table("_meta")
+    path = Path(roots[1]) / "shard_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["table_rows"].pop("_meta", None)
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(MergeRefusedError, match="no _meta row"):
+        check(roots)
+
+
+def test_a_meta_table_that_exists_but_holds_no_row_refuses(tmp_path):
+    roots = two_shards(tmp_path)
+    db = lancedb.connect(os.path.join(roots[1], "data", "lancedb"))
+    schema = db.open_table("_meta").schema
+    db.drop_table("_meta")
+    db.create_table("_meta", schema=schema)
+    path = Path(roots[1]) / "shard_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["table_rows"]["_meta"] = 0
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(MergeRefusedError, match="no _meta row"):
+        check(roots)
+
+
+def test_one_shard_is_not_a_merge(tmp_path):
+    a = build_shard(tmp_path / "s0", shard_index=0, shard_count=1, doc_ids=["d0"])
+    with pytest.raises(MergeRefusedError, match="at least 2 shards"):
+        merge([str(a)], str(tmp_path / "merged"))
+
+
+# ------------------------------------------------------- uneven table presence
+
+
+def test_a_table_only_one_shard_has_still_merges(tmp_path):
+    # Optional tables (citations, memories) exist only where something wrote
+    # them. The shard without one must contribute no rows rather than abort.
+    roots = two_shards(tmp_path)
+    db = lancedb.connect(os.path.join(roots[0], "data", "lancedb"))
+    db.create_table(
+        "_citations",
+        pa.table({"source": pa.array(["00000/d0.txt"]), "cite": pa.array(["ref"])}),
+    )
+    path = Path(roots[0]) / "shard_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["table_rows"]["_citations"] = 1
+    path.write_text(json.dumps(manifest))
+
+    totals = merge(roots, str(tmp_path / "merged"))
+    assert totals["_citations"] == 1
+    assert totals["chunks"] == 6
+
+
+def test_a_singleton_table_no_shard_has_is_simply_absent(tmp_path):
+    # _entity_schema only exists once entities have been induced. Its absence
+    # must not fabricate an empty row.
+    roots = two_shards(tmp_path)
+    totals = merge(roots, str(tmp_path / "merged"))
+    assert "_entity_schema" not in totals
+
+
+def test_a_table_every_shard_has_but_none_filled_survives_as_an_empty_table(tmp_path):
+    # A shard that created a table without writing rows still has to appear in
+    # the merged index with its schema, or the next writer infers a new one.
+    roots = two_shards(tmp_path)
+    for root in roots:
+        db = lancedb.connect(os.path.join(root, "data", "lancedb"))
+        db.create_table(
+            "_memories",
+            schema=pa.schema([("source", pa.utf8()), ("note", pa.utf8())]),
+        )
+        path = Path(root) / "shard_manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["table_rows"]["_memories"] = 0
+        path.write_text(json.dumps(manifest))
+
+    totals = merge(roots, str(tmp_path / "merged"))
+    assert totals["_memories"] == 0
+    db = lancedb.connect(str(tmp_path / "merged" / "data" / "lancedb"))
+    assert db.open_table("_memories").schema.names == ["source", "note"]
+
+
+def test_an_empty_singleton_table_contributes_no_row(tmp_path):
+    # _entity_schema created but never written: the merge must not invent a row
+    # for a schema that was never induced.
+    roots = two_shards(tmp_path)
+    for root in roots:
+        db = lancedb.connect(os.path.join(root, "data", "lancedb"))
+        db.create_table(
+            "_entity_schema",
+            schema=pa.schema([("schema_json", pa.utf8()), ("updated_at", pa.utf8())]),
+        )
+        path = Path(root) / "shard_manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["table_rows"]["_entity_schema"] = 0
+        path.write_text(json.dumps(manifest))
+
+    totals = merge(roots, str(tmp_path / "merged"))
+    assert totals["_entity_schema"] == 0
