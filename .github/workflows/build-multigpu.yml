@@ -149,6 +149,15 @@ jobs:
           method: network
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
+      # The SDK tarball is the slow part of the Linux vulkan toolchain; the
+      # unpack into /opt is cheap. Keyed on engine-versions.env, which pins it.
+      - name: Cache Vulkan SDK download (Linux)
+        if: steps.engine.outputs.needs-build == 'true' && matrix.backend == 'vulkan' && runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lilbee
+          key: vulkan-sdk-${{ runner.os }}-${{ hashFiles('engine-versions.env') }}
+
       - name: Install Vulkan loader (Linux)
         if: steps.engine.outputs.needs-build == 'true' && matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
