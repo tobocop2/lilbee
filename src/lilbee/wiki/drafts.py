@@ -114,7 +114,11 @@ class UnindexedDraftError(DraftAcceptError):
 
 
 class BodylessDraftError(DraftAcceptError):
-    """Raised when a draft has no prose to publish, only frontmatter and citations."""
+    """Raised when a draft's body would index nothing.
+
+    Covers an empty body and a body that chunks to nothing on its own, such as
+    a lone heading, rule, or image.
+    """
 
 
 @dataclass
@@ -412,7 +416,8 @@ def accept_draft(
     Raises :class:`FileNotFoundError` when the draft does not exist,
     :class:`StaleDraftError` when the published counterpart is newer,
     :class:`UnverifiedDraftError` when no cited excerpt is still in its source,
-    and :class:`UnindexedDraftError` when the published body indexed no chunks.
+    :class:`BodylessDraftError` when the draft's body would index nothing, and
+    :class:`UnindexedDraftError` when the store write landed no rows anyway.
 
     Holds the wiki build mutex while publishing, so accepting a draft cannot
     interleave with a build, synthesis, or prune from another surface.
@@ -445,11 +450,11 @@ def accept_draft(
         records = _accepted_citations(clean, wiki_source, slug, store)
         content = _render_accepted_page(clean, records)
         _refuse_stale_draft(target, draft, slug, content)
-        _refuse_bodyless_draft(content, slug)
+        chunks = _refuse_bodyless_draft(content, slug)
 
         atomic_write_text(target, content)
         store.replace_citations_for_wiki(wiki_source, records)
-        reindexed = index_wiki_page(content, wiki_source, store, config)
+        reindexed = index_wiki_page(content, wiki_source, store, config, chunks)
         if not reindexed:
             # Backstop on the store write, not on the draft's content: the
             # accept-time guard above already refused anything that chunks to
@@ -481,7 +486,7 @@ def _accept_target(wiki_root: Path, target_slug: str, slug: str, raw: str) -> Pa
     return wiki_root / fallback_subdir / f"{target_slug}.md"
 
 
-def _refuse_bodyless_draft(content: str, slug: str) -> None:
+def _refuse_bodyless_draft(content: str, slug: str) -> list[str]:
     """Refuse a draft whose only content is frontmatter and citations.
 
     Checked before the published page is overwritten, and against what the
@@ -489,12 +494,17 @@ def _refuse_bodyless_draft(content: str, slug: str) -> None:
     ("#", "---"). Indexing such a page clears the rows of whatever it replaced,
     and the old order reported that as an index failure, so every retry
     destroyed the published page again and could never succeed.
+
+    Returns the chunks so the caller indexes without chunking the same body a
+    second time inside the build lock.
     """
-    if not indexable_chunks(content):
+    chunks = indexable_chunks(content)
+    if not chunks:
         raise BodylessDraftError(
             f"draft {slug} has nothing to index: its body produces no searchable "
             "text; reject it or edit the draft to add content"
         )
+    return chunks
 
 
 def _refuse_stale_draft(target: Path, draft: Path, slug: str, content: str) -> None:
