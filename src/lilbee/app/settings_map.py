@@ -520,7 +520,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Enable the wiki layer (cited concept and entity pages). "
             "GPU-heavy: a build spends one LLM call per source document, "
-            "so a large library takes hours. Nothing generates until you wikify"
+            "so a large library takes hours. Enabling this generates nothing "
+            "on its own: you wikify explicitly, or turn on wiki_auto_update"
         ),
     ),
     "wiki_auto_update": SettingDef(
