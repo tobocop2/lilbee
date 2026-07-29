@@ -267,6 +267,33 @@ def _wiki_lock_held() -> bool:
     return not free[0]
 
 
+class TestFrontmatterWithMarkers:
+    """A draft carries marker comments above its frontmatter.
+
+    Every reader that parses the raw file (browse.build_page_info, and so the
+    drafts listing) would otherwise see no frontmatter at all: no title, no
+    source count, no generated_at.
+    """
+
+    _PAGE = "---\ntitle: Brakes\nsources: [a.md]\n---\n# Brakes\n"
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "",
+            "<!-- origin: concepts -->\n\n",
+            "<!-- DRIFT: 50% content changed; origin: concepts -->\n\n",
+            "<!-- PENDING -->\n<!-- DRIFT: 50% content changed -->\n\n",
+        ],
+        ids=["plain", "origin", "drift", "stacked"],
+    )
+    def test_frontmatter_survives_a_leading_marker_run(self, prefix: str):
+        assert parse_frontmatter(prefix + self._PAGE)["title"] == "Brakes"
+
+    def test_a_body_with_no_frontmatter_still_parses_as_empty(self):
+        assert parse_frontmatter("<!-- origin: concepts -->\n\n# Brakes\n") == {}
+
+
 class TestWikiBuildMutex:
     """Every mutating wiki entry point holds one process-wide lock while it
     writes, so an MCP build, an HTTP prune, a CLI synthesize and a TUI accept

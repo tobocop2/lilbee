@@ -293,6 +293,17 @@ def assemble_content(
     return full
 
 
+def indexable_chunks(content: str) -> list[str]:
+    """The chunks a page's body would index as; empty means nothing to index.
+
+    One definition of "indexable" for the indexer and for the accept-time
+    refusal, because a non-empty body can still chunk to nothing ("#", "---")
+    and the two must not disagree about that.
+    """
+    body = extract_body(content).strip()
+    return chunk_text(body, mime_type="text/markdown", use_semantic=True) if body else []
+
+
 def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
@@ -321,8 +332,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store, config: Config
         return 0
 
     predicate = f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'"
-    body = extract_body(content).strip()
-    chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True) if body else []
+    chunks = indexable_chunks(content)
     if not chunks:
         store.clear_table(CHUNKS_TABLE, predicate)
         return 0
