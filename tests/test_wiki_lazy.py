@@ -188,6 +188,24 @@ class TestGenerateStubPage:
             generate_stub_page("ford", store, cfg)
         assert gen.call_args.kwargs["chunks"][0].source == "z-loud.md"
 
+    def test_a_subject_whose_refs_were_subtracted_still_generates(self):
+        """The cap can hand every ref to a source that is later re-indexed,
+        leaving an entry with sources but no refs. The sources are the truth,
+        so generation reads them rather than reporting nothing to write from."""
+        stub = WikiStub(
+            slug="ford",
+            label="Ford",
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            source_mentions=(("b.md", 5),),
+            chunk_refs=(),
+        )
+        save_stub_index({"ford": stub})
+        store = _store_with({"b.md": [make_search_chunk("b.md", 0), make_search_chunk("b.md", 1)]})
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
+            assert generate_stub_page("ford", store, cfg) == Path("p.md")
+        assert len(gen.call_args.kwargs["chunks"]) == 2
+
     def test_defaults_to_the_global_config(self):
         save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
         store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})

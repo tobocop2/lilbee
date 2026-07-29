@@ -53,6 +53,11 @@ def _chunks_for_stub(stub: WikiStub, store: Store) -> tuple[dict[str, list[Searc
     wanted: dict[str, set[int]] = {}
     for source, index in stub.chunk_refs:
         wanted.setdefault(source, set()).add(index)
+    if not wanted:
+        # Subtracting a re-indexed source can empty the refs while leaving real
+        # evidence: the cap may have given every ref to the source that went.
+        # The recorded sources are the truth, so fall back to reading them.
+        wanted = {source: set() for source in stub.sources}
 
     # Most-mentioning source first, so when the context budget truncates it
     # drops the documents with least to say rather than the alphabetically
@@ -64,11 +69,12 @@ def _chunks_for_stub(stub: WikiStub, store: Store) -> tuple[dict[str, list[Searc
     resolved = 0
     for source in order:
         available = {c.chunk_index: c for c in store.get_chunks_by_source(source)}
-        kept = [available[i] for i in sorted(wanted[source]) if i in available]
+        indexes = wanted[source] or set(available)
+        kept = [available[i] for i in sorted(indexes) if i in available]
         resolved += len(kept)
         if kept:
             by_source[source] = kept
-    return by_source, len(stub.chunk_refs) - resolved
+    return by_source, max(0, len(stub.chunk_refs) - resolved)
 
 
 def _resolve(slug: str, stubs: dict[str, WikiStub]) -> WikiStub | None:

@@ -226,9 +226,10 @@ class TestRefresh:
         result = self._run([_entity("ford", [("a.md", 0)])])
         assert result == {}
 
-    def test_a_stub_left_with_no_evidence_is_dropped(self):
-        """Its refs all belonged to the source being re-indexed, so there is
-        nothing left to write a page from and it must not be offered as one."""
+    def test_a_subject_its_other_sources_still_name_survives_losing_its_refs(self):
+        """The cap can hand every ref to the source being re-indexed, so
+        subtracting it empties the refs while b.md's five mentions remain.
+        Dropping the entry would lose a subject the corpus still names."""
         cfg.wiki_entity_min_mentions = 1
         save_stub_index(
             {
@@ -242,7 +243,8 @@ class TestRefresh:
                 )
             }
         )
-        assert self._run([], sources={"a.md"}) == {}
+        result = self._run([], sources={"a.md"})
+        assert result["ford"].sources == ("b.md",)
 
     def test_a_source_that_stopped_naming_an_entity_drops_it(self):
         """Re-ingesting a document that no longer mentions an entity must not
@@ -342,9 +344,9 @@ class TestDropSourcesFromIndex:
         drop_sources_from_index({"a.md"})
         assert load_stub_index() == {}
 
-    def test_a_subject_whose_evidence_all_belonged_to_it_is_dropped(self):
-        """The same rule refresh applies: sources left with no chunk refs
-        cannot back a page, so the entry must not survive."""
+    def test_a_subject_another_document_still_names_survives(self):
+        """Removing a.md empties the refs the cap had given it, but b.md still
+        names the subject four times, so the entry must stay."""
         save_stub_index(
             {
                 "ford": WikiStub(
@@ -358,7 +360,7 @@ class TestDropSourcesFromIndex:
             }
         )
         drop_sources_from_index({"a.md"})
-        assert load_stub_index() == {}
+        assert load_stub_index()["ford"].sources == ("b.md",)
 
     def test_an_absent_index_is_not_created(self):
         drop_sources_from_index({"a.md"})
@@ -366,14 +368,16 @@ class TestDropSourcesFromIndex:
 
 
 class TestUngeneratedStubs:
-    def test_an_archived_page_does_not_read_as_unwritten(self, isolated_env: Path):
-        """Prune retired it when its sources went; listing it as unwritten
-        would regenerate what prune just archived, on every sync."""
+    def test_an_archived_page_still_reads_as_unwritten(self, isolated_env: Path):
+        """Prune retires a page when the sources it cited go, while other
+        documents can still name the subject. Nothing lists or restores
+        archive/, so suppressing the stub would make the subject unreachable
+        from either pane."""
         wiki_root = isolated_env / cfg.wiki_dir
         archived = wiki_root / WikiSubdir.ARCHIVE / WikiSubdir.ENTITIES / "ford.md"
         archived.parent.mkdir(parents=True, exist_ok=True)
         archived.write_text("# Ford\n", encoding="utf-8")
-        assert ungenerated_stubs({"ford": _stub("ford")}, wiki_root) == []
+        assert [s.slug for s in ungenerated_stubs({"ford": _stub("ford")}, wiki_root)] == ["ford"]
 
     def test_a_pending_marker_still_reads_as_unwritten(self, isolated_env: Path):
         """A marker records that generation failed to produce the section, so

@@ -296,6 +296,36 @@ class TestSync:
         mock_batch.assert_called()
         mock_extract_file.assert_not_called()
 
+    async def test_a_move_subtracts_the_old_name_from_the_wiki_index(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The index is keyed by source name. Without the old key the move
+        leaves it there forever: its mentions double-count and its dead chunk
+        refs occupy the per-subject cap ahead of live evidence."""
+        import shutil
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "a.txt").write_text("Hello world. This document will move.")
+        await sync()
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        seen: list[set] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            seen.append(sources or set())
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        (isolated_env / "sub").mkdir()
+        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+
+        await sync()
+
+        assert seen, "the post-sync refresh did not run"
+        assert {"a.txt", "sub/a.txt"} <= seen[-1]
+
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
 

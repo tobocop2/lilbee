@@ -662,6 +662,10 @@ class _StreamedPlan:
     # Processed files' content hashes, for the skip markers written after the run.
     pending_hashes: dict[str, str] = field(default_factory=dict)
     relocated: list[str] = field(default_factory=list)
+    # Old keys of relocated sources. The wiki index is keyed by source name, so
+    # without these a move leaves the old name in it forever: its mentions
+    # double-count and its dead chunk refs occupy the per-subject cap.
+    relocated_from: list[str] = field(default_factory=list)
     unchanged: int = 0
     planned: int = 0
 
@@ -687,6 +691,7 @@ async def _absorb_shard(
             _retry_after_lock_timeout, lambda: store.relocate_sources(relocations)
         )
         entries, relocated = _apply_moves(detected, entries, plan.added)
+        state.relocated_from.extend(m.old for m in detected)
         for name in relocated:
             state.added.pop(name, None)
         state.relocated.extend(relocated)
@@ -1032,7 +1037,9 @@ async def sync(
     await _run_post_ingest_passes(
         _store,
         indexed_anything=bool(state.planned or relocated),
-        touched=set(added) | set(updated) | set(relocated),
+        # The old names of relocated sources ride along so the wiki index
+        # subtracts them in the same pass that merges their new ones.
+        touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),
         cancel=cancel,
     )
 

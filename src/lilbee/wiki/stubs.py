@@ -253,15 +253,14 @@ def _recut_refs(stub: WikiStub, cap: int) -> WikiStub:
 def _usable(stubs: dict[str, WikiStub], config: Config) -> dict[str, WikiStub]:
     """Drop the entries that cannot back a page.
 
-    One rule for every writer of the index. A stub below the corpus-wide
-    mention floor should never have had a page, and a stub whose refs all
-    belonged to a source that is gone has nothing left to write one from;
-    either would sit in the browse tree offering a page that fails.
+    One rule for every writer of the index: a subject below the corpus-wide
+    mention floor should never have had a page. Refs are deliberately not part
+    of the test. Subtracting a source can empty them while leaving real
+    evidence behind, because the cap may have given every ref to the source
+    that went, and generation falls back to the surviving sources' chunks.
     """
     threshold = config.wiki_entity_min_mentions
-    return {
-        slug: stub for slug, stub in stubs.items() if stub.mentions >= threshold and stub.chunk_refs
-    }
+    return {slug: stub for slug, stub in stubs.items() if stub.mentions >= threshold}
 
 
 def refresh_stub_index(
@@ -330,12 +329,17 @@ def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
     A page the faithfulness gate routed to drafts/ has been written and is
     waiting on a human. Offering it as unwritten invites generating it again
     and again, each time for another LLM call, while the draft sits there.
+
+    An archived page does not count. Prune retires a page when the sources it
+    cited are deleted, while the subject can still be named by documents that
+    survive, and nothing lists or restores archive/. Suppressing the stub would
+    make the subject unreachable from either pane; listing it costs nothing,
+    since generation only ever runs when a user asks for it.
     """
     if (wiki_root / f"{stub.wiki_slug}.md").is_file():
         return True
     draft = wiki_root / WikiSubdir.DRAFTS / f"{stub.slug}.md"
-    if draft.is_file() and not _is_placeholder(draft):
-        return True
+    return draft.is_file() and not _is_placeholder(draft)
     # Prune moved it here when its sources went. Offering it as unwritten would
     # regenerate what prune just retired, on the next sync and every one after.
     return (wiki_root / WikiSubdir.ARCHIVE / f"{stub.wiki_slug}.md").is_file()
