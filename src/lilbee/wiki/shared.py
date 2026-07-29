@@ -188,8 +188,8 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     while start < len(lines):
         stripped = lines[start].lstrip()
         is_marker = stripped.startswith("<!--")
-        is_gap_between_markers = seen_marker and not stripped
-        if not (is_marker or is_gap_between_markers):
+        is_blank_after_marker = seen_marker and not stripped
+        if not (is_marker or is_blank_after_marker):
             break
         seen_marker = seen_marker or is_marker
         start += 1

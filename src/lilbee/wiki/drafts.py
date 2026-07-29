@@ -116,9 +116,9 @@ class UnindexedDraftError(DraftAcceptError):
 class BodylessDraftError(DraftAcceptError):
     """Raised when a draft's body would index nothing.
 
-    Covers an empty body and a body carrying no text of its own, such as a bare
-    "#", a horizontal rule, or an image. A heading with words in it indexes
-    normally.
+    Covers an empty body and a body whose markup produces no indexable text,
+    such as a bare "#", a horizontal rule, or an image. A heading with words in
+    it indexes normally.
     """
 
 
