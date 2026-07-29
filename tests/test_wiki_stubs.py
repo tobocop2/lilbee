@@ -147,6 +147,23 @@ class TestRefresh:
         result = self._run([_entity("ford", [("a.md", 0)])], sources={"a.md"})
         assert sorted(result) == ["ford", "gm"]
 
+    def test_an_index_that_is_genuinely_empty_does_not_force_a_rebuild(self):
+        """A corpus that names nothing indexes to an empty but valid file.
+        Treating that as unreadable would re-scan every chunk of every
+        document on every sync, forever, and re-arm itself each time."""
+        save_stub_index({})
+        store = MagicMock()
+        store.get_sources.return_value = []
+        store.get_chunks_by_source.return_value = []
+        extractor = MagicMock()
+        extractor.extract.return_value = []
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            refresh_stub_index(store, cfg, sources={"a.md"})
+        store.get_sources.assert_not_called()
+
     def test_the_incremental_pass_does_not_pre_filter_by_the_threshold(self):
         """The extractor drops entities under min_mentions from whatever chunks
         it is given. On an incremental pass that is one document's chunks, so

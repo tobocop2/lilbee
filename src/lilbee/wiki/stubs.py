@@ -124,22 +124,32 @@ def stub_index_path(config: Config | None = None) -> Path:
     return config.data_root / config.wiki_dir / STUB_INDEX_FILENAME
 
 
-def load_stub_index(config: Config | None = None) -> dict[str, WikiStub]:
-    """Read the index, keyed by slug. Empty when absent or unreadable."""
+def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None:
+    """The index as stored, or None when it cannot be read.
+
+    None and an empty dict mean different things to an incremental refresh:
+    one has nothing to build on and must rebuild, the other is a corpus that
+    genuinely indexes to nothing and must not re-scan on every sync.
+    """
     path = stub_index_path(config)
     if not path.is_file():
-        return {}
+        return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        log.warning("Wiki stub index unreadable; treating as empty", exc_info=True)
-        return {}
+        log.warning("Wiki stub index unreadable", exc_info=True)
+        return None
     if not isinstance(payload, dict) or payload.get("version") != _INDEX_VERSION:
-        log.info("Wiki stub index version mismatch; treating as empty")
-        return {}
+        log.info("Wiki stub index version mismatch")
+        return None
     rows = payload.get("stubs", [])
     stubs = (_stub_from_dict(row) for row in rows if isinstance(row, dict))
     return {stub.slug: stub for stub in stubs if stub is not None}
+
+
+def load_stub_index(config: Config | None = None) -> dict[str, WikiStub]:
+    """Read the index, keyed by slug. Empty when absent or unreadable."""
+    return _read_stub_index(config) or {}
 
 
 def save_stub_index(stubs: dict[str, WikiStub], config: Config | None = None) -> None:
@@ -288,14 +298,16 @@ def refresh_stub_index(
         config = cfg
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
-        stored = load_stub_index(config)
-        if sources is not None and not stored:
-            # Nothing to subtract from and nothing to merge into, whether the
-            # file is missing, unreadable, or from another version. Proceeding
-            # would index only the changed sources and call that the whole
-            # corpus, so rebuild instead.
-            log.info("No usable wiki stub index; rebuilding it in full")
+        stored = _read_stub_index(config)
+        if sources is not None and stored is None:
+            # Nothing to subtract from or merge into, whether the file is
+            # missing, unreadable, or from another version. Proceeding would
+            # index only the changed sources and save that as the whole corpus.
+            # An index that reads as genuinely empty is not this case, or a
+            # corpus that names nothing would re-scan on every sync forever.
+            log.info("No readable wiki stub index; rebuilding it in full")
             sources = None
+        stored = stored or {}
         if sources is None:
             chunks = _corpus_chunks(store)
             surviving: dict[str, WikiStub] = {}
