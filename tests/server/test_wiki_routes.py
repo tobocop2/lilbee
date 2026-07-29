@@ -470,6 +470,29 @@ class TestWikiEnabled:
         assert body["archived"] == 0
         assert body["records"][0]["action"] == "reconciled"
 
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("POST", "/api/wiki/build"),
+            ("PATCH", "/api/wiki/update"),
+            ("POST", "/api/wiki/synthesize"),
+        ],
+    )
+    async def test_streaming_routes_declare_the_sse_media_type(self, method: str, path: str):
+        """A union return annotation resolves to JSON and every SSE client
+        rejects the stream, so the media type is asserted per route."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request(method, path, headers=_h())
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+    async def test_build_dry_run_stays_json(self):
+        """The dry run shares the streaming route, so it carries its own media
+        type rather than inheriting the stream's."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", params={"dry_run": True}, headers=_h())
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "entities" in resp.json()
+
     async def test_wipe_reports_a_failed_row_delete(self, monkeypatch: pytest.MonkeyPatch):
         """The client must be able to tell a completed wipe from one that left
         the rows behind, since those rows keep answering searches."""
@@ -543,7 +566,7 @@ class TestWikiEnabled:
         assert on_loop == [False]
 
     async def test_build_streams_progress_then_a_done_summary(self, monkeypatch):
-        def fake_build(config, on_progress):
+        def fake_build(config, on_progress, cancel):
             on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
             on_progress(
                 EventType.WIKI_PAGE,
@@ -571,7 +594,7 @@ class TestWikiEnabled:
         stats.record_citations(rendered=2, dropped=1)
         monkeypatch.setattr(
             "lilbee.server.handlers.wiki.run_full_build",
-            lambda config, on_progress: {
+            lambda config, on_progress, cancel: {
                 "paths": ["wiki/concepts/x.md"],
                 "entities": 3,
                 "count": 1,
@@ -620,7 +643,7 @@ class TestWikiEnabled:
         """The build is CPU- and IO-bound, so it runs in a worker thread."""
         on_loop: list[bool] = []
 
-        def fake_build(config, on_progress):
+        def fake_build(config, on_progress, cancel):
             on_loop.append(_on_the_event_loop())
             return {"paths": [], "entities": 0, "count": 0}
 
@@ -631,7 +654,7 @@ class TestWikiEnabled:
         assert on_loop == [False]
 
     async def test_build_stream_reports_a_failed_run_as_an_error_event(self, monkeypatch):
-        def fake_build(config, on_progress):
+        def fake_build(config, on_progress, cancel):
             raise RuntimeError("provider unreachable")
 
         monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
@@ -644,7 +667,7 @@ class TestWikiEnabled:
     async def test_update_streams_the_same_build(self, monkeypatch):
         monkeypatch.setattr(
             "lilbee.server.handlers.wiki.run_full_build",
-            lambda config, on_progress: {"paths": [], "entities": 0, "count": 0},
+            lambda config, on_progress, cancel: {"paths": [], "entities": 0, "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.patch("/api/wiki/update", headers=_h())
@@ -652,7 +675,7 @@ class TestWikiEnabled:
         assert _sse_events(resp.text) == [("done", {"paths": [], "entities": 0, "count": 0})]
 
     async def test_synthesize_streams_progress_then_a_done_summary(self, monkeypatch):
-        def fake_synthesize(config, on_progress):
+        def fake_synthesize(config, on_progress, cancel):
             on_progress(
                 EventType.WIKI_PAGE,
                 WikiPageEvent(label="typing", pages=1, current=1, total=1),
@@ -670,7 +693,7 @@ class TestWikiEnabled:
     async def test_synthesize_no_clusters_still_ends_with_done(self, monkeypatch):
         monkeypatch.setattr(
             "lilbee.server.handlers.wiki.run_full_synthesize",
-            lambda config, on_progress: {"paths": [], "count": 0},
+            lambda config, on_progress, cancel: {"paths": [], "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/synthesize", headers=_h())

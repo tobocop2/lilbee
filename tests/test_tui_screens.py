@@ -4260,6 +4260,25 @@ async def test_command_provider_wikify_action():
             start.assert_called_once_with(app)
 
 
+async def test_command_provider_wipe_wiki_action_with_wiki_off(tmp_path):
+    """The palette is the only TUI route to the wipe once the wiki is off: the
+    wiki view and its W binding are dropped from the nav in exactly that state."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    cfg.wiki = False
+    cfg.data_root = tmp_path
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        assert "Delete wiki" in [c[0] for c in provider._get_commands()]
+        with patch("lilbee.cli.tui.screens.wiki.confirm_wiki_wipe") as confirm:
+            provider._action_wipe_wiki()
+            confirm.assert_called_once_with(app)
+
+
 async def test_command_provider_retry_skipped_action(tmp_path):
     """Palette 'Retry skipped documents' clears the marker file and starts a sync."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -8659,7 +8678,11 @@ class TestStartWikiWipe:
             patch("lilbee.cli.tui.screens.wiki.call_from_thread") as posted,
         ):
             target(MagicMock())
-        assert fake_app.task_bar.reload_wiki_screens in [c.args[1] for c in posted.call_args_list]
+        posted_fns = [c.args[1] for c in posted.call_args_list]
+        assert fake_app.task_bar.reload_wiki_screens in posted_fns
+        assert fake_app.notify in posted_fns
+        toast = next(c for c in posted.call_args_list if c.args[1] is fake_app.notify)
+        assert "2 pages" in toast.args[2]
 
     def test_failed_row_delete_fails_the_task(self):
         """Pages gone but rows left is not a completed wipe."""

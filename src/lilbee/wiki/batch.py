@@ -148,8 +148,12 @@ def archive_legacy_concept_pages(
             wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/{slug}.md"
             store.delete_by_source(wiki_source)
             if not store.delete_citations_for_wiki(wiki_source):
-                # Sentinel unwritten: the next build retries the migration.
+                # Sentinel unwritten: the next build retries the migration. Pages
+                # already moved this pass still need their inbound links unwrapped,
+                # since the retry only sees what is left in concepts/ and would
+                # never revisit them, leaving those links pointing at a 404.
                 log.warning("Citation delete failed for %s; migration will retry", wiki_source)
+                _unwrap_archived_links(wiki_root, archived_slugs)
                 return
             src.replace(dest)
             archived_slugs.append(slug)

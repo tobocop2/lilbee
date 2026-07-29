@@ -259,9 +259,9 @@ hundreds of LLM calls behind your back.
 
 Turning the wiki back off stops new pages being written, but the pages already
 generated stay on disk and their rows stay in the index. Remove them with
-`lilbee wiki wipe`, the `W` binding on the wiki screen, `DELETE /api/wiki`, or
-the `wiki_wipe` MCP tool. The TUI offers it for you when you switch the setting
-off. A wipe deletes only what the wiki generated; your documents are untouched.
+`lilbee wiki wipe`, the **Delete wiki** command in the TUI palette (or `W` on
+the wiki screen while the wiki is still on), `DELETE /api/wiki`, or the
+`wiki_wipe` MCP tool. The TUI offers it for you when you switch the setting off. A wipe deletes only what the wiki generated; your documents are untouched.
 While the wiki is off, generated pages are excluded from search results even if
 you never wipe them.
 

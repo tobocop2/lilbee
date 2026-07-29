@@ -45,6 +45,7 @@ from lilbee.wiki.persistence import (
     divert_concept_collision,
     divert_to_drafts,
     draft_source_names,
+    origin_marker,
     persist_and_finalize,
     subdir_from_wiki_source,
 )
@@ -276,7 +277,7 @@ def _write_draft_page(
             drafts_dir=drafts_dir,
             origin_subdir=page_type,
         )
-    atomic_write_text(draft_path, full_content)
+    atomic_write_text(draft_path, f"{origin_marker(page_type)}\n\n{full_content}")
     return draft_path
 
 

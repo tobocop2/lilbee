@@ -11,7 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from litestar import delete, get, patch, post
+from litestar import MediaType, Response, delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -270,7 +270,7 @@ async def wiki_wipe_route() -> WikiWipeResult:
 @post("/api/wiki/build")
 async def wiki_build_route(
     dry_run: bool = Parameter(query="dry_run", default=False),
-) -> Stream | WikiBuildDryRunResult:
+) -> Stream | Response[WikiBuildDryRunResult]:
     """Build the concept and entity wiki across all ingested sources.
 
     A build issues per-source LLM calls and embeddings and can run for a long
@@ -280,7 +280,10 @@ async def wiki_build_route(
     its own progress only once the first run finishes.
 
     ``dry_run=true`` answers with plain JSON instead: the NER entity candidates
-    a build would cover, with no LLM call made.
+    a build would cover, with no LLM call made. The dry run returns a Response
+    carrying its own media type, and the annotation says so: a union of Stream
+    and a bare model resolves the whole route to JSON, which breaks every SSE
+    client on the streaming arm.
     """
     _require_wiki()
     if dry_run:
@@ -288,16 +291,17 @@ async def wiki_build_route(
     return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
 
 
-async def _build_dry_run() -> WikiBuildDryRunResult:
+async def _build_dry_run() -> Response[WikiBuildDryRunResult]:
     """Extract entity candidates off the event loop and shape them for the wire."""
     from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE, preview_build_entities
 
     rows = await asyncio.to_thread(preview_build_entities, cfg)
-    return WikiBuildDryRunResult(
+    result = WikiBuildDryRunResult(
         entities=[WikiEntityCandidateResponse(**row) for row in rows],
         count=len(rows),
         note=DRY_RUN_CONCEPT_NOTE,
     )
+    return Response(result, media_type=MediaType.JSON)
 
 
 @patch("/api/wiki/update")

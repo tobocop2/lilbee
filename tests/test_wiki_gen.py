@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -264,8 +265,13 @@ class TestWikiGenerationOptions:
         assert wiki_generation_options(cfg)["seed"] == 99
 
     def test_applies_the_wiki_temperature_and_output_cap(self):
+        """Set the two temperatures apart first: they share the 0.1 default, so
+        asserting against cfg.wiki_temperature alone passes even if generation
+        reads the general chat temperature instead."""
+        cfg.wiki_temperature = 0.42
+        cfg.temperature = 0.9
         options = wiki_generation_options(cfg)
-        assert options["temperature"] == cfg.wiki_temperature
+        assert options["temperature"] == 0.42
         assert options["max_tokens"] == cfg.wiki_summary_max_tokens
 
 
@@ -1925,6 +1931,26 @@ class TestLegacyConceptsMigration:
         assert (wiki_root / "concepts" / "foo.md").exists()
         assert not (data_dir / ".phase-d-migrated").exists()
 
+    def test_a_partial_archive_still_unwraps_links_to_what_it_moved(self, tmp_path: Path):
+        """The retry only sees what is left in concepts/, so pages archived
+        before the failure are never revisited: their inbound links would point
+        at a 404 forever."""
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "aaa.md").write_text("original")
+        (wiki_root / "concepts" / "zzz.md").write_text("original")
+        (wiki_root / "entities").mkdir(parents=True)
+        (wiki_root / "entities" / "ref.md").write_text("See [[aaa]] and [[zzz]].")
+        store = MagicMock(spec=Store)
+        # Succeed for the first page (sorted order), fail on the second.
+        store.delete_citations_for_wiki.side_effect = [True, False]
+
+        archive_legacy_concept_pages(wiki_root, tmp_path / "data", store, cfg)
+
+        body = (wiki_root / "entities" / "ref.md").read_text()
+        assert "[[aaa]]" not in body
+        assert "[[zzz]]" in body
+
     def test_idempotent(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
@@ -1939,6 +1965,58 @@ class TestLegacyConceptsMigration:
         # Freshly written page stayed put.
         assert (wiki_root / "concepts" / "new.md").exists()
         store.delete_by_source.assert_called_once()
+
+
+class TestBuildCancellation:
+    """A cancelled run stops at the next boundary and releases the wiki mutex.
+
+    Without this a client that disconnects mid-stream leaves the worker
+    building the whole corpus while every other surface waits on the lock.
+    """
+
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["runs", "cancelled"])
+    def test_synthesis_stops_at_the_next_cluster(self, tmp_path: Path, cancelled: bool):
+        import threading
+
+        cfg.data_root = tmp_path
+        cancel = threading.Event()
+        if cancelled:
+            cancel.set()
+        clusterer = MagicMock()
+        clusterer.get_clusters.return_value = [
+            SimpleNamespace(label="typing", sources=["a.md", "b.md", "c.md"]),
+        ]
+
+        with patch("lilbee.wiki.generation._generate_for_cluster", return_value=None) as gen:
+            generate_synthesis_pages(
+                MagicMock(), MagicMock(spec=Store), clusterer, cfg, cancel=cancel
+            )
+
+        assert gen.called is not cancelled
+
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["runs", "cancelled"])
+    def test_build_stops_at_the_next_source(self, tmp_path: Path, cancelled: bool):
+        import threading
+
+        from lilbee.wiki.generation import build_wiki
+
+        cfg.data_root = tmp_path
+        cancel = threading.Event()
+        if cancelled:
+            cancel.set()
+        store = MagicMock(spec=Store)
+        # Enough chunks to clear wiki_batch_min_chunks, so the only thing that
+        # can stop the batch call is the cancel itself.
+        store.get_chunks_by_source.return_value = [MagicMock()] * (cfg.wiki_batch_min_chunks + 1)
+        store.get_sources.return_value = [
+            {"filename": "a.md", "chunk_count": cfg.wiki_batch_min_chunks},
+            {"filename": "b.md", "chunk_count": cfg.wiki_batch_min_chunks},
+        ]
+
+        with patch("lilbee.wiki.generation.generate_source_batch", return_value=[]) as batch:
+            build_wiki([], MagicMock(), store, cfg, cancel=cancel)
+
+        assert batch.called is not cancelled
 
 
 class TestUnwrapArchivedLinks:
@@ -1981,7 +2059,7 @@ class TestRunFullBuild:
             return ext
 
         def fake_build_wiki(
-            entities, provider, store, config, *, extract_concepts, on_progress, stats
+            entities, provider, store, config, *, extract_concepts, on_progress, stats, cancel
         ):
             captured["config"] = config
             return []
@@ -2043,7 +2121,7 @@ class TestRunFullSynthesize:
         def fake_get_services():
             return MagicMock()
 
-        def fake_generate(provider, store, clusterer, config, on_progress, stats):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats, cancel):
             captured["config"] = config
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
 
@@ -2063,7 +2141,7 @@ class TestRunSummaryStats:
         from lilbee.wiki.generation import run_full_build
 
         def fake_build_wiki(
-            entities, provider, store, config, *, extract_concepts, on_progress, stats
+            entities, provider, store, config, *, extract_concepts, on_progress, stats, cancel
         ):
             stats.record_published("wiki/concepts/brakes.md", 2)
             stats.record_drafted()
@@ -2096,7 +2174,7 @@ class TestRunSummaryStats:
     def test_synthesize_summary_and_log_carry_the_gate_stats(self, monkeypatch, tmp_path):
         from lilbee.wiki.generation import run_full_synthesize
 
-        def fake_generate(provider, store, clusterer, config, on_progress, stats):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats, cancel):
             stats.record_published("wiki/synthesis/typing.md", 3)
             stats.record_citations(rendered=3, dropped=0)
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
@@ -2169,7 +2247,8 @@ class TestPersistAndFinalizeDrafts:
         )
 
         assert page_path == target.wiki_root / WikiSubdir.DRAFTS / f"{target.slug}.md"
-        assert page_path.read_text().startswith("# Brakes")
+        # The leading origin marker records the page type accept should restore to.
+        assert "# Brakes" in page_path.read_text()
         _assert_no_store_writes(store)
         # A draft supersedes nothing, so its sources stay searchable.
         store.delete_by_source.assert_not_called()

@@ -187,6 +187,50 @@ class TestAcceptDraft:
         assert WikiSubdir.SUMMARIES in result.moved_to.parts
         assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
 
+    def test_bodyless_draft_leaves_the_published_page_intact(self, tmp_path: Path) -> None:
+        """A draft trimmed to frontmatter and citations indexes nothing. The
+        check runs before the write, because the old order overwrote the
+        published page and then reported an index failure whose suggested retry
+        repeated the same destruction and could never succeed."""
+        from lilbee.wiki.drafts import BodylessDraftError
+
+        wiki_root = tmp_path / "wiki"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(published, _draft_content("the published prose"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content(""))
+        store = MagicMock()
+
+        with pytest.raises(BodylessDraftError, match="no body"):
+            accept_draft("brakes", wiki_root, store)
+
+        assert "the published prose" in published.read_text()
+        store.replace_citations_for_wiki.assert_not_called()
+
+    def test_quality_gate_draft_accepts_into_its_own_page_type(self, tmp_path: Path) -> None:
+        """A first-build concept held only by the faithfulness gate has no
+        published counterpart, so without an origin marker of its own it would
+        land in summaries/, invisible to concept reuse and to the next build's
+        drift check, which then publishes a second copy."""
+        from lilbee.wiki.page import _write_draft_page
+
+        wiki_root = tmp_path / "wiki"
+        drafts_dir = wiki_root / WikiSubdir.DRAFTS
+        drafts_dir.mkdir(parents=True)
+        _write_draft_page(
+            draft_path=drafts_dir / "torque.md",
+            drafts_dir=drafts_dir,
+            slug="torque",
+            full_content=_draft_content("torque body"),
+            source_names=["manual.pdf"],
+            page_type=WikiSubdir.CONCEPTS,
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("torque", wiki_root, store)
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
+        published = (wiki_root / WikiSubdir.CONCEPTS / "torque.md").read_text()
+        assert "origin:" not in published
+
     def test_accepts_into_origin_subdir_when_no_published_counterpart(self, tmp_path: Path) -> None:
         # A concept page whose published counterpart was deleted drifts to a draft;
         # accepting it must restore it under concepts/, not misfile it to summaries/.
