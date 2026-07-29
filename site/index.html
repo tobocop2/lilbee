@@ -110,7 +110,7 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. lilbee runs and manages the models across every GPU you have, then talks to everything you point it at: your files, your code, and the web. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>. Every answer cites the source, it all runs on your own machine, and there's nothing else to set up.</h1>
-      <p class="sub">A built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your own GPU, on Metal, Vulkan, or CUDA. Any coding agent can also use it over MCP.</p>
+      <p class="sub">A built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your own GPU, on Metal, Vulkan, CUDA, or ROCm. Any coding agent can also use it over MCP.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -356,6 +356,14 @@
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
           <div class="install">
@@ -382,6 +390,14 @@
           <div class="install">
             <span class="prompt">$</span>
             <span class="cmd">uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/cu125/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
@@ -414,6 +430,14 @@
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">brew install tobocop2/lilbee/lilbee-rocm</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
           <div class="install">
@@ -440,6 +464,14 @@
           <div class="install">
             <span class="prompt">$</span>
             <span class="cmd">paru -S lilbee-cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">paru -S lilbee-rocm</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
@@ -472,6 +504,14 @@
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">docker run --device=/dev/kfd --device=/dev/dri --group-add video --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:rocm --help</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
           <p class="variant-note">no compat image; run the self-contained <a href="https://github.com/tobocop2/lilbee/releases/latest">lilbee-compat binary</a> instead.</p>
@@ -494,6 +534,14 @@
           <div class="install">
             <span class="prompt">$</span>
             <span class="cmd">nix run github:tobocop2/lilbee#lilbee-cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">nix run github:tobocop2/lilbee#lilbee-rocm</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
@@ -523,6 +571,14 @@
           <div class="install">
             <span class="prompt">$</span>
             <span class="cmd">flatpak install lilbee io.github.tobocop2.lilbee.cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">flatpak install lilbee io.github.tobocop2.lilbee.rocm</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
         </div>
@@ -657,6 +713,19 @@
           </div>
         </div>
 
+        <div class="binary-section rocm">AMD · ROCm</div>
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Linux x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64-rocm">download lilbee-linux-x86_64-rocm &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64-rocm -o lilbee &amp;&amp; chmod +x lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+
         <div class="binary-section compat">older CPU · no AVX2</div>
         <div class="binary-row">
           <div class="binary-row-h">
@@ -698,6 +767,10 @@
         <div class="variant cuda">
           <span class="variant-tag">NVIDIA · CUDA</span>
           <p class="variant-note">driven via Vulkan by default; for the CUDA path use pip or the <a href="https://github.com/tobocop2/lilbee/releases/latest">binary</a>.</p>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <p class="variant-note">Linux only. Use the <a href="https://github.com/tobocop2/lilbee/releases/latest">ROCm binary</a> or the pip / uv ROCm index instead.</p>
         </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
@@ -763,7 +836,7 @@
       <div class="caps">
         <div class="cap">
           <h3>runs local AI models itself</h3>
-          <p>Browse Hugging Face, pull a model, assign it to a role. lilbee runs it on Metal, Vulkan, or CUDA; you never point it at a server you set up.</p>
+          <p>Browse Hugging Face, pull a model, assign it to a role. lilbee runs it on Metal, Vulkan, CUDA, or ROCm; you never point it at a server you set up.</p>
         </div>
         <div class="cap">
           <h3>a real retrieval pipeline (RAG)</h3>
@@ -822,7 +895,7 @@
       <div class="faq">
         <details><summary>What is lilbee?</summary><p>lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up.</p></details>
         <details><summary>Is it really one program?</summary><p>Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library.</p></details>
-        <details><summary>Is lilbee a model manager? Do I need Ollama or LM Studio?</summary><p>lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead.</p></details>
+        <details><summary>Is lilbee a model manager? Do I need Ollama or LM Studio?</summary><p>lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, CUDA, or ROCm, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead.</p></details>
         <details><summary>Does my data leave my machine?</summary><p>No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one.</p></details>
         <details><summary>What can I search?</summary><p>Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
       </div>
