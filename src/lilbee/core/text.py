@@ -43,7 +43,7 @@ def make_slug(label: str) -> str:
     """
     # ``--`` is the reserved encoding for ``/``, so collapse whitespace first:
     # a double space would produce it and collide two entities onto one page.
-    slug = _WHITESPACE_RE.sub(" ", label.lower()).strip()
+    slug = collapse_whitespace(label.lower())
     slug = slug.replace("/", "--").replace(" ", "-")
     slug = _SLUG_CLEAN_RE.sub("", slug)
     return slug.strip("-")
@@ -83,7 +83,7 @@ def is_valid_label(label: str) -> bool:
     # splitlines because that is what those readers use, so the gate and they
     # agree on what a line break is. A non-breaking or thin space is not one,
     # and PDF text is full of both.
-    if len(stripped.splitlines()) > 1:
+    if "\n" in stripped or "\r" in stripped:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False

@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_WHITESPACE_RE = re.compile(r"\s+")
 
 # Pre-spaCy markdown-noise strippers. Compiled once at module scope so
 # the extractor's hot path does not recompile them per chunk. Match on
@@ -43,7 +42,7 @@ _NAV_CHROME_RE = re.compile(
 
 def _normalize(text: str) -> str:
     """Lowercase, strip, and collapse internal whitespace for dedup keys."""
-    return _WHITESPACE_RE.sub(" ", text.strip().lower())
+    return collapse_whitespace(text.lower())
 
 
 def pre_clean_for_ner(text: str) -> str:
