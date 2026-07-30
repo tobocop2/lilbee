@@ -33,11 +33,15 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
+from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 
+# Pristine extraction entry points, captured before any test can patch them.
+_PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
+_PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
 pytest_plugins = ["tests._hang_watchdog"]
 
@@ -312,6 +316,23 @@ def overlay_reads_config_toml(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_xberg_extract_globals():
+    """Start every test with the real extraction functions.
+
+    ``extract_document`` (sync) resolves ``aextract_document`` via module-global
+    lookup, so a ``mock.patch`` of ``lilbee.data.extract.xberg.aextract_document``
+    intercepts both the async and the sync path -- and the sync path is what
+    ``chunk_text`` uses. The ingest/handler suites patch that global heavily; under
+    the parallel run a patch occasionally stays active into an unrelated test, and
+    ``chunk_text`` then silently returns mock content ('Some extracted text.'),
+    a nondeterministic cross-test failure. Resetting the globals before each test
+    makes that leak impossible regardless of how a patch escaped. (bb-ql1)
+    """
+    _xberg_extract.extract_document = _PRISTINE_EXTRACT_DOCUMENT
+    _xberg_extract.aextract_document = _PRISTINE_AEXTRACT_DOCUMENT
+
+
+@pytest.fixture(autouse=True)
 def _no_leaked_task_workers():
     """Fail the test that leaves a live task-bar worker thread behind.
 
@@ -336,6 +357,26 @@ def _no_leaked_task_workers():
             "target (often a model download) must be mocked or joined before "
             "the test returns, or it will starve later TUI tests on this worker."
         )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _shutdown_ingest_pool():
+    """Join the shared ingest pool before coverage stops, so the total is stable.
+
+    ``offload._ingest_executor`` is a cached pool of daemon ``lilbee-ingest``
+    workers. Left running, they are still tracing when ``coverage.stop()`` combines
+    thread data at process exit, and a worker mid-line during that combine
+    intermittently loses its lines -- the flake that reads the 100% gate as 99% on
+    an unlucky run. A session finalizer runs before coverage's atexit, so joining
+    the pool here removes those threads from the combine and makes coverage
+    deterministic. No-op when ingest never ran.
+    """
+    yield
+    from lilbee.data import offload
+
+    if offload._ingest_executor.cache_info().currsize:
+        offload._ingest_executor().shutdown(wait=True)
+        offload._ingest_executor.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -697,3 +738,26 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
 async def one_shard(files):
     """Present a known file list to ``ingest_stream`` as a single-shard stream."""
     yield list(files)
+
+
+def make_pdf(*, pages: int = 1, title: str | None = None, author: str | None = None) -> bytes:
+    """A born-digital PDF with a real text layer, for extraction tests.
+
+    reportlab always writes a ``/Title``, defaulting to "untitled", so a PDF built
+    without an explicit ``title`` still carries one rather than reporting none.
+    """
+    import io
+
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    if title is not None:
+        c.setTitle(title)
+    if author is not None:
+        c.setAuthor(author)
+    for i in range(pages):
+        c.drawString(72, 720, f"Page {i + 1} with a perfectly clean native text layer.")
+        c.showPage()
+    c.save()
+    return buf.getvalue()

@@ -31,6 +31,7 @@ from .enums import (
     KvCacheType,
     LlmProvider,
     RerankerType,
+    TableModel,
     WikiEntityMode,
 )
 from .parsing import parse_bool
@@ -191,14 +192,29 @@ class Config(BaseSettings):
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
-    # Opt-in typed entity extraction (an entities table for exact counting
-    # and cross-referencing). Fully automatic: sync induces a schema from the
-    # corpus and extracts across the index; new files extract at ingest. Off
-    # by default: the corpus-scale pass costs real compute and most vaults
-    # never need it.
+    # Tesseract OCR language codes for the scanned-document fallback (used when no
+    # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
+    # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
+    ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
+    # Typed entity table for exact counting/cross-referencing; corpus-scale pass, off by default.
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size chunks in real tokens via the embedder's tokenizer backend, not the
+    # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
+    token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Index each recognized table as its own markdown-serialized chunk.
+    table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Layout-aware PDF extraction (reading-order sort, header/footer stripping),
+    # run in xberg's AUTO strategy so detection only fires when it helps.
+    layout_detection: bool = ConfigField(default=True, writable=True, reindex=True)
+    # Table structure model; only applied when layout_detection is on.
+    table_model: TableModel = ConfigField(
+        default=TableModel.SLANET_AUTO, writable=True, reindex=True
+    )
+    # Coalesce concurrent extractions into one xberg extract_batch call.
+    batch_extraction: bool = ConfigField(default=False, writable=True)
+    batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
@@ -920,6 +936,24 @@ class Config(BaseSettings):
                 log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
                 return None
         return bool(v)
+
+    @field_validator("ocr_language", mode="before")
+    @classmethod
+    def _parse_ocr_language(cls, v: Any) -> list[str]:
+        """Accept a list or a ``+``/comma/newline-separated string; never empty.
+
+        Tesseract joins languages with ``+`` (e.g. ``eng+deu``), so that is the
+        canonical user-facing form. Commas are also accepted. Newlines are
+        accepted because ``app.settings`` joins list values with ``\\n`` when it
+        persists them to config.toml; without splitting on it a multi-language
+        value would reload as one malformed token. Blank input falls back to
+        English, since xberg errors on an empty list.
+        """
+        if isinstance(v, str):
+            v = v.replace("+", ",").replace("\n", ",").split(",")
+        items = v or []
+        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        return langs or ["eng"]
 
     @field_validator("flash_attention", mode="before")
     @classmethod

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from lilbee.data.chunk import CHARS_PER_TOKEN
+from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
 if TYPE_CHECKING:
     from lilbee.retrieval.query.searcher import ChatMessage
@@ -19,7 +19,7 @@ def estimate_text_tokens(text: str) -> int:
 def chars_for_tokens(tokens: int) -> int:
     """Rough char budget for a token budget: the inverse of estimate_text_tokens.
 
-    The chars-per-token ratio itself is owned by :mod:`lilbee.data.chunk`, the
+    The chars-per-token ratio itself is owned by :mod:`lilbee.data.extract.chunk`, the
     one place it is defined; this is the token->char direction of it.
     """
     return tokens * CHARS_PER_TOKEN

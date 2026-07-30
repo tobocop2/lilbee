@@ -1857,6 +1857,18 @@ def test_tokenize_and_detokenize_use_upstream_route() -> None:
     assert "/upstream/test-model/detokenize" in seen
 
 
+def test_count_tokens_returns_tokenize_length() -> None:
+    """count_tokens is the length of the server's /tokenize result."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": [1, 2, 3, 4]})
+        return httpx.Response(404)
+
+    client = _client(handler)
+    assert client.count_tokens("hello world") == 4
+
+
 def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
     """A token-dense input the char estimate trusts can overflow the context; embed
     retries that batch with exact server-side tokenization so it truncates (bb-54r)."""

@@ -7,10 +7,11 @@ implementation.
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from lilbee.data.chunk import chunk_text
+from lilbee.data.extract.chunk import chunk_text
 from tests._mock_effects import repeat_last
 
 
@@ -96,7 +97,7 @@ class TestChunkText:
     def test_use_semantic_false_bypasses_semantic(self, monkeypatch):
         """Caller can opt out of semantic chunking even when cfg has it enabled."""
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import build_chunking_config
+        from lilbee.data.extract.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         bypassed = build_chunking_config(use_semantic=False)
@@ -107,9 +108,9 @@ class TestChunkText:
 
 class TestBuildChunkingConfig:
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
-        """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
+        """Semantic path requires an EmbeddingConfig or xberg silently falls back."""
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import build_chunking_config
+        from lilbee.data.extract.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "topic_threshold", 0.6)
@@ -119,69 +120,134 @@ class TestBuildChunkingConfig:
         assert result.embedding is not None
 
     def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
-        """With an embedding attached kreuzberg honors max_chars on the semantic path."""
+        """With an embedding attached xberg honors max_characters on the semantic path."""
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         result = build_chunking_config()
-        assert result.max_chars == 512 * CHARS_PER_TOKEN
+        assert result.max_characters == 512 * CHARS_PER_TOKEN
+        assert result.embedding is not None
+        # Boundary detection routes to lilbee's embedder via xberg's plugin backend
+        # (registered in lilbee.data.extract.backends.registry), not the ONNX preset.
+        assert result.embedding.model.type == "plugin"
+        assert str(result.embedding.model) == '{"type":"plugin","name":"lilbee"}'
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         result = build_chunking_config()
         assert result.chunker_type == "text"
-        assert result.max_chars == 512 * CHARS_PER_TOKEN
-        assert result.max_overlap == 100 * CHARS_PER_TOKEN
+        assert result.max_characters == 512 * CHARS_PER_TOKEN
+        assert result.overlap == 100 * CHARS_PER_TOKEN
         assert result.embedding is None
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
         """When semantic is off, no EmbeddingConfig is built; avoids the ONNX download."""
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import build_chunking_config
+        from lilbee.data.extract.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         result = build_chunking_config()
         assert result.embedding is None
 
-    def test_download_progress_off_when_globally_suppressed(self, monkeypatch):
-        """quiet/JSON modes suppress HF progress bars; the embedding config mirrors that."""
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-        assert _show_download_progress() is False
-
-    def test_download_progress_on_when_not_suppressed(self, monkeypatch):
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
-        assert _show_download_progress() is True
-
-    def test_download_progress_default_off_when_unset(self, monkeypatch):
-        """lilbee defaults the env var on at import, so the bar stays off by default."""
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
-        # Unset env reads as "not disabled" -> progress allowed; lilbee's __init__
-        # sets it to "1" in real runs, so this documents the bare-helper contract.
-        assert _show_download_progress() is True
-
     def test_heading_path_shares_char_budget(self, monkeypatch):
         """The heading-aware path uses the same token->char budget as the default path."""
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import CHARS_PER_TOKEN, _char_budget
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _char_budget
 
         monkeypatch.setattr(cfg, "chunk_size", 256)
         monkeypatch.setattr(cfg, "chunk_overlap", 40)
         max_chars, max_overlap = _char_budget()
         assert max_chars == 256 * CHARS_PER_TOKEN
         assert max_overlap == 40 * CHARS_PER_TOKEN
+
+
+_TOKENIZER_SIZING = '{"type":"tokenizer","model":"lilbee"}'
+
+
+class TestTokenSizing:
+    """cfg.token_sizing routes the plain and heading chunkers through lilbee's
+    registered tokenizer backend, so chunk_size is a real token budget."""
+
+    def test_size_params_off_is_char_budget_without_sizing(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        max_size, overlap, sizing = _size_params()
+        assert (max_size, overlap) == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
+        assert sizing is None
+
+    def test_size_params_on_is_raw_token_budget_with_sizing(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import _size_params
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        max_size, overlap, sizing = _size_params()
+        assert (max_size, overlap) == (512, 100)
+        assert str(sizing) == _TOKENIZER_SIZING
+
+    def test_overlap_capped_at_half_the_token_budget(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import _size_params
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "chunk_size", 100)
+        monkeypatch.setattr(cfg, "chunk_overlap", 90)
+        _max_size, overlap, _sizing = _size_params()
+        assert overlap == 50
+
+    def test_default_chunker_attaches_tokenizer_sizing(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        result = build_chunking_config()
+        assert result.max_characters == 512
+        assert str(result.sizing) == _TOKENIZER_SIZING
+
+    def test_semantic_chunker_ignores_token_sizing(self, monkeypatch):
+        """The semantic chunker sizes by characters, so it keeps the char budget even
+        with token_sizing on (xberg's ChunkSizing has no effect on that path)."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        result = build_chunking_config()
+        assert result.chunker_type == "semantic"
+        assert result.max_characters == 512 * CHARS_PER_TOKEN
+
+    def test_heading_path_attaches_tokenizer_sizing(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import chunk_text
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        captured = {}
+
+        def fake_extract_document(data, mime_type, *, config):
+            chunking = config["chunking"]
+            captured["sizing"] = str(chunking.sizing)
+            captured["chunker_type"] = chunking.chunker_type
+            return SimpleNamespace(chunks=[])
+
+        monkeypatch.setattr("lilbee.data.extract.xberg.extract_document", fake_extract_document)
+        chunk_text("# Heading\n\nbody text", mime_type="text/markdown", heading_context=True)
+        assert captured["sizing"] == _TOKENIZER_SIZING
+        assert captured["chunker_type"] == "markdown"
 
 
 class TestMarkdownChunking:
@@ -228,7 +294,7 @@ class TestCodeChunker:
     """Tree-sitter code chunker tests: grouped to avoid fork-unsafe C parser collisions."""
 
     def test_python_function_extraction(self):
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         code = '''
 def hello():
@@ -257,7 +323,7 @@ class Greeter:
             path.unlink()
 
     def test_unsupported_extension_returns_fallback(self):
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".xyz_unsupported", mode="w", delete=False) as f:
             f.write("some content here")
@@ -271,7 +337,7 @@ class Greeter:
             path.unlink()
 
     def test_is_code_file_common_extensions(self):
-        from lilbee.data.code_chunker import is_code_file
+        from lilbee.data.extract.code_chunker import is_code_file
 
         assert is_code_file(Path("main.py"))
         assert is_code_file(Path("app.js"))
@@ -279,13 +345,13 @@ class Greeter:
         assert is_code_file(Path("server.go"))
 
     def test_is_code_file_non_code(self):
-        from lilbee.data.code_chunker import is_code_file
+        from lilbee.data.extract.code_chunker import is_code_file
 
         assert not is_code_file(Path("photo.png"))
         assert not is_code_file(Path("document.pdf"))
 
     def test_detect_language_python(self):
-        from lilbee.data.code_chunker import _detect_language
+        from lilbee.data.extract.code_chunker import _detect_language
 
         result = _detect_language(Path("main.py"))
         assert result is not None
@@ -294,13 +360,15 @@ class Greeter:
     def test_ensure_language_exception_returns_false(self):
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import _ensure_language
+        from lilbee.data.extract.code_chunker import _ensure_language
 
-        with patch("lilbee.data.code_chunker.has_language", side_effect=RuntimeError("boom")):
+        with patch(
+            "lilbee.data.extract.code_chunker.has_language", side_effect=RuntimeError("boom")
+        ):
             assert _ensure_language("python") is False
 
     def test_find_line_no_match_returns_start(self):
-        from lilbee.data.code_chunker import find_line
+        from lilbee.data.extract.code_chunker import find_line
 
         lines = ["aaa", "bbb", "ccc"]
         assert find_line("zzz", lines, 0) == 1
@@ -311,7 +379,7 @@ class Greeter:
         otherwise be skipped and mis-located (1-based start fed as a 0-based index)."""
         from unittest.mock import patch
 
-        from lilbee.data import code_chunker
+        from lilbee.data.extract import code_chunker
 
         text = "FIRST\nsecond"
         with patch.object(code_chunker, "chunk_text", return_value=["FIRST\nsecond", "FIRST"]):
@@ -322,7 +390,7 @@ class Greeter:
     def test_ensure_language_false_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -330,7 +398,7 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            with patch("lilbee.data.code_chunker._ensure_language", return_value=False):
+            with patch("lilbee.data.extract.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
                 # Truthiness, not isinstance: a regression returning [] would drop
                 # the file's content from the index and still be a list.
@@ -342,7 +410,7 @@ class Greeter:
     def test_process_exception_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -354,8 +422,11 @@ class Greeter:
         # preloaded short-circuit to the no-language fallback first.
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", side_effect=RuntimeError("parse fail")),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch(
+                    "lilbee.data.extract.code_chunker.process",
+                    side_effect=RuntimeError("parse fail"),
+                ),
             ):
                 chunks = chunk_code(path)
                 assert chunks
@@ -366,7 +437,7 @@ class Greeter:
     def test_empty_chunks_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -377,8 +448,8 @@ class Greeter:
             # process() yielding no size-bounded chunks must fall back to text
             # chunking rather than returning nothing.
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=_FakeResult([])),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=_FakeResult([])),
             ):
                 chunks = chunk_code(path)
                 assert chunks  # fell back to non-empty text chunks
@@ -390,9 +461,9 @@ class Greeter:
         """The early-return branch fires when has_language already says yes."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import _ensure_language
+        from lilbee.data.extract.code_chunker import _ensure_language
 
-        with patch("lilbee.data.code_chunker.has_language", return_value=True) as has:
+        with patch("lilbee.data.extract.code_chunker.has_language", return_value=True) as has:
             assert _ensure_language("python") is True
             has.assert_called_once_with("python")
 
@@ -402,13 +473,14 @@ class Greeter:
         ships pre-installed for a given Python version."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import PackConfig, _ensure_language
+        from lilbee.data.extract.code_chunker import PackConfig, _ensure_language
 
         with (
             patch(
-                "lilbee.data.code_chunker.has_language", side_effect=repeat_last(False, True)
+                "lilbee.data.extract.code_chunker.has_language",
+                side_effect=repeat_last(False, True),
             ) as has,
-            patch("lilbee.data.code_chunker.init") as init_mock,
+            patch("lilbee.data.extract.code_chunker.init") as init_mock,
         ):
             assert _ensure_language("python") is True
             assert has.call_count == 2
@@ -416,7 +488,7 @@ class Greeter:
 
     def test_chunk_code_empty_source_returns_empty(self):
         """Empty (whitespace-only) source short-circuits before tree-sitter."""
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("\n   \n")
@@ -435,7 +507,7 @@ class Greeter:
         test is independent of whether tree-sitter parses on this CI host."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         result = _FakeResult(
             [
@@ -451,8 +523,8 @@ class Greeter:
 
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=result),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result),
             ):
                 chunks = chunk_code(path, source_name="pkg/mod.py")
         finally:
@@ -474,8 +546,8 @@ class Greeter:
         from unittest.mock import patch
 
         from lilbee.core.config import cfg
-        from lilbee.data.chunk import CHARS_PER_TOKEN
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+        from lilbee.data.extract.code_chunker import chunk_code
 
         result = _FakeResult([_FakeTSChunk("x = 1\n", start_line=0, end_line=1, symbols=[])])
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
@@ -485,9 +557,9 @@ class Greeter:
 
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=result) as proc,
-                patch("lilbee.data.code_chunker.ProcessConfig") as config_cls,
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result) as proc,
+                patch("lilbee.data.extract.code_chunker.ProcessConfig") as config_cls,
             ):
                 chunk_code(path, source_name="m.py")
         finally:
@@ -501,7 +573,7 @@ class Greeter:
         rather than rendering the literal string 'None' (bb-ziks.62)."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         result = _FakeResult([_FakeTSChunk("x = 1\n", start_line=0, end_line=1, symbols=[])])
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
@@ -510,8 +582,8 @@ class Greeter:
             path = Path(f.name)
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=result),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result),
             ):
                 chunks = chunk_code(path, source_name="m.py")
         finally:
@@ -526,7 +598,7 @@ class Greeter:
         (bb-ziks.19)."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         result = _FakeResult([_FakeTSChunk("code\n", start_line=0, end_line=1, symbols=["s"])])
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
@@ -535,8 +607,8 @@ class Greeter:
             path = Path(f.name)
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=result),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result),
             ):
                 chunks = chunk_code(path, source_name="src/x.py")
         finally:
@@ -548,7 +620,7 @@ class Greeter:
         """Non-ASCII identifiers/strings survive chunking: the prior code sliced a
         str with tree-sitter UTF-8 byte offsets, mis-slicing every symbol after
         the first multibyte char (bb-7jg1.4)."""
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         code = (
             'def greet(náme):\n    return f"Hallo {náme}"\n\n'
@@ -580,7 +652,7 @@ class Greeter:
         under-reports here; line_end is derived from the content instead."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         # Content spans two physical lines but ends without a trailing newline;
         # the fake's end_line=1 mirrors the real parser's under-count.
@@ -593,8 +665,8 @@ class Greeter:
             path = Path(f.name)
         try:
             with (
-                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value=result),
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result),
             ):
                 chunks = chunk_code(path, source_name="m.py")
         finally:
@@ -606,7 +678,7 @@ class Greeter:
     def test_real_parser_line_range_spans_no_trailing_newline_file(self):
         """Against the real parser, the chunk line range reaches the file's final
         line even when the file has no trailing newline."""
-        from lilbee.data.code_chunker import chunk_code
+        from lilbee.data.extract.code_chunker import chunk_code
 
         # 5 physical lines (L1..L5), no trailing newline on the last.
         code = "def alpha():\n    return 1\n\ndef beta():\n    return 2"
@@ -627,7 +699,7 @@ class Greeter:
 
 class TestHeadingContextNoDuplicate:
     def test_heading_context_no_duplicate(self):
-        """kreuzberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
+        """xberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
         md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
         chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
         for c in chunks:
@@ -641,9 +713,9 @@ class TestChunkTextEmptyResult:
     def test_returns_empty_when_no_chunks(self):
         from unittest.mock import MagicMock, patch
 
-        from lilbee.data.chunk import chunk_text
+        from lilbee.data.extract.chunk import chunk_text
 
         mock_result = MagicMock()
         mock_result.chunks = []
-        with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
+        with patch("lilbee.data.extract.xberg.extract_document", return_value=mock_result):
             assert chunk_text("some text") == []

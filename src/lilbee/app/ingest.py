@@ -268,7 +268,7 @@ def temporary_ocr_config(
     Backed by a ContextVar rather than a global ``cfg`` mutation, so concurrent
     ingests on the shared HTTP daemon do not clobber one another's OCR settings.
     """
-    from lilbee.data.ingest.extract import ocr_override
+    from lilbee.data.extract.document import ocr_override
 
     with ocr_override(enable_ocr, ocr_timeout):
         yield

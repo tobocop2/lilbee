@@ -879,7 +879,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.ingest.types import SyncResult
+    from lilbee.data.types import SyncResult
     from lilbee.runtime.progress import (
         BatchProgressEvent,
         BatchStatus,
@@ -948,7 +948,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.ingest.types import SyncResult
+    from lilbee.data.types import SyncResult
     from lilbee.runtime.progress import (
         BatchProgressEvent,
         BatchStatus,
@@ -1036,7 +1036,7 @@ def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.ingest.types import SyncResult
+    from lilbee.data.types import SyncResult
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -1069,7 +1069,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.ingest.types import SyncResult
+    from lilbee.data.types import SyncResult
 
     src = tmp_path / "scan.pdf"
     src.write_bytes(b"x")

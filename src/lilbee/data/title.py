@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from pathlib import PurePath
-from typing import Any
+from typing import Protocol
 
 from lilbee.data.store import SourceMeta
 
@@ -36,7 +35,21 @@ def is_junk_stem(stem: str) -> bool:
     return bool(_HEX_ID_RE.fullmatch(flat.replace(" ", "")))
 
 
-def derive_title(source_name: str, metadata_title: str | None = None) -> str:
+class ExtractionMetadata(Protocol):
+    """xberg metadata fields, typed ``object``: xberg annotates but does not enforce
+    them (a PDF /Author arrives as a bare str; a non-str title is accepted)."""
+
+    @property
+    def title(self) -> object: ...
+
+    @property
+    def authors(self) -> object: ...
+
+    @property
+    def created_at(self) -> object: ...
+
+
+def derive_title(source_name: str, metadata_title: object = None) -> str:
     """Human-readable document title: the extracted title, else the cleaned filename stem.
 
     The stem cleanup flattens underscore/hyphen separators to spaces so BM25
@@ -51,15 +64,18 @@ def derive_title(source_name: str, metadata_title: str | None = None) -> str:
     return _STEM_SEPARATOR_RE.sub(" ", stem).strip()
 
 
-def source_meta_from_extraction(metadata: Mapping[str, Any], source_name: str) -> SourceMeta:
-    """Fold kreuzberg extraction metadata into a :class:`SourceMeta`.
+def source_meta_from_extraction(
+    metadata: ExtractionMetadata | None, source_name: str
+) -> SourceMeta:
+    """Fold xberg extraction metadata into a :class:`SourceMeta`.
 
     The title falls back to the filename stem; authors and creation date stay
-    empty (persisted NULL) when the extractor reports none. Extractor metadata is
-    untyped, so a string ``authors`` is treated as one author (not split into its
-    characters) and non-string entries are coerced.
+    empty (persisted NULL) when the extractor reports none. xberg annotates these
+    fields but does not enforce them: a PDF ``/Author`` arrives as a bare ``str``
+    where ``list[str]`` is declared, so a string is treated as one author rather
+    than split into its characters, and non-string entries are coerced.
     """
-    raw_authors = metadata.get("authors")
+    raw_authors = metadata.authors if metadata is not None else None
     if isinstance(raw_authors, str):
         authors: list[str] = [raw_authors]
     elif isinstance(raw_authors, (list, tuple)):
@@ -67,7 +83,7 @@ def source_meta_from_extraction(metadata: Mapping[str, Any], source_name: str) -
     else:
         authors = []
     return SourceMeta(
-        title=derive_title(source_name, metadata.get("title")),
+        title=derive_title(source_name, metadata.title if metadata is not None else None),
         authors=", ".join(a for a in authors if a),
-        created_at=str(metadata.get("created_at") or ""),
+        created_at=str((metadata.created_at if metadata is not None else None) or ""),
     )

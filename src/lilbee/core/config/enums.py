@@ -58,6 +58,21 @@ class WikiEntityMode(StrEnum):
     LLM_TAGGED = "llm_tagged"
 
 
+class TableModel(StrEnum):
+    """xberg's table structure recognition model, used when layout detection is on.
+
+    The ``slanet_*`` variants are the docling-parity lineage; ``tatr`` is xberg's
+    older default. ``disabled`` skips structure recognition.
+    """
+
+    DISABLED = "disabled"
+    TATR = "tatr"
+    SLANET_AUTO = "slanet_auto"
+    SLANET_PLUS = "slanet_plus"
+    SLANET_WIRED = "slanet_wired"
+    SLANET_WIRELESS = "slanet_wireless"
+
+
 class KvCacheType(StrEnum):
     """KV cache element type. ``q8_0`` / ``q4_0`` require flash attention."""
 

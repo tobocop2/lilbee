@@ -3137,8 +3137,8 @@ class TestRelocateTitles:
 
     def test_relocated_title_guard_branches(self, store):
         """No sources table, a failing read, and a missing row all keep the title."""
-        from lilbee.data.ingest.title import derive_title
         from lilbee.data.store.core import _KEEP_TITLE
+        from lilbee.data.title import derive_title
 
         assert store._relocated_title(None, "a.md", "b.md", derive_title) is _KEEP_TITLE
         broken = mock.MagicMock()

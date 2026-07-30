@@ -3,7 +3,7 @@
 Uses a rasterized PDF fixture (no selectable text) to exercise the full
 extraction pipeline including Tesseract OCR and vision model fallbacks.
 
-Requires: kreuzberg, Tesseract (for OCR tests), a vision model (for vision tests).
+Requires: xberg, Tesseract (for OCR tests), a vision model (for vision tests).
 Skipped automatically when dependencies are not available.
 
 Run with:
@@ -132,11 +132,20 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_text(self):
         """Tesseract OCR produces non-empty text from the scanned PDF fixture."""
-        from kreuzberg import ExtractionConfig, OcrConfig, extract_file
+        from xberg import ExtractionConfig, OcrConfig
 
-        config = ExtractionConfig(ocr=OcrConfig())
-        result = await extract_file(str(SCANNED_PDF), config=config)
-        assert len(result.content.strip()) > 0, "Tesseract produced empty text"
+        from lilbee.data.extract.xberg import aextract_document
+
+        config = ExtractionConfig(
+            ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
+        )
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        assert len(doc.content.strip()) > 0, "Tesseract produced empty text"
 
     @pytest.mark.skipif(
         not shutil.which("tesseract"),
@@ -144,11 +153,20 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_known_phrases(self):
         """Tesseract OCR captures key phrases from the scanned document."""
-        from kreuzberg import ExtractionConfig, OcrConfig, extract_file
+        from xberg import ExtractionConfig, OcrConfig
 
-        config = ExtractionConfig(ocr=OcrConfig())
-        result = await extract_file(str(SCANNED_PDF), config=config)
-        text_lower = result.content.lower()
+        from lilbee.data.extract.xberg import aextract_document
+
+        config = ExtractionConfig(
+            ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
+        )
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        text_lower = doc.content.lower()
         # At least some of the rendered text should be recognized
         recognized = any(
             phrase in text_lower
@@ -171,41 +189,45 @@ def _vision_model_available() -> bool:
 
 
 class TestVisionOcrFallback:
-    """Verify vision model OCR fallback on scanned PDFs."""
+    """Vision OCR through the registered lilbee-vision xberg backend."""
+
+    async def _vision_extract(self) -> str:
+        from xberg import ExtractionConfig, OcrConfig
+
+        from lilbee.app.services import get_services
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.xberg import aextract_document
+        from lilbee.data.types import OcrBackendName
+
+        sync_xberg_backend(BackendKind.OCR, get_services().provider)
+        config = ExtractionConfig(
+            ocr=OcrConfig(backend=OcrBackendName.LILBEE_VISION), force_ocr=True
+        )
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        return doc.content
 
     @pytest.mark.skipif(
         not _vision_model_available(),
-        reason="No vision-capable chat model available locally",
+        reason="No vision-capable model available locally",
     )
     async def test_vision_extracts_text(self):
-        """Vision model OCR produces non-empty text from the scanned PDF fixture."""
-        from lilbee.app.services import get_services
-
-        page_texts = get_services().provider.pdf_ocr(
-            SCANNED_PDF,
-            backend="vision",
-            model=cfg.chat_model,
-            per_page_timeout_s=cfg.ocr_timeout,
-        )
-        all_text = " ".join(text for _, text in page_texts)
-        assert len(all_text.strip()) > 0, "Vision OCR produced empty text"
+        """Vision OCR via the registered backend produces non-empty text."""
+        content = await self._vision_extract()
+        assert len(content.strip()) > 0, "Vision OCR produced empty text"
 
     @pytest.mark.skipif(
         not _vision_model_available(),
-        reason="No vision-capable chat model available locally",
+        reason="No vision-capable model available locally",
     )
     async def test_vision_extracts_known_phrases(self):
-        """Vision model OCR captures key phrases from the scanned document."""
-        from lilbee.app.services import get_services
-
-        page_texts = get_services().provider.pdf_ocr(
-            SCANNED_PDF,
-            backend="vision",
-            model=cfg.chat_model,
-            per_page_timeout_s=cfg.ocr_timeout,
-        )
-        all_text = " ".join(text for _, text in page_texts).lower()
+        """Vision OCR via the registered backend captures key phrases."""
+        text_lower = (await self._vision_extract()).lower()
         recognized = any(
-            phrase in all_text for phrase in ["oil", "maintenance", "filter", "quarts", "engine"]
+            phrase in text_lower for phrase in ["oil", "maintenance", "filter", "quarts", "engine"]
         )
-        assert recognized, f"No expected phrases found in vision output: {all_text[:200]}"
+        assert recognized, f"No expected phrases found in vision output: {text_lower[:200]}"
