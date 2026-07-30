@@ -7,7 +7,7 @@ import numpy as np
 
 from lilbee.core.config import Config
 from lilbee.core.vectors import Vector
-from lilbee.data.chunk import CHARS_PER_TOKEN
+from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile

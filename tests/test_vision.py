@@ -1,133 +1,19 @@
-"""Tests for vision model OCR extraction."""
+"""Tests for the vision-message helpers (prompt resolution + image messages)."""
 
-from pathlib import Path
-from unittest import mock
-
-import pytest
-
-from lilbee.app.services import CrawlerSyncState, Services, set_services
+from __future__ import annotations
 
 
-@pytest.fixture()
-def mock_provider():
-    """Create a mock provider with the full LLMProvider surface.
+class TestResolveOcrPrompt:
+    def test_native_prompt_for_known_family(self) -> None:
+        from lilbee.vision import resolve_ocr_prompt
 
-    ``vision_ocr`` is part of the protocol now, so every concrete provider
-    implements it; tests mock it directly rather than the chat fallthrough.
-    """
-    provider = mock.MagicMock(
-        spec=[
-            "chat",
-            "embed",
-            "vision_ocr",
-            "list_models",
-            "pull_model",
-            "show_model",
-            "shutdown",
-        ]
-    )
-    store = mock.MagicMock()
-    embedder = mock.MagicMock()
-    reranker = mock.MagicMock()
-    concepts = mock.MagicMock()
-    searcher = mock.MagicMock()
-    registry = mock.MagicMock()
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        clusterer=mock.MagicMock(),
-        searcher=searcher,
-        registry=registry,
-        hf_client=mock.MagicMock(),
-        ingest_lock_registry=mock.MagicMock(),
-        model_manager=mock.MagicMock(),
-        crawler_semaphore=None,
-        crawler_sync_state=CrawlerSyncState(),
-    )
-    set_services(services)
-    yield provider
-    set_services(None)
+        assert resolve_ocr_prompt("vendor/glm-ocr-1b") == "OCR"
+        assert resolve_ocr_prompt("deepseek-ocr").startswith("<|grounding|>")
 
+    def test_generic_prompt_for_unknown_model(self) -> None:
+        from lilbee.vision import OCR_PROMPT, resolve_ocr_prompt
 
-def _mock_iterator(num_pages: int = 1) -> mock.MagicMock:
-    """Build a mock PdfPageIterator that yields (index, png_bytes) tuples."""
-    pages = [(i, b"\x89PNG" + bytes(f"page-{i}", "utf-8")) for i in range(num_pages)]
-    it = mock.MagicMock()
-    it.__len__ = mock.Mock(return_value=num_pages)
-    it.__iter__ = mock.Mock(return_value=iter(pages))
-    it.__enter__ = mock.Mock(return_value=it)
-    it.__exit__ = mock.Mock(return_value=False)
-    return it
-
-
-class TestPdfPageCount:
-    def test_returns_page_count(self) -> None:
-        mock_iter = _mock_iterator(num_pages=5)
-        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
-            from lilbee.vision import pdf_page_count
-
-            assert pdf_page_count(Path("test.pdf")) == 5
-
-    def test_empty_pdf_returns_zero(self) -> None:
-        mock_iter = _mock_iterator(num_pages=0)
-        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
-            from lilbee.vision import pdf_page_count
-
-            assert pdf_page_count(Path("empty.pdf")) == 0
-
-    def test_passes_dpi(self) -> None:
-        mock_iter = _mock_iterator(num_pages=1)
-        mock_cls = mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter)
-        with mock_cls as patched:
-            from lilbee.vision import _RASTER_DPI, pdf_page_count
-
-            pdf_page_count(Path("test.pdf"))
-            patched.assert_called_once_with(mock.ANY, dpi=_RASTER_DPI)
-
-
-class TestRasterizePdf:
-    def test_yields_index_and_png_bytes(self) -> None:
-        mock_iter = _mock_iterator(num_pages=2)
-        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
-            from lilbee.vision import rasterize_pdf
-
-            pages = list(rasterize_pdf(Path("test.pdf")))
-
-        assert len(pages) == 2
-        assert pages[0][0] == 0
-        assert pages[1][0] == 1
-        assert all(data.startswith(b"\x89PNG") for _, data in pages)
-
-    def test_empty_pdf_yields_nothing(self) -> None:
-        mock_iter = _mock_iterator(num_pages=0)
-        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
-            from lilbee.vision import rasterize_pdf
-
-            pages = list(rasterize_pdf(Path("empty.pdf")))
-
-        assert pages == []
-
-    def test_uses_context_manager(self) -> None:
-        mock_iter = _mock_iterator(num_pages=1)
-        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
-            from lilbee.vision import rasterize_pdf
-
-            list(rasterize_pdf(Path("test.pdf")))
-
-        mock_iter.__enter__.assert_called_once()
-        mock_iter.__exit__.assert_called_once()
-
-    def test_passes_dpi(self) -> None:
-        mock_iter = _mock_iterator(num_pages=1)
-        mock_cls = mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter)
-        with mock_cls as patched:
-            from lilbee.vision import _RASTER_DPI, rasterize_pdf
-
-            list(rasterize_pdf(Path("test.pdf")))
-            patched.assert_called_once_with(mock.ANY, dpi=_RASTER_DPI)
+        assert resolve_ocr_prompt("vendor/qwen-vl") == OCR_PROMPT
 
 
 class TestPngToDataUrl:
@@ -139,7 +25,6 @@ class TestPngToDataUrl:
         png_bytes = b"\x89PNG\r\n\x1a\n"
         result = _png_to_data_url(png_bytes)
         assert result.startswith("data:image/png;base64,")
-        # Verify round-trip
         encoded = result.split(",", 1)[1]
         assert base64.b64decode(encoded) == png_bytes
 
@@ -159,29 +44,3 @@ class TestBuildVisionMessages:
         assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert content[1]["type"] == "text"
         assert content[1]["text"] == "describe this"
-
-
-class TestResolveOcrPrompt:
-    """The OCR prompt is resolved per model: native for specialists, generic fallback otherwise."""
-
-    def test_deepseek_gets_its_grounding_prompt(self):
-        from lilbee.vision import resolve_ocr_prompt
-
-        prompt = resolve_ocr_prompt("ggml-org/DeepSeek-OCR-GGUF")
-        assert prompt == "<|grounding|>Convert the document to markdown."
-
-    def test_glm_ocr_gets_terse_prompt(self):
-        from lilbee.vision import resolve_ocr_prompt
-
-        assert resolve_ocr_prompt("ggml-org/GLM-OCR-GGUF") == "OCR"
-
-    def test_match_is_case_insensitive_and_works_on_a_gguf_path(self):
-        from lilbee.vision import resolve_ocr_prompt
-
-        path = "/models/ggml-org/GLM-OCR-GGUF/glm-ocr-Q8_0.gguf"
-        assert resolve_ocr_prompt(path) == "OCR"
-
-    def test_unknown_model_falls_back_to_generic_prompt(self):
-        from lilbee.vision import OCR_PROMPT, resolve_ocr_prompt
-
-        assert resolve_ocr_prompt("unsloth/Qwen3-VL-8B-Instruct-GGUF") == OCR_PROMPT

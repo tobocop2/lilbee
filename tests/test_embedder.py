@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.chunk import CHARS_PER_TOKEN
+from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.retrieval.embedder import Embedder
 
 

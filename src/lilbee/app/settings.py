@@ -277,6 +277,12 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
     changed_role_fields = changed_keys & MODEL_ROLE_FIELDS
     for field in changed_role_fields:
         services.reload_role(MODEL_FIELD_TO_ROLE[field])
+    if "vision_model" in changed_role_fields:
+        # Register/unregister lilbee's xberg OCR backend on any vision-model
+        # change (REST/MCP/TUI/CLI all funnel here), not just the REST route.
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        sync_xberg_backend(BackendKind.OCR, services.provider)
     role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
     if role_agnostic:
         services.provider.drop_loaded_models_async()
@@ -318,6 +324,16 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     if changed_keys & LOAD_AFFECTING_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
+    if "token_sizing" in changed_keys:
+        # Register/unregister lilbee's xberg tokenizer backend when token_sizing is
+        # toggled (via any settings path), so chunk sizing picks up the change
+        # without waiting for a services rebuild.
+        from lilbee.app.services import peek_services
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        services = peek_services()
+        if services is not None:
+            sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
     if changed_keys & PROVIDER_API_KEYS:
         # heavy: sdk_llm_provider pulls litellm fanout (~145 ms)
         from lilbee.providers.sdk_llm_provider import inject_provider_keys

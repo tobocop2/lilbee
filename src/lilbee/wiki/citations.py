@@ -152,8 +152,10 @@ def verify_citations(
     config: Config,
 ) -> list[CitationRecord]:
     """Filter citation records, keeping only those whose excerpts are in the chunks."""
+    from xberg import verify_excerpt
+
     wiki_prefix = config.wiki_dir + "/"
-    all_chunk_text = normalize_whitespace(" ".join(c.chunk for c in chunks))
+    all_chunk_text = " ".join(c.chunk for c in chunks)
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if rec["source_filename"].startswith(wiki_prefix):
@@ -162,7 +164,7 @@ def verify_citations(
         if rec["claim_type"] == "inference" or not rec["excerpt"]:
             verified.append(rec)
             continue
-        if normalize_whitespace(rec["excerpt"]) in all_chunk_text:
+        if verify_excerpt(rec["excerpt"], all_chunk_text):
             verified.append(rec)
         else:
             log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)

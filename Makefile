@@ -26,7 +26,7 @@ test-ci-forked:
 	uv run pytest --forked -v -n logical --dist loadgroup
 
 imports-check:
-	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data import chunk, code_chunker, store, ingest; from lilbee.retrieval import embedder, query"
+	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
 test-integration:
 	uv run pytest tests/integration/ -v
