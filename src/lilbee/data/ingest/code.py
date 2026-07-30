@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from lilbee.app.services import get_services
-from lilbee.data.code_chunker import CodeChunk, chunk_code
-from lilbee.data.ingest.types import ChunkRecord
+from lilbee.data.extract.code_chunker import CodeChunk, chunk_code
 from lilbee.data.store import ChunkType
+from lilbee.data.types import ChunkRecord
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 

@@ -10,9 +10,7 @@ from lilbee.data.store import CitationRecord
 from lilbee.wiki.grammar import (
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,
-    CITE_RE,
     FOOTNOTE_RE,
-    INFERENCE_RE,
 )
 
 
@@ -80,29 +78,24 @@ def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatu
     by comparing ``citation.source_hash`` against the current file hash and
     checking file presence.
     """
+    from xberg import verify_excerpt
+
     if not citation["excerpt"]:
         return CitationStatus.EXCERPT_MISSING
-    if _normalize(citation["excerpt"]) in _normalize(source_text):
+    if verify_excerpt(citation["excerpt"], source_text):
         return CitationStatus.VALID
     return CitationStatus.EXCERPT_MISSING
 
 
 def find_unmarked_claims(markdown: str) -> list[str]:
-    """Find statements that are neither cited ``[^srcN]`` nor marked ``[*inference*]``.
-    Scans non-empty, non-metadata lines in the body (before the citation block).
-    Returns the text of each unmarked line.
+    """Find body statements that are neither cited ``[^srcN]`` nor marked ``[*inference*]``.
+
+    Delegates to xberg's footnote/citation API over the body (frontmatter and the
+    citation block stripped).
     """
-    body = extract_body(markdown)
-    lines = body.splitlines()
-    unmarked: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not _is_content_line(stripped):
-            continue
-        if CITE_RE.search(stripped) or INFERENCE_RE.search(stripped):
-            continue
-        unmarked.append(stripped)
-    return unmarked
+    from xberg import find_unmarked_claims as _find_unmarked_claims
+
+    return _find_unmarked_claims(extract_body(markdown))
 
 
 def strip_citation_block(markdown: str) -> str:
@@ -154,15 +147,6 @@ def _strip_frontmatter(markdown: str) -> str:
     return markdown
 
 
-def _is_content_line(stripped: str) -> bool:
-    """Return True if a line contains a substantive claim (not heading/blank/marker)."""
-    if not stripped:
-        return False
-    if stripped.startswith("#"):
-        return False
-    return stripped != CITATION_BLOCK_SEP
-
-
 def _format_source_ref(rec: CitationRecord) -> str:
     """Format a CitationRecord into a human-readable footnote reference."""
     ref = rec["source_filename"]
@@ -180,8 +164,3 @@ def _format_source_ref(rec: CitationRecord) -> str:
     if rec["excerpt"]:
         ref += f', excerpt: "{rec["excerpt"]}"'
     return ref
-
-
-def _normalize(text: str) -> str:
-    """Normalize whitespace for fuzzy excerpt matching."""
-    return " ".join(text.split()).lower()

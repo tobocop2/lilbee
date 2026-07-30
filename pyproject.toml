@@ -35,8 +35,9 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.9.1,<5",
-    "filelock",
+    "xberg>=1.0.4",
+    # 3.26 changed is_singleton reentrancy; breaks the engine user-lock warm-off reclaim.
+    "filelock<3.26",
     "tree-sitter-language-pack>=1.8.0,<2.0",
     "typer>=0.12",
     "tiktoken",
@@ -55,7 +56,8 @@ dependencies = [
     "huggingface_hub>=1.11.0",
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
-    "numpy",
+    # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.
+    "numpy<2.5",
     # Entity schema patterns are LLM-authored, so their matches need a wall-clock
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.

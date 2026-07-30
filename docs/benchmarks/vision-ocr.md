@@ -34,7 +34,7 @@ Extract ALL text from this page as clean markdown. Preserve table structure.
 - **LightOnOCR-2 is the clear winner:** fastest, smallest, and produces the best-structured output with clean markdown formatting
 - **DeepSeek-OCR is the accuracy runner-up** with very clean text extraction but no markdown formatting
 - **Model size does not correlate with quality:** the 1B model beat the 8B model in both speed and accuracy
-- **Vision OCR is only useful for scanned/image PDFs** — for text-based PDFs, Kreuzberg's text extraction is faster and more accurate
+- **Vision OCR is only useful for scanned/image PDFs** — for text-based PDFs, Xberg's text extraction is faster and more accurate
 
 ## Limitations
 

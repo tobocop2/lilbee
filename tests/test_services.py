@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
@@ -16,6 +17,197 @@ def isolated_cfg():
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+class TestSyncVisionOcrBackend:
+    def _patch_xberg(self, monkeypatch, *, listed):
+        reg = MagicMock()
+        unreg = MagicMock()
+        monkeypatch.setattr("xberg.list_ocr_backends", lambda: listed)
+        monkeypatch.setattr("xberg.register_ocr_backend", reg)
+        monkeypatch.setattr("xberg.unregister_ocr_backend", unreg)
+        return reg, unreg
+
+    def test_registers_when_model_set_and_absent(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
+        sync_xberg_backend(BackendKind.OCR, MagicMock())
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
+    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
+        """A rebuilt provider must replace the stale binding: unregister then re-register.
+
+        ``reset_services`` shuts the old provider down; if sync left the prior
+        registration in place, xberg would keep routing OCR to the dead provider.
+        """
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
+        sync_xberg_backend(BackendKind.OCR, MagicMock())
+        unreg.assert_called_once_with("lilbee-vision")
+        reg.assert_called_once()
+
+    def test_unregisters_when_model_cleared(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "vision_model", "")
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
+        sync_xberg_backend(BackendKind.OCR, MagicMock())
+        unreg.assert_called_once_with("lilbee-vision")
+        reg.assert_not_called()
+
+    def test_noop_when_no_model_and_absent(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "vision_model", "")
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
+        sync_xberg_backend(BackendKind.OCR, MagicMock())
+        reg.assert_not_called()
+        unreg.assert_not_called()
+
+    def test_settings_role_reload_syncs_vision_backend(self, monkeypatch):
+        """A vision_model change via any settings path (REST/MCP/TUI/CLI) registers it."""
+        from lilbee.app.services import set_services
+        from lilbee.app.settings import _reload_changed_roles
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services())
+        try:
+            monkeypatch.setattr(cfg, "vision_model", "org/V-GGUF/v-Q4_K_M.gguf")
+            reg, _unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
+            _reload_changed_roles({"vision_model"})
+            reg.assert_called_once()
+        finally:
+            set_services(None)
+
+
+class TestSyncEmbeddingBackend:
+    def _patch_xberg(self, monkeypatch, *, listed):
+        reg = MagicMock()
+        unreg = MagicMock()
+        monkeypatch.setattr("xberg.list_embedding_backends", lambda: listed)
+        monkeypatch.setattr("xberg.register_embedding_backend", reg)
+        monkeypatch.setattr("xberg.unregister_embedding_backend", unreg)
+        return reg, unreg
+
+    def test_registers_when_absent(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
+        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
+    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
+        """A rebuilt provider must replace the stale binding: unregister then re-register,
+        else xberg keeps embedding through the shut-down provider after reset_services."""
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
+        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
+        unreg.assert_called_once_with("lilbee")
+        reg.assert_called_once()
+
+    def test_registered_backend_routes_to_provider_embed(self, monkeypatch):
+        """The registered backend must call provider.embed and report cfg.embedding_dim."""
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+        monkeypatch.setattr(cfg, "embedding_dim", 7)
+        provider = MagicMock()
+        # The backend passes the provider's numpy vectors straight through; xberg accepts them.
+        vectors = [np.zeros(7, dtype=np.float32)]
+        provider.embed.return_value = vectors
+        sync_xberg_backend(BackendKind.EMBEDDING, provider)
+        backend = reg.call_args.args[0]
+        assert backend.name() == "lilbee"
+        assert backend.dimensions() == 7
+        assert backend.embed(["hello"]) is vectors
+        provider.embed.assert_called_once_with(["hello"])
+        provider.embed.assert_called_once_with(["hello"])
+        # Lifecycle hooks are no-ops but must exist (xberg calls initialize).
+        assert backend.initialize() is None
+        assert backend.shutdown() is None
+
+
+class TestSyncTokenizerBackend:
+    def _patch_xberg(self, monkeypatch, *, listed):
+        reg = MagicMock()
+        unreg = MagicMock()
+        monkeypatch.setattr("xberg.list_tokenizer_backends", lambda: listed)
+        monkeypatch.setattr("xberg.register_tokenizer_backend", reg)
+        monkeypatch.setattr("xberg.unregister_tokenizer_backend", unreg)
+        return reg, unreg
+
+    def test_registers_when_enabled_and_absent(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
+        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
+    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
+        """A rebuilt provider must replace the stale binding: unregister then re-register,
+        else xberg keeps counting through the shut-down provider after reset_services."""
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
+        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        unreg.assert_called_once_with("lilbee")
+        reg.assert_called_once()
+
+    def test_unregisters_when_disabled(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
+        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        unreg.assert_called_once_with("lilbee")
+        reg.assert_not_called()
+
+    def test_noop_when_disabled_and_absent(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
+        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        reg.assert_not_called()
+        unreg.assert_not_called()
+
+    def test_registered_backend_routes_to_provider_count_tokens(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+        provider = MagicMock()
+        provider.count_tokens.return_value = 42
+        sync_xberg_backend(BackendKind.TOKENIZER, provider)
+        backend = reg.call_args.args[0]
+        assert backend.name() == "lilbee"
+        assert backend.count_tokens("hello") == 42
+        provider.count_tokens.assert_called_once_with("hello")
+
+    def test_settings_change_syncs_tokenizer_backend(self, monkeypatch):
+        """Toggling token_sizing via any settings path re-syncs the backend."""
+        from lilbee.app.services import set_services
+        from lilbee.app.settings import _invalidate_caches
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services())
+        try:
+            monkeypatch.setattr(cfg, "token_sizing", True)
+            reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+            _invalidate_caches({"token_sizing"})
+            reg.assert_called_once()
+        finally:
+            set_services(None)
 
 
 class TestServicesDataclass:
@@ -264,3 +456,49 @@ class TestResetStore:
         assert services_mod.peek_services() is None
         reset_store()
         assert services_mod.peek_services() is None
+
+
+class TestGetServicesThreadSafety:
+    def test_concurrent_first_touch_builds_one_container(self, monkeypatch):
+        """Concurrent first ``get_services()`` calls must build exactly one container.
+
+        A duplicate concurrent build re-registers xberg's process-global backends
+        mid-flight, and the losing thread raises 'Embedding backend already
+        registered' -- surfacing as failed download tasks when several workers
+        first-touch services at once."""
+        import threading
+        import time
+
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        builds: list[int] = []
+
+        def slow_build(config, provider=None, registry=None, interactive=False):
+            builds.append(threading.get_ident())
+            time.sleep(0.05)
+            return make_mock_services()
+
+        monkeypatch.setattr(services_mod, "build_services", slow_build)
+        monkeypatch.setattr("lilbee.app.settings.reconcile_embedding_dim", lambda registry: None)
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
+        services_mod._state.singleton = None
+
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def touch() -> None:
+            try:
+                results.append(services_mod.get_services())
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=touch) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert len(builds) == 1
+        assert len({id(r) for r in results}) == 1

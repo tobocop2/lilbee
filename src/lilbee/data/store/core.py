@@ -319,7 +319,7 @@ class Store:
         upgrade. Extracted (H1/EXIF) titles still need ``lilbee rebuild``;
         failure leaves NULLs, the pre-backfill behavior.
         """
-        from lilbee.data.ingest.title import derive_title  # circular at module scope
+        from lilbee.data.title import derive_title  # circular at module scope
 
         try:
             rows = table.search().select(["source"]).limit(None).to_list()
@@ -1557,7 +1557,7 @@ class Store:
         """
         if not moves:
             return
-        from lilbee.data.ingest.title import derive_title  # circular at module scope
+        from lilbee.data.title import derive_title  # circular at module scope
 
         with self._write_lock():
             tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]

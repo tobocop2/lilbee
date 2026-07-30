@@ -51,7 +51,7 @@ class TestBindOnlyFlag:
 
     async def test_reaches_the_ingest_offload_pool(self):
         """Workers embed via to_ingest_thread, so the guard must hold on that thread too."""
-        from lilbee.data.ingest.offload import to_ingest_thread
+        from lilbee.data.offload import to_ingest_thread
 
         with bind_only_engine():
             assert await to_ingest_thread(bind_only_active) is True
