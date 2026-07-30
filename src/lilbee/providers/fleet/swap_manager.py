@@ -549,7 +549,12 @@ def _ephemeral_range() -> tuple[int, int] | None:
 # Where lilbee looks for engine ports when the kernel's ephemeral range is known.
 # Above the registered-service crowd, below every default ephemeral range.
 _PORT_SEARCH_FLOOR = 20000
-_PORT_SEARCH_ATTEMPTS = 200
+_PORT_WINDOW_SPAN = 8192
+# Block width. Each process searches one block, so concurrent lilbees hold
+# disjoint ranges. A fleet takes one proxy port plus one per member, and embed
+# and vision replicate per GPU, so 64 covers a 30-GPU host; a wider fleet spills
+# into the next block.
+_PORT_BLOCK = 64
 
 # Ports handed to a child that has not bound them yet. llama-swap binds a member
 # port only on that member's first request, so the probe socket is long closed
@@ -565,15 +570,20 @@ def release_reserved_ports(ports: Iterable[int]) -> None:
         _reserved_ports.difference_update(ports)
 
 
-def _search_start(ceiling: tuple[int, int]) -> int:
-    """Where this process begins its scan of the sub-ephemeral window.
+def _window_span(ceiling: tuple[int, int]) -> int:
+    """How many ports below the ephemeral floor this host leaves to search."""
+    return max(1, min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_WINDOW_SPAN) - _PORT_SEARCH_FLOOR)
 
-    Spread by pid. Reservation only covers this process, and two lilbee starts
-    racing each other cannot see each other's picks at all, so beginning at a
-    different offset per process is what keeps them apart.
+
+def _search_start(ceiling: tuple[int, int]) -> int:
+    """First port of the block this process owns.
+
+    The pid selects a whole block, not an offset: reservation is per-process, and
+    a fleet takes its ports contiguously, so pid-offset starts one apart overlap
+    on all but one port.
     """
-    span = max(1, min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_SEARCH_ATTEMPTS) - _PORT_SEARCH_FLOOR)
-    return _PORT_SEARCH_FLOOR + os.getpid() % span
+    blocks = max(1, _window_span(ceiling) // _PORT_BLOCK)
+    return _PORT_SEARCH_FLOOR + (os.getpid() % blocks) * _PORT_BLOCK
 
 
 def _pick_free_ports(count: int) -> list[int]:
@@ -608,8 +618,7 @@ def _bind_below_ephemeral(sock: socket.socket, ceiling: tuple[int, int] | None) 
     ephemeral range for those ports.
     """
     if ceiling is not None and ceiling[0] > _PORT_SEARCH_FLOOR:
-        top = min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_SEARCH_ATTEMPTS)
-        span = top - _PORT_SEARCH_FLOOR
+        span = _window_span(ceiling)
         start = _search_start(ceiling)
         for offset in range(span):
             port = _PORT_SEARCH_FLOOR + (start - _PORT_SEARCH_FLOOR + offset) % span
