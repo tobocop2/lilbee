@@ -9,6 +9,8 @@ what it gave the last one.
 
 from __future__ import annotations
 
+import os
+
 from lilbee.providers.fleet import swap_manager as sm
 
 
@@ -53,7 +55,7 @@ class TestConsecutivePicksDoNotOverlap:
     def test_exhausting_the_window_still_yields_ports(self, monkeypatch) -> None:
         # With the sub-ephemeral window fully reserved the picker must fall back
         # to letting the OS choose rather than failing the fleet start.
-        monkeypatch.setattr(sm, "_PORT_SEARCH_ATTEMPTS", 2)
+        monkeypatch.setattr(sm, "_PORT_WINDOW_SPAN", 2)
         held = sm._pick_free_ports(2)
         try:
             extra = sm._pick_free_ports(2)
@@ -72,6 +74,47 @@ def test_separate_processes_do_not_start_at_the_same_offset(monkeypatch) -> None
         monkeypatch.setattr(sm.os, "getpid", lambda p=pid: p)
         starts.add(sm._search_start((32768, 60999)))
     assert len(starts) > 1
+
+
+def _pick_as_pid(monkeypatch, pid: int, count: int) -> list[int]:
+    """One process's allocation: its own pid, its own empty reserved set."""
+    monkeypatch.setattr(sm.os, "getpid", lambda p=pid: p)
+    monkeypatch.setattr(sm, "_reserved_ports", set())
+    return sm._pick_free_ports(count)
+
+
+def test_a_block_holds_a_whole_fleet(monkeypatch) -> None:
+    # A group wider than a block spills into the next one. Stated as arithmetic
+    # rather than by binding 35 real sockets, which depends on the host.
+    widest_real_fleet = 1 + 2 * 16 + 2  # 16-GPU host: proxy, embed+vision, two singles
+    assert widest_real_fleet <= sm._PORT_BLOCK
+    starts = [sm._search_start((32768, 60999)) for _ in (0, 1)]
+    monkeypatch.setattr(sm.os, "getpid", lambda: 4001)
+    next_start = sm._search_start((32768, 60999))
+    monkeypatch.setattr(sm.os, "getpid", lambda: 4000)
+    assert next_start - sm._search_start((32768, 60999)) == sm._PORT_BLOCK
+    assert len(set(starts)) == 1  # same pid, same block, every time
+
+
+def test_concurrent_wide_fleets_do_not_overlap(monkeypatch) -> None:
+    # Fake pids derive from the real one so parallel test workers land in
+    # different blocks instead of fighting over one.
+    monkeypatch.setattr(sm, "_ephemeral_range", lambda: (32768, 60999))
+    real = os.getpid()
+    first = _pick_as_pid(monkeypatch, real, 40)
+    second = _pick_as_pid(monkeypatch, real + 1, 40)
+    assert not set(first) & set(second)
+
+
+def test_concurrent_workers_get_disjoint_port_groups(monkeypatch) -> None:
+    # Ports are taken contiguously and the probe sockets close before
+    # llama-server binds, so pid-offset starts one apart overlap on all but one.
+    monkeypatch.setattr(sm, "_ephemeral_range", lambda: (32768, 60999))
+    groups = [_pick_as_pid(monkeypatch, 4000 + i, 4) for i in range(8)]
+    taken: set[int] = set()
+    for group in groups:
+        assert not taken & set(group)
+        taken.update(group)
 
 
 class TestTheSubEphemeralSearch:
