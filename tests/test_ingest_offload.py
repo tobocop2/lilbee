@@ -14,7 +14,7 @@ from collections.abc import Iterator
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.ingest import offload
+from lilbee.data import offload
 from lilbee.providers.fleet import replicas
 
 

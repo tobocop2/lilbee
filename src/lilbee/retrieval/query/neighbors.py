@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # it would delete real text at an overlap-free seam.
 _MIN_OVERLAP = 16
 
-# kreuzberg markdown breadcrumb ("# Guide > ## Install\n\n"); heading-context
+# xberg markdown breadcrumb ("# Guide > ## Install\n\n"); heading-context
 # content lines never start with "#", so only the breadcrumb matches.
 _BREADCRUMB_RE = re.compile(r"\A#{1,6} [^\n]*\n\n")
 

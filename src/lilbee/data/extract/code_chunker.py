@@ -20,7 +20,8 @@ from tree_sitter_language_pack import (
 )
 
 from lilbee.core.config import cfg
-from lilbee.data.chunk import CHARS_PER_TOKEN, chunk_text
+
+from .chunk import CHARS_PER_TOKEN, chunk_text
 
 log = logging.getLogger(__name__)
 

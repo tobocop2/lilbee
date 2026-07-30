@@ -9,7 +9,7 @@ import pytest
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import _flush_entity_rows, build_entity_records
-from lilbee.data.ingest.types import _IngestResult
+from lilbee.data.types import _IngestResult
 from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind
 
 

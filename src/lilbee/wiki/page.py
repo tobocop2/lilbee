@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
-from lilbee.data.chunk import chunk_text
+from lilbee.data.extract.chunk import chunk_text
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
