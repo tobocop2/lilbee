@@ -188,12 +188,9 @@ def build_services(
     reconciliation is a global-cfg concern owned by :func:`get_services`, not
     done here.
 
-    Side effect: binds *provider* into xberg's process-global OCR, embedding and
-    tokenizer backends (see :mod:`lilbee.data.extract.backends.registry`) so scanned-page OCR,
-    semantic-chunk boundary detection, and token-budgeted chunk sizing route through
-    it. xberg's registry is a single global slot, so the most recently built container
-    wins; this is why binding lives here (every container, singleton or per-instance
-    library, binds its own provider) rather than only in :func:`get_services`.
+    Side effect: binds *provider* into xberg's process-global OCR/embedding/
+    tokenizer backends. The registry is a single global slot, so every container
+    (singleton or per-instance library) binds its own, not only get_services.
     """
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
@@ -209,10 +206,6 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = provider or create_provider(config, hold_warm=interactive)
-    # Bind this provider into xberg's OCR/embedding/tokenizer backends so scanned-page
-    # OCR, semantic-chunk boundary detection and token-budgeted sizing route through it.
-    # Bound here (not only in get_services) so the library API's per-instance containers
-    # bind too; each backend reads live cfg and re-binds when the provider is rebuilt.
     from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)

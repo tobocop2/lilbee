@@ -196,42 +196,23 @@ class Config(BaseSettings):
     # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
     # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
     ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
-    # Opt-in typed entity extraction (an entities table for exact counting
-    # and cross-referencing). Fully automatic: sync induces a schema from the
-    # corpus and extracts across the index; new files extract at ingest. Off
-    # by default: the corpus-scale pass costs real compute and most vaults
-    # never need it.
+    # Typed entity table for exact counting/cross-referencing; corpus-scale pass, off by default.
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
-    # Size chunk budgets (chunk_size/chunk_overlap) in real tokens from the
-    # embedder's own tokenizer via xberg's registered tokenizer backend, instead of
-    # the chars-per-token heuristic. Off by default: turning it on re-partitions
-    # chunks, so a library must be reindexed. Applies to the plain and heading
-    # chunkers; the semantic chunker sizes by characters and ignores it.
+    # Size chunks in real tokens via the embedder's tokenizer backend, not the
+    # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
     token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
-    # Index each extracted table as its own chunk: xberg recognizes table
-    # structure during extraction and the markdown serialization is embedded
-    # alongside the prose chunks, so tabular data is retrievable as a unit.
-    # Off by default: recognition costs extraction time, and toggling changes
-    # what gets indexed, so a library must be reindexed.
+    # Index each recognized table as its own markdown-serialized chunk.
     table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
-    # Layout-aware PDF extraction: xberg's layout detection orders page text
-    # by detected reading order (multi-column PDFs stop interleaving) and the
-    # running header/footer bands are stripped. Off by default: detection runs
-    # an extra model pass per page, and toggling changes extracted text, so a
-    # library must be reindexed.
-    layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
-    # Table structure recognition model, applied when layout detection is on.
-    # slanet_auto is the docling-parity default; toggling changes extracted
-    # tables, so a library must be reindexed.
+    # Layout-aware PDF extraction (reading-order sort, header/footer stripping),
+    # run in xberg's AUTO strategy so detection only fires when it helps.
+    layout_detection: bool = ConfigField(default=True, writable=True, reindex=True)
+    # Table structure model; only applied when layout_detection is on.
     table_model: TableModel = ConfigField(
         default=TableModel.SLANET_AUTO, writable=True, reindex=True
     )
-    # Coalesce concurrent extractions into one xberg extract_batch call. Off by
-    # default: the streaming pipeline already parallelizes extraction per file.
-    # Extraction output is unchanged, so no reindex. batch_extraction_size caps
-    # files per batch.
+    # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)

@@ -84,9 +84,8 @@ _ocr_timeout_override: contextvars.ContextVar[float | None] = contextvars.Contex
 )
 
 
-# Per-file document title for embedding input; a ContextVar (like the OCR
-# overrides) so the OCR call chains need no signature threading and concurrent
-# ingests never leak titles across files.
+# Per-file title for embedding input; a ContextVar (like the OCR overrides) so the
+# call chains need no signature threading and concurrent ingests don't leak titles.
 _embed_title: contextvars.ContextVar[str] = contextvars.ContextVar("lilbee_embed_title", default="")
 
 
@@ -256,11 +255,8 @@ def _pdf_options() -> PdfConfig | None:
 
 
 def warn_if_table_model_ignored() -> None:
-    """Warn once per ingest when table extraction runs without layout detection.
-
-    xberg only runs the table structure model (table_model) inside layout
-    detection, so with layout_detection off the native table path is used and the
-    configured model is silently ignored (xberg#1322).
+    """Warn when table extraction runs with layout_detection off: xberg only
+    applies table_model inside layout detection, so the model is silently ignored.
     """
     config = active_config()
     if config.table_extraction and not config.layout_detection:
@@ -273,23 +269,21 @@ def warn_if_table_model_ignored() -> None:
 
 
 def _layout_config() -> LayoutDetectionConfig | None:
-    """LayoutDetectionConfig when layout detection is on, else None for xberg's default."""
+    """AUTO-strategy layout config when enabled, else None."""
     config = active_config()
     if not config.layout_detection:
         return None
-    from xberg import LayoutDetectionConfig
+    from xberg import LayoutDetectionConfig, LayoutStrategy
 
-    return LayoutDetectionConfig(table_model=config.table_model)
+    return LayoutDetectionConfig(strategy=LayoutStrategy.AUTO, table_model=config.table_model)
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
     from xberg import ExtractionConfig, PageConfig
 
-    # Files are extracted one per call, so xberg parallelizes OCR across the
-    # pages of each document internally; cross-file concurrency is the pipeline's
-    # semaphore. (max_concurrent_extractions only bounds multi-file batch calls,
-    # which lilbee never makes, so it is intentionally not set here.)
+    # Files are extracted one per call; xberg parallelizes OCR across a document's
+    # pages internally, and cross-file concurrency is the pipeline's semaphore.
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
     # Defeats xberg's text-layer short-circuit; vision path only (GPU re-OCR lever).
@@ -494,10 +488,9 @@ async def ingest_document(
             doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
     elapsed = time.perf_counter() - started
 
-    # One trace line per xberg extraction (filename, timing, counts, OCR pages),
-    # plus a dedicated vision line for scanned files -- the diagnostics an xberg
-    # author needs. Emitted for empty results too: a slow file that yields nothing
-    # is exactly the case worth surfacing.
+    # One trace line per extraction (filename, timing, counts, OCR pages), plus a
+    # vision line for scanned files. Emitted for empty results too (a slow file
+    # that yields nothing is worth surfacing).
     trace_extraction(
         ExtractionTrace(
             source=source_name,
@@ -521,9 +514,8 @@ async def ingest_document(
 
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
-    # One EXTRACT event per file so subscribers (chat /add, /sync, CLI Rich
-    # progress) show "extracted N pages" before the embed phase; result.pages is
-    # the canonical page list, falling back to the chunk count for non-paginated docs.
+    # One EXTRACT event per file so progress subscribers show "extracted N pages"
+    # before embedding; result.pages, or the chunk count for non-paginated docs.
     page_count = len(doc.pages or []) or len(doc.chunks or [])
     on_progress(
         EventType.EXTRACT,

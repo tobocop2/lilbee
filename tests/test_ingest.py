@@ -2831,10 +2831,12 @@ class TestExtractionConfig:
             assert config["chunking"].chunker_type == "semantic"
             assert config["chunking"].topic_threshold == pytest.approx(0.42, abs=1e-5)
 
-    def test_table_extraction_off_sets_no_pdf_options(self):
-        """Default config leaves pdf_options unset: exact pre-feature behavior."""
+    def test_table_extraction_off_sets_no_pdf_options(self, monkeypatch):
+        """Table and layout both off leave pdf_options unset."""
+        from lilbee.core.config import cfg
         from lilbee.data.ingest import ExtractMode, extraction_config
 
+        monkeypatch.setattr(cfg, "layout_detection", False)
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.get("pdf_options") is None
 
@@ -2862,10 +2864,12 @@ class TestExtractionConfig:
         assert config.get("pdf_options") is None
         assert config["chunking"].table_chunking == TableChunkingMode.REPEAT_HEADER
 
-    def test_layout_detection_off_sets_no_layout(self):
-        """Default config leaves layout detection unset: exact pre-feature behavior."""
+    def test_layout_detection_off_sets_no_layout(self, monkeypatch):
+        """With layout detection off, no layout config or pdf_options."""
+        from lilbee.core.config import cfg
         from lilbee.data.ingest import ExtractMode, extraction_config
 
+        monkeypatch.setattr(cfg, "layout_detection", False)
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.get("layout") is None
         assert config.get("pdf_options") is None

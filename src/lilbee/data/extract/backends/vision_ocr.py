@@ -19,15 +19,12 @@ from .registry import BackendKind, XbergBinding, register_binding
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    # The OcrBackend Protocol types the callback config as the public
-    # xberg.OcrConfig; a backend typed against the native
-    # xberg._xberg.OcrConfig no longer satisfies it. The runtime object still
-    # arrives with backend_options as a JSON string (handled in _OcrConfigView).
+    # OcrBackend types the config as the public xberg.OcrConfig; its
+    # backend_options arrives as a JSON string at runtime (see _OcrConfigView).
     from xberg import ExtractedDocument, OcrBackendType, OcrConfig
 
-# Token key inside OcrConfig.backend_options JSON. xberg does not propagate
-# contextvars into process_image, so per-request state travels as
-# a token on the config and is resolved through the registry below.
+# xberg doesn't propagate contextvars into process_image, so per-request state
+# travels as this token in OcrConfig.backend_options and resolves via the registry.
 _REQUEST_TOKEN_KEY = "req"  # noqa: S105  # JSON key name, not a secret
 
 
@@ -84,13 +81,9 @@ def backend_options_for(token: str) -> dict[str, str]:
 
 
 class _OcrConfigView:
-    """Typed reader over the xberg OcrConfig object passed to process_image.
-
-    Typed against the public ``xberg.OcrConfig`` from the OcrBackend Protocol, whose
-    fields are read directly as attributes. The native round-trip hands
-    ``backend_options`` back as a JSON string rather than the dict lilbee put in, so
-    ``request_token`` accepts both shapes.
-    """
+    """Typed reader over the xberg OcrConfig passed to process_image. The native
+    round-trip hands ``backend_options`` back as a JSON string, so ``request_token``
+    accepts both the dict and string shapes."""
 
     def __init__(self, config: OcrConfig) -> None:
         self._config = config
@@ -101,10 +94,6 @@ class _OcrConfigView:
 
     @property
     def request_token(self) -> str | None:
-        # The native round-trip hands backend_options back as a JSON STRING, not
-        # the dict lilbee put in (alef serializes the map). Accept both shapes,
-        # or the token -- and with it on_page progress and the OCR timeout --
-        # silently vanishes for every OCR call.
         options = self._config.backend_options
         if isinstance(options, str):
             try:
@@ -165,16 +154,12 @@ class VisionOcrBackend:
         return False
 
     def emits_structured_markdown(self) -> bool:
-        # Keep xberg's default: the pre-migration differential was validated with
-        # layout reconstruction on. The vision model does emit markdown, so flipping
-        # this to True (skip reconstruction) is a valid optimization, but it changes
-        # real OCR output and must be validated on the live integration first.
+        # False keeps xberg's layout reconstruction (the validated path). The model
+        # does emit markdown, so True is a valid optimization but changes OCR output.
         return False
 
     def process_image(self, image_bytes: bytes, config: OcrConfig) -> ExtractedDocument:
-        # xberg passes the OcrConfig as a native object and expects a native
-        # ExtractedDocument back (alef typed trait callbacks); read the request
-        # token and prompt override off the config, return the OCR text as markdown.
+        # xberg passes a native OcrConfig and expects a native ExtractedDocument back.
         from xberg import ExtractedDocument
 
         view = _OcrConfigView(config)

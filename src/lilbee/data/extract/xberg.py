@@ -1,9 +1,7 @@
 """Bridge to xberg's async-only ``extract`` for lilbee's call sites.
 
-xberg 1.x exposes a single ``extract(ExtractInput, config) -> ExtractionResult``
-coroutine whose ``results`` hold one ``ExtractedDocument`` per input. lilbee
-extracts one in-memory document at a time, from both async code (await directly)
-and synchronous code (driven to completion here).
+xberg exposes one ``extract(input, config)`` coroutine; lilbee extracts a single
+in-memory document at a time, from both async and sync callers.
 """
 
 from __future__ import annotations
@@ -105,11 +103,8 @@ def extract_document(
 ) -> ExtractedDocument:
     """Extract one in-memory document from synchronous code.
 
-    Drives xberg's coroutine to completion. When no event loop is running on this
-    thread (the common case: a plain sync caller or one of lilbee's offloaded
-    worker threads) ``asyncio.run`` is used directly; if a loop is already running
-    here, the coroutine is driven on a fresh worker thread so it never re-enters
-    that loop.
+    Uses ``asyncio.run``; if a loop is already running on this thread, drives the
+    coroutine on a fresh worker thread so it never re-enters that loop.
     """
     return _run(aextract_document(data, mime_type, filename=filename, config=config))
 

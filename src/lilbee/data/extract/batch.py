@@ -1,15 +1,11 @@
 """Coalesce concurrent single-document extractions into one xberg batch call.
 
-Active only when ``cfg.batch_extraction`` is on. The streaming pipeline runs one
-extraction coroutine per file; this batcher intercepts them at the extract
-boundary and groups the ones in flight into a single ``extract_batch`` call, so
-the per-file pipeline contract (progress, admission, per-file results) is
-untouched. Off by default. There is no off-the-shelf async request-coalescer
-that speaks xberg's per-input config, so the small buffer-and-flush below is
-hand-rolled.
-
-Inputs sharing an extraction mode share one batch config; each carries its own
-OCR token as a per-file override so per-file OCR progress survives batching.
+Active only when ``cfg.batch_extraction`` is on. Intercepts the pipeline's per-file
+extraction coroutines and groups in-flight ones into a single ``extract_batch``,
+leaving the per-file contract (progress, admission, results) untouched. No
+off-the-shelf async coalescer speaks xberg's per-input config, so the buffer-and-
+flush below is hand-rolled. Inputs sharing a mode share a batch config; each keeps
+its own OCR token as a per-file override.
 """
 
 from __future__ import annotations

@@ -1,17 +1,8 @@
-"""Registry that binds lilbee's providers into xberg's process-global backends.
+"""Binds lilbee's providers into xberg's process-global OCR/embedding/tokenizer backends.
 
-xberg exposes three pluggable backends -- OCR, embedding and tokenizer -- each
-with its own ``list_/register_/unregister_`` trio. lilbee registers one of each so
-scanned-page OCR, semantic-chunk boundary detection and token-budgeted chunk
-sizing route through the fleet instead of xberg's bundled defaults.
-
-Each backend module declares one :class:`XbergBinding` and self-registers it here
-at import, so the backend, its gate and its factory live next to the class they
-wire rather than in the services container. :func:`sync_xberg_backends` (re)binds
-them all; :func:`sync_xberg_backend` rebinds one after a setting change. The bind
-is a locked unregister-then-register so a concurrent rebuild cannot collide on
-xberg's "already registered", and it re-binds every time because each backend
-captures a provider callable that a rebuild (``reset_services``) invalidates.
+Each backend module declares an :class:`XbergBinding` and self-registers it here at
+import. The bind is a locked unregister-then-register: a rebuild invalidates the
+captured provider, and the lock avoids racing xberg's "already registered".
 """
 
 from __future__ import annotations
@@ -50,9 +41,7 @@ class XbergBinding:
     make: Callable[[LLMProvider, Config], Any]
 
 
-# Keyed by kind: lilbee registers exactly one backend per xberg registry, and the
-# per-registry names are not unique across kinds (embedding and tokenizer both use
-# "lilbee"), so the kind is the only collision-free key.
+# Keyed by kind, not name: embedding and tokenizer both register as "lilbee".
 _BINDINGS: dict[BackendKind, XbergBinding] = {}
 _bind_lock = threading.Lock()
 
@@ -63,10 +52,8 @@ def register_binding(binding: XbergBinding) -> None:
 
 
 def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
-    """xberg's (list, register, unregister) functions for *kind*, imported lazily.
-
-    Kept here so the backend modules never import xberg at module scope -- it is a
-    heavy dependency and importing it eagerly would slow every CLI startup.
+    """xberg's (list, register, unregister) functions for *kind*, imported lazily
+    so backend modules never import the heavy xberg package at module scope.
     """
     import xberg
 
