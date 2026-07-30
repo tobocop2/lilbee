@@ -1123,6 +1123,10 @@ class LlamaServerClient:
         _raise_for_status(resp)
         return list(resp.json()["tokens"])
 
+    def count_tokens(self, text: str) -> int:
+        """Number of tokens *text* encodes to under the server's tokenizer."""
+        return len(self._tokenize(text))
+
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
         _raise_for_status(resp)
