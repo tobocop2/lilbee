@@ -62,7 +62,7 @@ def register_binding(binding: XbergBinding) -> None:
     _BINDINGS[binding.kind] = binding
 
 
-def _register_trio(kind: BackendKind) -> tuple[Any, Any, Any]:
+def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
     """xberg's (list, register, unregister) functions for *kind*, imported lazily.
 
     Kept here so the backend modules never import xberg at module scope -- it is a
@@ -90,7 +90,7 @@ def _register_trio(kind: BackendKind) -> tuple[Any, Any, Any]:
 
 
 def _sync(binding: XbergBinding, provider: LLMProvider, cfg: Config) -> None:
-    list_fn, register_fn, unregister_fn = _register_trio(binding.kind)
+    list_fn, register_fn, unregister_fn = _registry_fns(binding.kind)
     with _bind_lock:
         present = binding.name in list_fn()
         if binding.enabled(cfg):
