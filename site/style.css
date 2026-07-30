@@ -416,11 +416,15 @@ h2.label { font-size: inherit; font-weight: inherit; }
 .variant.compat .variant-tag { color: var(--gold); }
 .variant.compat .install { border-left: 2px solid var(--gold); }
 .variant.compat .variant-note { border-left: 2px solid var(--gold); padding-left: 0.7rem; }
+.variant.rocm .variant-tag { color: var(--trust); }
+.variant.rocm .install { border-left: 2px solid var(--trust); }
+.variant.rocm .variant-note { border-left: 2px solid var(--trust); padding-left: 0.7rem; }
 .variant.cuda .variant-tag { color: var(--iris); }
 .variant.cuda .install { border-left: 2px solid var(--iris); }
 .variant.cuda .variant-note { border-left: 2px solid var(--iris); padding-left: 0.7rem; }
 .binary-section.compat { color: var(--gold); }
 .binary-section.cuda { color: var(--iris); }
+.binary-section.rocm { color: var(--trust); }
 
 /* labelled section divider inside the binary tab (older CPU, NVIDIA) */
 .binary-section {

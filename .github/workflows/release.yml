@@ -207,7 +207,10 @@ jobs:
         run: |
           set -euxo pipefail
           dnf install -y libxkbcommon-devel libX11-devel libXrandr-devel libXcursor-devel libXi-devel libXinerama-devel mesa-libGL-devel
-          VULKAN_VERSION="1.3.296.0"
+          # Pinned in engine-versions.env so the SDK cannot drift from the
+          # one install_gpu_toolkit.sh uses.
+          source engine-versions.env
+          VULKAN_VERSION="${ENGINE_VULKAN_SDK_VERSION:?}"
           curl -L -o /tmp/vulkan-sdk.tar.xz \
             "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz"
           mkdir -p /opt/vulkan
