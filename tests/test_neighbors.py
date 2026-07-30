@@ -58,7 +58,7 @@ class TestMergeAdjacentTexts:
         assert "the next chunk" in merged
 
     def test_breadcrumb_on_the_right_does_not_hide_the_overlap(self):
-        # kreuzberg heading-context chunks carry "# A > ## B\n\n" prefixes; the
+        # xberg heading-context chunks carry "# A > ## B\n\n" prefixes; the
         # overlap sits after the breadcrumb and the merge must still find it.
         overlap = "word219 word220 word221 word222"
         left = f"# Guide > ## Install\n\nword0 word1 {overlap}"

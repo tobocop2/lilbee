@@ -20,13 +20,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     # The OcrBackend Protocol types the callback config as the public
-    # xberg.OcrConfig (kreuzberg-u4r); a backend typed against the native
+    # xberg.OcrConfig; a backend typed against the native
     # xberg._xberg.OcrConfig no longer satisfies it. The runtime object still
     # arrives with backend_options as a JSON string (handled in _OcrConfigView).
     from xberg import ExtractedDocument, OcrBackendType, OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
-# contextvars into process_image (xberg-4w9), so per-request state travels as
+# contextvars into process_image, so per-request state travels as
 # a token on the config and is resolved through the registry below.
 _REQUEST_TOKEN_KEY = "req"  # noqa: S105  # JSON key name, not a secret
 

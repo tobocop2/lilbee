@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 BATCH_FILES = 32
 
 # Under this many files the pool costs more than it saves: every worker pays a
-# fresh lilbee import (lancedb, kreuzberg) before its first file.
+# fresh lilbee import (lancedb, xberg) before its first file.
 _MIN_FILES_FOR_POOL = 2000
 
 # Under this many usable cores there is nothing to parallelise onto, and the
