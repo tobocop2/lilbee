@@ -393,7 +393,7 @@ card.
 produced records, a single parent collected them over IPC and wrote the one store. That
 parent drain was the binding ceiling for a large embedder, which is why the setting was
 off by default and measured 1.00x. Per-card workers remove the drain instead of widening
-it — eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
+it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
 fraction of 0.93.
 
 **Where the work is skipped.** Workers build no indexes and run no corpus-wide passes:
