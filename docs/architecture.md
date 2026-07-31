@@ -351,8 +351,8 @@ to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as list
 
 #### One worker process per GPU (`ingest_processes`)
 
-**The problem.** One process cannot feed several cards. Everything funnels through a
-single plan stream, a single collect and a single writer, and the cards wait on that:
+**The problem.** One process cannot feed several cards. The work is serialized through
+one plan stream, one collect and one writer, and that serial stage is the bottleneck:
 on 8xH100 a plain `lilbee sync` measured 152 docs/sec across eight cards against 162
 across four, so the eighth card made the run slower.
 
