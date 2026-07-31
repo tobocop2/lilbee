@@ -80,6 +80,35 @@ The re-run planned only what the shards were missing, which is why it beat the
 first sync's rate, and the index came out at exactly the corpus size. Nothing was
 re-embedded and nothing was left behind.
 
+## Is the merged index the index a single process would build?
+
+Matching row counts are weak evidence: they match just as well if the merge
+duplicated one source and dropped another. The oracle is a single-process ingest
+of the same corpus, diffed against the merged one.
+
+Three ingests of one shared documents dir on 2x RTX 4090, 20,000 passages: a
+reference (`ingest_processes = 1`), a floor (the same again), and the candidate
+(native fan-out). Embeddings are not deterministic, so the floor is what makes
+the drift claim falsifiable: without it, any drift number can be called small.
+
+| Check | Result |
+|---|---|
+| Same tables, same row count in each | chunks / sources / page texts 20,000, one meta row |
+| Same source keys, same file hashes | 0 differ |
+| Same embedder identity | matches |
+| Same chunk text for every (source, chunk_index) | 0 of 20,000 differ |
+| Vector drift against the reference | mean 2.455e-06 |
+| Drift a single host shows against its own re-run | mean 2.098e-06 |
+
+The candidate sits at the floor, so what is left is embedding noise rather than
+anything the merge did.
+
+Structural checks on the merged store, which the diff above does not cover: no
+duplicate source keys, no duplicate `(source, chunk_index)`, no null vectors,
+every vector the configured width, exactly one meta row recording the right
+dimension, FTS and scalar indexes present on the merged chunks table, and a
+search returning five hits drawn from four different buckets.
+
 ## Is it as fast as configuring it by hand?
 
 The question that matters for anyone already running one lilbee per card: does
