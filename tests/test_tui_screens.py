@@ -10563,10 +10563,10 @@ class TestWikiCoverageEdgeCases:
             screen.query_one("#wiki-search", TextualInput).value = "brakes"
             app.switch_screen("elsewhere")
             await pilot.pause()
-            # Drop the pending search debounce so the only repaint under the
+            # Drop a still-pending search debounce so the only repaint under the
             # patch is the one the switch back triggers.
-            assert screen._search_filter_timer is not None
-            screen._search_filter_timer.stop()
+            if screen._search_filter_timer is not None:
+                screen._search_filter_timer.stop()
             with patch.object(screen, "_load_pages") as mock_load:
                 app.switch_screen("wiki")
                 await pilot.pause()
