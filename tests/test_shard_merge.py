@@ -55,6 +55,16 @@ class TestWholeShardMerge:
         assert store.get_meta()["embedding_model"] == cfg.embedding_model
 
 
+class TestWholeShardMergeAtScale:
+    def test_a_shard_larger_than_any_default_query_limit_lands_whole(self, tmp_path, store):
+        """A capped scan would drop the tail of every shard and say nothing."""
+        sources = [f"f{index:05d}.txt" for index in range(1200)]
+        _write_shard(tmp_path / "w0", sources)
+        merged = merge_shards(store, [tmp_path / "w0"])
+        assert merged[CHUNKS_TABLE] == 1200
+        assert store.open_table(CHUNKS_TABLE).count_rows() == 1200
+
+
 class TestScopedMerge:
     def test_only_the_touched_sources_are_taken(self, tmp_path, store):
         _write_shard(tmp_path / "w0", ["a.txt", "b.txt"])
