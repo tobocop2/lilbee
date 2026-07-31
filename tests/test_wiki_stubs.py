@@ -13,11 +13,11 @@ from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.shared import WikiSubdir
 from lilbee.wiki.stubs import (
     WikiStub,
+    _recut_refs,
     drop_sources_from_index,
     load_stub_index,
     refresh_stub_index,
     save_stub_index,
-    stub_from_entity,
     stub_index_path,
     ungenerated_stubs,
 )
@@ -36,6 +36,65 @@ def _entity(slug: str, refs: list[tuple[str, int]], kind: EntityKind = EntityKin
         type_hint="ORG",
         chunk_refs=tuple(ChunkRef(source=s, chunk_index=i) for s, i in refs),
     )
+
+
+class _FakeStore:
+    """A store that serves chunks and persists wiki mention rows in memory, so a
+    refresh can write per-source evidence and aggregate it back the way the real
+    store does. The mention table is the source of truth the index derives from,
+    so a MagicMock (which never persists) would leave the whole flow unobserved.
+    """
+
+    def __init__(self, chunks_by_source: dict[str, list]):
+        self._chunks = chunks_by_source
+        self._mentions: dict[str, list[dict]] = {}
+
+    def get_sources(self):
+        return [{"filename": name} for name in sorted(self._chunks)]
+
+    def get_chunks_by_source(self, name):
+        return self._chunks.get(name, [])
+
+    def replace_wiki_mentions_for_source(self, source, rows):
+        if rows:
+            self._mentions[source] = [dict(r) for r in rows]
+        else:
+            self._mentions.pop(source, None)
+
+    def wiki_mention_rows(self, slugs=None):
+        rows = [dict(r) for src_rows in self._mentions.values() for r in src_rows]
+        if slugs is not None:
+            wanted = set(slugs)
+            rows = [r for r in rows if r["slug"] in wanted]
+        return rows
+
+    def has_wiki_mentions(self):
+        return any(self._mentions.values())
+
+    def clear_wiki_mentions(self):
+        self._mentions = {}
+        return True
+
+
+def _seed_full(store: _FakeStore, entities: list[ExtractedEntity]) -> None:
+    """Run a full refresh that writes *entities* into *store* and the index,
+    so both the mention table and the file reflect a real prior sync."""
+    for entity in entities:
+        for ref in entity.chunk_refs:
+            store._chunks.setdefault(ref.source, []).append(MagicMock(source=ref.source))
+
+    def _extract(chunks):
+        served = {chunk.source for chunk in chunks}
+        return [e for e in entities if any(r.source in served for r in e.chunk_refs)]
+
+    extractor = MagicMock()
+    extractor.available.return_value = True
+    extractor.extract.side_effect = _extract
+    with (
+        patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+        patch("lilbee.wiki.stubs.get_services"),
+    ):
+        refresh_stub_index(store, cfg, sources=None)
 
 
 def _stub(
@@ -67,11 +126,18 @@ class TestStubShape:
     def test_refs_are_capped_weakest_source_first(self):
         """The cap has to drop the least-supported evidence, so refs are ordered
         by how much each source has to say before the cut."""
-        entity = _entity("ford", [("thin.md", 0), ("thick.md", 0), ("thick.md", 1)])
-        stub = stub_from_entity(entity, cap=2)
-        assert stub.chunk_refs == (("thick.md", 0), ("thick.md", 1))
+        stub = WikiStub(
+            slug="ford",
+            label="ford",
+            kind=EntityKind.ENTITY,
+            type_hint="ORG",
+            source_mentions=(("thick.md", 2), ("thin.md", 1)),
+            chunk_refs=(("thin.md", 0), ("thick.md", 0), ("thick.md", 1)),
+        )
+        capped = _recut_refs(stub, cap=2)
+        assert capped.chunk_refs == (("thick.md", 0), ("thick.md", 1))
         # Sources still record everything the entity was seen in.
-        assert stub.sources == ("thick.md", "thin.md")
+        assert capped.sources == ("thick.md", "thin.md")
 
 
 class TestRoundTrip:
@@ -99,10 +165,10 @@ class TestRoundTrip:
     @pytest.mark.parametrize(
         ("payload", "readable"),
         [
-            ({"version": 2, "stubs": [{"slug": "broken"}, {"nope": 1}]}, False),
-            ({"version": 2}, False),
-            ({"version": 2, "stubs": "garbage"}, False),
-            ({"version": 2, "stubs": []}, True),
+            ({"version": 3, "stubs": [{"slug": "broken"}, {"nope": 1}]}, False),
+            ({"version": 3}, False),
+            ({"version": 3, "stubs": "garbage"}, False),
+            ({"version": 3, "stubs": []}, True),
         ],
         ids=["all-rows-bad", "no-stubs-key", "stubs-not-a-list", "genuinely-empty"],
     )
@@ -123,7 +189,7 @@ class TestRoundTrip:
         path.write_text(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": 3,
                     "stubs": [
                         {"slug": "broken"},
                         _stub("ford").to_dict(),
@@ -148,19 +214,19 @@ class TestRefresh:
     def _run(entities, store=None, sources=None):
         """Refresh with the extractor reading the chunks it is actually handed.
 
-        The store serves one chunk per source an entity names, and the
-        extractor returns only the entities whose sources are represented in
-        its argument. An extractor answering with a fixed list regardless of
-        input would leave the refresh's chunk gathering unobserved: replacing
-        it with an empty list would still merge the same entities and every
-        case in this class would pass.
+        The store serves one chunk per source an entity names and persists the
+        mention rows the refresh writes; the extractor returns only the entities
+        whose sources are represented in its argument. Pass the returned store
+        back in to chain an incremental refresh onto a seeded one, since the
+        store, not the file, is now what an incremental pass builds on.
         """
-        by_source: dict[str, list[MagicMock]] = {}
+        if store is None:
+            store = _FakeStore({})
         for entity in entities:
             for ref in entity.chunk_refs:
                 chunk = MagicMock()
                 chunk.source = ref.source
-                by_source.setdefault(ref.source, []).append(chunk)
+                store._chunks.setdefault(ref.source, []).append(chunk)
 
         def _extract(chunks):
             served = {chunk.source for chunk in chunks}
@@ -168,14 +234,12 @@ class TestRefresh:
 
         extractor = MagicMock()
         extractor.extract.side_effect = _extract
-        store = store or MagicMock()
-        store.get_sources.return_value = [{"filename": name} for name in sorted(by_source)]
-        store.get_chunks_by_source.side_effect = lambda name: by_source.get(name, [])
         with (
             patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
             patch("lilbee.wiki.stubs.get_services"),
         ):
-            return refresh_stub_index(store, cfg, sources=sources)
+            refresh_stub_index(store, cfg, sources=sources)
+        return load_stub_index()
 
     def test_full_refresh_replaces_the_index(self):
         save_stub_index({"stale": _stub("stale")})
@@ -204,9 +268,29 @@ class TestRefresh:
         extractor.extract.assert_not_called()
 
     def test_incremental_refresh_keeps_untouched_stubs(self):
-        save_stub_index({"gm": _stub("gm", ("other.md",))})
-        result = self._run([_entity("ford", [("a.md", 0)])], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("gm", [("other.md", 0)])], store=store)
+        result = self._run([_entity("ford", [("a.md", 0)])], store=store, sources={"a.md"})
         assert sorted(result) == ["ford", "gm"]
+
+    def test_a_subject_recovers_once_its_evidence_spans_two_synced_documents(self):
+        """The headline fix. A subject below the floor in each separately-synced
+        document still appears once the store holds all its evidence. The old
+        file-only index dropped a.md's sub-floor mentions at write time, so
+        b.md's later sync had nothing to accumulate into and the subject was
+        lost for good."""
+        cfg.wiki_entity_min_mentions = 3
+        store = _FakeStore({})
+        after_a = self._run(
+            [_entity("boeing", [("a.md", 0), ("a.md", 1)])], store=store, sources={"a.md"}
+        )
+        assert after_a == {}  # two mentions is below the floor on a.md's own
+        after_b = self._run(
+            [_entity("boeing", [("b.md", 0), ("b.md", 1)])], store=store, sources={"b.md"}
+        )
+        assert "boeing" in after_b  # four across the corpus clears it
+        assert after_b["boeing"].mentions == 4
+        assert after_b["boeing"].sources == ("a.md", "b.md")
 
     def test_an_index_that_is_genuinely_empty_does_not_force_a_rebuild(self):
         """A corpus that names nothing indexes to an empty but valid file.
@@ -250,56 +334,66 @@ class TestRefresh:
             refresh_stub_index(store, cfg, sources={"a.md"})
         assert seen == [1]
 
-    def test_a_full_pass_keeps_the_configured_threshold(self):
+    def test_extraction_always_uses_a_floor_of_one(self):
+        """The store keeps every mention so the corpus-wide floor can be judged
+        over the aggregate; the extractor must therefore run at a floor of one,
+        whatever the configured threshold, or sub-floor evidence never reaches
+        the store to accumulate across syncs."""
         cfg.wiki_entity_min_mentions = 4
         seen: list[int] = []
 
         def fake_get_extractor(mode, provider, config):
             seen.append(config.wiki_entity_min_mentions)
             extractor = MagicMock()
+            extractor.available.return_value = True
             extractor.extract.return_value = []
             return extractor
 
-        store = MagicMock()
-        store.get_sources.return_value = []
+        store = _FakeStore({})
         with (
             patch("lilbee.wiki.stubs.get_entity_extractor", fake_get_extractor),
             patch("lilbee.wiki.stubs.get_services"),
         ):
             refresh_stub_index(store, cfg)
-        assert seen == [4]
+        assert seen == [1]
 
-    @pytest.mark.parametrize(
-        "payload", [None, '{"version": 999, "stubs": []}'], ids=["missing", "wrong-version"]
-    )
-    def test_no_usable_index_rebuilds_in_full_rather_than_truncating(self, payload):
-        """With nothing to subtract from or merge into, an incremental pass
-        would index only the changed sources and call that the whole corpus.
-        A missing index is the same situation as an unreadable one."""
-        path = stub_index_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if payload is not None:
-            path.write_text(payload, encoding="utf-8")
-        store = MagicMock()
-        store.get_sources.return_value = []
-        store.get_chunks_by_source.return_value = []
+    def test_an_empty_store_rebuilds_in_full_rather_than_truncating(self):
+        """An incremental pass over a store with no mention rows -- a cold or
+        file-only-migrated store -- would derive an empty index. It must rebuild
+        in full to seed the table, not index only the changed sources and call
+        that the whole corpus."""
+        store = _FakeStore({})
+        # b.md is already in the corpus but is not the changed source.
+        for src in ("a.md", "b.md"):
+            store._chunks.setdefault(src, []).append(MagicMock(source=src))
+
+        entities = [_entity("ford", [("a.md", 0)]), _entity("gm", [("b.md", 0)])]
+
+        def _extract(chunks):
+            served = {c.source for c in chunks}
+            return [e for e in entities if any(r.source in served for r in e.chunk_refs)]
+
         extractor = MagicMock()
-        extractor.extract.return_value = [_entity("ford", [("a.md", 0)])]
+        extractor.available.return_value = True
+        extractor.extract.side_effect = _extract
         with (
             patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
             patch("lilbee.wiki.stubs.get_services"),
         ):
             refresh_stub_index(store, cfg, sources={"a.md"})
-        # Went down the full-corpus path rather than the per-source one.
-        store.get_sources.assert_called()
+        # The full corpus was indexed, not just the changed source.
+        assert sorted(load_stub_index()) == ["ford", "gm"]
 
     def test_the_mention_threshold_is_judged_across_the_whole_corpus(self):
         """An entity named twice in the document being re-indexed and often
         elsewhere must not lose that document. Applying the threshold to one
         source's chunks would erode the entry on every later sync."""
         cfg.wiki_entity_min_mentions = 3
-        save_stub_index({"ford": _stub("ford", ("b.md",), per_source=40)})
-        result = self._run([_entity("ford", [("a.md", 0), ("a.md", 1)])], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("ford", [("b.md", i) for i in range(40)])], store=store)
+        result = self._run(
+            [_entity("ford", [("a.md", 0), ("a.md", 1)])], store=store, sources={"a.md"}
+        )
         assert result["ford"].sources == ("a.md", "b.md")
         assert result["ford"].mentions == 42
 
@@ -313,37 +407,30 @@ class TestRefresh:
         subtracting it empties the refs while b.md's five mentions remain.
         Dropping the entry would lose a subject the corpus still names."""
         cfg.wiki_entity_min_mentions = 1
-        save_stub_index(
-            {
-                "ford": WikiStub(
-                    slug="ford",
-                    label="ford",
-                    kind=EntityKind.ENTITY,
-                    type_hint="ORG",
-                    source_mentions=(("a.md", 1), ("b.md", 5)),
-                    chunk_refs=(("a.md", 0),),
-                )
-            }
-        )
-        result = self._run([], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("ford", [("a.md", 0)] + [("b.md", i) for i in range(5)])], store=store)
+        result = self._run([], store=store, sources={"a.md"})
         assert result["ford"].sources == ("b.md",)
 
     def test_a_source_that_stopped_naming_an_entity_drops_it(self):
         """Re-ingesting a document that no longer mentions an entity must not
         leave the entity's page in the browse tree forever."""
-        save_stub_index({"ford": _stub("ford", ("a.md",))})
-        result = self._run([], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("ford", [("a.md", 0)])], store=store)
+        result = self._run([], store=store, sources={"a.md"})
         assert result == {}
 
     def test_an_entity_in_several_sources_survives_one_being_reindexed(self):
-        save_stub_index({"ford": _stub("ford", ("a.md", "b.md"))})
-        result = self._run([], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("ford", [("a.md", 0), ("b.md", 0)])], store=store)
+        result = self._run([], store=store, sources={"a.md"})
         assert result["ford"].sources == ("b.md",)
 
     def test_reindexing_merges_rather_than_duplicating(self):
         cfg.wiki_entity_min_mentions = 1
-        save_stub_index({"ford": _stub("ford", ("b.md",))})
-        result = self._run([_entity("ford", [("a.md", 0)])], sources={"a.md"})
+        store = _FakeStore({})
+        self._run([_entity("ford", [("b.md", 0)])], store=store)
+        result = self._run([_entity("ford", [("a.md", 0)])], store=store, sources={"a.md"})
         assert result["ford"].sources == ("a.md", "b.md")
 
     def test_a_new_sources_evidence_survives_a_full_cap(self):
@@ -401,17 +488,30 @@ class TestDropSourcesFromIndex:
     def _low_threshold(self):
         cfg.wiki_entity_min_mentions = 1
 
+    @staticmethod
+    def _drop(seed_entities, removed):
+        """Seed store and index from a real sync, then drop *removed* the way
+        remove_documents does: its mention rows are already gone with its chunks
+        before drop_sources_from_index re-aggregates the affected slugs."""
+        store = _FakeStore({})
+        _seed_full(store, seed_entities)
+        for source in removed:
+            store.replace_wiki_mentions_for_source(source, [])
+        services = MagicMock()
+        services.store = store
+        with patch("lilbee.wiki.stubs.get_services", return_value=services):
+            drop_sources_from_index(removed)
+        return load_stub_index()
+
     def test_a_removed_document_stops_contributing(self):
-        save_stub_index({"ford": _stub("ford", ("a.md", "b.md"))})
-        drop_sources_from_index({"a.md"})
-        assert load_stub_index()["ford"].sources == ("b.md",)
+        result = self._drop([_entity("ford", [("a.md", 0), ("b.md", 0)])], {"a.md"})
+        assert result["ford"].sources == ("b.md",)
 
     def test_a_subject_only_that_document_named_disappears(self):
         """Its skip marker keeps it out of later syncs, so no refresh would
         ever revisit the entry and the tree would offer it forever."""
-        save_stub_index({"ford": _stub("ford", ("a.md",))})
-        drop_sources_from_index({"a.md"})
-        assert load_stub_index() == {}
+        result = self._drop([_entity("ford", [("a.md", 0)])], {"a.md"})
+        assert result == {}
 
     def test_removing_nothing_leaves_the_index_alone(self):
         save_stub_index({"ford": _stub("ford")})
@@ -422,27 +522,18 @@ class TestDropSourcesFromIndex:
         """The floor is a corpus-wide judgement, so losing a document can put a
         subject under it just as re-indexing can."""
         cfg.wiki_entity_min_mentions = 3
-        save_stub_index({"ford": _stub("ford", ("a.md", "b.md"), per_source=2)})
-        drop_sources_from_index({"a.md"})
-        assert load_stub_index() == {}
+        result = self._drop(
+            [_entity("ford", [("a.md", 0), ("a.md", 1), ("b.md", 0), ("b.md", 1)])], {"a.md"}
+        )
+        assert result == {}
 
     def test_a_subject_another_document_still_names_survives(self):
-        """Removing a.md empties the refs the cap had given it, but b.md still
-        names the subject four times, so the entry must stay."""
-        save_stub_index(
-            {
-                "ford": WikiStub(
-                    slug="ford",
-                    label="ford",
-                    kind=EntityKind.ENTITY,
-                    type_hint="ORG",
-                    source_mentions=(("a.md", 1), ("b.md", 4)),
-                    chunk_refs=(("a.md", 0),),
-                )
-            }
+        """Removing a.md still leaves b.md naming the subject four times, so the
+        entry must stay with its surviving evidence."""
+        result = self._drop(
+            [_entity("ford", [("a.md", 0)] + [("b.md", i) for i in range(4)])], {"a.md"}
         )
-        drop_sources_from_index({"a.md"})
-        assert load_stub_index()["ford"].sources == ("b.md",)
+        assert result["ford"].sources == ("b.md",)
 
     def test_an_absent_index_is_not_created(self):
         drop_sources_from_index({"a.md"})

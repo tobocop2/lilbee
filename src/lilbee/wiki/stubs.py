@@ -34,20 +34,25 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from lilbee.core.config import Config
-    from lilbee.data.store import Store
+    from lilbee.data.store import SearchChunk, Store
 
-    from .entity_extractor import ExtractedEntity
+    from .entity_extractor import EntityExtractor, ExtractedEntity
 
 log = logging.getLogger(__name__)
 
-# The index lives beside the pages rather than in the store: it is derived data
-# a wipe should remove with everything else, and it is read on every browse.
+# The index file is a derived cache: the authoritative mention evidence lives in
+# the store's _wiki_mentions table, and this file is the corpus-wide >=floor view
+# rebuilt from it on every refresh. It lives beside the pages because it is read
+# on every browse and a wipe should remove it with everything else.
 STUB_INDEX_FILENAME = "stubs.json"
 
 # Schema marker, so a future shape change can be detected rather than parsed
 # as garbage. A mismatch is treated as no index at all and the next sync
 # rebuilds it.
-_INDEX_VERSION = 2
+# Bumped to 3 when the index became a derived view of the store mention table:
+# an older file reads as absent so the first refresh rebuilds in full and seeds
+# the table.
+_INDEX_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -174,83 +179,6 @@ def save_stub_index(stubs: dict[str, WikiStub], config: Config | None = None) ->
     atomic_write_text(stub_index_path(config), json.dumps(payload, indent=2, sort_keys=False))
 
 
-def _capped_refs(entity: ExtractedEntity, cap: int) -> tuple[tuple[str, int], ...]:
-    """The entity's chunk refs, most-mentioning source first, capped at *cap*.
-
-    The cap bounds the index: an entity named in ten thousand chunks would
-    otherwise carry all of them. Ordering by how much each source has to say
-    means the cap drops the weakest evidence, and the kept refs are already
-    more than one page's context budget admits.
-    """
-    per_source: dict[str, list[int]] = {}
-    for ref in entity.chunk_refs:
-        per_source.setdefault(ref.source, []).append(ref.chunk_index)
-    ordered = sorted(per_source.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    refs: list[tuple[str, int]] = []
-    for source, indexes in ordered:
-        for index in sorted(indexes):
-            if len(refs) >= cap:
-                return tuple(refs)
-            refs.append((source, index))
-    return tuple(refs)
-
-
-def stub_from_entity(entity: ExtractedEntity, cap: int) -> WikiStub:
-    """Build the index row for an extracted entity."""
-    counts: dict[str, int] = {}
-    for ref in entity.chunk_refs:
-        counts[ref.source] = counts.get(ref.source, 0) + 1
-    return WikiStub(
-        slug=entity.slug,
-        label=entity.label,
-        kind=entity.kind,
-        type_hint=entity.type_hint,
-        source_mentions=tuple(sorted(counts.items())),
-        chunk_refs=_capped_refs(entity, cap),
-    )
-
-
-def _without_sources(stub: WikiStub, dropped: set[str]) -> WikiStub | None:
-    """The stub with *dropped* sources removed, or None when nothing is left.
-
-    A re-ingested document no longer naming an entity must not leave that
-    entity's stub behind, so an incremental refresh subtracts the sources it is
-    about to recompute before merging the new findings back in.
-    """
-    kept = tuple((s, c) for s, c in stub.source_mentions if s not in dropped)
-    if not kept:
-        return None
-    return WikiStub(
-        slug=stub.slug,
-        label=stub.label,
-        kind=stub.kind,
-        type_hint=stub.type_hint,
-        source_mentions=kept,
-        chunk_refs=tuple((s, i) for s, i in stub.chunk_refs if s not in dropped),
-    )
-
-
-def _merge(existing: WikiStub, found: WikiStub, cap: int) -> WikiStub:
-    """Combine a surviving stub with what a refresh just found for it.
-
-    Refs are re-cut across the union rather than concatenated and truncated:
-    head-truncation gave a stub already holding ``cap`` refs nothing at all
-    from a newly ingested source, however much that source had to say.
-    """
-    counts = dict(existing.source_mentions)
-    for source, count in found.source_mentions:
-        counts[source] = counts.get(source, 0) + count
-    merged = WikiStub(
-        slug=found.slug,
-        label=found.label,
-        kind=found.kind,
-        type_hint=found.type_hint,
-        source_mentions=tuple(sorted(counts.items())),
-        chunk_refs=(*existing.chunk_refs, *found.chunk_refs),
-    )
-    return _recut_refs(merged, cap)
-
-
 def _recut_refs(stub: WikiStub, cap: int) -> WikiStub:
     """Re-apply the cap across the stub's refs, most-mentioning source first."""
     if len(stub.chunk_refs) <= cap:
@@ -276,17 +204,95 @@ def _recut_refs(stub: WikiStub, cap: int) -> WikiStub:
     )
 
 
-def _usable(stubs: dict[str, WikiStub], config: Config) -> dict[str, WikiStub]:
-    """Drop the entries that cannot back a page.
+def _mention_rows_by_source(
+    entities: list[ExtractedEntity], cap: int
+) -> dict[str, list[dict[str, Any]]]:
+    """Split extracted entities into per-(subject, source) store rows.
 
-    One rule for every writer of the index: a subject below the corpus-wide
-    mention floor should never have had a page. Refs are deliberately not part
-    of the test. Subtracting a source can empty them while leaving real
-    evidence behind, because the cap may have given every ref to the source
-    that went, and generation falls back to the surviving sources' chunks.
+    One extraction pass yields entities whose refs span every source; the store
+    keeps them per source so a later sync can replace one source's evidence
+    without re-reading the rest. ``mention_count`` is the true per-source count;
+    the indices are capped, since the aggregate re-caps across sources anyway.
     """
-    threshold = config.wiki_entity_min_mentions
-    return {slug: stub for slug, stub in stubs.items() if stub.mentions >= threshold}
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        per_source: dict[str, list[int]] = {}
+        for ref in entity.chunk_refs:
+            per_source.setdefault(ref.source, []).append(ref.chunk_index)
+        for source, indices in per_source.items():
+            unique = sorted(set(indices))
+            by_source.setdefault(source, []).append(
+                {
+                    "slug": entity.slug,
+                    "label": entity.label,
+                    "kind": entity.kind.value,
+                    "type_hint": entity.type_hint,
+                    "source": source,
+                    "mention_count": len(unique),
+                    "chunk_indices": unique[:cap],
+                }
+            )
+    return by_source
+
+
+def _stubs_from_mention_rows(
+    rows: list[dict[str, Any]], config: Config, cap: int
+) -> dict[str, WikiStub]:
+    """Aggregate mention rows into the stubs whose corpus-wide count clears the
+    floor.
+
+    The floor is judged over the count summed across every source, so a subject
+    below it in each separately-synced document still qualifies once all of its
+    rows are present. This is the one place the floor is applied.
+    """
+    floor = config.wiki_entity_min_mentions
+    by_slug: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_slug.setdefault(row["slug"], []).append(row)
+    stubs: dict[str, WikiStub] = {}
+    for slug, slug_rows in by_slug.items():
+        if sum(r["mention_count"] for r in slug_rows) < floor:
+            continue
+        # The source that names the subject most often labels its page.
+        canonical = max(slug_rows, key=lambda r: (r["mention_count"], r["source"]))
+        source_mentions = tuple(sorted((r["source"], r["mention_count"]) for r in slug_rows))
+        refs = tuple(
+            (r["source"], index)
+            for r in sorted(slug_rows, key=lambda r: r["source"])
+            for index in r["chunk_indices"]
+        )
+        stub = WikiStub(
+            slug=slug,
+            label=canonical["label"],
+            kind=EntityKind(canonical["kind"]),
+            type_hint=canonical["type_hint"],
+            source_mentions=source_mentions,
+            chunk_refs=refs,
+        )
+        stubs[slug] = _recut_refs(stub, cap)
+    return stubs
+
+
+def _write_source_mentions(
+    store: Store,
+    extractor: EntityExtractor,
+    chunks: list[SearchChunk],
+    sources: set[str],
+    cap: int,
+) -> set[str]:
+    """Extract *chunks* and replace the mention rows for every source in
+    *sources*, returning the slugs those sources now name.
+
+    A source that named something and now names nothing is still replaced, with
+    an empty set, so its stale rows go.
+    """
+    rows_by_source = _mention_rows_by_source(extractor.extract(chunks), cap)
+    affected: set[str] = set()
+    for source in sources:
+        rows = rows_by_source.get(source, [])
+        store.replace_wiki_mentions_for_source(source, rows)
+        affected.update(row["slug"] for row in rows)
+    return affected
 
 
 def refresh_stub_index(
@@ -297,10 +303,12 @@ def refresh_stub_index(
 ) -> dict[str, WikiStub]:
     """Rebuild the index from the corpus and persist it.
 
-    ``sources=None`` recomputes everything. Otherwise only those sources are
-    re-extracted: each existing stub first drops the named sources, then the new
-    findings merge back in, so a document that stopped naming an entity stops
-    contributing to it and a stub with no sources left disappears.
+    The store's ``_wiki_mentions`` table is the source of truth. ``sources=None``
+    re-extracts the whole corpus; otherwise only those sources are re-extracted
+    and their mention rows replaced. The stub index is then the corpus-wide
+    aggregate of that table filtered to the mention floor, so a subject below
+    the floor in each separately-synced document still appears once all its
+    evidence is present.
 
     Spends no LLM call. Holds the wiki mutex because it writes into the wiki
     directory alongside builds and prunes.
@@ -309,55 +317,41 @@ def refresh_stub_index(
         config = cfg
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
-        stored = _read_stub_index(config)
-        if sources is not None and stored is None:
-            # Nothing to subtract from or merge into, whether the file is
-            # missing, unreadable, or from another version. Proceeding would
-            # index only the changed sources and save that as the whole corpus.
-            # An index that reads as genuinely empty is not this case, or a
-            # corpus that names nothing would re-scan on every sync forever.
-            log.info("No readable wiki stub index; rebuilding it in full")
-            sources = None
-        stored = stored or {}
-        if sources is None:
-            chunks = _corpus_chunks(store)
-            surviving: dict[str, WikiStub] = {}
-        else:
-            chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
-            surviving = {}
-            for slug, stub in stored.items():
-                trimmed = _without_sources(stub, sources)
-                if trimmed is not None:
-                    surviving[slug] = trimmed
-
-        # The mention threshold judges a subject across the whole corpus, so an
-        # incremental pass must not apply it to one source's chunks: an entity
-        # named twice in the document being re-indexed and forty times
-        # elsewhere would lose that document from its index entry, and lose
-        # another on every later sync.
-        pass_config = (
-            config if sources is None else config.model_copy(update={"wiki_entity_min_mentions": 1})
-        )
+        # Floor forced to one for extraction: the store keeps every mention so
+        # the corpus-wide floor can be judged over the aggregate rather than one
+        # sync's slice. _stubs_from_mention_rows applies the real floor.
+        pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
         extractor = get_entity_extractor(
             config.wiki_entity_mode, get_services().provider, pass_config
         )
         if not extractor.available():
             # An unavailable backend extracts nothing, which is indistinguishable
-            # from a corpus that names nothing. Persisting that empty result would
-            # overwrite a good index and, worse, leave a valid empty file that the
-            # next incremental sync builds on instead of rebuilding. Leave the
-            # existing index untouched.
+            # from a corpus that names nothing. Rebuilding on that would drop the
+            # whole index; leave both the store and the file untouched.
             log.warning("Wiki entity extractor unavailable; leaving the stub index unchanged")
-            return stored
-        for entity in extractor.extract(chunks):
-            found = stub_from_entity(entity, cap)
-            existing = surviving.get(found.slug)
-            surviving[found.slug] = found if existing is None else _merge(existing, found, cap)
+            return load_stub_index(config)
 
-        surviving = _usable(surviving, config)
-        save_stub_index(surviving, config)
-    log.info("Wiki stub index: %d entities across the corpus", len(surviving))
-    return surviving
+        # A cold or file-only-migrated store has no rows to aggregate, so an
+        # incremental pass would derive an empty index. Rebuild in full to seed
+        # the table; incremental passes maintain it from there.
+        if sources is None or not store.has_wiki_mentions():
+            store.clear_wiki_mentions()
+            all_sources = {record["filename"] for record in store.get_sources()}
+            _write_source_mentions(store, extractor, _corpus_chunks(store), all_sources, cap)
+            stubs = _stubs_from_mention_rows(store.wiki_mention_rows(), config, cap)
+        else:
+            previous = load_stub_index(config)
+            chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
+            affected = _write_source_mentions(store, extractor, chunks, sources, cap)
+            affected |= {slug for slug, stub in previous.items() if set(stub.sources) & sources}
+            recomputed = _stubs_from_mention_rows(
+                store.wiki_mention_rows(slugs=affected), config, cap
+            )
+            stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
+            stubs.update(recomputed)
+        save_stub_index(stubs, config)
+    log.info("Wiki stub index: %d entities across the corpus", len(stubs))
+    return stubs
 
 
 def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
@@ -390,18 +384,22 @@ def drop_sources_from_index(names: set[str], config: Config | None = None) -> No
         return
     if config is None:
         config = cfg
+    cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
-        stubs = load_stub_index(config)
-        if not stubs:
+        previous = load_stub_index(config)
+        affected = {slug for slug, stub in previous.items() if set(stub.sources) & names}
+        if not affected:
             return
-        trimmed = {
-            slug: t
-            for slug, stub in stubs.items()
-            if (t := _without_sources(stub, names)) is not None
-        }
-        kept = _usable(trimmed, config)
-        if kept != stubs:
-            save_stub_index(kept, config)
+        # The removed sources' mention rows went with their chunks, so
+        # re-aggregating the affected slugs reflects the smaller corpus: a
+        # subject only those sources named drops out, one still named elsewhere
+        # keeps its surviving evidence.
+        store = get_services().store
+        recomputed = _stubs_from_mention_rows(store.wiki_mention_rows(slugs=affected), config, cap)
+        stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
+        stubs.update(recomputed)
+        if stubs != previous:
+            save_stub_index(stubs, config)
 
 
 def _is_placeholder(draft: Path) -> bool:
