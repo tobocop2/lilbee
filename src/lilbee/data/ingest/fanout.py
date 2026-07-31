@@ -219,14 +219,22 @@ class _ShardReporter:
         if now - self._last_sent < _REPORT_INTERVAL_S:
             return
         self._last_sent = now
-        status = BatchStatus.FAILED if data.status == _ERROR_STATUS else BatchStatus.INGESTED
+        self._send(
+            data.file, BatchStatus.FAILED if data.status == _ERROR_STATUS else BatchStatus.INGESTED
+        )
+
+    def flush(self) -> None:
+        """Send the final counters past the throttle, so the bar lands on its total."""
+        self._send("", BatchStatus.INGESTED)
+
+    def _send(self, file: str, status: BatchStatus) -> None:
         self._messages.put(
             ShardProgress(
                 kind="progress",
                 index=self._index,
                 done=self._done,
                 planned=self._planned,
-                file=data.file,
+                file=file,
                 status=status,
             )
         )
@@ -417,6 +425,7 @@ def run_shard(
                     shard=spec.shard,
                 )
             )
+        reporter.flush()
         messages.put(ShardDone(kind="done", index=index, result=result, error=None))
     except (Exception, asyncio.CancelledError) as exc:
         messages.put(ShardDone(kind="done", index=index, result=None, error=error_reason(exc)))

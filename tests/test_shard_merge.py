@@ -104,3 +104,16 @@ class TestBatching:
         _write_shard(tmp_path / "w0", [f"f{index}.txt" for index in range(5)])
         merge_shards(store, [tmp_path / "w0"])
         assert max(appends) <= 2
+
+
+class TestReconciliation:
+    def test_an_index_short_of_the_workers_says_so(self, tmp_path, store, caplog):
+        """A source a worker holds and the index does not must not stay missing silently."""
+        _write_shard(tmp_path / "w0", ["a.txt", "b.txt"])
+        merge_shards(store, [tmp_path / "w0"], sources={"a.txt"})
+        assert "against 2 across the ingest workers" in caplog.text
+
+    def test_a_complete_merge_is_quiet(self, tmp_path, store, caplog):
+        _write_shard(tmp_path / "w0", ["a.txt"])
+        merge_shards(store, [tmp_path / "w0"])
+        assert "across the ingest workers" not in caplog.text

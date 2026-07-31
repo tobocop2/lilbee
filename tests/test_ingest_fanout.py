@@ -243,6 +243,16 @@ class TestShardReporter:
         reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="error", chunks=0))
         assert messages.get_nowait().status is BatchStatus.FAILED
 
+    def test_the_final_counters_are_sent_past_the_throttle(self):
+        """Otherwise the one bar stops short of its total when the workers finish."""
+        messages = queue_mod.Queue()
+        reporter = fanout._ShardReporter(0, messages)
+        for _ in range(5):
+            reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="ok", chunks=1))
+        reporter.flush()
+        last = [messages.get_nowait() for _ in range(messages.qsize())][-1]
+        assert last.done == 5
+
     def test_reports_are_throttled(self):
         """One message per file across a million-file shard would swamp the parent."""
         messages = queue_mod.Queue()
@@ -310,7 +320,7 @@ class TestRunShard:
             messages,
             threading.Event(),
         )
-        verdict = messages.get_nowait()
+        verdict = [messages.get_nowait() for _ in range(messages.qsize())][-1]
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
         assert seen["shard"] == spec.shard

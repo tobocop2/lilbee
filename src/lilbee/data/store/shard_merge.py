@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from lilbee.core.config import INGEST_SOURCE_COLUMNS, META_TABLE
+from lilbee.core.config import INGEST_SOURCE_COLUMNS, META_TABLE, SOURCES_TABLE
 from lilbee.data.store.lance_helpers import escape_sql_string, table_names
 
 if TYPE_CHECKING:
@@ -52,7 +52,35 @@ def merge_shards(
             rows = _copy_table(database.open_table(name), store, name, sources)
             merged[name] = merged.get(name, 0) + rows
     log.info("Merged %d shard(s): %s", len(shard_dirs), merged)
+    _reconcile_sources(store, shard_dirs)
     return merged
+
+
+def _reconcile_sources(store: Store, shard_dirs: list[Path]) -> None:
+    """Say so when the merged index tracks fewer sources than the workers hold.
+
+    A scoped merge only takes what the run touched, so a source a worker holds and
+    the index does not (an earlier merge that failed, a removal against the index
+    alone) would otherwise stay missing with nothing to show for it.
+    """
+    import lancedb
+
+    held = sum(_source_count(lancedb.connect(str(shard_dir))) for shard_dir in shard_dirs)
+    merged = _source_count(store.get_db())
+    if merged < held:
+        log.warning(
+            "The index tracks %d source(s) against %d across the ingest workers. "
+            "Re-run with --force to fold every worker's shard back in.",
+            merged,
+            held,
+        )
+
+
+def _source_count(database: lancedb.DBConnection) -> int:
+    """Rows in a store's source table, zero when it has none."""
+    if SOURCES_TABLE not in table_names(database):
+        return 0
+    return int(database.open_table(SOURCES_TABLE).count_rows())
 
 
 def _copy_table(
