@@ -46,6 +46,7 @@ from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.ingest.fanout import (
+    WORKER_LOG_NAME,
     ShardDone,
     ShardOptions,
     ShardSpec,
@@ -890,9 +891,13 @@ async def _run_post_ingest_passes(
     await to_ingest_thread(ensure_entities, cancel)
 
 
-def _worker_failure_message(failures: list[ShardDone]) -> str:
+def _worker_failure_message(failures: list[ShardDone], specs: list[ShardSpec]) -> str:
     """What a failed fan-out reports; its workers' shards are kept for the re-run."""
-    detail = "; ".join(f"worker {failure.index}: {failure.error}" for failure in failures)
+    detail = "; ".join(
+        f"worker {failure.index} ({specs[failure.index].config.data_root / WORKER_LOG_NAME}): "
+        f"{failure.error}"
+        for failure in failures
+    )
     return (
         f"{len(failures)} ingest worker(s) failed, so the index was not updated: {detail}. "
         "Their work is kept: re-running sync continues from where they stopped."
@@ -928,7 +933,7 @@ async def _sync_across_workers(
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError
     if failures := [verdict for verdict in verdicts if verdict.error is not None]:
-        raise RuntimeError(_worker_failure_message(failures))
+        raise RuntimeError(_worker_failure_message(failures, specs))
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
     await to_ingest_thread(_merge_worker_shards, store, specs, touched)

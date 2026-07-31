@@ -214,15 +214,31 @@ class TestShardSpecs:
 class TestShardEnvironment:
     def test_a_worker_pins_its_card_engine_slot_and_cpu_share(self, monkeypatch):
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        redirected = []
+        monkeypatch.setattr(fanout, "_redirect_output", redirected.append)
         spec = _spec(1, device=3)
-        monkeypatch.setattr(fanout, "_apply_shard_env", fanout._apply_shard_env)
+
         fanout._apply_shard_env(spec)
-        import os
 
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
         assert os.environ["LILBEE_ENGINE_DIR"] == str(spec.engine_dir)
         assert os.environ["LILBEE_CPU_QUOTA"] == "4"
         assert os.environ["LILBEE_DATA"] == str(spec.config.data_root)
+        assert redirected == [spec.config.data_root / fanout.WORKER_LOG_NAME]
+
+    def test_a_worker_logs_to_its_own_data_root(self, tmp_path):
+        """N workers logging onto the parent's terminal is what the one bar replaces."""
+        log = tmp_path / "shard" / fanout.WORKER_LOG_NAME
+        saved = (os.dup(sys.stdout.fileno()), os.dup(sys.stderr.fileno()))
+        try:
+            fanout._redirect_output(log)
+            os.write(sys.stdout.fileno(), b"from the worker\n")
+        finally:
+            os.dup2(saved[0], sys.stdout.fileno())
+            os.dup2(saved[1], sys.stderr.fileno())
+            os.close(saved[0])
+            os.close(saved[1])
+        assert "from the worker" in log.read_text()
 
 
 class TestShardReporter:

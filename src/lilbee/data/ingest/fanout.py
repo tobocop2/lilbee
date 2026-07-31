@@ -8,6 +8,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,9 @@ _FINAL_DRAIN_S = 1.0
 _WORKER_EXIT_GRACE_S = 30.0
 
 _ERROR_STATUS = "error"
+
+# Where a worker's console output lands, under its own data root.
+WORKER_LOG_NAME = "sync.log"
 
 
 @dataclass(frozen=True)
@@ -189,11 +193,25 @@ def _shard_config(config: Config, root: Path, plan_share: int) -> Config:
 
 
 def _apply_shard_env(spec: ShardSpec) -> None:
-    """Pin this process to the worker's card, engine slot and CPU share."""
+    """Pin this process to the worker's card, engine slot, CPU share and log."""
     os.environ.update(spec.visible_devices)
     os.environ[ENGINE_DIR_ENV] = str(spec.engine_dir)
     os.environ[_DATA_ROOT_ENV] = str(spec.config.data_root)
     os.environ[_CPU_QUOTA_ENV] = str(spec.cpu_share)
+    _redirect_output(spec.config.data_root / WORKER_LOG_NAME)
+
+
+def _redirect_output(path: Path) -> None:
+    """Send this process's console output to *path*.
+
+    At the file descriptor, so the engine this worker spawns follows it: N
+    workers logging onto the parent's terminal is the pile of log files the one
+    aggregated bar exists to replace.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab", buffering=0) as handle:
+        os.dup2(handle.fileno(), sys.stdout.fileno())
+        os.dup2(handle.fileno(), sys.stderr.fileno())
 
 
 class _ShardReporter:
