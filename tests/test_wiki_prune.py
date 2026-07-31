@@ -92,7 +92,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
-        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_concepts_page_above_threshold(self, tmp_path: Path):
         write_source(tmp_path, "a.md", "content a")
@@ -104,14 +104,26 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="b.md", citation_key="src2"),
             make_citation(source_filename="c.md", citation_key="src3"),
         ]
-        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
+        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_non_synthesis_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
             make_citation(source_filename="gone.md"),
         ]
-        assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store)
+        assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store, cfg)
+
+    def test_synthesis_in_the_slug_is_not_a_synthesis_page(self, tmp_path: Path):
+        """A summary whose slug happens to contain ``synthesis`` is under the
+        summaries subdir, not synthesis. A substring match would treat it as a
+        shrunken cluster and delete its rows on the first prune."""
+        write_source(tmp_path, "a.md", "content a")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="gone1.md", citation_key="src2"),
+        ]
+        assert not _check_cluster_below_threshold("wiki/summaries/synthesis/report.md", store, cfg)
 
     def test_synthesis_page_below_threshold(self, tmp_path: Path):
         write_source(tmp_path, "a.md", "content a")
@@ -121,12 +133,12 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
-        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
-        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store)
+        assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
 
 class TestCheckStaleMajority:

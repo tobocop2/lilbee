@@ -145,12 +145,16 @@ def _check_all_sources_deleted(
 def _check_cluster_below_threshold(
     wiki_source: str,
     store: Store,
+    config: Config,
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
     from lilbee.data.ingest.discovery import resolve_source_path
 
-    if f"/{WikiSubdir.SYNTHESIS}/" not in wiki_source:
+    # Match the subdir component, not the substring: a summary whose slug is
+    # ``synthesis/report`` or a wiki_dir ending in ``synthesis`` would satisfy a
+    # substring test and get its rows deleted as a shrunken cluster.
+    if subdir_from_wiki_source(wiki_source, config.wiki_dir) != WikiSubdir.SYNTHESIS:
         return False
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
@@ -196,7 +200,7 @@ def _evaluate_page(
         return _archive_and_record(
             wiki_source, wiki_root, store, config, "all cited sources deleted"
         )
-    if _check_cluster_below_threshold(wiki_source, store):
+    if _check_cluster_below_threshold(wiki_source, store, config):
         return _archive_and_record(
             wiki_source,
             wiki_root,
