@@ -67,6 +67,19 @@ row-count check on the first run and fail on the second.
 Nothing was left holding VRAM, the work already done stayed in the shards, and the
 merge correctly did not run against a corpus the workers never finished.
 
+### The sync that resumes after the kill
+
+| | |
+|---|---|
+| Wall clock | 76 s |
+| Throughput | 263 docs/sec |
+| GPU utilisation, while embedding | 82% / 89% |
+| Rows in the merged index afterwards | 20,000 of 20,000 |
+
+The re-run planned only what the shards were missing, which is why it beat the
+first sync's rate, and the index came out at exactly the corpus size. Nothing was
+re-embedded and nothing was left behind.
+
 ## Reading the numbers
 
 **Throughput is not the headline here.** Two consumer cards and a 0.6B embedder are
