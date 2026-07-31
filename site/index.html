@@ -196,8 +196,8 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. lilbee runs and manages the models across every GPU you have, then talks to everything you point it at: your files, your code, and the web. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>. Every answer cites the source, it all runs on your own machine, and there's nothing else to set up.</h1>
-      <p class="sub">A built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your own GPU, on Metal, Vulkan, CUDA, or ROCm. Any coding agent can also use it over MCP.</p>
+      <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. It runs and manages the models on every GPU you have, and answers questions about your files, your code, and the web, every answer cited. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>.</h1>
+      <p class="sub">The built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU: Metal, Vulkan, CUDA, or ROCm.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -895,7 +895,7 @@
 
     <section>
       <h2 class="label">one program</h2>
-      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; by default nothing's left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
+      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing's left running, no container to keep alive. Want long-running? Use the command line and manage it yourself.</p>
       <div class="shape">
         <div class="shape-box many">
           <div class="shape-h">the usual local-AI setup</div>
@@ -912,9 +912,9 @@
         <div class="shape-box one">
           <div class="shape-h">lilbee</div>
           <ul>
-            <li>the model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee, not as separate services to stand up</li>
-            <li>use it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, or a Python library</li>
-            <li>a built-in model catalog: browse and pull straight from Hugging Face Hub, no hunting for model files yourself</li>
+            <li>the model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee</li>
+            <li>use it as a terminal app, a CLI, an MCP server, a web API, or a Python library</li>
+            <li>a built-in model catalog: browse and pull straight from Hugging Face Hub</li>
             <li>a scoped library per project, so each domain stays its own clean encyclopedia</li>
             <li>runs on a laptop or headless over a remote shell; move it between machines</li>
           </ul>
