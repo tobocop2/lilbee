@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
 # Stop paying for GPUs the moment nobody is using them, without you watching.
 #
-# Stops the pod when either is true:
-#   - the run finished or failed (/root/RUN_DONE), after a grace period, or
+# Ends the pod when either is true:
+#   - the ingest and merge finished ($STATE_DIR/MERGE_DONE), after a grace
+#     period, or
 #   - nothing has been working for IDLE_MIN minutes, which is the crashed or
-#     wedged case that never touches RUN_DONE.
+#     wedged case that never touches a marker.
 #
-# "Working" is deliberately three things, not one. The setup phase downloads a
-# 1.3GB tarball, unpacks 8.8M files, hard-links them into per-worker trees and
-# pulls an 8GB model: half an hour with no busy card and no worker process. A
-# watchdog that only looked at GPUs and workers would power the box off in the
-# middle of it, so the ingest script's own liveness counts as activity too.
+# "Working" is deliberately several things, not one. Setup downloads a 1.3GB
+# tarball, unpacks 8.8M files and pulls an 8GB model: roughly half an hour with
+# no busy card and no worker process. A watchdog that only looked at GPUs and
+# workers would power the box off in the middle of it, so the run script's own
+# liveness counts, and so does a publish, which is network-bound and touches no
+# card for its whole length.
 #
-# It STOPS rather than deletes: GPU billing ends, the container disk and every
-# result survive, and 'pod9m.sh resume' brings it back to fetch them. Stopping
-# needs the RunPod API, so the launcher drops a key at /root/.runpod/config.toml
-# (mode 600) unless NO_SELF_STOP=1, in which case this falls back to powering the
-# box off, which is best-effort inside a container. The pod's terminate-after is
-# the hard backstop behind all of it.
+# IT DELETES RATHER THAN STOPS, and that is a change from the previous run.
+# Stopping looks safer and is not: it keeps the container disk but does NOT
+# reserve the GPUs, so a stopped 8-pack could not be restarted after RunPod
+# reallocated the cards, and the run on its disk was unrecoverable. The index now
+# lives on a network volume that outlives the pod, so deleting is both cheaper
+# (a stopped pod still bills for its disk) and strictly safer: the data is not on
+# the thing being deleted. 'pod_native.sh resume' brings up a replacement pod on
+# the same volume, and it is free to land on different hardware.
+#
+# Deleting needs the RunPod API, so the launcher drops a key at
+# /root/.runpod/config.toml (mode 600). Without one this falls back to powering
+# the box off, which is best effort inside a container; the pod's terminate-after
+# is the hard backstop behind all of it.
 set -uo pipefail
+: "${STATE_DIR:=/workspace}"
 : "${GRACE_MIN:=20}"     # after the run ends, how long to leave it up for a look
 : "${IDLE_MIN:=30}"      # consecutive idle minutes that count as abandoned
 : "${IDLE_UTIL:=5}"      # per-card utilisation below this is "not working"
-LOG=/root/idlewatch.log
+LOG="$STATE_DIR/idlewatch.log"
 say() { printf '[idlewatch %s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "$LOG"; }
 
 busy_cards() {
@@ -39,34 +49,33 @@ running() {
   echo "${n:-0}"
 }
 activity() {
-  local cards workers driver
-  cards=$(busy_cards)
-  workers=$(running "[l]ilbee sync")
-  driver=$(running "[i]ngest9m.sh")
-  echo "$(( cards + workers + driver ))"
+  echo "$(( $(busy_cards) \
+          + $(running "[l]ilbee sync") \
+          + $(running "[n]ative9m.sh") \
+          + $(running "[p]ublish9m.sh") ))"
 }
 
-stop_pod() {
-  local id; id=$(cat /root/status/pod_id 2>/dev/null || true)
-  local stopped=0
+end_pod() {
+  local id; id=$(cat "$STATE_DIR/status/pod_id" 2>/dev/null || true)
+  local ended=0
   if [ -n "$id" ] && command -v runpodctl >/dev/null 2>&1; then
-    # The CLI has two shapes in the wild: 1.14, which is what the pod pulls from
-    # the latest release, takes "stop pod <id>"; newer builds take "pod stop
+    # The CLI has two shapes in the wild: 1.14, which is what a pod pulls from
+    # the latest release, takes "remove pod <id>"; newer builds take "pod delete
     # <id>" and reject the old form. Trying only one left a measured pod RUNNING
-    # after its run ended, which is the whole failure this watchdog exists to
-    # prevent, so try both and verify rather than trusting an exit code.
-    for verb in "stop pod" "pod stop"; do
+    # after its run ended, which is the whole failure this watchdog prevents, so
+    # try both rather than trusting one exit code.
+    for verb in "pod delete" "remove pod"; do
       say "trying: runpodctl $verb $id"
       # shellcheck disable=SC2086
       if runpodctl $verb "$id" >>"$LOG" 2>&1; then
-        stopped=1; say "stop accepted via '$verb'"; break
+        ended=1; say "delete accepted via '$verb'"; break
       fi
     done
   else
     say "no runpodctl or pod id on this box"
   fi
 
-  if [ "$stopped" = "1" ]; then
+  if [ "$ended" = "1" ]; then
     say "waiting for the container to go away"
     sleep 180
   fi
@@ -80,24 +89,22 @@ stop_pod() {
   kill -9 1 2>/dev/null
 }
 
-say "armed: stop ${GRACE_MIN}m after the run ends, or after ${IDLE_MIN}m with no activity"
+say "armed: end ${GRACE_MIN}m after the merge, or after ${IDLE_MIN}m with no activity"
 idle=0
 while :; do
-  if [ -f /root/RUN_DONE ]; then
-    say "run finished; ${GRACE_MIN}m grace before stopping"
+  if [ -f "$STATE_DIR/MERGE_DONE" ]; then
+    say "merge finished; ${GRACE_MIN}m grace before ending the pod"
+    # The grace period is the whole hold. An earlier version also waited on `who`
+    # being empty, which is unusable here: the dashboard holds five pty-allocating
+    # ssh sessions for the run's whole length, so `who` never empties and the pod
+    # would bill until its terminate-after. Set GRACE_MIN for the look you want.
     sleep $(( GRACE_MIN * 60 ))
-    # Someone poking around inside the grace window keeps it up until they leave.
-    if who 2>/dev/null | grep -q .; then
-      say "an ssh session is open; holding until it ends"
-      while who 2>/dev/null | grep -q .; do sleep 300; done
-      say "sessions ended"
-    fi
     break
   fi
 
   if [ "$(activity)" -eq 0 ]; then
     idle=$(( idle + 1 ))
-    say "idle ${idle}/${IDLE_MIN} min (no busy card, no worker, no ingest script)"
+    say "idle ${idle}/${IDLE_MIN} min (no busy card, no worker, no run script, no publish)"
     [ "$idle" -ge "$IDLE_MIN" ] && { say "abandoned: nothing has run for ${IDLE_MIN}m"; break; }
   else
     [ "$idle" -gt 0 ] && say "activity resumed"
@@ -106,4 +113,4 @@ while :; do
   sleep 60
 done
 
-stop_pod
+end_pod
