@@ -276,6 +276,63 @@ class TestWikiChunkSources:
         assert store.wiki_chunk_sources() == set()
 
 
+def _mention(slug, source, count, indices, kind="entity", type_hint="ORG"):
+    return {
+        "slug": slug,
+        "label": slug.replace("-", " ").title(),
+        "kind": kind,
+        "type_hint": type_hint,
+        "source": source,
+        "mention_count": count,
+        "chunk_indices": indices,
+    }
+
+
+class TestWikiMentions:
+    def test_round_trips_rows(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        rows = store.wiki_mention_rows()
+        assert len(rows) == 1
+        assert rows[0]["slug"] == "boeing"
+        assert rows[0]["mention_count"] == 2
+        assert list(rows[0]["chunk_indices"]) == [0, 1]
+
+    def test_replace_only_touches_the_named_source(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        store.replace_wiki_mentions_for_source("b.md", [_mention("boeing", "b.md", 2, [0, 1])])
+        # Re-syncing a.md must not disturb b.md's evidence.
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 3, [0, 1, 2])])
+        by_source = {
+            (r["slug"], r["source"]): r["mention_count"] for r in store.wiki_mention_rows()
+        }
+        assert by_source == {("boeing", "a.md"): 3, ("boeing", "b.md"): 2}
+
+    def test_aggregate_across_separately_synced_sources(self, store):
+        """The corpus-wide total is the sum over per-source rows -- the property
+        the stub floor is judged on."""
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        store.replace_wiki_mentions_for_source("b.md", [_mention("boeing", "b.md", 2, [0, 1])])
+        total = sum(r["mention_count"] for r in store.wiki_mention_rows(slugs=["boeing"]))
+        assert total == 4
+
+    def test_rows_filter_by_slug(self, store):
+        store.replace_wiki_mentions_for_source(
+            "a.md",
+            [_mention("boeing", "a.md", 2, [0]), _mention("airbus", "a.md", 1, [1])],
+        )
+        assert {r["slug"] for r in store.wiki_mention_rows(slugs=["boeing"])} == {"boeing"}
+        assert store.wiki_mention_rows(slugs=[]) == []
+
+    def test_clear_drops_every_row(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0])])
+        assert store.clear_wiki_mentions() is True
+        assert store.wiki_mention_rows() == []
+
+    def test_rows_on_a_store_that_never_wrote_mentions(self, store):
+        assert store.wiki_mention_rows() == []
+        assert store.wiki_mention_rows(slugs=["boeing"]) == []
+
+
 class TestWikiCitationSources:
     def test_returns_distinct_wiki_sources(self, store):
         from tests.conftest import make_citation
@@ -3230,7 +3287,12 @@ class TestRelocateSources:
     def test_relocate_rekeys_every_source_table(self, store):
         # Guards _RELOCATABLE_TABLES: page_texts.source and citations.source_filename
         # must move too, so dropping a table from the list fails here.
-        from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, PAGE_TEXTS_TABLE
+        from lilbee.core.config import (
+            CHUNKS_TABLE,
+            CITATIONS_TABLE,
+            PAGE_TEXTS_TABLE,
+            WIKI_MENTIONS_TABLE,
+        )
         from lilbee.data.store import SourceType
         from lilbee.data.store.types import SourceStat
 
@@ -3240,6 +3302,7 @@ class TestRelocateSources:
         store.add_page_texts(
             [{"source": "old/a.md", "page": 1, "text": "t", "content_type": "text"}]
         )
+        store.replace_wiki_mentions_for_source("old/a.md", [_mention("boeing", "old/a.md", 2, [0])])
         store.add_citations(
             [
                 {
@@ -3265,12 +3328,15 @@ class TestRelocateSources:
         chunks = store.open_table(CHUNKS_TABLE)
         pages = store.open_table(PAGE_TEXTS_TABLE)
         cites = store.open_table(CITATIONS_TABLE)
+        mentions = store.open_table(WIKI_MENTIONS_TABLE)
         assert chunks.count_rows("source = 'new/a.md'") == 1
         assert chunks.count_rows("source = 'old/a.md'") == 0
         assert pages.count_rows("source = 'new/a.md'") == 1
         assert pages.count_rows("source = 'old/a.md'") == 0
         assert cites.count_rows("source_filename = 'new/a.md'") == 1
         assert cites.count_rows("source_filename = 'old/a.md'") == 0
+        assert mentions.count_rows("source = 'new/a.md'") == 1
+        assert mentions.count_rows("source = 'old/a.md'") == 0
 
     def test_relocate_empty_is_noop(self, store):
         store.relocate_sources([])  # must not raise or acquire the lock

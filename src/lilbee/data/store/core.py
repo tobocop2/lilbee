@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -21,6 +21,7 @@ from lilbee.core.config import (
     META_TABLE,
     PAGE_TEXTS_TABLE,
     SOURCES_TABLE,
+    WIKI_MENTIONS_TABLE,
     Config,
 )
 from lilbee.core.vectors import Vector
@@ -48,6 +49,7 @@ from .schema import (
     _meta_schema,
     _page_texts_schema,
     _sources_schema,
+    _wiki_mentions_schema,
 )
 from .types import (
     ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
@@ -180,7 +182,11 @@ _PER_SOURCE_TABLES = (
 # (table, source column) pairs re-keyed when a source is relocated (moved on
 # disk, same content). Extends the per-source set with the wiki citation's raw
 # source_filename so citations keep pointing at the source after a move.
-_RELOCATABLE_TABLES = (*_PER_SOURCE_TABLES, (CITATIONS_TABLE, "source_filename"))
+_RELOCATABLE_TABLES = (
+    *_PER_SOURCE_TABLES,
+    (CITATIONS_TABLE, "source_filename"),
+    (WIKI_MENTIONS_TABLE, "source"),
+)
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
@@ -1775,6 +1781,45 @@ class Store:
             [dict(rec) for rec in records],
             _citations_for_wiki_predicate(wiki_source),
         )
+
+    def replace_wiki_mentions_for_source(self, source: str, rows: list[dict]) -> None:
+        """Swap one source's wiki mention rows for *rows* under one write lock.
+
+        A source contributes its whole mention set at once, so an incremental
+        wiki refresh replaces exactly that source's rows and leaves every other
+        source's evidence in place for the corpus-wide aggregate.
+        """
+        escaped = escape_sql_string(source)
+        self.clear_and_add(
+            WIKI_MENTIONS_TABLE,
+            _wiki_mentions_schema(),
+            rows,
+            f"source = '{escaped}'",
+        )
+
+    def wiki_mention_rows(self, slugs: Iterable[str] | None = None) -> list[dict]:
+        """Every wiki mention row, or only those for *slugs*.
+
+        The wiki aggregates these across sources to rebuild the stub index. A
+        full refresh reads them all; an incremental one reads only the slugs it
+        touched, to recompute their corpus-wide totals without a full scan.
+        """
+        table = self.open_table(WIKI_MENTIONS_TABLE)
+        if table is None:
+            return []
+        query = table.search()
+        if slugs is not None:
+            wanted = list(slugs)
+            if not wanted:
+                return []
+            joined = ", ".join(f"'{escape_sql_string(s)}'" for s in wanted)
+            query = query.where(f"slug IN ({joined})")
+        rows: list[dict] = query.limit(None).to_list()
+        return rows
+
+    def clear_wiki_mentions(self) -> bool:
+        """Drop every wiki mention row (a full rebuild starts from nothing)."""
+        return self.clear_table(WIKI_MENTIONS_TABLE, "1 = 1")
 
     def _memories_schema(self) -> pa.Schema:
         return pa.schema(

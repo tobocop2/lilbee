@@ -48,6 +48,10 @@ CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 ENTITIES_TABLE = "entities"
 ENTITY_SCHEMA_TABLE = "_entity_schema"
+# Per-(subject, source) wiki mention evidence. The wiki stub index is a
+# corpus-wide aggregate over this table, so a subject named below the floor in
+# each separately-synced source still crosses it once its rows are all present.
+WIKI_MENTIONS_TABLE = "_wiki_mentions"
 
 # Default URL-exclusion regexes for recursive crawls. Grouped by source
 # CMS / category. User overrides come from LILBEE_CRAWL_EXCLUDE_PATTERNS
