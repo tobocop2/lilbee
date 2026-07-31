@@ -926,9 +926,20 @@ class Searcher:
         retrieval_query = question
         if history and self._config.history_rewrite:
             retrieval_query = self._condense_question(question, history)
-        scope = self._retrieval_scope(chunk_type)
+        # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
+        # it names reaches the known-item route and the wiki-disabled guard. Left
+        # in the query, the prefix sits in front of a document name and
+        # document_references resolves that name from the opposite pool; the
+        # search() call below re-parses the prefix for strategy routing.
+        mode, clean_query = self._parse_structured_query(retrieval_query)
+        requested = chunk_type
+        if requested is None and mode in (QueryMode.WIKI, QueryMode.RAW):
+            requested = ChunkType(mode.value)
+        if self._refuse_wiki_scope(requested):
+            return None
+        scope = self._retrieval_scope(requested)
         known_item = (
-            self._known_item_results(retrieval_query, scope) if self._config.intent_routing else []
+            self._known_item_results(clean_query, scope) if self._config.intent_routing else []
         )
         if known_item:
             # The named document IS the context; ranking and reranking would

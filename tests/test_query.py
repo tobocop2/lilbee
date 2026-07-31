@@ -2369,6 +2369,22 @@ class TestKnownItemRoute:
         get_services().searcher.search("term: survey_report.pdf")
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
+    def test_wiki_scoped_known_item_does_not_resolve_a_raw_document(self, mock_svc):
+        """A ``wiki:`` question names a wiki page, not a raw document. Without
+        resolving the prefix, build_rag_context leaves ``wiki:`` in the query,
+        the known-item route pulls the raw file out of it, and the ask path is
+        answered from the opposite pool from what search() returns."""
+        cfg.wiki = True
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.search.return_value = [
+            _make_result(source="wiki/topics/tigers.md", chunk_type="wiki")
+        ]
+        get_services().searcher.build_rag_context("wiki: survey_report.pdf")
+        # The raw document is never resolved through known-item under a wiki scope.
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        # It falls through to a wiki-scoped search instead.
+        assert mock_svc.store.search.call_args.kwargs["chunk_type"] == ChunkType.WIKI
+
     def test_named_document_bypasses_similarity_search(self, mock_svc):
         """A question naming one resolvable document gets that document's
         chunks in document order, not a similarity ranking."""
