@@ -40,11 +40,6 @@ _NAV_CHROME_RE = re.compile(
 )
 
 
-def _normalize(text: str) -> str:
-    """Lowercase, strip, and collapse internal whitespace for dedup keys."""
-    return collapse_whitespace(text.lower())
-
-
 def pre_clean_for_ner(text: str) -> str:
     """Strip markdown-structural noise before handing text to spaCy.
 
@@ -145,7 +140,14 @@ def _accumulate_doc_entities(
             if debug_enabled:
                 log.debug("label-sanity: rejected entity %r", surface)
             continue
-        key = _normalize(surface)
+        # Key by slug, not the normalized surface: the index keys stubs on
+        # make_slug, so two surfaces that slug alike ("Ford Motor Co." and
+        # "Ford Motor Co") are one subject. Keyed by surface they stay two
+        # aggregates that an incremental refresh sums, double-counting mentions
+        # and duplicating refs past the floor.
+        key = make_slug(surface)
+        if not key:
+            continue
         rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
         rec.refs.add(ref)
         funnel["kept_entity_surfaces"] += 1

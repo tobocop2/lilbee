@@ -201,6 +201,22 @@ class TestDedupAndAggregation:
         rec = result[0]
         assert len(rec.chunk_refs) == 2
 
+    def test_surfaces_that_slug_alike_fold_into_one(self) -> None:
+        """ "Ford Motor Co." and "Ford Motor Co" produce the same slug and so
+        are one subject. Keyed by the normalized surface they stayed two
+        aggregates with the same slug, which an incremental refresh summed into
+        a doubled mention count and duplicated refs."""
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        doc_map = {
+            "c0": _FakeDoc(ents=[_FakeSpan("Ford Motor Co.", "ORG")]),
+            "c1": _FakeDoc(ents=[_FakeSpan("Ford Motor Co", "ORG")]),
+        }
+        with _patch_pipeline(doc_map):
+            result = extractor.extract([_chunk("a.md", 0, "c0"), _chunk("a.md", 1, "c1")])
+        fords = [e for e in result if e.slug == "ford-motor-co"]
+        assert len(fords) == 1
+        assert len(fords[0].chunk_refs) == 2
+
     def test_output_sorted_by_slug(self) -> None:
         doc = _FakeDoc(
             ents=[_FakeSpan("Zulu", "PERSON"), _FakeSpan("Alpha", "PERSON")],
