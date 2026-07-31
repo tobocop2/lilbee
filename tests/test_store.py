@@ -334,6 +334,22 @@ class TestWikiMentions:
         assert store.wiki_mention_rows() == []
         assert store.wiki_mention_rows(slugs=["boeing"]) == []
 
+    def test_has_wiki_mentions_reflects_presence(self, store):
+        assert store.has_wiki_mentions() is False
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0])])
+        assert store.has_wiki_mentions() is True
+        store.clear_wiki_mentions()
+        assert store.has_wiki_mentions() is False
+
+    def test_removing_a_source_drops_its_mentions(self, store):
+        """Mentions are per-source, so a source deletion takes its evidence with
+        its chunks -- the refresh never has to subtract a removed source."""
+        store.add_chunks(_records_for("doc.md", 1))
+        store.replace_wiki_mentions_for_source("doc.md", [_mention("boeing", "doc.md", 2, [0])])
+        store.replace_wiki_mentions_for_source("keep.md", [_mention("airbus", "keep.md", 2, [0])])
+        store.delete_by_source("doc.md")
+        assert {r["source"] for r in store.wiki_mention_rows()} == {"keep.md"}
+
 
 class TestWikiCitationSources:
     def test_returns_distinct_wiki_sources(self, store):

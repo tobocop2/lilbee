@@ -177,6 +177,10 @@ _PER_SOURCE_TABLES = (
     (PAGE_TEXTS_TABLE, "source"),
     (CHUNK_CONCEPTS_TABLE, "chunk_source"),
     (ENTITIES_TABLE, "source"),
+    # Per-(subject, source), so removing a source drops its mention evidence
+    # here with its chunks; the wiki refresh only ever re-adds a source, never
+    # has to remember to subtract a deleted one.
+    (WIKI_MENTIONS_TABLE, "source"),
 )
 
 # (table, source column) pairs re-keyed when a source is relocated (moved on
@@ -185,7 +189,6 @@ _PER_SOURCE_TABLES = (
 _RELOCATABLE_TABLES = (
     *_PER_SOURCE_TABLES,
     (CITATIONS_TABLE, "source_filename"),
-    (WIKI_MENTIONS_TABLE, "source"),
 )
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
@@ -1822,6 +1825,16 @@ class Store:
     def clear_wiki_mentions(self) -> bool:
         """Drop every wiki mention row (a full rebuild starts from nothing)."""
         return self.clear_table(WIKI_MENTIONS_TABLE, "1 = 1")
+
+    def has_wiki_mentions(self) -> bool:
+        """Whether any wiki mention row exists.
+
+        A cold store or one migrated from the file-only index has none, which
+        forces a refresh to rebuild in full and seed the table before an
+        incremental pass can aggregate over it.
+        """
+        table = self.open_table(WIKI_MENTIONS_TABLE)
+        return table is not None and table.count_rows() > 0
 
     def _memories_schema(self) -> pa.Schema:
         return pa.schema(
