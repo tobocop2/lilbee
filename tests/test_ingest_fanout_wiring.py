@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 
 import pytest
@@ -14,6 +15,15 @@ from lilbee.data.ingest.discovery import corpus_has_at_least, discover_files
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.providers.fleet.gpu_env import shard_visible_devices
 from lilbee.runtime.progress import EventType
+
+
+@pytest.fixture(autouse=True)
+def restored_environ():
+    """The fan-out gate applies the fleet's GPU env; siblings must not inherit it."""
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
 
 
 @pytest.fixture()

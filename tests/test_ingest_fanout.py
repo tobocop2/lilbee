@@ -72,6 +72,15 @@ class FakeContext:
         return worker
 
 
+@pytest.fixture(autouse=True)
+def restored_environ():
+    """These tests apply a worker's process environment; siblings must not inherit it."""
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
+
+
 @pytest.fixture()
 def fake_context(monkeypatch):
     """Run fan-out workers as threads, and don't pay the dead-worker drain grace."""
