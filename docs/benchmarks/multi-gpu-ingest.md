@@ -80,12 +80,44 @@ The re-run planned only what the shards were missing, which is why it beat the
 first sync's rate, and the index came out at exactly the corpus size. Nothing was
 re-embedded and nothing was left behind.
 
+## Is it as fast as configuring it by hand?
+
+The question that matters for anyone already running one lilbee per card: does
+deriving the arrangement cost anything against typing it? Measured on 8x H100
+80GB HBM3, 224 cores, 250,000 MS MARCO passages, Qwen3-Embedding-8B Q8 at 4096
+dims. Three arms back to back on one box, same corpus, same wheel, no ANN build
+in any of them.
+
+| Arm | Mechanism | Ingest | docs/sec | Per-card while embedding | Busy |
+|---|---|---|---|---|---|
+| A1 | environment variables, 8 workers | 646 s | 387.0 | 91/93/91/90/90/90/90/90 | 0.90 |
+| B | native, one bare `lilbee sync` | 647 s | 386.4 | 91/92/89/93/91/90/93/90 | 0.85 |
+| A2 | environment variables again | 639 s | 391.2 | 90/93/92/91/90/90/91/90 | 0.91 |
+
+A1 and A2 are the same mechanism run twice, and they disagree by 1.09%. Native
+differs from their mean by 0.69%. The gap between mechanisms is smaller than the
+gap between two identical runs, so dropping the four environment variables costs
+nothing measurable.
+
+Both arms run the same code. An environment-variable worker sees one card, so
+the fan-out gate declines and it takes the in-process path; the A/B isolates the
+mechanism rather than comparing two builds.
+
+Native additionally pays a 28 s merge at this corpus size, taking it from 386.4
+to 370.4 docs/sec end to end. The harness arm does not pay that inside the run
+because the operator pays it afterwards by hand.
+
 ## Reading the numbers
 
-**Throughput is not the headline here.** Two consumer cards and a 0.6B embedder are
-a small rig chosen to validate the mechanism cheaply. The throughput claim for this
-work comes from 8xH100 with an 8B embedder: 152 docs/sec for one process across
-eight cards against 415 for eight pinned workers.
+**The two rigs answer different questions.** The 2x4090 runs above test behaviour
+(one index, resume, no orphans) cheaply. The 8xH100 arms test throughput against
+the hand-configured alternative.
+
+**One number was not reproduced.** The 8xH100 box measured 387-391 docs/sec for
+both mechanisms, where an earlier 800k run on this hardware recorded 415. Corpus
+size does not explain it (a smaller run should be faster, since throughput falls
+as a worker's own table grows) and core count matches at 224. The gap is tracked
+rather than explained away; the parity claim above does not depend on it.
 
 **Utilisation is the headline.** Even, high utilisation across every card, from a
 command with no configuration, is what the feature exists to produce. Mean
