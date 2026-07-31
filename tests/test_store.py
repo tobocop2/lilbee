@@ -231,12 +231,14 @@ class TestDeleteAllWikiRows:
         store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
         store.add_chunks(_make_records(1, chunk_type="raw"))
         store.add_citations([make_citation(wiki_source="wiki/concepts/a.md")])
+        store.replace_wiki_mentions_for_source("doc0.md", [_mention("boeing", "doc0.md", 2, [0])])
 
         assert store.delete_all_wiki_rows() is True
 
         rows = store.open_table(CHUNKS_TABLE).search().to_list()
         assert [r["chunk_type"] for r in rows] == ["raw"]
         assert store.wiki_citation_sources() == set()
+        assert store.wiki_mention_rows() == []
 
     def test_empty_store_succeeds(self, store):
         assert store.delete_all_wiki_rows() is True
@@ -247,9 +249,9 @@ class TestDeleteAllWikiRows:
         monkeypatch.setattr(store, "clear_table", lambda name, predicate: False)
         assert store.delete_all_wiki_rows() is False
 
-    def test_both_deletes_run_even_when_the_first_fails(self, store, monkeypatch):
-        """A short-circuit would leave the citations behind whenever the chunk
-        delete failed, so the second delete never runs and never retries."""
+    def test_every_delete_runs_even_when_the_first_fails(self, store, monkeypatch):
+        """A short-circuit would leave citations or mentions behind whenever an
+        earlier delete failed, so every delete runs and none is skipped."""
         cleared: list[str] = []
 
         def _clear(name: str, predicate: str) -> bool:
@@ -258,7 +260,7 @@ class TestDeleteAllWikiRows:
 
         monkeypatch.setattr(store, "clear_table", _clear)
         store.delete_all_wiki_rows()
-        assert len(cleared) == 2
+        assert len(cleared) == 3
 
 
 class TestWikiChunkSources:
