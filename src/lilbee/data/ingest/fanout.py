@@ -134,8 +134,12 @@ def resolve_process_count(devices: int) -> int:
 def plan_fanout() -> list[ShardSpec]:
     """The workers for this sync, empty when it runs in this process."""
     from lilbee.data.ingest.discovery import corpus_has_at_least
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
     from lilbee.providers.fleet.replicas import gpu_device_count
 
+    # Applied before the cards are counted, so a gpu_devices pin is the space the
+    # workers are dealt in: without it they would be dealt cards the pin excludes.
+    apply_fleet_gpu_env()
     devices = gpu_device_count()
     processes = resolve_process_count(devices)
     if processes < _MIN_FANOUT_WORKERS or not corpus_has_at_least(_MIN_FILES_FOR_FANOUT):

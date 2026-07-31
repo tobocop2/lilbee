@@ -148,6 +148,24 @@ class TestPlanFanout:
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: False)
         assert fanout.plan_fanout() == []
 
+    def test_a_gpu_devices_pin_is_the_space_the_workers_are_dealt_in(self, monkeypatch):
+        """Counting cards before the pin lands would deal workers cards it excludes."""
+        monkeypatch.setattr(cfg, "gpu_devices", "2,3")
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
+        seen = {}
+
+        def counted():
+            import os
+
+            seen["mask"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+            return 2
+
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", counted)
+        specs = fanout.plan_fanout()
+        assert seen["mask"] == "2,3"
+        assert [spec.visible_devices["CUDA_VISIBLE_DEVICES"] for spec in specs] == ["2", "3"]
+
     def test_a_big_corpus_on_several_cards_fans_out(self, monkeypatch):
         monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 4)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
