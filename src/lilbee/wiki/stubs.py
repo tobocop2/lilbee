@@ -63,10 +63,11 @@ class WikiStub:
     label: str
     kind: EntityKind
     type_hint: str
-    # Per-source mention counts, sorted by source. Kept rather than a single
-    # total because an incremental refresh has to add and subtract one source's
-    # contribution exactly, and because chunk refs are capped, so counting them
-    # would shrink the total every time the index is rewritten.
+    # Per-source mention counts, sorted by source, summed by ``mentions`` for
+    # the floor. Kept per source rather than as a single total because the
+    # store aggregate produces them per source, and because chunk refs are
+    # capped, so counting those would undercount a subject named more often
+    # than the cap.
     source_mentions: tuple[tuple[str, int], ...]
     chunk_refs: tuple[tuple[str, int], ...]
 
@@ -376,9 +377,10 @@ def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
 def drop_sources_from_index(names: set[str], config: Config | None = None) -> None:
     """Forget documents the library no longer has.
 
-    Subtraction only, so it costs no extraction pass. Without it a removed
-    document keeps its subjects in the browse tree forever: its skip marker
-    keeps it out of later syncs, so no refresh ever revisits those entries.
+    Re-aggregates the affected slugs from the store, whose rows for the removed
+    sources went with their chunks, so it costs no extraction pass. Without it a
+    removed document keeps its subjects in the browse tree forever: its skip
+    marker keeps it out of later syncs, so no refresh ever revisits them.
     """
     if not names:
         return
