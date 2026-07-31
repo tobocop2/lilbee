@@ -44,13 +44,26 @@ Measurement (validation runs below). Graduation out of the experimental label re
 
 Pending.
 
-### Run 2: large PDF corpus subset (~2,000 documents, single GPU)
+### Run 2: large PDF corpus subset (4,256 documents, single GPU)
 
-Pending.
+Corpus: 4,256 scanned PDFs (DOJ production sets and court batches), ingested with OCR on a single NVIDIA L4 (RunPod). Embeddings: nomic-embed-text-v1.5. Page generation: Qwen2.5-7B-Instruct (fp16). 4,212 sources indexed.
+
+Store-backed index (the layer this branch rebuilt around a `_wiki_mentions` table whose ≥floor stub index is a corpus-wide aggregate): 27,548 mention rows, 21,670 distinct subjects, 2,261 published pages. Of those, **1,600 pages (71%) draw their evidence from two or more separately-ingested documents** — the exact subject class the previous per-document index dropped, since a subject below the mention floor in each document alone only clears the floor once evidence from every document is aggregated. That recovery is the point of the change and it holds at corpus scale.
+
+Against the criteria:
+
+- **Citation verification: pass.** 100% of citations on published pages verify (47/47), zero pages published with zero verified citations. Measured with the same `verify_citation` the lint surface uses.
+- **Second build over the unchanged corpus: pass at the index.** Re-running `wiki index` produced 2,261/2,261 pages with zero slug churn and a byte-stable mention table (27,548 rows both builds). Generation-level drift was not established this run (see draft-rate caveat).
+- **No crashes or corruption; self-heal proven.** Interrupting a full index rebuild empties the derived `_wiki_mentions` table (it clears before it rewrites); the next `wiki index` fully restores it — 27,548 rows, 2,261 pages, 1,600 cross-source. The durable artifact (the on-disk index) is never the half-written table, so reads are unaffected. Making that rebuild atomic is a tracked follow-up.
+- **Surface parity: pass.** CLI (`status`, `lint`, `index`), MCP (`wiki_index` → 2,261 entries, `wiki_lint` → clean), and HTTP all agree. HTTP enforces the bearer token (GET list → 200, read → 200, POST lint → 201, every route without a token → 401).
+- **Draft-routing rate: not established.** 4 of 17 generated pages routed to drafts (23.5%), but the sample is under-powered: 13 of 30 requested pages exceeded the 300 s per-page generation cap because fp16 7B generation on the L4 is slow. A faster card (or a raised cap) is needed to sample the rate against the 20% bar.
+- **Lifecycle — delete source then prune archives its page: fails.** Removing a page's only source (via `lilbee remove`) leaves its citation in place but pointing at absent chunks; `verify_citation` returns `UNVERIFIABLE`, which `_lint_excerpt` reports as no issue at all, so prune's stale-majority check (`_STALE_TYPES = {STALE_HASH, EXCERPT_MISSING}`) never fires and the orphaned page is not archived. Reproduced through the real user path; filed as a follow-up. The other lifecycle drills (edit-source stale lint; accept/reject round-trip) were not exercised in this run.
+
+Profile ([py-spy flame graph](wiki-index-flame.svg), full corpus): spaCy NER over the corpus dominates the index build; the store layer (mention read/write/aggregate) is negligible. A full index over 4,212 sources runs single-threaded NER-bound.
 
 ### Claim-support audit
 
-Pending.
+Sampled published pages, each citation's excerpt checked against the cited source's extracted chunks: **100% of sampled citations are `VALID`** with genuine verbatim excerpts (e.g. an entity page's testimony quote, a billing page's `Customer Service Number 1.800.937-8997`). Page-level faithfulness scores ranged 0.73–0.91 (mean 0.84), the generation gate having quarantined lower-scoring drafts. One caveat surfaced: the NER long tail yields occasional spurious subjects (e.g. `aaa`, lifted from call-log text); the resulting page stays faithful — it states outright that the evidence does not define the subject — but is low value. That is a subject-selection quality issue, not a claim-support failure.
 
 ## Comparison to other systems
 
@@ -58,4 +71,4 @@ The README carries a comparison table (STORM, GraphRAG, DeepWiki-Open) in which 
 
 ## Verdict
 
-Pending validation. The experimental label stays until the criteria above hold on both validation runs.
+Run 2 (4,256-document corpus, single GPU) proves the store-backed cross-source recovery this branch was built for: 1,600 of 2,261 pages depend on evidence aggregated across separately-ingested documents, citations verify at 100%, the index rebuild is deterministic, the mention table self-heals after interruption, and every surface agrees. Two items block full graduation and are tracked as follow-ups: prune does not archive a page whose sources are fully removed (an `UNVERIFIABLE`-vs-stale classification gap in lint/prune), and the draft-routing rate could not be sampled against the 20% bar because fp16 7B generation on an L4 timed out on 13 of 30 pages — a faster card is needed. Run 1 (local vault, Apple Silicon) is still pending. The experimental label stays until those hold.
