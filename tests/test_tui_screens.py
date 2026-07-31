@@ -10560,17 +10560,16 @@ class TestWikiCoverageEdgeCases:
             assert isinstance(screen, WikiScreen)
             app.install_screen(screen, name="wiki")
             app.install_screen(Screen(), name="elsewhere")
-            screen.query_one("#wiki-search", TextualInput).value = "brakes"
-            app.switch_screen("elsewhere")
-            await pilot.pause()
-            # Drop a still-pending search debounce so the only repaint under the
-            # patch is the one the switch back triggers.
-            if screen._search_filter_timer is not None:
-                screen._search_filter_timer.stop()
-            with patch.object(screen, "_load_pages") as mock_load:
-                app.switch_screen("wiki")
+            # Inflate the debounce so the keystroke's timer can't fire under the
+            # patch; the only repaint then is the one the switch back triggers.
+            with patch.object(WikiScreen, "_SEARCH_FILTER_DEBOUNCE_SECONDS", 30):
+                screen.query_one("#wiki-search", TextualInput).value = "brakes"
+                app.switch_screen("elsewhere")
                 await pilot.pause()
-                mock_load.assert_called_once_with(filter_text="brakes")
+                with patch.object(screen, "_load_pages") as mock_load:
+                    app.switch_screen("wiki")
+                    await pilot.pause()
+                    mock_load.assert_called_once_with(filter_text="brakes")
 
     async def test_load_pages_failure_surfaces_in_content_pane(self, tmp_path):
         """A failing list_pages renders an error, not the ordinary empty state."""
