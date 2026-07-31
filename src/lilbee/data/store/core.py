@@ -789,11 +789,28 @@ class Store:
             _check_vector_dims(records, embedding_dim)
             table = self._chunks_table()
             table.add(records)
-            if self.get_meta() is None:
-                self._write_meta_unlocked(
-                    embedding_model=embedding_model, embedding_dim=embedding_dim
-                )
+            self._stamp_meta_unlocked(embedding_model, embedding_dim)
             return len(records)
+
+    def _stamp_meta_unlocked(self, embedding_model: str, embedding_dim: int) -> None:
+        """Write the embedder identity on the first write to a fresh store."""
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+
+    def absorb_rows(self, name: str, rows: pa.Table) -> int:
+        """Append an ingest shard's *rows* to table *name*, creating it if absent.
+
+        The rows already carry their embeddings, so this is the merge path for a
+        multi-GPU sync: the per-worker stores are folded in whole and the indexes
+        are rebuilt corpus-wide afterwards.
+        """
+        with self._write_lock():
+            self._ensure_embedding_compat()
+            self._fts_ready = False
+            self._scalar_ready = False
+            ensure_table(self.get_db(), name, rows.schema).add(rows)
+            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
+            return int(rows.num_rows)
 
     def bm25_probe(
         self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None

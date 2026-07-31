@@ -22,7 +22,6 @@ never double-count.
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import CHUNKS_TABLE, ENTITIES_TABLE, active_config
@@ -43,6 +42,7 @@ from lilbee.retrieval.entities.schema import (
 if TYPE_CHECKING:
     from lilbee.data.store import Store
     from lilbee.data.store.types import EntitySchemaState
+    from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ _REINDUCE_GROWTH_FACTOR = 1.5
 _REINDUCE_MIN_SOURCES = 10
 
 
-def ensure_entities(cancel: threading.Event | None = None) -> None:
+def ensure_entities(cancel: CancelSignal | None = None) -> None:
     """Bring extracted entities in line with the schema; no-op when off.
 
     Failure never fails the sync: a missing chat model defers induction to
@@ -194,7 +194,7 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
     return texts
 
 
-def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | None) -> bool:
+def _full_pass(store: Store, schema: EntitySchema, cancel: CancelSignal | None) -> bool:
     """Extract entities across every stored chunk. True when it completed.
 
     Clears previously extracted rows first so the pass is idempotent. A pass
