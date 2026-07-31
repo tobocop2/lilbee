@@ -341,6 +341,14 @@ def refresh_stub_index(
         extractor = get_entity_extractor(
             config.wiki_entity_mode, get_services().provider, pass_config
         )
+        if not extractor.available():
+            # An unavailable backend extracts nothing, which is indistinguishable
+            # from a corpus that names nothing. Persisting that empty result would
+            # overwrite a good index and, worse, leave a valid empty file that the
+            # next incremental sync builds on instead of rebuilding. Leave the
+            # existing index untouched.
+            log.warning("Wiki entity extractor unavailable; leaving the stub index unchanged")
+            return stored
         for entity in extractor.extract(chunks):
             found = stub_from_entity(entity, cap)
             existing = surviving.get(found.slug)

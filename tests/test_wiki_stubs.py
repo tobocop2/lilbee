@@ -183,6 +183,26 @@ class TestRefresh:
         assert list(result) == ["ford"]
         assert list(load_stub_index()) == ["ford"]
 
+    def test_an_unavailable_extractor_leaves_the_index_untouched(self):
+        """An unavailable backend extracts nothing, which looks the same as a
+        corpus that names nothing. Persisting that would overwrite a good index
+        with an empty one and every surface would report success."""
+        save_stub_index({"ford": _stub("ford")})
+        extractor = MagicMock()
+        extractor.available.return_value = False
+        extractor.extract.return_value = []
+        store = MagicMock()
+        store.get_sources.return_value = []
+        store.get_chunks_by_source.return_value = []
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            result = refresh_stub_index(store, cfg, sources=None)
+        assert list(result) == ["ford"]
+        assert list(load_stub_index()) == ["ford"]
+        extractor.extract.assert_not_called()
+
     def test_incremental_refresh_keeps_untouched_stubs(self):
         save_stub_index({"gm": _stub("gm", ("other.md",))})
         result = self._run([_entity("ford", [("a.md", 0)])], sources={"a.md"})

@@ -70,6 +70,10 @@ class NerConceptsExtractor:
         self._provider = provider
         self._config = config
 
+    def available(self) -> bool:
+        """True when the spaCy pipeline is loadable. Cached, so this is cheap."""
+        return _load_spacy() is not None
+
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         if not chunks:
             return []
