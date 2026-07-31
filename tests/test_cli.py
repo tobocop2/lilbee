@@ -2405,7 +2405,6 @@ class TestIngestShutdownError:
                     failed,
                     skipped,
                     quiet=True,
-                    unindexed_files=0,
                 )
 
         asyncio.run(_run())

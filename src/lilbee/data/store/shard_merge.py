@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from lilbee.core.config.defaults import INGEST_SOURCE_COLUMNS, META_TABLE
-from lilbee.data.store.lance_helpers import escape_sql_string
+from lilbee.data.store.lance_helpers import escape_sql_string, table_names
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,7 +44,7 @@ def merge_shards(
     merged: dict[str, int] = {}
     for shard_dir in shard_dirs:
         database = lancedb.connect(str(shard_dir))
-        for name in database.table_names():
+        for name in table_names(database):
             # The merged store writes its own meta row from the running config;
             # a shard's copy would land beside it as a second row.
             if name == META_TABLE:
@@ -88,9 +88,7 @@ def _in_predicate(column: str, names: list[str]) -> str:
     return f"{column} IN ({quoted})"
 
 
-def _copy_rows(
-    table: lancedb.table.Table, store: Store, name: str, predicate: str | None
-) -> int:
+def _copy_rows(table: lancedb.table.Table, store: Store, name: str, predicate: str | None) -> int:
     """Stream the rows *predicate* selects from *table* into *store*."""
     import pyarrow as pa
 

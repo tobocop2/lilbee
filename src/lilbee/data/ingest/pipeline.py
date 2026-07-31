@@ -991,9 +991,6 @@ async def sync(
     disk_files = discover_files(shard)
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
-    # What the worker-pool decision is sized on. A rebuild drops the store above,
-    # so its sources are already empty here and the whole corpus counts as new.
-    unindexed = sum(1 for name in disk_files if name not in existing_sources)
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
@@ -1043,7 +1040,6 @@ async def sync(
                     cancel=cancel,
                     flush_failed=flush_failed,
                     reasons=reasons,
-                    unindexed_files=unindexed,
                 )
             if cancel is not None and cancel.is_set():
                 # The stream stops feeding on cancel, so ingest can drain its
@@ -1231,7 +1227,6 @@ async def ingest_stream(
     cancel: CancelSignal | None = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
-    unindexed_files: int,
 ) -> None:
     """Ingest a stream of planned file shards, optionally showing a Rich progress bar.
 

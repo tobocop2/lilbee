@@ -1998,12 +1998,12 @@ class TestAdaptiveFilterFinalPass:
 
 class TestTableNamesAttributeError:
     def test_fallback_to_list_when_no_tables_attr(self, store):
-        """_table_names falls back to list() when result has no .tables attribute."""
-        from lilbee.data.store.lance_helpers import _table_names
+        """table_names falls back to list() when result has no .tables attribute."""
+        from lilbee.data.store.lance_helpers import table_names
 
         mock_db = mock.MagicMock()
         mock_db.list_tables.return_value = ["chunks", "sources"]
-        result = _table_names(mock_db)
+        result = table_names(mock_db)
         assert result == ["chunks", "sources"]
 
 

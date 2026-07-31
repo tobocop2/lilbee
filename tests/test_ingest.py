@@ -245,34 +245,6 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
-    async def test_pool_is_sized_on_unindexed_files_not_the_whole_corpus(
-        self, mock_extract_file, isolated_env, monkeypatch
-    ):
-        """An incremental sync over an indexed corpus must not reach for a pool.
-
-        The streamed plan has no total up front, so the pool decision is sized on
-        a pre-diff proxy. Sizing it on every file on disk would spawn workers for
-        a two-file sync of a large indexed corpus.
-        """
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.ingest import sync
-
-        for i in range(3):
-            (isolated_env / f"c{i}.txt").write_text(f"body {i}")
-        await sync()  # index them, so the next pass sees them as unchanged
-
-        sized_on: list[int] = []
-        monkeypatch.setattr(
-            pipeline_mod,
-            "resolve_process_count",
-            lambda count: sized_on.append(count) or 1,
-        )
-        (isolated_env / "new.txt").write_text("only this one is new")
-        await sync()
-
-        # One new file, three already indexed: the corpus is 4.
-        assert sized_on == [1]
-
     async def test_sync_uses_batch_extraction_when_enabled(
         self, mock_extract_file, isolated_env, monkeypatch
     ):
@@ -915,71 +887,6 @@ class TestSyncCancellation:
         assert result.added == []
         assert result.unchanged == 0
 
-    async def test_worker_mode_releases_the_pool_and_routes_every_file(
-        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
-    ):
-        """ingest_stream in worker mode must shut the pool down, happy path included.
-
-        Drives the whole worker dispatch (shard -> batch -> collect -> flush) with the
-        pool faked out, which is the only place the shard slotting, _collect_from_worker
-        and the pool teardown run together.
-        """
-        from concurrent.futures import ThreadPoolExecutor
-
-        from lilbee.data.ingest import ingest_stream, workers
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.types import FileToProcess
-        from tests.conftest import one_shard
-
-        shutdowns: list[dict] = []
-        order: list[str] = []
-
-        class RecordingPool(ThreadPoolExecutor):
-            def shutdown(self, wait=True, **kwargs):
-                shutdowns.append(kwargs)
-                super().shutdown(wait=wait)
-
-        monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
-        monkeypatch.setattr(pipeline_mod, "warm_parent_engine", lambda: order.append("warm"))
-        built: dict = {}
-
-        def fake_build_pool(n, cfg, inflight):
-            order.append("pool")
-            built["processes"], built["inflight"] = n, inflight
-            return RecordingPool(max_workers=2)
-
-        monkeypatch.setattr(pipeline_mod, "build_pool", fake_build_pool)
-        monkeypatch.setattr(
-            workers,
-            "run_batch",
-            lambda batch: [
-                workers.WorkerOutcome(name=f.name, records=[], page_texts=[]) for f in batch
-            ],
-        )
-
-        (isolated_env / "w1.txt").write_text("one")
-        (isolated_env / "w2.txt").write_text("two")
-        files = [
-            FileToProcess("w1.txt", isolated_env / "w1.txt", "text", "h1", False),
-            FileToProcess("w2.txt", isolated_env / "w2.txt", "text", "h2", False),
-        ]
-        added = {"w1.txt": None, "w2.txt": None}
-        skipped: dict[str, None] = {}
-
-        await ingest_stream(
-            one_shard(files), added, {}, {}, skipped, quiet=True, unindexed_files=len(files)
-        )
-
-        # Ordering is the fix for the A/B that embedded 0 of 50k: a pool built
-        # first spawns attach-only workers against an engine nothing has started.
-        assert order == ["warm", "pool"]
-        assert built["processes"] == 2
-        assert built["inflight"] > 0  # admission is passed through, not defaulted
-        assert shutdowns == [{"cancel_futures": True}]
-        # Zero chunks is a skip, not an add: the worker produced no searchable text.
-        assert set(skipped) == {"w1.txt", "w2.txt"}
-        assert added == {}
-
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio
@@ -1002,9 +909,7 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_stream(
-                one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel, unindexed_files=0
-            )
+            await ingest_stream(one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1228,9 +1133,7 @@ class TestCancellation:
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_stream(
-                    one_shard([entry]), added, {}, {}, {}, quiet=True, unindexed_files=0
-                )
+                await ingest_stream(one_shard([entry]), added, {}, {}, {}, quiet=True)
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
@@ -1291,7 +1194,6 @@ class TestCancellation:
                 skipped,
                 quiet=True,
                 on_progress=on_progress,
-                unindexed_files=0,
             )
 
 

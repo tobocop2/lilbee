@@ -36,10 +36,10 @@ from .lance_helpers import (
     _has_vector_index,
     _safe_delete_unlocked,
     _sources_search_filter,
-    _table_names,
     ensure_table,
     escape_sql_string,
     refs_compatible,
+    table_names,
 )
 from .ranking import mmr_rerank
 from .schema import (
@@ -533,7 +533,7 @@ class Store:
     def open_table(self, name: str) -> lancedb.table.Table | None:
         """Open a table if it exists, otherwise return None."""
         db = self.get_db()
-        if name not in _table_names(db):
+        if name not in table_names(db):
             return None
         return db.open_table(name)
 
@@ -1921,7 +1921,7 @@ class Store:
             self._title_fts_ready = False
             self._scalar_ready = False
             db = self.get_db()
-            for name in _table_names(db):
+            for name in table_names(db):
                 if name == MEMORIES_TABLE:
                     continue
                 db.drop_table(name)
