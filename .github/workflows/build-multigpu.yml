@@ -176,11 +176,19 @@ jobs:
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
+      - name: Read the pinned Go toolchain
+        if: steps.engine.outputs.needs-build == 'true'
+        shell: bash
+        run: |
+          source engine-versions.env
+          echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
+
       - name: Set up Go (for llama-swap + gguf-parser)
         if: steps.engine.outputs.needs-build == 'true'
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: ${{ env.ENGINE_GO_VERSION }}
+          cache-dependency-path: engine-versions.env
 
       - name: Build the engine binaries from source
         if: steps.engine.outputs.needs-build == 'true'
