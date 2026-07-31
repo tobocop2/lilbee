@@ -935,8 +935,6 @@ class Searcher:
         requested = chunk_type
         if requested is None and mode in (QueryMode.WIKI, QueryMode.RAW):
             requested = ChunkType(mode.value)
-        if self._refuse_wiki_scope(requested):
-            return None
         scope = self._retrieval_scope(requested)
         known_item = (
             self._known_item_results(clean_query, scope) if self._config.intent_routing else []

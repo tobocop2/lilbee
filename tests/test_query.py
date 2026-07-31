@@ -2385,6 +2385,22 @@ class TestKnownItemRoute:
         # It falls through to a wiki-scoped search instead.
         assert mock_svc.store.search.call_args.kwargs["chunk_type"] == ChunkType.WIKI
 
+    def test_wiki_scoped_context_off_does_not_resolve_a_raw_document(self, mock_svc):
+        """With the wiki off, a wiki: question must not resolve the named
+        document from the raw pool. Resolving the prefix scopes the known-item
+        route to wiki, which never routes a raw document, and the wiki-scoped
+        search then refuses -- so the turn yields no context rather than the
+        wrong pool's chunks."""
+        cfg.wiki = False
+        try:
+            mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+            mock_svc.store.search.return_value = []
+            result = get_services().searcher.build_rag_context("wiki: survey_report.pdf")
+        finally:
+            cfg.wiki = True
+        assert result is None
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
     def test_named_document_bypasses_similarity_search(self, mock_svc):
         """A question naming one resolvable document gets that document's
         chunks in document order, not a similarity ranking."""

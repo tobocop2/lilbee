@@ -150,8 +150,6 @@ def _accumulate_doc_entities(
         # aggregates that an incremental refresh sums, double-counting mentions
         # and duplicating refs past the floor.
         key = make_slug(surface)
-        if not key:
-            continue
         rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
         rec.refs.add(ref)
         funnel["kept_entity_surfaces"] += 1

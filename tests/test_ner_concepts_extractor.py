@@ -186,6 +186,32 @@ class TestOnlyEntityKind:
         assert {e.label for e in result} == {"Henry Ford"}
 
 
+class TestAvailability:
+    def test_available_when_pipeline_loads(self) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({}):
+            assert extractor.available() is True
+
+    def test_unavailable_when_pipeline_missing(self) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with patch(
+            "lilbee.wiki.entity_extractor.ner_concepts._load_spacy",
+            return_value=None,
+        ):
+            assert extractor.available() is False
+
+    def test_llm_backed_extractors_report_available(self) -> None:
+        """The LLM-schema extractors have no loadable backend to miss, so they
+        report available; their extract raises NotImplementedError on use."""
+        from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
+        from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
+            NerConceptsPlusLlmTypesExtractor,
+        )
+
+        assert LlmTaggedExtractor(MagicMock(), cfg).available() is True
+        assert NerConceptsPlusLlmTypesExtractor(MagicMock(), cfg).available() is True
+
+
 class TestDedupAndAggregation:
     def test_duplicate_ner_surface_folds_into_one(self) -> None:
         doc = _FakeDoc(
