@@ -194,7 +194,7 @@ class TestSyncAcrossWorkers:
         """A partial merge is an index silently short of rows, which is the bug being fixed."""
         merged = []
         with pytest.raises(
-            RuntimeError, match="worker 1 .*sync.log.*: RuntimeError: out of memory"
+            RuntimeError, match=r"worker 1 .*sync\.log.*: RuntimeError: out of memory"
         ):
             await self._run(
                 specs,
