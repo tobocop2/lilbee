@@ -22,7 +22,6 @@ def services(monkeypatch):
     from unittest.mock import MagicMock
 
     from lilbee.app.services import set_services
-
     from tests.conftest import make_mock_services
 
     store = MagicMock()

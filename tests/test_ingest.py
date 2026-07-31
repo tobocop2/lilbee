@@ -106,9 +106,9 @@ def _install_real_store():
 def _feed(coros):
     """A _ResultFeed over one already-planned shard of file coroutines."""
     from lilbee.data.ingest.pipeline import _ResultFeed
-    from tests.conftest import one_shard
+    from tests.conftest import one_plan_batch
 
-    return _ResultFeed(one_shard(coros))
+    return _ResultFeed(one_plan_batch(coros))
 
 
 def _lazy_feed(coros):
@@ -893,7 +893,7 @@ class TestSyncCancellation:
         import threading
 
         from lilbee.data.ingest import ingest_stream
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         (isolated_env / "a.txt").write_text("file a")
         (isolated_env / "b.txt").write_text("file b")
@@ -909,7 +909,7 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_stream(one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel)
+            await ingest_stream(one_plan_batch(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1126,14 +1126,14 @@ class TestCancellation:
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_cancel):
             from lilbee.data.ingest import ingest_stream
             from lilbee.data.types import FileToProcess
-            from tests.conftest import one_shard
+            from tests.conftest import one_plan_batch
 
             added = {"cancel.txt": None}
             entry = FileToProcess(
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_stream(one_shard([entry]), added, {}, {}, {}, quiet=True)
+                await ingest_stream(one_plan_batch([entry]), added, {}, {}, {}, quiet=True)
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
@@ -1157,7 +1157,7 @@ class TestCancellation:
 
         from lilbee.data.ingest import ingest_stream
         from lilbee.runtime.cancellation import TaskCancelledError
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         # The callback flips on the second invocation so the first file makes
         # progress (which exercises the FILE_DONE re-entry path inside the error
@@ -1187,7 +1187,7 @@ class TestCancellation:
         # surrounding try/except in _do_sync catches it cleanly.
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(
-                one_shard(files),
+                one_plan_batch(files),
                 added,
                 {},
                 failed,
@@ -2190,12 +2190,12 @@ class TestStreamedPlan:
         from lilbee.data.ingest.pipeline import (
             _PLAN_SHARD_MAX_FILES,
             _PLAN_SHARD_MIN_FILES,
-            _shard_bounds,
+            _plan_batch_bounds,
         )
 
-        assert list(_shard_bounds(0)) == []
+        assert list(_plan_batch_bounds(0)) == []
         total = _PLAN_SHARD_MAX_FILES * 4
-        bounds = list(_shard_bounds(total))
+        bounds = list(_plan_batch_bounds(total))
         # Small first shard, doubling, capped -- and contiguous over the corpus.
         assert bounds[0] == (0, _PLAN_SHARD_MIN_FILES)
         assert bounds[1][1] - bounds[1][0] == 2 * _PLAN_SHARD_MIN_FILES
@@ -2350,12 +2350,12 @@ class TestStreamedPlan:
     ):
         # The shard loop's break fires when a cancel is observed between shards.
         # Driving it through sync relies on a cancel-during-extract race that is
-        # not portable across platforms; drive _plan_shards directly with a cancel
+        # not portable across platforms; drive _plan_batches directly with a cancel
         # already set, over >1 shard, so the break is hit without any timing.
         import threading
 
         from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.pipeline import _plan_shards, _StreamedPlan
+        from lilbee.data.ingest.pipeline import _plan_batches, _StreamedPlan
 
         disk = {f"doc{i}.txt": isolated_env / f"doc{i}.txt" for i in range(4)}
         for path in disk.values():
@@ -2366,7 +2366,7 @@ class TestStreamedPlan:
         cancel = threading.Event()
         cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
         state = _StreamedPlan()
-        shards = _plan_shards(disk, {}, {}, [], state, cancel)
+        shards = _plan_batches(disk, {}, {}, [], state, cancel)
         yielded = [shard async for shard in shards]
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0

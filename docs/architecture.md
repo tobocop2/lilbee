@@ -349,19 +349,43 @@ and convert once at the provider boundary. They are network-bound, so the conver
 does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
 to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
-#### Multiprocess extract/embed (`ingest_processes`), and why it is off by default
+#### One worker process per GPU (`ingest_processes`)
 
 Base64 raised the one-core decode ceiling; worker **processes** are the other lever for
-it, spreading decode across cores the GIL otherwise serializes. It is **off by default**
-(`ingest_processes = 1`) because it only pays when one process cannot saturate the fleet.
-A small, fast embedder on several GPUs leaves headroom a second process fills — 0.6B on
-4xA40 goes 174 → 220 docs/sec from 1 → 2 processes. A large or GPU-bound embedder does
-not: the single parent that collects worker records over IPC and writes the one index is
-itself serial, so throughput ties single-process no matter the process count — 8B on
-4xH100 measures ~168 docs/sec at both 1 and 4 processes, GPUs only ~67% (idle capacity
-the extra processes cannot reach). That parent drain, not the process count, is the
-binding ceiling for large models. Set `ingest_processes = 0` to auto-size, or an explicit
-N to opt in.
+it, and on a multi-GPU box they are also how each card gets fed at all. A sync large
+enough to pay for them fans out into one worker per visible card, with nothing to
+configure (`ingest_processes = 0`, the default; `1` keeps ingest in this process, `N`
+pins the count and worker *i* takes card *i % card_count*).
+
+A worker is an ordinary `lilbee sync` over a deterministic slice of the corpus:
+
+| What it owns | Why |
+|---|---|
+| One card, masked at the process | Sizing and placement read the mask, so a worker plans against its own card, not the box. |
+| A private engine slot, keyed by card | Without one, every worker scans the machine-wide slot, finds worker 0's fleet and adopts it: measured one card at 95% and seven at 0%, run completes, index correct, no error. Workers sharing a card share its slot deliberately. |
+| A private data root and store | No shared write drain, which is what capped the previous mechanism. |
+| Its share of the CPU pools | Eight workers each sizing to a 160-core box put 4208 threads on it, load average 254, GPUs idle. |
+| A slice of the corpus, hashed by source key | blake2b, not `hash()`, so a resume deals the corpus the same way and re-embeds nothing. |
+
+The parent plans nothing and embeds nothing. It supervises, renders one progress bar
+instead of N log files, and at the end folds the shards into the one index, where the
+ANN and BM25 builds run once corpus-wide. Per-shard builds are thrown away by
+construction, and they measured a third of an 800k run's wall clock.
+
+The previous mechanism behind this setting was a pool inside one process: workers
+produced records, a single parent collected them over IPC and wrote the one store. That
+parent drain was the binding ceiling for a large embedder, which is why the setting used
+to be off by default and measured 1.00x. Per-card workers remove the drain rather than
+widen it: on 8xH100, one lilbee across eight cards measured 152 docs/s (against 162 on
+four, so the eighth card made it worse), while eight pinned workers measured 415 at a GPU
+busy fraction of 0.93.
+
+Two costs are worth stating. The merge copies rows rather than committing metadata, so a
+first full ingest writes the corpus twice, and the shard stores are kept as the resume
+state, so the vectors live on disk twice until the merge is replaced with Lance's
+distributed-write commit. And a worker that fails leaves its shard in place and stops the
+merge, reporting which one failed, rather than producing an index that is silently short
+of rows.
 
 ---
 

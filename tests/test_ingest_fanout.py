@@ -384,6 +384,27 @@ class TestRunWorkers:
         )
         assert stopped.is_set()
 
+    async def test_a_worker_still_running_after_its_verdict_is_stopped(
+        self, fake_context, monkeypatch
+    ):
+        """A worker that reported and then hung must not outlive the sync that spawned it."""
+
+        def fake_shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            stop.wait(5)
+
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        await fanout.run_workers(
+            [_spec(0)],
+            options=fanout.ShardOptions(),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        assert fake_context.processes[0].terminated
+
     async def test_a_live_worker_is_terminated_when_the_run_ends(self, fake_context, monkeypatch):
         def fake_shard(spec, options, messages, stop):
             messages.put(
