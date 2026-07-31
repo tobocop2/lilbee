@@ -174,7 +174,7 @@ class TestSyncAcrossWorkers:
         result = await pipeline_mod._sync_across_workers(
             specs,
             store=object(),
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=1),
             quiet=True,
             on_progress=lambda kind, data: events.append(kind),
             cancel=cancel,

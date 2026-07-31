@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue as queue_mod
 import subprocess
 import sys
@@ -31,6 +32,7 @@ class FakeProcess:
         self.exitcode = None
         self._thread = threading.Thread(target=self._run, name=name)
         self.terminated = False
+        self.killed = threading.Event()
 
     def _run(self):
         self._target(*self._args)
@@ -47,6 +49,9 @@ class FakeProcess:
 
     def terminate(self):
         self.terminated = True
+
+    def kill(self):
+        self.killed.set()
 
 
 class FakeContext:
@@ -299,7 +304,12 @@ class TestRunShard:
         monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
         messages = queue_mod.Queue()
         spec = _spec(1)
-        fanout.run_shard(spec, fanout.ShardOptions(force_rebuild=True), messages, threading.Event())
+        fanout.run_shard(
+            spec,
+            fanout.ShardOptions(parent_pid=os.getppid(), force_rebuild=True),
+            messages,
+            threading.Event(),
+        )
         verdict = messages.get_nowait()
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
@@ -314,7 +324,9 @@ class TestRunShard:
         monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
         monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
         messages = queue_mod.Queue()
-        fanout.run_shard(_spec(0), fanout.ShardOptions(), messages, threading.Event())
+        fanout.run_shard(
+            _spec(0), fanout.ShardOptions(parent_pid=os.getppid()), messages, threading.Event()
+        )
         verdict = messages.get_nowait()
         assert verdict.result is None
         assert verdict.error == "RuntimeError: no embedding model"
@@ -347,7 +359,7 @@ class TestRunWorkers:
         events = []
         verdicts = await fanout.run_workers(
             [_spec(0), _spec(1)],
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: events.append((kind, data)),
             cancel=None,
@@ -369,7 +381,7 @@ class TestRunWorkers:
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         verdicts = await fanout.run_workers(
             [_spec(0), _spec(1)],
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=None,
@@ -395,7 +407,7 @@ class TestRunWorkers:
         cancel.set()
         await fanout.run_workers(
             [_spec(0)],
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=cancel,
@@ -416,12 +428,32 @@ class TestRunWorkers:
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         await fanout.run_workers(
             [_spec(0)],
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=None,
         )
         assert fake_context.processes[0].terminated
+
+    async def test_a_worker_that_ignores_the_stop_is_killed(self, fake_context, monkeypatch):
+        """A worker wedged in fleet teardown must not hold the sync open behind it."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 0.05)
+
+        def fake_shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            fake_context.processes[0].killed.wait(5)
+
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        await fanout.run_workers(
+            [_spec(0)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        assert fake_context.processes[0].killed.is_set()
 
     async def test_a_live_worker_is_terminated_when_the_run_ends(self, fake_context, monkeypatch):
         def fake_shard(spec, options, messages, stop):
@@ -432,7 +464,7 @@ class TestRunWorkers:
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         await fanout.run_workers(
             [_spec(0)],
-            options=fanout.ShardOptions(),
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=None,

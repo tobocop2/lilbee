@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -982,7 +983,11 @@ async def sync(
         return await _sync_across_workers(
             specs,
             _store,
-            options=ShardOptions(force_rebuild=force_rebuild, retry_skipped=retry_skipped),
+            options=ShardOptions(
+                parent_pid=os.getpid(),
+                force_rebuild=force_rebuild,
+                retry_skipped=retry_skipped,
+            ),
             quiet=quiet,
             on_progress=on_progress,
             cancel=cancel,

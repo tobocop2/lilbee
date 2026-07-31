@@ -69,6 +69,9 @@ _DRAIN_INTERVAL_S = 0.1
 # Grace for the queue's feeder thread to flush a dead worker's last messages.
 _FINAL_DRAIN_S = 1.0
 
+# How long a worker gets to exit on its own before it is killed.
+_WORKER_EXIT_GRACE_S = 30.0
+
 _ERROR_STATUS = "error"
 
 
@@ -86,8 +89,9 @@ class ShardSpec:
 
 @dataclass(frozen=True)
 class ShardOptions:
-    """The sync flags every worker of one fan-out runs under."""
+    """What every worker of one fan-out is told about the run it belongs to."""
 
+    parent_pid: int
     force_rebuild: bool = False
     retry_skipped: bool = False
 
@@ -326,12 +330,20 @@ def _final_verdicts(
 
 
 def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
-    """Ask every live worker to stop, then wait for it."""
+    """Ask every live worker to stop, then wait for it, then insist.
+
+    A worker owns a GPU fleet, and its teardown can outlast a TERM; a plain join
+    would hang the sync behind it instead of returning a result it already has.
+    """
     stop.set()
     for worker in workers:
         if worker.is_alive():
             worker.terminate()
-        worker.join()
+        worker.join(_WORKER_EXIT_GRACE_S)
+        if worker.is_alive():
+            log.warning("Ingest worker %s did not exit; killing it", worker.name)
+            worker.kill()
+            worker.join()
 
 
 async def run_workers(
@@ -387,7 +399,9 @@ def run_shard(
     from lilbee.app.services import build_services, services_scope
     from lilbee.core.config.context import config_scope
     from lilbee.data.ingest.pipeline import sync
+    from lilbee.providers.fleet.child_guard import bind_lifetime_to_parent
 
+    bind_lifetime_to_parent(options.parent_pid)
     _apply_shard_env(spec)
     index = spec.shard.index
     reporter = _ShardReporter(index, messages)

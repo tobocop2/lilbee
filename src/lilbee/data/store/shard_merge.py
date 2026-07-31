@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from lilbee.core.config.defaults import INGEST_SOURCE_COLUMNS, META_TABLE
+from lilbee.core.config import INGEST_SOURCE_COLUMNS, META_TABLE
 from lilbee.data.store.lance_helpers import escape_sql_string, table_names
 
 if TYPE_CHECKING:

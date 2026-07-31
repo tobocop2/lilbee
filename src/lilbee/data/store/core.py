@@ -17,6 +17,7 @@ from lilbee.core.config import (
     CITATIONS_TABLE,
     ENTITIES_TABLE,
     ENTITY_SCHEMA_TABLE,
+    INGEST_SOURCE_COLUMNS,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -170,17 +171,18 @@ _TITLE_COLUMN = "title"
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
 # so only the per-chunk concept mapping is source-scoped.
-_PER_SOURCE_TABLES = (
-    (CHUNKS_TABLE, "source"),
-    (PAGE_TEXTS_TABLE, "source"),
-    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
-    (ENTITIES_TABLE, "source"),
+_PER_SOURCE_TABLES = tuple(
+    (name, INGEST_SOURCE_COLUMNS[name])
+    for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
 )
 
 # (table, source column) pairs re-keyed when a source is relocated (moved on
 # disk, same content). Extends the per-source set with the wiki citation's raw
 # source_filename so citations keep pointing at the source after a move.
-_RELOCATABLE_TABLES = (*_PER_SOURCE_TABLES, (CITATIONS_TABLE, "source_filename"))
+_RELOCATABLE_TABLES = (
+    *_PER_SOURCE_TABLES,
+    (CITATIONS_TABLE, INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]),
+)
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
