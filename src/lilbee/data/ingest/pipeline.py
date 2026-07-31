@@ -76,6 +76,7 @@ from lilbee.data.store import (
     SourceStat,
     SourceStatBackfill,
     SourceType,
+    Store,
     source_stat,
 )
 from lilbee.data.title import derive_title
@@ -904,7 +905,7 @@ def _worker_failure_message(failures: list[ShardDone], specs: list[ShardSpec]) -
     )
 
 
-def _merge_worker_shards(store: Any, specs: list[ShardSpec], touched: set[str]) -> None:
+def _merge_worker_shards(store: Store, specs: list[ShardSpec], touched: set[str]) -> None:
     """Fold every worker's shard into this index.
 
     A store with no chunks of its own takes the shards whole; one that already
@@ -919,7 +920,7 @@ def _merge_worker_shards(store: Any, specs: list[ShardSpec], touched: set[str]) 
 
 async def _sync_across_workers(
     specs: list[ShardSpec],
-    store: Any,
+    store: Store,
     *,
     options: ShardOptions,
     quiet: bool,
