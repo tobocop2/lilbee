@@ -57,10 +57,97 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260515a">
-<script src="../main.js?v=20260515a" defer></script>
+<link rel="stylesheet" href="../style.css?v=20260731a">
+<script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="/">lilbee</a>
+    <nav class="nav-menus" aria-label="Site">
+      <div class="menu">
+        <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">demos</button>
+        <div class="menu-panel menu-cols">
+          <div class="menu-col">
+            <div class="menu-group">TUI</div>
+            <a href="/#demo-whatis">what is lilbee</a>
+            <a href="/#demo-setup">first run</a>
+            <a href="/#demo-startup">startup</a>
+            <a href="/#demo-tour">tui-tour</a>
+            <a href="/#demo-chat">chat</a>
+            <a href="/#demo-sessions">sessions</a>
+            <a href="/#demo-add">add files</a>
+            <a href="/#demo-crawl">crawl</a>
+            <a href="/#demo-crawlsite">crawl a site</a>
+            <a href="/#demo-catalog">catalog</a>
+            <a href="/#demo-settings">settings</a>
+            <a href="/#demo-palette">palette</a>
+          </div>
+          <div class="menu-col">
+            <div class="menu-group">models &amp; GPUs</div>
+            <a href="/#demo-gpuauto">gpu: auto</a>
+            <a href="/#demo-gpumanual">gpu: manual</a>
+            <a href="/#demo-ollama">ollama</a>
+            <a href="/#demo-lmstudio">lm studio</a>
+            <div class="menu-group">agents</div>
+            <a href="/#demo-agent">agent: code</a>
+            <a href="/#demo-pdf">agent: pdf</a>
+            <a href="/#demo-index">agent: index</a>
+            <a href="/#demo-godot">agent: godot</a>
+            <a href="/#demo-launchoc">launch: opencode</a>
+            <a href="/#demo-launchhm">launch: hermes</a>
+            <div class="menu-group">reel</div>
+            <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
+          </div>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
+        <div class="menu-panel">
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
+          <a href="/#install-brew">homebrew</a>
+          <a href="/#install-aur">AUR</a>
+          <a href="/#install-docker">docker</a>
+          <a href="/#install-nix">nix</a>
+          <a href="/#install-flatpak">flatpak</a>
+          <a href="/#install-snap">snap</a>
+          <a href="/#install-scoop">scoop</a>
+          <a href="/#install-binary">binary</a>
+          <a href="/#install-source">source</a>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">use it for</button>
+        <div class="menu-panel">
+          <a href="/model-manager/">model manager</a>
+          <a href="/local-rag/" aria-current="page">local rag</a>
+          <a href="/code-search/">code search</a>
+          <a href="/mcp/">mcp server</a>
+          <a href="/gpu/">gpu fit</a>
+          <a href="/vs/">how it compares</a>
+        </div>
+      </div>
+      <div class="menu align-right">
+        <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">more</button>
+        <div class="menu-panel">
+          <div class="menu-group">project</div>
+          <a href="https://github.com/tobocop2/lilbee">github</a>
+          <a href="https://pypi.org/project/lilbee/">pypi</a>
+          <a href="https://github.com/tobocop2/lilbee/releases">changelog</a>
+          <a href="/coverage/">coverage</a>
+          <div class="menu-group">docs</div>
+          <a href="/tutorial/">tutorial reel</a>
+          <a href="/api/">api docs</a>
+          <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md">usage guide</a>
+          <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks">benchmarks</a>
+          <a href="https://obsidian.lilbee.sh/">obsidian plugin</a>
+        </div>
+      </div>
+    </nav>
+    <a class="nav-star" href="https://github.com/tobocop2/lilbee">&#9733; star</a>
+  </div>
+</header>
 <div class="layout">
   <main class="main">
 
@@ -72,8 +159,6 @@
         <span class="pill">no vector DB</span>
       </div>
     </div>
-
-    <p class="crumb"><a href="/">lilbee</a> / local RAG</p>
 
     <section class="hero">
 <pre class="wordmark" aria-hidden="true">888 d8b 888 888
