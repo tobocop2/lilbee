@@ -662,6 +662,23 @@ class _StreamedPlan:
     relocated: list[str] = field(default_factory=list)
     unchanged: int = 0
     planned: int = 0
+    # Files this pass's slice holds, from the discovery walk. Fixed before the
+    # first batch is planned, so it is what progress is measured against: the
+    # plan's own running totals grow as batches land and cannot say how much of
+    # the corpus is left. Summed across a fan-out's workers it is the corpus.
+    corpus_total: int = 0
+
+    @property
+    def resolved(self) -> int:
+        """Files the plan disposed of without ingest, as it disposes of them.
+
+        Unchanged (or skip-marked) files and repointed moves are done as far as
+        the corpus is concerned, and nothing downstream reports them, so an
+        incremental sync would otherwise show a handful of changed files against
+        the whole corpus. Files a cancelled plan never classified are absent from
+        both counts and so are not claimed as done.
+        """
+        return self.unchanged + len(self.relocated)
 
 
 async def _absorb_plan_batch(
@@ -1019,7 +1036,7 @@ async def sync(
     # batch off the event loop and overlapped with ingest. A brand-new file whose
     # content hash matches an absent source is folded in per batch as a move, not an
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
-    state = _StreamedPlan()
+    state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
     plan_batches = _plan_batches(disk_files, existing_sources, skip_markers, absent, state, cancel)
 
@@ -1046,6 +1063,7 @@ async def sync(
                     updated,
                     failed,
                     skipped,
+                    plan=state,
                     quiet=quiet,
                     on_progress=on_progress,
                     cancel=cancel,
@@ -1233,6 +1251,7 @@ async def ingest_stream(
     failed: dict[str, None],
     skipped: dict[str, None],
     *,
+    plan: _StreamedPlan | None = None,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
@@ -1245,6 +1264,10 @@ async def ingest_stream(
     batch instead of waiting for the whole corpus to be diffed. Old chunks are
     deleted in the same transaction as the new write, so the two are atomic per
     file. When *cancel* is set, pending files raise CancelledError before starting.
+
+    *plan* is the bookkeeping the batches were planned into; it carries the corpus
+    the run is measured against. Without it progress is reported with no total,
+    since a bare stream of batches does not say what corpus it came from.
     """
     # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
     # the default WARNING so per-file extraction lines actually surface.
@@ -1323,7 +1346,7 @@ async def ingest_stream(
                     exc, entry, pages_done=pages_done, on_progress=on_progress, cancel=cancel
                 )
 
-    feed = _ResultFeed(_stream_tasks(plan_batches, _process_one))
+    feed = _ResultFeed(_stream_tasks(plan_batches, _process_one), plan)
     collect = _collect_results if quiet else _collect_under_bar
     try:
         # extract_batching coalesces extractions into xberg batch calls when the
@@ -1368,13 +1391,26 @@ class _ResultFeed:
     """
 
     def __init__(
-        self, plan_batches: AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]]
+        self,
+        plan_batches: AsyncGenerator[list[Coroutine[Any, Any, _IngestResult]]],
+        plan: _StreamedPlan | None = None,
     ) -> None:
         self._plan_batches = plan_batches
         self._buffer: deque[Coroutine[Any, Any, _IngestResult]] = deque()
         self._pull: asyncio.Task[list[Coroutine[Any, Any, _IngestResult]] | None] | None = None
         self._drained = False
+        self._plan = plan if plan is not None else _StreamedPlan()
         self.planned = 0
+
+    @property
+    def corpus_total(self) -> int:
+        """Files the run's slice holds, or 0 when the caller declared no corpus."""
+        return self._plan.corpus_total
+
+    @property
+    def resolved(self) -> int:
+        """Files already disposed of by the plan, which never reach this feed."""
+        return self._plan.resolved
 
     def pull(self) -> asyncio.Task[list[Coroutine[Any, Any, _IngestResult]] | None] | None:
         """The in-flight plan-batch prefetch, so a waiting collector wakes when it lands."""
@@ -1524,7 +1560,13 @@ async def _collect_results(
                     # purge pass (see _purge_emptied_sources).
                     to_purge.append(result.name)
                 _report_file_progress(
-                    result, status, completed_count, feed.planned, on_progress, progress, ptask
+                    result,
+                    status,
+                    feed.resolved + completed_count,
+                    feed.corpus_total,
+                    on_progress,
+                    progress,
+                    ptask,
                 )
             if saw_cancel:
                 # Completed siblings in this batch are now buffered; propagate the
@@ -1569,9 +1611,9 @@ async def _collect_under_bar(
         TimeElapsedColumn(),
         transient=True,
     ) as progress:
-        # No total yet: the corpus is still being planned, so the bar's total is
-        # filled in (and grows) as batches land.
-        ptask = progress.add_task("Ingesting documents...", total=None)
+        # The corpus the discovery walk found, known before the first batch is
+        # planned. None only when the caller supplied no plan to measure against.
+        ptask = progress.add_task("Ingesting documents...", total=feed.corpus_total or None)
         # The bar advances once per file (in _collect_results), so a single
         # multi-page scanned PDF would freeze at "0/1" through its whole
         # OCR + embed phase. Drive the spinner's description off the same
@@ -1636,13 +1678,15 @@ def _report_file_progress(
 ) -> None:
     """Advance the Rich bar (when present) and emit one BATCH_PROGRESS event.
 
-    *total* is what the plan has produced so far, which grows while the corpus is
-    still being planned, so the bar's total is refreshed on every file.
+    *completed_count* counts every file the pass has disposed of and *total* is
+    the corpus the discovery walk found, so the pair answers how much of the
+    corpus is done rather than how much of the plan so far is.
     """
     if progress is not None and ptask is not None:
         desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
-        progress.update(ptask, description=desc, total=total)
-        progress.advance(ptask)
+        # Set, not advanced: files the plan resolved without ingest produce no
+        # result of their own and would otherwise never reach the bar.
+        progress.update(ptask, description=desc, completed=completed_count)
     with contextlib.suppress(TaskCancelledError):
         on_progress(
             EventType.BATCH_PROGRESS,

@@ -14,6 +14,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.progress import (
+    BatchProgressEvent,
     BatchStatus,
     EventType,
     FileDoneEvent,
@@ -250,13 +251,16 @@ class TestShardEnvironment:
         assert "from the worker" in log.read_text()
 
 
+def _progress(current, total, *, file="a", status=BatchStatus.INGESTED):
+    return BatchProgressEvent(file=file, status=status, current=current, total=total)
+
+
 class TestShardReporter:
-    def test_counters_carry_the_plan_total_and_the_running_count(self, monkeypatch):
+    def test_counters_carry_the_shards_slice_and_its_running_count(self, monkeypatch):
         monkeypatch.setattr(fanout, "_REPORT_INTERVAL_S", 0.0)
         messages = queue_mod.Queue()
         reporter = fanout._ShardReporter(2, messages)
-        reporter(EventType.FILE_START, FileStartEvent(file="a", total_files=9, current_file=1))
-        reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="ok", chunks=1))
+        reporter(EventType.BATCH_PROGRESS, _progress(1, 9))
         sent = messages.get_nowait()
         assert (sent.index, sent.done, sent.planned) == (2, 1, 9)
         assert sent.status is BatchStatus.INGESTED
@@ -265,26 +269,36 @@ class TestShardReporter:
         monkeypatch.setattr(fanout, "_REPORT_INTERVAL_S", 0.0)
         messages = queue_mod.Queue()
         reporter = fanout._ShardReporter(0, messages)
-        reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="error", chunks=0))
+        reporter(EventType.BATCH_PROGRESS, _progress(1, 9, status=BatchStatus.FAILED))
         assert messages.get_nowait().status is BatchStatus.FAILED
 
     def test_the_final_counters_are_sent_past_the_throttle(self):
         """Otherwise the one bar stops short of its total when the workers finish."""
         messages = queue_mod.Queue()
         reporter = fanout._ShardReporter(0, messages)
-        for _ in range(5):
-            reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="ok", chunks=1))
+        for done in range(1, 6):
+            reporter(EventType.BATCH_PROGRESS, _progress(done, 5))
         reporter.flush()
         last = [messages.get_nowait() for _ in range(messages.qsize())][-1]
-        assert last.done == 5
+        assert (last.done, last.planned) == (5, 5)
 
     def test_reports_are_throttled(self):
         """One message per file across a million-file shard would swamp the parent."""
         messages = queue_mod.Queue()
         reporter = fanout._ShardReporter(0, messages)
-        for _ in range(50):
-            reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="ok", chunks=1))
+        for done in range(1, 51):
+            reporter(EventType.BATCH_PROGRESS, _progress(done, 50))
         assert messages.qsize() == 1
+
+    def test_per_file_events_do_not_set_the_total(self):
+        """FILE_START carries the plan so far, which grows; the bar's total must not."""
+        messages = queue_mod.Queue()
+        reporter = fanout._ShardReporter(0, messages)
+        reporter(EventType.FILE_START, FileStartEvent(file="a", total_files=3, current_file=1))
+        reporter(EventType.FILE_DONE, FileDoneEvent(file="a", status="ok", chunks=1))
+        reporter.flush()
+        sent = messages.get_nowait()
+        assert (sent.done, sent.planned) == (0, 0)
 
     def test_other_events_are_ignored(self):
         messages = queue_mod.Queue()

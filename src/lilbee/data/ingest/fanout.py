@@ -33,8 +33,6 @@ from lilbee.runtime.progress import (
     BatchStatus,
     DetailedProgressCallback,
     EventType,
-    FileDoneEvent,
-    FileStartEvent,
     ProgressEvent,
 )
 
@@ -72,8 +70,6 @@ _FINAL_DRAIN_S = 1.0
 
 # How long a worker gets to exit on its own before it is killed.
 _WORKER_EXIT_GRACE_S = 30.0
-
-_ERROR_STATUS = "error"
 
 # Where a worker's console output lands, under its own data root.
 WORKER_LOG_NAME = "sync.log"
@@ -215,7 +211,13 @@ def _redirect_output(path: Path) -> None:
 
 
 class _ShardReporter:
-    """Throttled per-file counters from a worker onto the parent's queue."""
+    """Throttled relay of a worker's counters onto the parent's queue.
+
+    The counters are the pipeline's own: how much of this worker's slice is done
+    and how big that slice is. Counting files here instead would only re-derive
+    the first, and the per-file events carry no slice size -- FILE_START's total
+    is the plan so far, which grows all run.
+    """
 
     def __init__(self, index: int, messages: Queue[ShardMessage]) -> None:
         self._index = index
@@ -225,21 +227,15 @@ class _ShardReporter:
         self._last_sent = 0.0
 
     def __call__(self, event_type: EventType, data: ProgressEvent) -> None:
-        if event_type is EventType.FILE_START and isinstance(data, FileStartEvent):
-            self._planned = data.total_files
-        elif event_type is EventType.FILE_DONE and isinstance(data, FileDoneEvent):
-            self._done += 1
-            self._report(data)
-
-    def _report(self, data: FileDoneEvent) -> None:
-        """Send the counters, at most once per report interval."""
+        if event_type is not EventType.BATCH_PROGRESS or not isinstance(data, BatchProgressEvent):
+            return
+        self._done = data.current
+        self._planned = data.total
         now = time.monotonic()
         if now - self._last_sent < _REPORT_INTERVAL_S:
             return
         self._last_sent = now
-        self._send(
-            data.file, BatchStatus.FAILED if data.status == _ERROR_STATUS else BatchStatus.INGESTED
-        )
+        self._send(data.file, data.status)
 
     def flush(self) -> None:
         """Send the final counters past the throttle, so the bar lands on its total."""
