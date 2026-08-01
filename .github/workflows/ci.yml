@@ -258,7 +258,7 @@ jobs:
       # pinned versions from source here; resolve_llama_swap()/resolve_gguf_parser()
       # then find them on PATH. Same Go toolchain the release wheel uses.
       - name: Set up Go (engine helpers)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.23"
 
