@@ -43,15 +43,6 @@ _CANDIDATE_WINDOW = 200
 _UNTIERED_WINDOW = 50
 
 
-def _tier_of(params: int) -> CatalogSize | None:
-    """Parameter-count tier for *params*, or None when the repo publishes no count."""
-    if params <= 0:
-        return None
-    from lilbee.catalog.query import size_bucket
-
-    return size_bucket(params)
-
-
 def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
     """True when *model* really serves *task*, not just per its HF pipeline tag.
 
@@ -103,10 +94,13 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
 
 def _chat_picks() -> list[CatalogModel]:
     """Most popular chat models of each parameter tier, in tier order."""
+    from lilbee.catalog.query import size_bucket
+
     candidates = _fetch_trending(ModelTask.CHAT, _CANDIDATE_WINDOW)
     by_tier: dict[CatalogSize, list[CatalogModel]] = {}
     for model in candidates:
-        tier = _tier_of(model.params)
+        # None when the repo publishes no parameter count, so it has no tier.
+        tier = size_bucket(model.params)
         if tier is not None:
             by_tier.setdefault(tier, []).append(model)
 
@@ -132,32 +126,56 @@ def _resolve_picks() -> tuple[CatalogModel, ...]:
     return tuple(replace(m, featured=True) for m in picks)
 
 
-_picks_lock = threading.Lock()
-_picks: tuple[CatalogModel, ...] | None = None
+class ModelPicks:
+    """Process-lifetime memo of the resolved picks.
+
+    Not a TTL cache: rows must not reshuffle while the user types in the catalog
+    search box or moves between tabs, so one draw serves the whole session and a
+    new set appears only on relaunch. Modelled on
+    :class:`~lilbee.modelhub.model_manager.discovery.KnownModelCache`, which owns
+    its state and lock the same way rather than spreading them over module
+    globals.
+    """
+
+    def __init__(self) -> None:
+        self._picks: tuple[CatalogModel, ...] | None = None
+        self._lock = threading.Lock()
+
+    def all(self) -> tuple[CatalogModel, ...]:
+        """Every pick across every role.
+
+        An empty result is not memoized, so an offline launch that later regains
+        network still fills in.
+        """
+        with self._lock:
+            if self._picks:
+                return self._picks
+            try:
+                resolved = _resolve_picks()
+            except Exception:
+                log.warning("Could not fetch model picks from HuggingFace", exc_info=True)
+                return ()
+            if resolved:
+                self._picks = resolved
+            return resolved
+
+    def seed(self, picks: tuple[CatalogModel, ...]) -> None:
+        """Install *picks* directly, skipping resolution. For tests."""
+        with self._lock:
+            self._picks = picks
+
+    def reset(self) -> None:
+        """Drop the memo so the next read resolves again."""
+        with self._lock:
+            self._picks = None
+
+
+_PICKS = ModelPicks()
 
 
 def get_picks() -> tuple[CatalogModel, ...]:
-    """Every pick across every role, resolved once per process.
-
-    Held for the life of the process rather than behind a TTL: rows must not
-    reshuffle while the user types in the catalog search box or moves between
-    tabs. A new set appears on relaunch.
-
-    An empty result is not memoized, so an offline launch that later regains
-    network still fills in.
-    """
-    global _picks
-    with _picks_lock:
-        if _picks:
-            return _picks
-        try:
-            resolved = _resolve_picks()
-        except Exception:
-            log.warning("Could not fetch model picks from HuggingFace", exc_info=True)
-            return ()
-        if resolved:
-            _picks = resolved
-        return resolved
+    """Every pick across every role, resolved once per process."""
+    return _PICKS.all()
 
 
 def picks_for(task: ModelTask) -> tuple[CatalogModel, ...]:
@@ -179,14 +197,11 @@ def find_pick(ref: str) -> CatalogModel | None:
     return next((m for m in get_picks() if m.hf_repo.lower() == wanted), None)
 
 
+def seed_picks(picks: tuple[CatalogModel, ...]) -> None:
+    """Install *picks* directly, skipping resolution. For tests."""
+    _PICKS.seed(picks)
+
+
 def reset_picks() -> None:
     """Drop the memoized picks. For tests and ``reset_services()``."""
-    global _picks
-    with _picks_lock:
-        _picks = None
-
-
-# Vision models need both the main GGUF and an mmproj (CLIP projection) file.
-# Resolved by glob rather than a per-repo table: every mainstream VL repo names
-# its projector this way, and a table would be one more thing to maintain.
-DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
+    _PICKS.reset()

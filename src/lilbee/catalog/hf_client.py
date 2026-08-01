@@ -133,7 +133,7 @@ def repo_has_mmproj(hf_repo: str) -> bool:
     """
     from huggingface_hub import HfApi
 
-    from lilbee.catalog.picks import DEFAULT_MMPROJ_PATTERN
+    from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN
 
     try:
         siblings = HfApi(token=hf_token()).model_info(hf_repo).siblings or []

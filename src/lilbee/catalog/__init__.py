@@ -35,7 +35,6 @@ from lilbee.catalog.models import (
     ModelVariant,
 )
 from lilbee.catalog.picks import (
-    DEFAULT_MMPROJ_PATTERN,
     find_pick,
     get_picks,
     picks_for,
@@ -48,6 +47,7 @@ from lilbee.catalog.query import (
     resolve_pull_target,
     size_bucket,
 )
+from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN
 
 __all__ = [
     "DEFAULT_MMPROJ_PATTERN",

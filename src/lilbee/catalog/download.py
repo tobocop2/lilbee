@@ -21,8 +21,7 @@ from lilbee.catalog.hf_client import (
     repo_has_mmproj,
 )
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.picks import DEFAULT_MMPROJ_PATTERN
-from lilbee.catalog.refs import pick_best_gguf
+from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN, pick_best_gguf
 from lilbee.catalog.types import ModelTask
 from lilbee.runtime.cancellation import TaskCancelledError
 

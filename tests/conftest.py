@@ -783,8 +783,7 @@ def _seed_model_picks(request):
     if request.node.get_closest_marker("live_picks"):
         yield
         return
-    picks_mod.reset_picks()
-    picks_mod._picks = SAMPLE_PICKS
+    picks_mod.seed_picks(SAMPLE_PICKS)
     yield
     picks_mod.reset_picks()
 
