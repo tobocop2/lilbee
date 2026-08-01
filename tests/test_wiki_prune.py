@@ -75,12 +75,51 @@ class TestCheckAllSourcesDeleted:
             make_citation(source_filename="gone.md"),
             make_citation(source_filename="alive.md", citation_key="src2"),
         ]
+        store.source_ingested_at_map.return_value = {"alive.md": "2024-01-01"}
         assert not _check_all_sources_deleted("wiki/summaries/doc.md", store)
 
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
         assert not _check_all_sources_deleted("wiki/summaries/doc.md", store)
+
+    def test_source_unindexed_but_file_on_disk(self, tmp_path: Path):
+        # `lilbee remove` unregisters a source but may leave its file on disk.
+        # The page's evidence is gone from the library, so it must archive even
+        # though a bare filesystem check would still find the file.
+        write_source(tmp_path, "removed.md", "content")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="removed.md"),
+        ]
+        store.source_ingested_at_map.return_value = {}
+        assert _check_all_sources_deleted("wiki/entities/removed.md", store)
+
+    def test_pruned_raw_source_stays_live(self, tmp_path: Path):
+        # wiki_prune_raw clears a source's chunks at publish but keeps it
+        # registered; such a page must not be archived.
+        write_source(tmp_path, "kept.md", "content")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="kept.md"),
+        ]
+        store.source_ingested_at_map.return_value = {"kept.md": "2024-01-01"}
+        assert not _check_all_sources_deleted("wiki/entities/kept.md", store)
+
+    def test_wiki_page_source_judged_by_file_presence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A synthesis page cites other wiki pages, which never appear in the
+        # document registry; they stay live as long as the page file exists, so
+        # the registry check must not archive them.
+        page = write_wiki_page(tmp_path, "entities", "member", "# Member\n")
+        monkeypatch.setattr("lilbee.data.ingest.discovery.resolve_source_path", lambda _f: page)
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="wiki/entities/member.md"),
+        ]
+        store.source_ingested_at_map.return_value = {}
+        assert not _check_all_sources_deleted("wiki/synthesis/topic.md", store)
 
 
 class TestCheckClusterBelowThreshold:
@@ -314,6 +353,7 @@ class TestPruneWiki:
                 citation_key="src3",
             ),
         ]
+        store.source_ingested_at_map.return_value = {"a.md": "2024-01-01"}
 
         report = prune_wiki(store)
 
@@ -328,6 +368,7 @@ class TestPruneWiki:
             make_citation(source_hash="old_hash", excerpt="old text"),
             make_citation(source_hash="old_hash", excerpt="old text 2", citation_key="src2"),
         ]
+        store.source_ingested_at_map.return_value = {"doc.md": "2024-01-01"}
 
         report = prune_wiki(store)
 
@@ -362,6 +403,7 @@ class TestPruneWiki:
         store.get_citations_for_wiki.return_value = [
             make_citation(source_hash=source_hash(source), excerpt="Good content"),
         ]
+        store.source_ingested_at_map.return_value = {"doc.md": "2024-01-01"}
 
         report = prune_wiki(store)
 
@@ -404,6 +446,11 @@ class TestPruneWiki:
                 citation_key="src3",
             ),
         ]
+        store.source_ingested_at_map.return_value = {
+            "a.md": "2024-01-01",
+            "b.md": "2024-01-01",
+            "c.md": "2024-01-01",
+        }
 
         report = prune_wiki(store)
 

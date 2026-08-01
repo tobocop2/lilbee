@@ -131,15 +131,36 @@ def _archive_page(
 def _check_all_sources_deleted(
     wiki_source: str,
     store: Store,
+    config: Config | None = None,
 ) -> bool:
-    """Return True if every cited source file has been deleted from disk."""
+    """Return True if every cited source has left the library.
+
+    A document source is gone when its file is deleted from disk or it was
+    removed from the index: ``lilbee remove`` unregisters a source while its
+    file may remain on disk, so a filesystem check alone never fires for it.
+    Sources whose raw chunks were pruned at publish (``wiki_prune_raw``) stay
+    registered and so stay live. Wiki-page sources (a synthesis page citing
+    other pages) are judged by file presence only, as they are not documents in
+    the source registry.
+    """
     from lilbee.data.ingest.discovery import resolve_source_path
 
+    if config is None:
+        config = cfg
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    source_files = {c["source_filename"] for c in citations}
-    return all(not resolve_source_path(f).exists() for f in source_files)
+    registered = store.source_ingested_at_map()
+    wiki_prefix = config.wiki_dir + "/"
+
+    def _gone(source_filename: str) -> bool:
+        if not resolve_source_path(source_filename).exists():
+            return True
+        if source_filename.startswith(wiki_prefix):
+            return False
+        return source_filename not in registered
+
+    return all(_gone(c["source_filename"]) for c in citations)
 
 
 def _check_cluster_below_threshold(
@@ -196,7 +217,7 @@ def _evaluate_page(
     wiki_source: str, wiki_root: Path, store: Store, config: Config
 ) -> PruneRecord | None:
     """Check a single wiki page against pruning rules. Returns a record or None."""
-    if _check_all_sources_deleted(wiki_source, store):
+    if _check_all_sources_deleted(wiki_source, store, config):
         return _archive_and_record(
             wiki_source, wiki_root, store, config, "all cited sources deleted"
         )
