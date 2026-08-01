@@ -3214,3 +3214,79 @@ class TestABusyUnifiedHostStillServesASmallModel:
         )
 
         assert WorkerRole.CHAT in plan.unplaceable_roles
+
+
+class TestDeviceProbeEmptyRetry:
+    """A transient empty device probe on a GPU host is re-probed before it is
+    treated as fatal; a persistently empty probe still fails loud, and a CPU
+    host (no GPU) is not retried."""
+
+    _EMPTY = DeviceProbe(
+        devices=[], output="ggml_cuda_init: initialization error", spoke_protocol=True
+    )
+    _OK = DeviceProbe(devices=[_card(24_000_000_000)], output="", spoke_protocol=True)
+
+    def _gpu_present(self, monkeypatch, present=True):
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
+            lambda: {"nvidia"} if present else set(),
+        )
+        monkeypatch.setattr(planning_mod.time, "sleep", lambda *_: None)
+
+    def test_transient_empty_probe_recovers(self, monkeypatch):
+        self._gpu_present(monkeypatch)
+        seq = [self._EMPTY, self._OK]
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda *a, **k: seq.pop(0))
+        assert [d.index for d in planning_mod.resolve_devices(Path("/x"))] == [0]
+
+    def test_persistent_empty_still_raises(self, monkeypatch):
+        from lilbee.providers.base import ProviderError
+
+        self._gpu_present(monkeypatch)
+        calls = {"n": 0}
+
+        def _probe(*a, **k):
+            calls["n"] += 1
+            return self._EMPTY
+
+        monkeypatch.setattr(planning_mod, "probe_devices", _probe)
+
+        def _raise(*a, **k):
+            raise ProviderError("no cuda device")
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", _raise
+        )
+        with pytest.raises(ProviderError):
+            planning_mod.resolve_devices(Path("/x"))
+        assert calls["n"] == 4  # 1 initial + 3 retries, then fatal
+
+    def test_healthy_probe_not_retried(self, monkeypatch):
+        self._gpu_present(monkeypatch)
+        calls = {"n": 0}
+
+        def _probe(*a, **k):
+            calls["n"] += 1
+            return self._OK
+
+        monkeypatch.setattr(planning_mod, "probe_devices", _probe)
+        planning_mod.resolve_devices(Path("/x"))
+        assert calls["n"] == 1  # devices found first try, no retry
+
+    def test_cpu_host_empty_not_retried(self, monkeypatch):
+        self._gpu_present(monkeypatch, present=False)
+        calls = {"n": 0}
+
+        def _probe(*a, **k):
+            calls["n"] += 1
+            return self._EMPTY
+
+        monkeypatch.setattr(planning_mod, "probe_devices", _probe)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.rocm_runtime.assert_rocm_devices_usable", lambda *a, **k: None
+        )
+        planning_mod.resolve_devices(Path("/x"))
+        assert calls["n"] == 1  # no GPU present, empty is authoritative
