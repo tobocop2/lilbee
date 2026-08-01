@@ -52,9 +52,10 @@ def _to_wiki(s) -> None:
 
 def _open_row(s, row: int) -> None:
     """Open the page at absolute tree ``row`` from the top. The j burst is real
-    driver motion, so it also feeds motion_fps."""
+    driver motion; at this interval it renders near the 25fps cap so the scroll
+    reads smoothly rather than choppy."""
     s.key("g", after=0.4)
-    s.key(*(["j"] * row), after=0.05)
+    s.key(*(["j"] * row), after=0.038)
     s.key("enter", after=0.9)
 
 
@@ -95,25 +96,29 @@ def record(cast: pathlib.Path) -> dict:
         for row in BROWSE_ROWS:
             _open_row(s, row)
             s.wait_for(r"faithfulness|\[\^src", timeout=20)
-            time.sleep(2.6)
+            time.sleep(2.0)
         s.mark("browse_end")
 
         # Now a page that has not been written. Search finds it as a dim stub.
         _open_stub_by_search(s, "jupiter")
         s.wait_for(r"Write this page\?", timeout=25)
-        time.sleep(2.6)
+        time.sleep(2.2)
 
-        # Confirm, then follow the job in the Task Center so the work is visible:
-        # the running row's sweeping bar is the generation happening on camera.
+        # Confirm, then follow the job in the Task Center so the work is visible.
         s.mark("gen_start")
         s.key("y", after=0.7)
         s.wait_for(r"Write Jupiter|Writing", timeout=20)
         time.sleep(0.6)
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=15)
-        time.sleep(2.0)
+        time.sleep(1.0)
+        # Open the GPU panel so the card the model runs on is visible, its live
+        # utilisation bars moving, while the page is written.
+        s.key("C-g", after=0.8)
+        time.sleep(1.6)
         t["gen"] = s.wait_for(r"1 done", timeout=400)
         time.sleep(1.6)
+        s.key("C-g", after=0.6)  # close the drawer before leaving
         s.mark("gen_end")
 
         # Step back to the Wiki (Tasks is next to Wiki in the ring; the Task
@@ -123,7 +128,10 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(0.6)
         _open_generated_page(s)
         s.wait_for(r"gas giant|fifth planet", timeout=25)
-        time.sleep(4.0)
+        time.sleep(2.4)
+        # Scroll down through the whole article so the full page is shown.
+        _scroll_page(s)
+        time.sleep(1.6)
         s.mark("payload_end")
         time.sleep(0.8)
     finally:
@@ -131,6 +139,16 @@ def record(cast: pathlib.Path) -> dict:
     t["marks"] = dict(s.marks)
     t["motion_spans"] = list(s.motion_spans)
     return t
+
+
+def _scroll_page(s) -> None:
+    """Scroll the content pane line by line so the whole article is shown.
+
+    Focus method + scroll keys are set from the probe; the burst also feeds
+    motion_fps.
+    """
+    s.key("Tab", after=0.5)
+    s.key(*(["Down"] * 40), after=0.045)
 
 
 def _open_generated_page(s) -> None:
