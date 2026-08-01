@@ -66,7 +66,18 @@ def record(cast: pathlib.Path) -> dict:
         s.mark("gen_start")
         timings["answer"] = s.await_answer()
         s.mark("gen_end")
-        time.sleep(3.5)
+        time.sleep(2.0)
+
+        # Scroll back through the exchange. This is the reel's only sustained driver
+        # motion that happens after the app has stopped doing startup work; the question
+        # is typed while the engine is still loading, which renders too slowly and with
+        # too few frames to measure anything from.
+        s.esc()
+        time.sleep(0.4)
+        s.key(*(["k"] * 14), after=0.045)
+        time.sleep(0.8)
+        s.key(*(["j"] * 14), after=0.045)
+        time.sleep(1.6)
 
         timings["total"] = time.monotonic() - t0
         s.mark("payload_end")

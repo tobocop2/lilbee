@@ -29,6 +29,8 @@ import re
 import numpy as np
 from PIL import Image, ImageSequence
 
+from seams import periodicity as seams_periodicity
+
 # Cursor moves, mode switches and colour resets carry no information a viewer can see.
 # A stream of these is what makes a naive idle-gap check unable to fail.
 _NOISE = re.compile(rb"^(?:\x1b\[[\d;]*[HfABCDGdm]|\x1b\[\?\d+[hl]|\x1b\[[0-2]?K|\s)*$")
@@ -58,6 +60,7 @@ MAX_GIF_MB = 10.0
 MIN_STROKE_MEAN = 2.0
 NEAR_WHITE = (225, 225, 243)
 NEAR_WHITE_TOLERANCE = 45
+MAX_SEAM_ALIGNMENT = 0.20
 
 
 @dataclasses.dataclass
@@ -90,6 +93,35 @@ def _events(cast: pathlib.Path) -> list[tuple[float, str]]:
     return out
 
 
+def screen_text(events: list[tuple[float, str]], cols: int = 128, rows: int = 41) -> str:
+    """Replay the cast through a terminal emulator and return everything ever displayed.
+
+    Searching the raw byte stream is what this replaces, and it was quietly unreliable:
+    Textual writes a line as several writes with cursor moves between them, so a string
+    that is contiguous on screen is not contiguous in the stream. "Sources:" appeared zero
+    times in a cast whose reel plainly rendered it, which failed a must-string on a reel
+    that satisfied it. Strings that happened to be written in one go passed by luck.
+
+    Snapshots after every event and concatenates, so a string counts if it was ever on
+    screen, not only if it survived to the end.
+    """
+    import pyte
+
+    screen = pyte.Screen(cols, rows)
+    stream = pyte.Stream(screen)
+    seen, last = [], None
+    for _, data in events:
+        try:
+            stream.feed(data)
+        except Exception:
+            continue
+        text = "\n".join(screen.display)
+        if text != last:
+            seen.append(text)
+            last = text
+    return "\n".join(seen)
+
+
 def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
               forbid: tuple[str, ...] = ("Traceback", "not ready yet", "Error 1213"),
               window: tuple[float, float | None] | None = None,
@@ -104,7 +136,7 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
     if window:
         lo, hi = window
         events = [(t, d) for t, d in events if t >= lo and (hi is None or t <= hi)]
-    text = "".join(e[1] for e in events)
+    text = screen_text(events)
     rows: list[Row] = []
 
     missing = [m for m in must if m not in text]
@@ -120,7 +152,7 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
     # citation and the strings it was asked for -- and ends on a spinner.
     if tail_forbid and events:
         cut = events[-1][0] - TAIL_SECONDS
-        tail = "".join(d for t_, d in events if t_ >= cut)
+        tail = screen_text([(t_, d) for t_, d in events if t_ >= cut])
         stuck = [f for f in tail_forbid if f in tail]
         rows.append(Row("finished_before_cut", "FAIL" if stuck else "PASS",
                         f"still showing {stuck} in the last {TAIL_SECONDS:.0f}s"
@@ -177,6 +209,32 @@ def artifact_gate(shipped: pathlib.Path, reference: pathlib.Path) -> Row:
     return Row("no_render_artifacts", "PASS" if worst == 0 else "FAIL",
                "identical to the render" if worst == 0 else
                f"{dirty} of {len(a)} frames differ from the render, worst channel {worst}")
+
+
+def seam_gate(gif: pathlib.Path) -> Row:
+    """Cell-boundary seams surviving in the shipped file.
+
+    agg lays terminal cells out on fractional pixel boundaries, so the two sides of a
+    boundary composite separately and the shared pixel ends up partially covered by both.
+    A run of block glyphs -- a VRAM bar, an ingest bar, a panel border -- comes apart into
+    segments, which reads as tearing.
+
+    Scored on how strongly the seam pixels line up with the cell pitch, because that is
+    what separates the artifact from the detector's own floor. Two earlier versions of
+    this row were content-dependent and both were wrong: an absolute rate failed a
+    settings screen full of bordered inputs that looked perfect, and a reduction ratio
+    failed a reel that started close to the floor and had little left to close.
+
+    Calibrated against both ends. An unrepaired render measures 0.362; the repaired reels
+    measure 0.05 to 0.15, with the higher end coming from reels that have few seam
+    pixels at all; the VHS assets these replace, which never had this artifact, measure
+    0.04 to 0.06. The repaired reels are indistinguishable from the clean
+    reference, and the limit sits between them and the defect.
+    """
+    m = seams_periodicity(gif)
+    return Row("no_cell_seams", "PASS" if m["alignment"] <= MAX_SEAM_ALIGNMENT else "FAIL",
+               f"seam phase alignment {m['alignment']:.3f} over {m['n']} pixels "
+               f"(limit {MAX_SEAM_ALIGNMENT}; unrepaired renders measure ~0.36)")
 
 
 def render_gate(gif: pathlib.Path,
@@ -361,7 +419,23 @@ def selftest(gif: pathlib.Path, cast: pathlib.Path) -> str:
                  if x.name == "must_strings")
         out.append(f"  missing must      -> {r.status} ({r.detail})")
 
-        # 6. Lossy compression. This is the exact damage that shipped: gifsicle --lossy
+        # 6. Cell seams, injected exactly as agg produces them: one column per cell,
+        # darkened 15%, which puts every seam at the same phase in the cell.
+        seamy = d / "seamy.gif"
+        cell = frames[0].size[0] / 128
+        dirty = []
+        for f in frames:
+            a = np.asarray(f).astype(np.int16)
+            for i in range(1, 128):
+                x = int(round(i * cell))
+                if x < a.shape[1]:
+                    a[:, x] = (a[:, x] * 0.85).astype(np.int16)
+            dirty.append(Image.fromarray(a.astype("uint8")))
+        dirty[0].save(seamy, save_all=True, append_images=dirty[1:], duration=40, loop=0)
+        r = seam_gate(seamy)
+        out.append(f"  cell seams        -> {r.status} ({r.detail})")
+
+        # 7. Lossy compression. This is the exact damage that shipped: gifsicle --lossy
         # leaves stale pixels under changed text, and nothing else here notices.
         import shutil as _shutil
         import subprocess as _subprocess

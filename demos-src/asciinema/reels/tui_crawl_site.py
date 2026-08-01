@@ -21,6 +21,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import drive  # noqa: E402
 from reels.tui_crawl import fresh_root  # noqa: E402
 
+# Qwen3 8B here: this reel synthesises an answer across several crawled pages,
+# which is where the larger model earns its load time.
+CHAT_MODEL = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+
 NAME = "tui-crawl-site"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Recursive", "Max pages", "Full-size_car")
@@ -35,7 +39,7 @@ QUESTION = "what defines a full-size car, and name two examples?"
 
 
 def record(cast: pathlib.Path) -> dict:
-    root = fresh_root(ROOT)
+    root = fresh_root(ROOT, CHAT_MODEL)
 
     s = drive.Session("reel-crawlsite", COLS, ROWS, cast)
     timings: dict[str, float] = {}

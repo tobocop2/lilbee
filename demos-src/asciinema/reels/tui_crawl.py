@@ -31,17 +31,27 @@ ROOT = pathlib.Path.home() / ".cache/lilbee-reel/crawl"
 URL = "https://en.wikipedia.org/wiki/Chevrolet_Caprice"
 QUESTION = "When was the 9C1 Caprice police package introduced?"
 
-CONFIG = """chat_model = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
-embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-theme = "rose-pine"
-top_k = 8
-"""
+# Gemma 4 E4B: a current multimodal pick from lilbee's own featured list, and a
+# different voice from the Qwen answers elsewhere in the set. Q4_0 rather than Q4_K_M
+# because that repo does not publish a Q4_K_M, which is a bug in the featured entry.
+CHAT_MODEL = "ggml-org/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_0.gguf"
 
 
-def fresh_root(path: pathlib.Path) -> pathlib.Path:
+def fresh_root(path: pathlib.Path, chat_model: str = CHAT_MODEL) -> pathlib.Path:
+    """A clean data root pinned to one chat model.
+
+    Parameterised because the two crawl reels share this and must not share a model:
+    running every reel on the same model makes the set look like one demo recorded
+    several times.
+    """
     shutil.rmtree(path, ignore_errors=True)
     path.mkdir(parents=True)
-    (path / "config.toml").write_text(CONFIG)
+    (path / "config.toml").write_text(
+        f'chat_model = "{chat_model}"\n'
+        'embedding_model = '
+        '"nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"\n'
+        'theme = "rose-pine"\n'
+        "top_k = 8\n")
     (path / "data/lancedb").mkdir(parents=True)
     return path
 

@@ -95,6 +95,39 @@ def record(cast: pathlib.Path) -> dict:
 
         # 6. Status, which counts what is actually indexed. A first-run reel should end on
         # a number, not on an empty chat pane with a toast still fading.
+        # Settings, scrolled, before the ending. Two reasons: a first run is the moment
+        # someone wants to see what there is to configure, and it is the only screen in
+        # this reel where the driver can produce sustained motion. Status cannot be
+        # scrolled at all -- j and k produce no repaint there -- and typing during a first
+        # run renders at about 12fps because the app is still doing startup work, so
+        # without this beat the reel has nothing measurable in it.
+        # Wait out the engine load before the scroll, and compress that wait rather than
+        # sit through it. A first run keeps repainting at about 10fps while it is loading
+        # a model in the background, so a scroll started before then renders choppy --
+        # honestly, but choppy. The wait is marked as a speed window, so it plays back
+        # six times faster with a label saying so.
+        s.mark("gen_start")
+        try:
+            s.wait_for(r"warming up|starting engine|loading into", absent=True, timeout=300)
+        except drive.Timeout:
+            pass
+        time.sleep(2.0)
+        s.mark("gen_end")
+
+        s.key("C-p", after=0.8)
+        s.wait_for(r"Search for commands", timeout=15)
+        s.type_text("settings", rate=0.045)
+        time.sleep(0.6)
+        s.key("Enter", after=1.0)
+        s.wait_for(r"chat_model", timeout=30)
+        time.sleep(1.2)
+        s.key(*(["j"] * 22), after=0.045)
+        time.sleep(1.0)
+        s.key(">", after=0.6)
+        time.sleep(1.0)
+        s.key(*(["j"] * 18), after=0.045)
+        time.sleep(1.2)
+
         s.goto("Status", forward=False, limit=8, marker=r"Indexed|Documents")
         time.sleep(1.6)
         time.sleep(2.6)

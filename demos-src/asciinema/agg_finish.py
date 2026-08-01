@@ -30,6 +30,15 @@ EXPECT_WEIGHT = 800
 
 FONT_SIZE = 18
 FPS_CAP = 25
+# agg collapses any idle stretch longer than this, and defaults to 5 seconds. That makes
+# the rendered timeline shorter than the recorded one by an amount that depends on how
+# much the app sat still, so frame positions stop matching the marks the driver recorded
+# against the session clock: trim windows land in the wrong place and driver-motion spans
+# select the wrong frames. A reel with a 277-second ingest ended on the Task Center
+# instead of on its answer because of it. Everything this pipeline does about pacing --
+# hold clamping, the generation timelapse -- it does itself, in the frame domain, where it
+# can keep the mapping. So idle collapsing is switched off rather than tuned.
+IDLE_TIME_LIMIT = 86400
 # agg defaults to 1.4, which makes the cell taller than the glyph box. Block-element
 # glyphs (U+2580-259F, what lilbee draws panel edges with) then cannot reach the next
 # row, so every border renders as dashes with gaps rather than a continuous line.
@@ -97,7 +106,8 @@ def render(cast: pathlib.Path, stem: pathlib.Path, *, speed: float = 1.0) -> dic
     gif = stem.with_suffix(".gif")
     subprocess.run(
         ["agg", "--font-dir", str(FONT_DIR), "--font-family", FONT_FAMILY,
-         "--font-size", str(FONT_SIZE), "--fps-cap", str(FPS_CAP), "--line-height", str(LINE_HEIGHT),
+         "--font-size", str(FONT_SIZE), "--fps-cap", str(FPS_CAP),
+         "--line-height", str(LINE_HEIGHT), "--idle-time-limit", str(IDLE_TIME_LIMIT),
          "--speed", str(speed), str(themed), str(gif)],
         check=True, capture_output=True,
     )

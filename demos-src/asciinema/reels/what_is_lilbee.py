@@ -43,7 +43,7 @@ FORBID_STRINGS = ("beta", "Beta")
 
 # 4B rather than 8B: it loads fast enough that the engine bar does not become the reel,
 # and the answer is a single sentence off a README either way.
-CONFIG = """chat_model = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+CONFIG = """chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 theme = "rose-pine"
 top_k = 8

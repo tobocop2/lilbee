@@ -84,7 +84,7 @@ def record(cast: pathlib.Path) -> dict:
         # A long burst, not a nudge: this scroll is the only sustained motion the
         # driver produces in the reel, and a short one leaves too few frames to
         # measure a frame rate from at all.
-        s.key(*(["j"] * 22), after=0.045)
+        s.key(*(["j"] * 34), after=0.045)
         time.sleep(0.8)
         s.key("v", after=0.6)
         time.sleep(1.2)

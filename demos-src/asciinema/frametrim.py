@@ -48,7 +48,7 @@ def _label(frame: Image.Image, text: str) -> Image.Image:
 def trim_gif(gif: pathlib.Path, out: pathlib.Path, *, start: float = 0.0,
              end: float | None = None, freeze: float = 2.5,
              max_hold: float = 2.5,
-             speedup: tuple[float, float, int] | None = None) -> dict:
+             speedup: list[tuple[float, float, int]] | None = None) -> dict:
     """Cut to [start, end], clamp interior holds, and freeze the last frame.
 
     ``max_hold`` shortens any single frame that stays on screen longer than it. Those are
@@ -58,7 +58,7 @@ def trim_gif(gif: pathlib.Path, out: pathlib.Path, *, start: float = 0.0,
     through it. The underlying stalls are worth filing against the app, not hiding, so
     the clamp count is returned.
 
-    ``speedup`` is ``(lo, hi, factor)`` in the same original-time seconds: inside that
+    ``speedup`` is a list of ``(lo, hi, factor)`` in the same original-time seconds: inside that
     window one frame in ``factor`` is kept and the rest are dropped, so the span plays
     that much faster and the file gets that much smaller. It exists for generation, where
     most of a reel can be a progress bar on a laptop. Kept frames in the window carry a
@@ -71,10 +71,9 @@ def trim_gif(gif: pathlib.Path, out: pathlib.Path, *, start: float = 0.0,
         frames.append(f.convert("RGB"))
         durs.append(f.info.get("duration", 40))
 
-    lo = hi = None
-    factor, in_window, sped = 1, 0, 0
-    if speedup and speedup[1] - speedup[0] >= MIN_SPEEDUP_SECONDS:
-        lo, hi, factor = speedup
+    windows = [w for w in (speedup or []) if w[1] - w[0] >= MIN_SPEEDUP_SECONDS]
+    counters = {i: 0 for i in range(len(windows))}
+    sped = 0
 
     clock, kept, kept_durs, kept_starts = 0.0, [], [], []
     for f, d in zip(frames, durs):
@@ -84,11 +83,12 @@ def trim_gif(gif: pathlib.Path, out: pathlib.Path, *, start: float = 0.0,
             continue
         if end is not None and t > end:
             break
-        if lo is not None and lo <= t <= hi:
-            if in_window % factor:
-                in_window += 1
+        hit = next((i for i, (lo, hi, _) in enumerate(windows) if lo <= t <= hi), None)
+        if hit is not None:
+            factor = windows[hit][2]
+            counters[hit] += 1
+            if (counters[hit] - 1) % factor:
                 continue
-            in_window += 1
             f = _label(f, f"{factor}x speed")
             sped += 1
         kept.append(f)
@@ -113,7 +113,7 @@ def trim_gif(gif: pathlib.Path, out: pathlib.Path, *, start: float = 0.0,
     kept[0].save(out, save_all=True, append_images=kept[1:],
                  duration=kept_durs, loop=0, optimize=True, disposal=1)
     return {"frames_in": len(frames), "frames_out": len(kept), "holds_clamped": clamped,
-            "sped_frames": sped, "speed_factor": factor if sped else 1,
+            "sped_frames": sped, "speed_windows": len(windows),
             "kept_starts": kept_starts, "duration": sum(kept_durs) / 1000.0,
             "dropped_head": sum(1 for i, _ in enumerate(frames)
                                 if sum(durs[:i]) / 1000.0 < start)}

@@ -26,7 +26,9 @@ OUT = KIT / "out"
 
 import agg_finish  # noqa: E402
 import frametrim  # noqa: E402
+import deseam  # noqa: E402
 import gates  # noqa: E402
+import seams  # noqa: E402
 
 
 def build(name: str, *, record: bool = True) -> tuple[str, bool]:
@@ -36,9 +38,16 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     OUT.mkdir(exist_ok=True)
 
     if record:
+        # Record which build this reel actually shows. A reel is evidence about a version,
+        # and the version was ambiguous once already: the recording environment reported
+        # dev724 from a stale install marker while the code it ran was current main, which
+        # cost a round trip to establish. Stamping both removes the question.
+        provenance = _provenance()
+        print("build " + str(provenance))
         t0 = time.monotonic()
         timings = mod.record(cast)
         timings["wall"] = time.monotonic() - t0
+        timings["build"] = provenance
         marks_path.write_text(json.dumps(timings, indent=2))
         print(f"recorded {cast} in {timings['wall']:.0f}s")
     timings = json.loads(marks_path.read_text())
@@ -51,17 +60,22 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     # reel. A reel with no marks ships whole rather than guessing a window.
     # Compress the generation window if the reel marked one. On a laptop most of a chat
     # reel can be a progress bar, and the answer is the part worth watching.
-    speedup = None
-    if "gen_start" in marks and "gen_end" in marks:
-        speedup = (marks["gen_start"], marks["gen_end"],
-                   getattr(mod, "SPEED_FACTOR", 6))
+    speedup = []
+    for base in getattr(mod, "SPEED_WINDOWS", ("gen",)):
+        lo, hi = marks.get(f"{base}_start"), marks.get(f"{base}_end")
+        if lo is not None and hi is not None:
+            speedup.append((lo, hi, getattr(mod, "SPEED_FACTOR", 6)))
     info = frametrim.trim_gif(full.with_suffix(".gif"), gif,
                               start=marks.get("boot_end", 0.0),
                               end=marks.get("payload_end"),
-                              speedup=speedup)
+                              speedup=speedup or None)
     print("trimmed " + str({k: v for k, v in info.items() if k != "kept_starts"}))
     for stale in (full.with_suffix(".gif"), full.with_suffix(".mp4"), full.with_suffix(".png")):
         stale.unlink(missing_ok=True)
+    # Close agg's cell-boundary seams before anything else looks at the file. This is a
+    # renderer repair, not a content edit: the terminal drew a solid bar and agg split it.
+    seam_info = deseam.repair_gif(gif)
+    print("deseamed " + str(seam_info))
     # Keep what the renderer produced, before anything optimises it, so the shipped file
     # can be compared against it rather than trusted.
     reference = OUT / f"{name}.reference.gif"
@@ -85,11 +99,28 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
                   if any(lo <= t <= hi for lo, hi in spans)}
     rows += gates.render_gate(gif, motion_idx=motion_idx or None)
     rows.append(gates.artifact_gate(gif, reference))
+    rows.append(gates.seam_gate(gif))
     reference.unlink(missing_ok=True)
     text, ok = gates.scorecard(name, rows)
     (OUT / f"{name}.score.txt").write_text(text + "\n")
     print(text)
     return text, ok
+
+
+def _provenance() -> dict:
+    """What is being recorded: the app version, and the source it actually runs."""
+    import subprocess
+
+    def run(*cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=60).stdout.strip()
+        except Exception:
+            return "?"
+
+    src = run("python3", "-c", "import lilbee,os;print(os.path.dirname(lilbee.__file__))")
+    head = run("git", "-C", src or ".", "rev-parse", "--short", "HEAD")
+    return {"version": run("lilbee", "--version"), "source": src, "head": head}
 
 
 def _optimize(gif: pathlib.Path) -> None:
