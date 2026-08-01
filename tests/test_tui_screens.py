@@ -213,7 +213,6 @@ class TestVariantToRowDedup:
             param_count="v1.5",
             quant="Q4_K_M",
             size_mb=300,
-            recommended=True,
         )
         family = ModelFamily(
             slug="nomic-embed-text",
@@ -234,7 +233,6 @@ class TestVariantToRowDedup:
             param_count="v1.5",
             quant="Q4_K_M",
             size_mb=300,
-            recommended=True,
         )
         family = ModelFamily(
             slug="nomic-embed-text",
@@ -255,7 +253,6 @@ class TestVariantToRowDedup:
             param_count="0.6B",
             quant="Q4_K_M",
             size_mb=400,
-            recommended=False,
         )
         family = ModelFamily(
             slug="qwen3",
@@ -397,7 +394,6 @@ class TestBackendField:
             param_count="0.6B",
             quant="Q4_K_M",
             size_mb=400,
-            recommended=False,
         )
         family = ModelFamily(
             slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
@@ -10507,7 +10503,6 @@ async def test_catalog_select_variant_row():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",
@@ -10541,7 +10536,6 @@ async def test_catalog_install_variant_creates_catalog_model():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",
@@ -10604,7 +10598,6 @@ async def test_catalog_get_highlighted_variant_name():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",

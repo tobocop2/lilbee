@@ -67,7 +67,6 @@ def _catalog_model(*, hf_repo: str = "Qwen/Qwen3-0.6B-GGUF", task: str = "chat")
     entry.description = "Tiny chat model"
     entry.task = task
     entry.featured = True
-    entry.recommended = True
     entry.architecture = ""
     entry.compat = ModelCompat.UNKNOWN
     return entry
@@ -803,7 +802,6 @@ class TestCatalogEntryDataFactory:
         assert data.ref == "Qwen/Qwen3-0.6B-GGUF"
         assert data.hf_repo == "Qwen/Qwen3-0.6B-GGUF"
         assert data.featured is True
-        assert data.recommended is True
 
 
 class TestManifestDataFactory:
