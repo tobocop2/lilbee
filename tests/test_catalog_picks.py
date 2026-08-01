@@ -296,3 +296,39 @@ class TestTrendingRequest:
 
         assert calls
         assert all(c["sort"] == TRENDING_SORT for c in calls)
+
+
+class TestBackoffAndConcurrency:
+    def test_a_failed_resolution_is_not_retried_until_the_backoff_expires(
+        self, monkeypatch
+    ) -> None:
+        """A degraded network must not turn every read into a fresh fan-out."""
+        from lilbee.catalog import picks as picks_mod
+        from lilbee.catalog.picks import get_picks
+
+        monkeypatch.setattr(picks_mod, "_RETRY_BACKOFF_S", 3600.0)
+        calls = _stub_fetch(monkeypatch, {})
+        assert get_picks() == ()
+        after_first = len(calls)
+
+        assert get_picks() == ()
+        assert len(calls) == after_first  # inside the backoff, no refetch
+
+    def test_a_set_landed_by_another_thread_wins(self, monkeypatch) -> None:
+        """A slow resolver must not clobber a complete set that arrived first."""
+        from lilbee.catalog import picks as picks_mod
+
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
+        _stub_fetch(monkeypatch, _ALL_ROLES)
+        picks = picks_mod.ModelPicks()
+        landed = tuple(_CHAT_CANDIDATES[:1])
+
+        real_resolve = picks_mod._resolve_picks
+
+        def resolve_then_race() -> tuple:
+            result = real_resolve()
+            picks.seed(landed)  # another thread completes mid-fetch
+            return result
+
+        monkeypatch.setattr(picks_mod, "_resolve_picks", resolve_then_race)
+        assert picks.all() == landed

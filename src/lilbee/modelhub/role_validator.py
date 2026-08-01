@@ -85,18 +85,13 @@ def _installed_ref_and_task(ref: str) -> tuple[str, str | None]:
     return ref, _resolve_installed_task(registry, ref)
 
 
-def _validate_installed_ref(ref: str, want: ModelTask) -> str:
-    """Role-check a ref by consulting the installed registry."""
-    ref, installed_task = _installed_ref_and_task(ref)
-    if installed_task is None:
-        raise ValueError(
-            f"Model '{ref}' is not installed. "
-            "Install it with 'lilbee model pull <ref>' "
-            "(or POST /api/models/pull) before assigning it to a role."
-        )
-    if installed_task != want:
-        raise TaskMismatchError(ref, ModelTask(installed_task), want)
-    return ref
+def _not_installed(ref: str) -> ValueError:
+    """The error for a ref that is neither a current pick nor installed."""
+    return ValueError(
+        f"Model '{ref}' is not installed. "
+        "Install it with 'lilbee model pull <ref>' "
+        "(or POST /api/models/pull) before assigning it to a role."
+    )
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
@@ -122,4 +117,4 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     entry = find_pick(ref)
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)
-    return _validate_installed_ref(ref, want)
+    raise _not_installed(installed_ref)

@@ -363,3 +363,12 @@ class TestEnsureChatModel:
 # ensure_tag was removed alongside the alias system. Tag normalisation has
 # no meaning under the new HF-keyed identity, so callers either pass a
 # canonical ref through directly or fail loudly via parse_model_ref.
+
+
+class TestPickDefaultModelFallback:
+    def test_nothing_fits_falls_back_to_the_smallest(self, monkeypatch):
+        """A host too small for every pick still gets an honest offer."""
+        catalog = tuple(models._get_model_catalog())
+        monkeypatch.setattr(models, "_get_model_catalog", lambda: catalog)
+        result = models.pick_default_model(0.5)
+        assert result.size_gb == min(m.size_gb for m in catalog)

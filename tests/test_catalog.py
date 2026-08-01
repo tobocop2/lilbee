@@ -1534,12 +1534,12 @@ class TestHfCacheEviction:
 
 class TestModelVariantDataclass:
     def test_frozen(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000)
         with pytest.raises(AttributeError):
             v.hf_repo = "nope"  # type: ignore[misc]
 
     def test_default_mmproj(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000)
         assert v.mmproj_filename == ""
 
 
@@ -1550,7 +1550,7 @@ class TestModelFamilyDataclass:
             f.name = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000)
         f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="Fast", variants=(v,))
         assert f.name == "Qwen3"
         assert f.slug == "qwen3"
