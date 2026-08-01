@@ -232,13 +232,29 @@ _LITELLM_MISSING_MSG = (
     "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
 )
 
+_LITELLM_BROKEN_MSG = (
+    "litellm is installed but fails to import ({error}). Its dependencies are "
+    "out of step with it; repair with: "
+    "uv tool install --prerelease=allow --reinstall 'lilbee[litellm]'"
+)
+
 
 def _require_litellm() -> Any:
-    """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
+    """Import ``litellm`` or raise a user-facing ProviderError with repair steps.
+
+    A present-but-unimportable litellm is reported apart from a missing one:
+    an environment assembled outside the declared constraints can leave a
+    dependency litellm cannot import against (an aiohttp below its own
+    ``>=3.10`` floor raises ``AttributeError`` on ``ConnectionTimeoutError``),
+    and the raw exception reaching the chat surface names neither litellm nor
+    a way out. ``find_spec`` separates the two cases without a second import.
+    """
     try:
         import litellm
-    except ImportError as exc:
-        raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
+    except Exception as exc:
+        if not litellm_available():
+            raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(_LITELLM_BROKEN_MSG.format(error=exc), provider=_PROVIDER_NAME) from exc
     return litellm
 
 

@@ -4441,12 +4441,19 @@ class TestSelfCheckExtras:
     """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test."""
 
     @staticmethod
-    def _import_module_stub(missing: set[str]):
-        """Return a side_effect that raises ImportError for names in *missing*."""
+    def _import_module_stub(missing: set[str], broken: dict[str, Exception] | None = None):
+        """Return a side_effect raising for names in *missing* / *broken*.
+
+        Missing names raise ``ModuleNotFoundError`` with ``name`` set, which is
+        what the interpreter raises for an absent module; the command reads that
+        to tell an absent extra from an installed one that will not import.
+        """
 
         def _stub(name: str):
             if name in missing:
-                raise ImportError(f"No module named {name!r}")
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            if broken and name in broken:
+                raise broken[name]
             return MagicMock(__name__=name)
 
         return _stub
@@ -4491,6 +4498,49 @@ class TestSelfCheckExtras:
         assert result.exit_code == 1, result.output
         assert "spacy" in result.output
         assert "MISSING" in result.output
+
+    def test_extra_broken_by_dependency_is_reported_not_raised(self) -> None:
+        """An extra whose module body raises must be reported, not crash the run.
+
+        litellm imports against an aiohttp below its own floor by raising
+        AttributeError from its module body. Catching only ImportError let that
+        abort the command with a traceback, so the extras after it in the list
+        went unreported and the output named neither litellm nor a repair step.
+        """
+        with mock.patch(
+            "lilbee.cli.commands.setup.importlib.import_module",
+            side_effect=self._import_module_stub(
+                missing=set(),
+                broken={
+                    "litellm": AttributeError(
+                        "module aiohttp has no attribute ConnectionTimeoutError"
+                    )
+                },
+            ),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert payload["litellm"] is False
+        assert "ConnectionTimeoutError" in payload["litellm_error"]
+        assert payload["litellm_missing"] is False
+        # The extras after the broken one still got probed.
+        assert payload["crawl4ai"] is True
+        assert payload["spacy"] is True
+        assert payload["graspologic_native"] is True
+
+    def test_broken_extra_labelled_apart_from_missing_one(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.setup.importlib.import_module",
+            side_effect=self._import_module_stub(
+                missing=set(), broken={"litellm": AttributeError("boom")}
+            ),
+        ):
+            result = runner.invoke(app, ["self-check-extras"])
+        assert result.exit_code == 1, result.output
+        assert "BROKEN" in result.output
+        assert "MISSING" not in result.output
 
 
 class TestDownloadSelfCheckModel:

@@ -316,16 +316,28 @@ _SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
 
 
 def self_check_extras_cmd() -> None:
-    """Verify optional extras (crawler, litellm, graph) are bundled and importable."""
+    """Verify optional extras (crawler, litellm, graph) are bundled and importable.
+
+    Catches every import-time failure, not just ImportError: an extra whose
+    dependencies are out of step with it raises from its own module body
+    (AttributeError, TypeError) and would otherwise abort the run with a
+    traceback, reporting nothing about the extras after it in the list.
+    """
     results: dict[str, Any] = {}
     failed: list[str] = []
     for name in _SELF_CHECK_EXTRAS:
         try:
             importlib.import_module(name)
             results[name] = True
-        except ImportError as exc:
+        except Exception as exc:
             results[name] = False
-            results[f"{name}_error"] = str(exc)
+            results[f"{name}_error"] = f"{type(exc).__name__}: {exc}"
+            # Absent only when the extra itself is the module that went missing;
+            # anything else (a broken dependency, a failing module body) means
+            # it is installed but unusable, which wants a different repair step.
+            results[f"{name}_missing"] = (
+                isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == name
+            )
             failed.append(name)
 
     if cfg.json_mode:
@@ -333,10 +345,11 @@ def self_check_extras_cmd() -> None:
     else:
         for name in _SELF_CHECK_EXTRAS:
             ok = results.get(name) is True
+            label = "MISSING" if results.get(f"{name}_missing") else "BROKEN"
             tag = (
                 f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"
                 if ok
-                else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
+                else f"[{theme.ERROR}]{label}[/{theme.ERROR}]"
             )
             console.print(f"  {name}: {tag}")
             if not ok:

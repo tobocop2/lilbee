@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import logging
 import os
 import sys
@@ -1034,6 +1035,22 @@ class TestLitellmBackendSupportsTools:
 
 
 class TestRequireLitellm:
+    @staticmethod
+    def _import_raising(exc: Exception):
+        """Return a ``builtins.__import__`` replacement that raises *exc* for litellm.
+
+        ``inject_modules`` can only make an import fail with ImportError; these
+        cases need the module body to raise something else.
+        """
+        real_import = builtins.__import__
+
+        def _stub(name: str, *args: object, **kwargs: object):
+            if name == "litellm":
+                raise exc
+            return real_import(name, *args, **kwargs)
+
+        return _stub
+
     @pytest.mark.real_litellm_probe
     def test_raises_provider_error_with_install_hint(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -1041,9 +1058,56 @@ class TestRequireLitellm:
 
         with (
             inject_modules({"litellm": None}),
+            mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False),
             pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
         ):
             _require_litellm()
+
+    def test_broken_litellm_names_the_cause_and_the_repair(self) -> None:
+        """A present-but-unimportable litellm must not surface as a bare AttributeError.
+
+        An environment holding an aiohttp below litellm's own ``>=3.10`` floor
+        makes ``import litellm`` raise ``AttributeError`` on
+        ``ConnectionTimeoutError``. That reached the chat surface verbatim as
+        'Chat failed: module aiohttp has no attribute ConnectionTimeoutError',
+        naming neither litellm nor a way out.
+        """
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        with (
+            mock.patch(
+                "builtins.__import__",
+                side_effect=self._import_raising(
+                    AttributeError("module aiohttp has no attribute ConnectionTimeoutError")
+                ),
+            ),
+            mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+            pytest.raises(ProviderError) as excinfo,
+        ):
+            _require_litellm()
+        message = str(excinfo.value)
+        assert "litellm is installed but fails to import" in message
+        assert "ConnectionTimeoutError" in message
+        assert "--reinstall" in message
+
+    def test_broken_dependency_import_error_is_not_read_as_absent(self) -> None:
+        """litellm present but a dependency missing is a broken install, not a missing extra."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        with (
+            mock.patch(
+                "builtins.__import__",
+                side_effect=self._import_raising(
+                    ModuleNotFoundError("No module named 'aiohttp'", name="aiohttp")
+                ),
+            ),
+            mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+            pytest.raises(ProviderError) as excinfo,
+        ):
+            _require_litellm()
+        assert "installed but fails to import" in str(excinfo.value)
 
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
