@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from lilbee.core.config import INGEST_SOURCE_COLUMNS, META_TABLE, SOURCES_TABLE
+from lilbee.core.config import CHUNKS_TABLE, INGEST_SOURCE_COLUMNS, META_TABLE, SOURCES_TABLE
 from lilbee.data.store.lance_helpers import escape_sql_string, table_names
 
 if TYPE_CHECKING:
@@ -42,6 +42,9 @@ def merge_shards(
     if sources is not None:
         store.remove_documents(sorted(sources))
     merged: dict[str, int] = {}
+    adopted = _adopt_chunks(store, shard_dirs, sources)
+    if adopted is not None:
+        merged[CHUNKS_TABLE] = adopted
     for shard_dir in shard_dirs:
         database = lancedb.connect(str(shard_dir))
         for name in table_names(database):
@@ -49,11 +52,41 @@ def merge_shards(
             # a shard's copy would land beside it as a second row.
             if name == META_TABLE:
                 continue
+            if name == CHUNKS_TABLE and adopted is not None:
+                continue  # already taken over whole, without reading a row
             rows = _copy_table(database.open_table(name), store, name, sources)
             merged[name] = merged.get(name, 0) + rows
     log.info("Merged %d shard(s): %s", len(shard_dirs), merged)
     _reconcile_sources(store, shard_dirs)
     return merged
+
+
+def _adopt_chunks(store: Store, shard_dirs: list[Path], sources: set[str] | None) -> int | None:
+    """Take over every shard's chunk fragments whole; None when that cannot apply.
+
+    The chunks table carries the vectors, so it is the whole cost of the merge:
+    at 8.8M rows by 4096 dims the row copy rewrites about 144GB, and since the
+    shard stores stay as resume state the corpus then sits on disk twice.
+    Adopting the fragments is metadata only, and the hard links mean one physical
+    copy with two names.
+
+    Whole-fragment, so only a full merge qualifies: a scoped re-sync names its
+    sources, and a fragment there holds touched and untouched rows together.
+    Returns None when the caller should copy rows instead, which also covers a
+    shard on another filesystem or a data file whose name is already taken; the
+    merge is correct either way, only slower.
+    """
+    if sources is not None:
+        return None
+    tables = [shard_dir / f"{CHUNKS_TABLE}.lance" for shard_dir in shard_dirs]
+    present = [table for table in tables if table.exists()]
+    if not present:
+        return None
+    try:
+        return store.adopt_fragments(CHUNKS_TABLE, present)
+    except OSError as exc:
+        log.warning("Adopting shard fragments failed (%s); copying rows instead", exc)
+        return None
 
 
 def _reconcile_sources(store: Store, shard_dirs: list[Path]) -> None:

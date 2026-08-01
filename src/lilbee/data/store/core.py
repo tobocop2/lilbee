@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
@@ -813,6 +815,58 @@ class Store:
             ensure_table(self.get_db(), name, rows.schema).add(rows)
             self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
             return int(rows.num_rows)
+
+    def adopt_fragments(self, name: str, shard_tables: list[Path]) -> int:
+        """Take over *shard_tables*' data files for table *name* without copying rows.
+
+        Every fragment's data file is hard-linked into this table's directory and
+        the whole set committed as one metadata-only append, so the rows are never
+        read or rewritten and the bytes exist once on disk with two names. That is
+        the difference between a merge that costs the corpus and one that costs its
+        fragment count: the copy path rewrites every vector, and because the shard
+        stores are kept as resume state the corpus would then be on disk twice.
+
+        Whole-fragment only, so this serves the first full merge. A re-sync merges
+        named sources, where a fragment holds both touched and untouched rows and
+        the scoped row copy is both correct and already cheap.
+
+        Returns the rows adopted. Raises OSError if a shard is on another
+        filesystem (hard links cannot cross one) or if a data file name collides,
+        leaving the parent untouched: the commit happens once, at the end.
+        """
+        import lance
+
+        with self._write_lock():
+            self._ensure_embedding_compat()
+            target = self._config.lancedb_dir / f"{name}.lance"
+            adopted: list[lance.FragmentMetadata] = []
+            rows = 0
+            for shard_table in shard_tables:
+                source = lance.dataset(str(shard_table))
+                if name not in table_names(self.get_db()):
+                    ensure_table(self.get_db(), name, source.schema)
+                # A table created empty has no data directory yet: nothing has
+                # been written into it, and the links below need somewhere to go.
+                (target / "data").mkdir(parents=True, exist_ok=True)
+                for fragment in source.get_fragments():
+                    meta = fragment.metadata
+                    for data_file in meta.files:
+                        filename = Path(data_file.path).name
+                        os.link(shard_table / "data" / filename, target / "data" / filename)
+                    adopted.append(meta)
+                rows += source.count_rows()
+            if not adopted:
+                return 0
+            self._fts_ready = False
+            self._scalar_ready = False
+            existing = lance.dataset(str(target))
+            lance.LanceDataset.commit(
+                str(target),
+                lance.LanceOperation.Append(adopted),
+                read_version=existing.version,
+            )
+            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
+            return rows
 
     def bm25_probe(
         self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
