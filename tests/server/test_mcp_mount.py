@@ -10,7 +10,7 @@ import pytest
 from litestar import Litestar
 from litestar.middleware.base import DefineMiddleware
 from litestar.testing import AsyncTestClient
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from lilbee.app.services import set_services
 from lilbee.server import auth as auth_mod
@@ -23,12 +23,12 @@ _HTTP_UNAUTHORIZED = 401
 _ACCEPT = "application/json, text/event-stream"
 
 
-def _mounted_server(monkeypatch) -> FastMCP:
+def _mounted_server(monkeypatch) -> MCPServer:
     """Build a mount and hand back the server it mounted."""
-    built: list[FastMCP] = []
+    built: list[MCPServer] = []
     real = mcp_mount.build_mcp_server
 
-    def _spy() -> FastMCP:
+    def _spy() -> MCPServer:
         server = real()
         built.append(server)
         return server
@@ -39,12 +39,16 @@ def _mounted_server(monkeypatch) -> FastMCP:
 
 
 def test_configures_localhost_transport_security(monkeypatch) -> None:
+    # The streamable-http options are app-factory arguments rather than server
+    # state, so this reads the session manager they landed on, not the call.
+    # The SDK's own default already allows loopback over http with rebinding
+    # protection on, so only the https origins tell the two apart.
     server = _mounted_server(monkeypatch)
-    assert server.settings.streamable_http_path == "/"
-    security = server.settings.transport_security
+    security = server.session_manager.security_settings
     assert security is not None
     assert security.enable_dns_rebinding_protection
     assert "127.0.0.1:*" in security.allowed_hosts
+    assert "https://127.0.0.1:*" in security.allowed_origins
 
 
 def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
@@ -116,7 +120,7 @@ def test_mount_is_stateful(monkeypatch) -> None:
     # derivation reads. Stateless serving is a future scale-out deployment
     # mode, not a flag on this one.
     server = _mounted_server(monkeypatch)
-    assert server.settings.stateless_http is False
+    assert server.session_manager.stateless is False
 
 
 async def test_two_mounts_in_one_process_both_start() -> None:

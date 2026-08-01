@@ -1872,7 +1872,7 @@ class TestReset:
         assert result.exit_code == 0
         # Use result.stdout (not result.output) so the WARNING log that reset
         # emits for each locked file does not pollute the JSON when a Rich log
-        # handler is active on the root logger (installed by FastMCP at import
+        # handler is active on the root logger (installed by the MCP SDK at import
         # time of lilbee.mcp_server).  The JSON command output goes to stdout;
         # the warning goes to stderr.
         data = json.loads(result.stdout.strip())

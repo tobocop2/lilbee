@@ -1195,7 +1195,7 @@ The tradeoff is that the token is all-or-nothing: a client trusted with retrieva
 
 #### Transports
 
-The same FastMCP tool server is reachable two ways:
+The same MCP tool server is reachable two ways:
 
 - **stdio** (`lilbee mcp`): the default for a single agent. The client spawns
   the process, which loads its own in-process `Services` (its own model copy).
@@ -1220,7 +1220,7 @@ flowchart LR
 
     subgraph daemon["lilbee serve daemon (shared)"]
         AUTH["AuthMiddleware (bearer token)"]
-        MCPSUB["/mcp (FastMCP sub-app)"]
+        MCPSUB["/mcp (MCP sub-app)"]
         REST["/v1 + REST"]
         SVC[(one warm Services)]
         AUTH --> MCPSUB
@@ -1242,9 +1242,9 @@ tools (~10% of a 32K context, ~35% of Gemma 4's 7K).
 
 - Wiki tools and crawler tools are gated off the schema unless
   `cfg.wiki` is on or `lilbee[crawler]` is installed.
-- Tool docstrings stay at one or two sentences (FastMCP turns them
+- Tool docstrings stay at one or two sentences (the SDK turns them
   into per-parameter schema descriptions).
-- `LilbeeMCP.list_tools` in `mcp_server.py` drops the FastMCP/Pydantic
+- `LilbeeMCP.list_tools` in `mcp_server.py` drops the SDK/Pydantic
   auto-generated `title` keys before the tools hit the wire.
 - `tests/test_mcp.py::TestToolsSchemaSize` caps the schema at 7 KB; new
   tools or doc bloat trip the cap and force a deliberate review.

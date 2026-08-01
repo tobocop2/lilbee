@@ -1852,7 +1852,7 @@ class TestToolsSchemaSize:
 
         tools = await _mcp.list_tools()
         payload = [
-            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            {"name": t.name, "description": t.description, "inputSchema": t.input_schema}
             for t in sorted(tools, key=lambda t: t.name)
             if t.name in _DEFAULT_TOOL_NAMES
         ]
@@ -1869,7 +1869,7 @@ class TestToolsSchemaSize:
         )
 
     async def test_no_title_noise_in_input_schema(self) -> None:
-        """The wire transform keeps FastMCP-auto-generated title fields
+        """The wire transform keeps SDK-auto-generated title fields
         off the wire. Adding a tool whose schema contains a title fails here.
         """
         from lilbee.mcp_server import build_mcp_server
@@ -1878,8 +1878,8 @@ class TestToolsSchemaSize:
 
         tools = await _mcp.list_tools()
         for t in tools:
-            assert "title" not in t.inputSchema, f"{t.name}: top-level title leaked into schema"
-            for pname, pdef in t.inputSchema.get("properties", {}).items():
+            assert "title" not in t.input_schema, f"{t.name}: top-level title leaked into schema"
+            for pname, pdef in t.input_schema.get("properties", {}).items():
                 if isinstance(pdef, dict):
                     assert "title" not in pdef, (
                         f"{t.name}.{pname}: per-property title leaked into schema"
@@ -1920,7 +1920,7 @@ class TestToolsSchemaSize:
 
         tools = await _mcp.list_tools()
         for t in tools:
-            for pname, pdef in t.inputSchema.get("properties", {}).items():
+            for pname, pdef in t.input_schema.get("properties", {}).items():
                 if isinstance(pdef, dict):
                     assert "default" not in pdef, (
                         f"{t.name}.{pname}: default leaked into schema; "
@@ -1937,7 +1937,7 @@ class TestToolsSchemaSize:
 
         tools = await _mcp.list_tools()
         for t in tools:
-            for pname, pdef in t.inputSchema.get("properties", {}).items():
+            for pname, pdef in t.input_schema.get("properties", {}).items():
                 if isinstance(pdef, dict):
                     arms = pdef.get("anyOf")
                     if isinstance(arms, list):
@@ -1959,7 +1959,7 @@ class TestToolsSchemaSize:
 
         tools = await _mcp.list_tools()
         for t in tools:
-            for pname, pdef in t.inputSchema.get("properties", {}).items():
+            for pname, pdef in t.input_schema.get("properties", {}).items():
                 if isinstance(pdef, dict):
                     assert pdef.get("additionalProperties") is not True, (
                         f"{t.name}.{pname}: additionalProperties=true leaked "

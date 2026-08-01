@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 import anyio
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
 from lilbee.app.memory import (
@@ -1125,7 +1125,7 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim auto-generated noise from a tool's input schema, on a copy.
 
     Drops:
-    - FastMCP/Pydantic ``title`` keys (per-schema + per-property). Tools the
+    - SDK/Pydantic ``title`` keys (per-schema + per-property). Tools the
       model picks by name don't need a separate display title.
     - ``default`` values on properties: clients send what they want and
       omitted fields fall back server-side.
@@ -1151,8 +1151,8 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 
-class LilbeeMCP(FastMCP):
-    """FastMCP that trims its tools wire and keeps it current with config."""
+class LilbeeMCP(MCPServer):
+    """MCP server that trims its tools wire and keeps it current with config."""
 
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.
@@ -1165,7 +1165,7 @@ class LilbeeMCP(FastMCP):
         """
         tools = await super().list_tools()
         for tool in tools:
-            tool.inputSchema = _strip_schema(tool.inputSchema)
+            tool.input_schema = _strip_schema(tool.input_schema)
             if isinstance(tool.description, str):
                 description = _flatten_tool_description(tool.description)
                 if tool.name == "search" and not cfg.wiki:
@@ -1376,7 +1376,7 @@ def clear_placement_tool() -> dict[str, Any]:
 def build_mcp_server() -> LilbeeMCP:
     """Build an MCP server carrying every tool registered in this module.
 
-    Each transport builds its own instance: FastMCP caches one
+    Each transport builds its own instance: the SDK caches one
     ``StreamableHTTPSessionManager`` per server and its ``run()`` is single-use,
     so a shared server cannot back two apps in one process. Gates registered
     via ``_tool_if`` are evaluated here, against current config.
