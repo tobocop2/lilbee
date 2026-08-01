@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
@@ -53,6 +53,7 @@ from lilbee.modelhub.models import get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
+_WORKER_SETUP_PICKS = "setup-picks"
 SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
@@ -208,15 +209,25 @@ class SetupWizard(Screen[str | None]):
         return msg.SETUP_ENTER_HINT
 
     def on_mount(self) -> None:
-        self._build_grid()
-        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
-        with contextlib.suppress(Exception):
-            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
+        self._load_picks_and_build()
+
+    @work(thread=True, name=_WORKER_SETUP_PICKS)
+    def _load_picks_and_build(self) -> None:
+        """Resolve the picks off the UI thread, then build the grid on it.
+
+        Picks come from HuggingFace on the first call of a session. Resolving
+        them inline in ``on_mount`` froze the wizard for as long as the request
+        took, which on a slow network is the per-request timeout, not the ~1.5s
+        a warm connection costs. The catalog screen fetches HF the same way.
+        """
+        chat_picks = picks_for(ModelTask.CHAT)
+        embed_picks = picks_for(ModelTask.EMBEDDING)
+        self.app.call_from_thread(self._build_grid, chat_picks, embed_picks)
 
     def _build_section(
         self,
         heading: str,
-        models: tuple[CatalogModel, ...],
+        models: Sequence[CatalogModel],
         installed_refs: set[str],
         widgets_out: list[Static | GridSelect],
         grid_id: str | None = None,
@@ -227,11 +238,13 @@ class SetupWizard(Screen[str | None]):
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50, id=grid_id))
         return cards
 
-    def _build_grid(self) -> None:
+    def _build_grid(
+        self,
+        chat_picks: Sequence[CatalogModel],
+        embed_picks: Sequence[CatalogModel],
+    ) -> None:
         """Build all model sections and pre-select recommended combo."""
         ram_gb = get_system_ram_gb()
-        chat_picks = picks_for(ModelTask.CHAT)
-        embed_picks = picks_for(ModelTask.EMBEDDING)
         rec_chat, rec_embed = _pick_recommended(ram_gb, chat_picks, embed_picks)
         self._recommended_chat = rec_chat
         self._recommended_embed = rec_embed
@@ -265,6 +278,9 @@ class SetupWizard(Screen[str | None]):
 
         container.mount_all(widgets_to_mount)
         self._preselect_recommended(chat_cards, embed_cards)
+        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
+        with contextlib.suppress(Exception):
+            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
 
     def _preselect_recommended(
         self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
