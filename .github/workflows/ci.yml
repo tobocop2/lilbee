@@ -260,7 +260,7 @@ jobs:
       - name: Set up Go (engine helpers)
         uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: "1.26"
 
       - name: Install llama-swap + gguf-parser (engine helpers)
         shell: bash

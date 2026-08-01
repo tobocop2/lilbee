@@ -180,7 +180,7 @@ jobs:
         if: steps.engine.outputs.needs-build == 'true'
         uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: "1.26"
 
       - name: Build the engine binaries from source
         if: steps.engine.outputs.needs-build == 'true'
