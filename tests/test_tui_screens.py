@@ -9917,7 +9917,8 @@ def _patch_setup_ram(ram_gb: float = 16.0):
 def test_pick_recommended_small_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, embed = _pick_recommended(3.0)
+    chat, embed = _pick_recommended(3.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 3.0
     assert embed == PICKS_EMBEDDING[0]
 
@@ -9925,22 +9926,32 @@ def test_pick_recommended_small_ram():
 def test_pick_recommended_medium_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, _ = _pick_recommended(8.0)
+    chat, _ = _pick_recommended(8.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 8.0
 
 
 def test_pick_recommended_large_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, _ = _pick_recommended(32.0)
+    chat, _ = _pick_recommended(32.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 32.0
 
 
-def test_pick_recommended_always_nomic_embed():
+def test_pick_recommended_takes_the_first_embedding_pick():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    _, embed = _pick_recommended(4.0)
+    _, embed = _pick_recommended(4.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert embed is not None
     assert embed.hf_repo == PICKS_EMBEDDING[0].hf_repo
+
+
+def test_pick_recommended_returns_nothing_without_picks():
+    """HuggingFace unreachable means no recommendation to offer."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    assert _pick_recommended(64.0, (), ()) == (None, None)
 
 
 def test_scan_installed_models_empty():

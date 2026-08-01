@@ -32,7 +32,7 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
-from lilbee.catalog.types import ModelCompat
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
@@ -693,7 +693,7 @@ TEST_EMBED_REF = f"{TEST_EMBED_REPO}/{TEST_EMBED_FILE}"
 
 def _pick(
     hf_repo: str,
-    task: str,
+    task: ModelTask,
     params: int,
     size_gb: float,
     min_ram_gb: float,
@@ -708,7 +708,7 @@ def _pick(
         description=f"Sample {task} pick",
         featured=True,
         downloads=1000,
-        task=task,
+        task=ModelTask(task),
         compat=ModelCompat.SUPPORTED,
         params=params,
     )
@@ -723,8 +723,14 @@ def make_test_catalog_model(
     min_ram_gb: float = 4,
     hf_repo: str | None = None,
     gguf_filename: str = "*.gguf",
+    compat: ModelCompat = ModelCompat.SUPPORTED,
 ) -> CatalogModel:
-    """Build a CatalogModel with sensible test defaults."""
+    """Build a CatalogModel with sensible test defaults.
+
+    ``compat`` defaults to SUPPORTED because most callers want a model the
+    engine can actually run; the setup wizard refuses to recommend anything
+    else.
+    """
     return CatalogModel(
         hf_repo=hf_repo or f"test/{name.replace(' ', '-')}",
         gguf_filename=gguf_filename,
@@ -734,6 +740,7 @@ def make_test_catalog_model(
         featured=featured,
         downloads=100,
         task=task,
+        compat=compat,
     )
 
 

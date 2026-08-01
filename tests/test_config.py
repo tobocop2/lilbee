@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION
 from lilbee.core.config import (
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
@@ -1617,41 +1618,38 @@ class TestValidateModelTaskAssignment:
     def test_chat_slot_accepts_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        result = validate_model_task_assignment("chat_model", _DEFAULT_CHAT_REF)
-        assert result == _DEFAULT_CHAT_REF
+        ref = f"{PICKS_CHAT[0].hf_repo}/tiny-1b-Q4_K_M.gguf"
+        assert validate_model_task_assignment("chat_model", ref) == ref
 
     def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("chat_model", vision)
+            validate_model_task_assignment("chat_model", PICKS_VISION[0].hf_repo)
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        rerank = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="rerank"):
-            validate_model_task_assignment("chat_model", rerank)
+            validate_model_task_assignment("chat_model", PICKS_RERANK[0].hf_repo)
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("embedding_model", _DEFAULT_CHAT_REF)
+            validate_model_task_assignment("embedding_model", PICKS_CHAT[0].hf_repo)
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("vision_model", _DEFAULT_CHAT_REF)
+            validate_model_task_assignment("vision_model", PICKS_CHAT[0].hf_repo)
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("reranker_model", vision)
+            validate_model_task_assignment("reranker_model", PICKS_VISION[0].hf_repo)
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
         """Empty or whitespace refs bypass validation (role unset)."""
@@ -1669,14 +1667,12 @@ class TestValidateModelTaskAssignment:
         ref = "ollama/qwen3:0.6b"
         assert validate_model_task_assignment("chat_model", ref) == ref
 
-    def test_bare_hf_repo_canonicalizes_to_catalog_ref(self, _task_validation_enabled):
-        """A bare ``hf_repo`` resolves to the catalog entry's ref (= the repo)."""
+    def test_bare_hf_repo_canonicalizes_to_the_picks_ref(self, _task_validation_enabled):
+        """A bare ``hf_repo`` that is a current pick resolves to that pick's ref."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        result = validate_model_task_assignment(
-            "reranker_model", "gpustack/bge-reranker-v2-m3-GGUF"
-        )
-        assert result == "gpustack/bge-reranker-v2-m3-GGUF"
+        repo = PICKS_RERANK[0].hf_repo
+        assert validate_model_task_assignment("reranker_model", repo) == repo
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Refs that are neither featured nor installed are rejected as not installed."""
@@ -1716,7 +1712,7 @@ class TestValidateModelTaskAssignment:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.role_validator import TaskMismatchError, validate_model_task_assignment
 
-        vision = "noctrex/LightOnOCR-2-1B-GGUF"
+        vision = PICKS_VISION[0].hf_repo
         with pytest.raises(TaskMismatchError) as exc_info:
             validate_model_task_assignment("chat_model", vision)
 

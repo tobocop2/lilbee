@@ -203,5 +203,10 @@ def seed_picks(picks: tuple[CatalogModel, ...]) -> None:
 
 
 def reset_picks() -> None:
-    """Drop the memoized picks. For tests and ``reset_services()``."""
+    """Drop the memoized picks so the next read resolves again. For tests.
+
+    Deliberately not wired into ``reset_services()``: a config change or a
+    provider teardown must not redraw the list under the user mid-session,
+    which is the whole point of holding one draw for the process.
+    """
     _PICKS.reset()

@@ -3669,34 +3669,41 @@ class TestSetupWizard:
         medium = _make_model("Medium", size_gb=5.0, min_ram_gb=8, featured=True)
         large = _make_model("Large", size_gb=18.0, min_ram_gb=16, featured=True)
         embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
-        with (
-            mock.patch.object(setup_mod, "PICKS_CHAT", (tiny, small, medium, large)),
-            mock.patch.object(setup_mod, "PICKS_EMBEDDING", (embed,)),
-        ):
-            # 64 GB: everything fits, largest wins.
-            chat, picked_embed = setup_mod._pick_recommended(64.0)
-            assert chat is large
-            assert picked_embed is embed
-            # 16 GB: large just fits, still wins.
-            assert setup_mod._pick_recommended(16.0)[0] is large
-            # 8 GB: medium is the largest that fits.
-            assert setup_mod._pick_recommended(8.0)[0] is medium
-            # 4 GB: small is the largest that fits.
-            assert setup_mod._pick_recommended(4.0)[0] is small
-            # 1 GB: only tiny fits.
-            assert setup_mod._pick_recommended(1.0)[0] is tiny
+        chat_picks = (tiny, small, medium, large)
 
-    def test_pick_recommended_falls_back_when_nothing_fits(self) -> None:
-        """If no featured model fits, fall back to the first entry."""
+        # 64 GB: everything fits, largest wins.
+        chat, picked_embed = setup_mod._pick_recommended(64.0, chat_picks, (embed,))
+        assert chat is large
+        assert picked_embed is embed
+        # 16 GB: large just fits, still wins.
+        assert setup_mod._pick_recommended(16.0, chat_picks, (embed,))[0] is large
+        # 8 GB: medium is the largest that fits.
+        assert setup_mod._pick_recommended(8.0, chat_picks, (embed,))[0] is medium
+        # 4 GB: small is the largest that fits.
+        assert setup_mod._pick_recommended(4.0, chat_picks, (embed,))[0] is small
+        # 1 GB: only tiny fits.
+        assert setup_mod._pick_recommended(1.0, chat_picks, (embed,))[0] is tiny
+
+    def test_pick_recommended_offers_nothing_when_nothing_fits(self) -> None:
+        """No fallback to a model the machine cannot run; offer no recommendation."""
         from lilbee.cli.tui.screens import setup as setup_mod
 
         big = _make_model("BigOnly", size_gb=40.0, min_ram_gb=64, featured=True)
         embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
-        with (
-            mock.patch.object(setup_mod, "PICKS_CHAT", (big,)),
-            mock.patch.object(setup_mod, "PICKS_EMBEDDING", (embed,)),
-        ):
-            assert setup_mod._pick_recommended(4.0)[0] is big
+        assert setup_mod._pick_recommended(4.0, (big,), (embed,))[0] is None
+
+    def test_pick_recommended_skips_an_unsupported_architecture(self) -> None:
+        """A pick the bundled engine cannot load is never recommended, even if it fits."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens import setup as setup_mod
+
+        runnable = _make_model("Runnable", size_gb=2.0, min_ram_gb=4, featured=True)
+        bigger_but_unsupported = _make_model(
+            "Exotic", size_gb=8.0, min_ram_gb=8, featured=True, compat=ModelCompat.UNSUPPORTED
+        )
+        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
+        chat, _ = setup_mod._pick_recommended(64.0, (runnable, bigger_but_unsupported), (embed,))
+        assert chat is runnable
 
     def test_build_section_marks_installed_catalog_cards(self) -> None:
         """Catalog cards whose hf_repo is already installed come back with
