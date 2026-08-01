@@ -134,6 +134,65 @@ class TestFragmentAdoption:
         assert CHUNKS_TABLE not in merged
         assert store.open_table(SOURCES_TABLE).count_rows() == 1
 
+    def test_a_shard_with_a_different_schema_is_refused(self, tmp_path, store):
+        # The dangerous case. Adoption commits fragment metadata and never passes
+        # rows through a writer, so a mismatched vector width is not rejected by
+        # anything downstream: before this guard the merge reported success and
+        # the index then panicked inside Arrow on the next read.
+        _write_shard(tmp_path / "w0", ["a.txt"])
+        merge_shards(store, [tmp_path / "w0"])
+
+        narrow = lancedb.connect(str(tmp_path / "w1"))
+        narrow.create_table(
+            CHUNKS_TABLE,
+            pa.table(
+                {
+                    "source": ["b.txt"],
+                    "chunk": ["body of b.txt"],
+                    "vector": [[1.0] * 16],
+                }
+            ),
+        )
+        with pytest.raises(ValueError, match="does not match"):
+            merge_shards(store, [tmp_path / "w1"])
+        # And the index it refused to touch is intact and still readable.
+        table = store.open_table(CHUNKS_TABLE)
+        assert table.count_rows() == 1
+        assert table.search().limit(None).to_arrow().num_rows == 1
+
+    def test_a_failed_link_leaves_no_files_behind(self, tmp_path, store):
+        # A link made before the failure is a file the manifest never names, so
+        # nothing would ever remove it. Fail on the second shard, after the first
+        # has already been linked.
+        import os
+
+        _write_shard(tmp_path / "w0", ["a.txt"])
+        _write_shard(tmp_path / "w1", ["b.txt"])
+        real_link = os.link
+        calls = {"n": 0}
+
+        def fail_after_first(src, dst, **kwargs):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise OSError("Invalid cross-device link")
+            return real_link(src, dst, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "link", fail_after_first)
+            merged = merge_shards(store, [tmp_path / "w0", tmp_path / "w1"])
+        # The link that succeeded before the failure must be gone: nothing names
+        # it, so it would sit in the table's directory forever.
+        data = tmp_path / "merged" / f"{CHUNKS_TABLE}.lance" / "data"
+        shard_names = {
+            path.name
+            for shard in ("w0", "w1")
+            for path in (tmp_path / shard / f"{CHUNKS_TABLE}.lance" / "data").iterdir()
+        }
+        assert not {p.name for p in data.iterdir()} & shard_names
+        # And the fallback copy still landed every row exactly once.
+        assert merged[CHUNKS_TABLE] == 2
+        assert store.open_table(CHUNKS_TABLE).count_rows() == 2
+
     def test_a_shard_that_cannot_be_linked_falls_back_to_copying(self, tmp_path, store):
         # Hard links cannot cross a filesystem, and a data file name could already
         # be taken. Either way the merge has to complete, just more slowly.

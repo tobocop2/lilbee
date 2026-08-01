@@ -77,6 +77,7 @@ from .types import (
 )
 
 if TYPE_CHECKING:
+    import lance
     import lancedb
     import lancedb.table
     from lancedb.index import FTS
@@ -816,6 +817,30 @@ class Store:
             self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
             return int(rows.num_rows)
 
+    def _assert_schemas_match(
+        self,
+        name: str,
+        target: Path,
+        shard_tables: list[Path],
+        sources: Sequence[lance.LanceDataset],
+    ) -> None:
+        """Refuse shards whose schema differs from the table's.
+
+        A mismatched vector width is the realistic case: two workers built with
+        different embedding models. Adoption commits fragment metadata and never
+        passes the rows through a writer, so nothing else would notice.
+        """
+        import lance
+
+        expected = lance.dataset(str(target)).schema
+        for shard_table, source in zip(shard_tables, sources, strict=True):
+            if not source.schema.equals(expected):
+                raise ValueError(
+                    f"Cannot adopt {shard_table} into {name}: its schema does not match "
+                    f"the index. A shard built with a different embedding model cannot be "
+                    f"folded in; re-ingest it with the model this index was built on."
+                )
+
     def adopt_fragments(self, name: str, shard_tables: list[Path]) -> int:
         """Take over *shard_tables*' data files for table *name* without copying rows.
 
@@ -830,31 +855,52 @@ class Store:
         named sources, where a fragment holds both touched and untouched rows and
         the scoped row copy is both correct and already cheap.
 
-        Returns the rows adopted. Raises OSError if a shard is on another
-        filesystem (hard links cannot cross one) or if a data file name collides,
-        leaving the parent untouched: the commit happens once, at the end.
+        Returns the rows adopted. Raises ValueError when a shard's schema differs
+        from the table's, and OSError when a shard is on another filesystem (hard
+        links cannot cross one) or a data file name collides. The parent is left
+        as it was in every failure: schemas are checked before anything is linked,
+        links made before a failure are removed, and the commit happens once at
+        the end.
         """
         import lance
 
         with self._write_lock():
             self._ensure_embedding_compat()
             target = self._config.lancedb_dir / f"{name}.lance"
+            sources = [lance.dataset(str(shard_table)) for shard_table in shard_tables]
+            if not sources:
+                return 0
+            if name not in table_names(self.get_db()):
+                ensure_table(self.get_db(), name, sources[0].schema)
+            # Before anything is linked. Committing a fragment whose schema does
+            # not match writes an index that reads back as a panic inside Arrow
+            # rather than an error: the row copy is rejected by the writer, and
+            # adoption has no writer to reject it.
+            self._assert_schemas_match(name, target, shard_tables, sources)
+            # A table created empty has no data directory yet: nothing has been
+            # written into it, and the links below need somewhere to go.
+            (target / "data").mkdir(parents=True, exist_ok=True)
             adopted: list[lance.FragmentMetadata] = []
+            linked: list[Path] = []
             rows = 0
-            for shard_table in shard_tables:
-                source = lance.dataset(str(shard_table))
-                if name not in table_names(self.get_db()):
-                    ensure_table(self.get_db(), name, source.schema)
-                # A table created empty has no data directory yet: nothing has
-                # been written into it, and the links below need somewhere to go.
-                (target / "data").mkdir(parents=True, exist_ok=True)
-                for fragment in source.get_fragments():
-                    meta = fragment.metadata
-                    for data_file in meta.files:
-                        filename = Path(data_file.path).name
-                        os.link(shard_table / "data" / filename, target / "data" / filename)
-                    adopted.append(meta)
-                rows += source.count_rows()
+            try:
+                for shard_table, source in zip(shard_tables, sources, strict=True):
+                    for fragment in source.get_fragments():
+                        meta = fragment.metadata
+                        for data_file in meta.files:
+                            filename = Path(data_file.path).name
+                            link = target / "data" / filename
+                            os.link(shard_table / "data" / filename, link)
+                            linked.append(link)
+                        adopted.append(meta)
+                    rows += source.count_rows()
+            except OSError:
+                # A link made before the failure is a file the manifest never
+                # names, so nothing would ever remove it. The caller falls back
+                # to copying rows.
+                for link in linked:
+                    link.unlink(missing_ok=True)
+                raise
             if not adopted:
                 return 0
             self._fts_ready = False
