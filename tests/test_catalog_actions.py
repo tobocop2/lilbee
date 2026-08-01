@@ -626,7 +626,9 @@ async def test_activate_initial_tab_retries_while_tab_strip_mounts(monkeypatch) 
         type(fake_tabs).active = mock.PropertyMock(side_effect=_unmounted_tab_strip_active)
         rescheduled: list[object] = []
         monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
-        monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a, **kwargs: rescheduled.append(fn))
+        monkeypatch.setattr(
+            screen, "call_after_refresh", lambda fn, *a, **kwargs: rescheduled.append(fn)
+        )
         budget = screen._activation_retries
         screen._activate_initial_tab()  # must not raise
         assert screen._activate_initial_tab in rescheduled
@@ -648,7 +650,9 @@ async def test_activate_initial_tab_retry_budget_exhausts(monkeypatch) -> None:
         type(fake_tabs).active = mock.PropertyMock(side_effect=_unmounted_tab_strip_active)
         rescheduled: list[object] = []
         monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
-        monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a, **kwargs: rescheduled.append(fn))
+        monkeypatch.setattr(
+            screen, "call_after_refresh", lambda fn, *a, **kwargs: rescheduled.append(fn)
+        )
         # The post-activation boot fetches are exercised elsewhere; the fake
         # TabbedContent would otherwise leak into their tab-id parsing.
         monkeypatch.setattr(screen, "_fetch_remote_models", lambda: None)
