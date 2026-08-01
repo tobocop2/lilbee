@@ -115,6 +115,19 @@ class TestPickDefaultModel:
         result = models.pick_default_model(32.0)
         assert result.min_ram_gb <= 32.0
 
+    def test_unattended_pick_is_capped_below_the_largest_fitting(self):
+        """A piped run must not be handed a 68 GB download on a big host."""
+        uncapped = models.pick_default_model(128.0)
+        capped = models.pick_default_model(128.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
+        assert uncapped.size_gb > models._UNATTENDED_MAX_SIZE_GB
+        assert capped.size_gb <= models._UNATTENDED_MAX_SIZE_GB
+
+    def test_raises_when_the_catalog_is_empty(self, monkeypatch):
+        """HuggingFace unreachable must surface as a message, not an IndexError."""
+        monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
+        with pytest.raises(RuntimeError, match="Could not reach HuggingFace"):
+            models.pick_default_model(16.0)
+
     def test_tiny_ram_picks_smallest(self):
         """No repo id is stable any more, so assert the fit rule, not a name."""
         result = models.pick_default_model(2.0)
@@ -279,9 +292,10 @@ class TestEnsureChatModel:
     ):
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             pulled = models.ensure_chat_model()
-        expected = models.pick_default_model(32.0)
+        expected = models.pick_default_model(32.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
         mock_pull.assert_called_once_with(expected.ref, console=None)
         assert pulled == expected.ref
+        assert expected.size_gb <= models._UNATTENDED_MAX_SIZE_GB
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)

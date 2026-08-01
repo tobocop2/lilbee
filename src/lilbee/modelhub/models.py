@@ -98,13 +98,35 @@ def get_free_disk_gb(path: Path) -> float:
     return usage.free / (1024**3)
 
 
-def pick_default_model(ram_gb: float) -> ModelInfo:
-    """Choose the largest catalog model that fits in *ram_gb*."""
-    best = _get_model_catalog()[0]
-    for model in _get_model_catalog():
-        if model.min_ram_gb <= ram_gb:
-            best = model
-    return best
+# Ceiling for a model chosen without a human present. The catalog spans every
+# parameter tier, so on a large host the largest fitting entry can be a 100B+
+# model; a non-interactive caller must not be handed a 68 GB download it never
+# asked for.
+_UNATTENDED_MAX_SIZE_GB = 12.0
+
+
+def pick_default_model(ram_gb: float, *, max_size_gb: float | None = None) -> ModelInfo:
+    """Choose the largest catalog model that fits in *ram_gb*.
+
+    Raises ``RuntimeError`` when the catalog is empty, which happens when
+    HuggingFace cannot be reached: callers surface that far better than the
+    ``IndexError`` an empty catalog would otherwise produce.
+    """
+    catalog = _get_model_catalog()
+    if not catalog:
+        raise RuntimeError(
+            "Could not reach HuggingFace to choose a chat model. "
+            "Check your connection, or pull one explicitly with 'lilbee model pull <ref>'."
+        )
+    eligible = [
+        m
+        for m in catalog
+        if m.min_ram_gb <= ram_gb and (max_size_gb is None or m.size_gb <= max_size_gb)
+    ]
+    if not eligible:
+        # Nothing fits: the smallest entry is the only honest offer.
+        return min(catalog, key=lambda m: m.size_gb)
+    return max(eligible, key=lambda m: m.size_gb)
 
 
 def _model_download_size_gb(model: str) -> float:
@@ -248,7 +270,7 @@ def ensure_chat_model() -> str | None:
     if sys.stdin.isatty():
         model_info = prompt_model_choice(ram_gb)
     else:
-        model_info = pick_default_model(ram_gb)
+        model_info = pick_default_model(ram_gb, max_size_gb=_UNATTENDED_MAX_SIZE_GB)
         sys.stderr.write(
             f"No chat model found. Auto-installing '{model_info.display_name}' "
             f"(detected {ram_gb:.0f} GB RAM)...\n"

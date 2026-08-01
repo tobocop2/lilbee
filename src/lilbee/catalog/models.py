@@ -1,5 +1,6 @@
 """Catalog dataclasses and pydantic types: leaf module, no sibling imports."""
 
+import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -13,13 +14,20 @@ _RAM_OVER_SIZE_FACTOR = 1.5
 
 _BYTES_PER_GB = 1024**3
 
-# On-disk bytes per parameter for each GGUF quantization. llama.cpp quants carry
-# per-block scale metadata, so the real cost per weight exceeds the nominal bit
-# width: Q4_K_M is ~4.9 bits, not 4. Values verified against Qwen3-8B-GGUF, whose
-# published quants measure 0.614 (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M),
-# 0.821 (Q6_K) and 1.063 (Q8_0).
+# Whole-file bytes per parameter for each llama.cpp quantization.
+#
+# Not the same quantity as ``gguf.GGML_QUANT_SIZES``, which gives the block size
+# of one ggml tensor type. llama.cpp never writes a homogeneous file: it promotes
+# ``output.weight`` and tied ``token_embd`` to Q6_K/Q8_0 whatever the ftype, and
+# leaves norms in F32, so a real file always costs more per weight than its
+# nominal type. These are measured file sizes; Qwen3-8B-GGUF publishes 0.614
+# (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K) and 1.063 (Q8_0).
+#
+# GGML_QUANT_SIZES is still used, as the physical floor: no file can be smaller
+# than its base type, so _quant_bytes_per_param clamps to it and a typo below the
+# floor cannot survive.
 _BYTES_PER_PARAM: dict[str, float] = {
-    "Q2_K": 0.325,
+    "Q2_K": 0.33,
     "Q3_K_S": 0.45,
     "Q3_K_M": 0.488,
     "Q3_K_L": 0.53,
@@ -41,6 +49,35 @@ _BYTES_PER_PARAM: dict[str, float] = {
 # estimates as if it were the quant a pull would most likely land on.
 _DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
 
+# Quant label as written in a GGUF filename. Matches the K/legacy quants
+# (``Q4_K_M``), the IQ family (``IQ4_XS``) and the unquantized float types,
+# which ``formatting.extract_quant`` does not: it exists to label a row for
+# display and only recognizes ``Q``-prefixed names.
+_QUANT_IN_FILENAME = re.compile(r"\b(I?Q\d[A-Z0-9_]*|BF16|F16|F32)\b", re.IGNORECASE)
+
+
+def _ggml_floor(quant: str) -> float | None:
+    """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
+    for name in (quant, base, "_".join(quant.split("_")[:2])):
+        try:
+            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
+        except KeyError:
+            continue
+        return type_size / block
+    return None
+
+
+def _quant_bytes_per_param(gguf_filename: str) -> float:
+    """Bytes per weight for the quant *gguf_filename* names, never below its floor."""
+    match = _QUANT_IN_FILENAME.search(gguf_filename)
+    quant = match.group(1).upper() if match else ""
+    measured = _BYTES_PER_PARAM.get(quant, _DEFAULT_BYTES_PER_PARAM)
+    floor = _ggml_floor(quant)
+    return max(measured, floor) if floor is not None else measured
+
 
 def estimate_min_ram_gb(size_gb: float) -> float:
     """Estimate the RAM a model needs from its on-disk size (single source)."""
@@ -60,12 +97,7 @@ def estimate_size_gb(params: int, gguf_filename: str) -> float:
     """
     if params <= 0:
         return 0.0  # unknown: display as "?" in UI
-    # Local import keeps models.py a leaf (no sibling imports at module top).
-    from lilbee.catalog.formatting import extract_quant
-
-    quant = extract_quant(gguf_filename)
-    bytes_per_param = _BYTES_PER_PARAM.get(quant, _DEFAULT_BYTES_PER_PARAM)
-    return round(params * bytes_per_param / _BYTES_PER_GB, 1)
+    return round(params * _quant_bytes_per_param(gguf_filename) / _BYTES_PER_GB, 1)
 
 
 class HfGgufMeta(BaseModel):
