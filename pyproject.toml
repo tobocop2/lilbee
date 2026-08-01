@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "lancedb",
+    "lancedb[pylance]",
     "xberg>=1.0.4",
     # 3.26 changed is_singleton reentrancy; breaks the engine user-lock warm-off reclaim.
     "filelock<3.26",

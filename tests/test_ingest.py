@@ -388,6 +388,24 @@ class TestSync:
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.status == "ok"
 
+    async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
+        self, mock_extract_file, isolated_env
+    ):
+        # Two files indexed, one then edited. The re-sync replans only the edited
+        # file, so a total taken from the plan reads 1/1 and says nothing about
+        # the corpus. The total is the files on disk, and the untouched file
+        # counts as done because it is.
+        (isolated_env / "a.txt").write_text("first")
+        (isolated_env / "b.txt").write_text("second")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        (isolated_env / "b.txt").write_text("second, edited")
+        events: list[tuple] = []
+        await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
+        batch = [d for t, d in events if t == "batch_progress"]
+        assert [(d.current, d.total) for d in batch] == [(2, 2)]
+
     async def test_ingest_markdown_file(self, mock_extract_file, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.data.ingest import sync
