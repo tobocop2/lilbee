@@ -73,31 +73,35 @@ def build_page_dataset(store: Store, source: str | None = None) -> pa.Table:
     (bb-bqg).
     """
     import pyarrow as pa
-    import pyarrow.compute as pc
 
-    captured = store.page_text_sources()
+    tracked = _with_wide_offsets(store.sources_arrow())
     if source is not None:
         table = _with_wide_offsets(store.page_texts_arrow(source))
-        if source not in captured:
+        if table.num_rows == 0:
             table = _reconstructed_arrow(store, [source], table.schema)
     else:
         # One scan for every captured page instead of a filtered query per source:
         # the per-source loop was O(sources) and its fixed per-query overhead, not
-        # data size, hung the export on a large store. Restrict to tracked sources
-        # so an orphaned page-text row (source record gone) stays out, matching the
-        # old get_sources()-scoped universe.
-        names = {s["filename"] for s in store.get_sources()}
-        table = _with_wide_offsets(store.page_texts_arrow())
-        if names:
-            table = table.filter(
-                pc.is_in(
-                    table.column("source"), value_set=pa.array(sorted(names), pa.large_string())
-                )
-            )
-        extra = _reconstructed_arrow(store, sorted(names - captured), table.schema)
+        # data size, hung the export on a large store. The semi-join restricts it
+        # to tracked sources, so an orphaned page-text row (source record gone)
+        # stays out, matching the old get_sources()-scoped universe.
+        keys = tracked.select(["source"])
+        table = _with_wide_offsets(store.page_texts_arrow()).join(
+            keys, keys="source", join_type="left semi"
+        )
+        # Tracked sources the scan found no page text for: older indexes and code,
+        # rebuilt from their chunks. Normally empty, and an anti-join keeps the
+        # comparison in Arrow rather than differencing two sets of every filename.
+        missing = keys.join(table.select(["source"]), keys="source", join_type="left anti")
+        extra = _reconstructed_arrow(
+            store, sorted(missing.column("source").to_pylist()), table.schema
+        )
         if extra.num_rows:
             table = pa.concat_tables([table, extra])
-    table = _with_source_metadata(store, table)
+    # Denormalize each source's title/authors/created_at onto its page rows, so an
+    # export/import cycle keeps them instead of falling back to the filename stem.
+    # Left outer: a source with no metadata keeps its pages, with nulls.
+    table = table.join(tracked, keys="source", join_type="left outer")
     return table.sort_by([("source", "ascending"), ("page", "ascending")])
 
 
@@ -122,23 +126,6 @@ def _with_wide_offsets(table: pa.Table) -> pa.Table:
             ]
         )
     )
-
-
-def _with_source_metadata(store: Store, table: pa.Table) -> pa.Table:
-    """Denormalize each source's extraction metadata onto its page rows.
-
-    The dataset is per page while title/authors/created_at live per source, so
-    without this an export/import cycle drops them and the import can only fall
-    back to the filename stem. Absent metadata stays null.
-    """
-    import pyarrow as pa
-
-    by_name: dict[str, dict] = {s["filename"]: dict(s) for s in store.get_sources()}
-    sources = table.column("source").to_pylist()
-    for column in SourceMeta._fields:
-        values = [by_name.get(name, {}).get(column) for name in sources]
-        table = table.append_column(column, pa.array(values, pa.large_string()))
-    return table
 
 
 def _reconstructed_arrow(store: Store, sources: list[str], schema: pa.Schema) -> pa.Table:

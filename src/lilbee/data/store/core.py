@@ -1336,12 +1336,42 @@ class Store:
             query = query.where(f"source = '{escape_sql_string(source)}'")
         return query.limit(None).to_arrow()
 
-    def page_text_sources(self) -> set[str]:
-        """Return the distinct sources present in the page-text table."""
-        table = self.open_table(PAGE_TEXTS_TABLE)
+    def sources_arrow(self) -> pa.Table:
+        """Return each tracked source's extraction metadata as an Arrow table.
+
+        The columnar sibling of :meth:`get_sources`, keyed by ``source`` so it
+        joins straight onto the page-text table. ``get_sources`` builds a dict per
+        source, which on a corpus of millions of single-page documents costs more
+        than the text being exported. An index written before the metadata columns
+        existed gets them as nulls rather than missing, so the join has one shape.
+        """
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        table = self.open_table(SOURCES_TABLE)
+        columns = ["source", *SourceMeta._fields]
         if table is None:
-            return set()
-        return {row["source"] for row in table.search().select(["source"]).limit(None).to_list()}
+            return pa.schema([pa.field(name, pa.utf8()) for name in columns]).empty_table()
+        present = [name for name in SourceMeta._fields if name in table.schema.names]
+        arrow = table.search().select(["filename", *present]).limit(None).to_arrow()
+        arrow = arrow.rename_columns(["source", *present])
+        for name in SourceMeta._fields:
+            if name not in present:
+                arrow = arrow.append_column(name, pa.nulls(arrow.num_rows, pa.utf8()))
+        arrow = arrow.select(columns)
+        if pc.count_distinct(arrow.column("source")).as_py() == arrow.num_rows:
+            return arrow
+        # One row per source, so a caller joining on it cannot fan out. A doubled
+        # row (a source re-merged from a shard) would otherwise multiply every page
+        # it owns. Last wins, matching the dict this replaced; single-threaded
+        # because that is the only execution mode with an ordered aggregate.
+        grouped = arrow.group_by("source", use_threads=False).aggregate(
+            [(name, "last") for name in SourceMeta._fields]
+        )
+        renamed = grouped.rename_columns(
+            [name.removesuffix("_last") for name in grouped.schema.names]
+        )
+        return renamed.select(columns)
 
     def get_sources(
         self,

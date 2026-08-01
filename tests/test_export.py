@@ -19,7 +19,7 @@ from lilbee.data.export import (
     serialize_dataset,
     write_dataset,
 )
-from lilbee.data.store import EmbeddingModelMismatchError, SourceType, Store
+from lilbee.data.store import EmbeddingModelMismatchError, SourceMeta, SourceType, Store
 from tests.conftest import make_mock_services
 
 
@@ -286,6 +286,68 @@ class TestSixtyFourBitOffsets:
         write_dataset(build_page_dataset(store), path, fmt)
         loaded = load_page_dataset(path, fmt)
         assert [(r["source"], r["page"], r["text"]) for r in loaded] == [("a.pdf", 1, "body text")]
+
+
+class TestColumnarSourceMetadata:
+    """The export reads tracked sources columnar, never as Python rows.
+
+    get_sources() returns a dict per source and the old metadata denormalization
+    built another dict per source plus a Python list per column. On a corpus of
+    8.8M single-page sources that is its own multi-GB cost, independent of the
+    encoded output, so it has to come out of the Python heap entirely.
+    """
+
+    def test_build_page_dataset_never_reads_sources_as_python_rows(self, store, monkeypatch):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2)
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("the export must read sources columnar, not row by row")
+
+        monkeypatch.setattr(store, "get_sources", boom)
+        assert build_page_dataset(store).num_rows == 2
+
+    def test_metadata_lands_on_every_page_of_its_source(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2, meta=SourceMeta("Alpha", "Ada", "2020-01-01"))
+        rows = build_page_dataset(store).to_pylist()
+        assert [(r["page"], r["title"], r["authors"]) for r in rows] == [
+            (1, "Alpha", "Ada"),
+            (2, "Alpha", "Ada"),
+        ]
+
+    def test_a_duplicate_source_row_does_not_multiply_its_pages(self, store):
+        # A join fans out on duplicate keys where the dict it replaced took the
+        # last one, so a doubled source row (a re-merged shard) would silently
+        # export every one of its pages twice.
+        import pyarrow as pa
+
+        store.add_page_texts([_page("a.pdf", 1, "one")])
+        store.get_db().create_table(
+            "_sources",
+            pa.table(
+                {
+                    "filename": pa.array(["a.pdf", "a.pdf"]),
+                    "file_hash": pa.array(["h1", "h2"]),
+                    "title": pa.array(["First", "Second"]),
+                    "authors": pa.array(["x", "y"]),
+                    "created_at": pa.array(["2020", "2021"]),
+                }
+            ),
+        )
+        rows = build_page_dataset(store).to_pylist()
+        assert len(rows) == 1
+        # Last wins, as the dict did, and the metadata comes from one row.
+        assert (rows[0]["title"], rows[0]["authors"]) == ("Second", "y")
+
+    def test_a_source_without_metadata_joins_to_nulls(self, store):
+        # Left outer, not inner: a source row with no captured title must keep its
+        # pages rather than drop them out of the export.
+        store.add_page_texts([_page("bare.pdf", 1, "text")])
+        store.upsert_source("bare.pdf", "h", 1)
+        rows = build_page_dataset(store).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["title"] in (None, "")
 
 
 class _CountingSink:
