@@ -1798,7 +1798,7 @@ class TestVisionMmprojFallback:
     def test_unmapped_vision_model_uses_default_pattern(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
+        """Any vision repo resolves its mmproj via the default glob, with no per-repo table."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         custom_entry = CatalogModel(
             hf_repo="user/CustomVision-1B-GGUF",

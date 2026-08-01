@@ -384,7 +384,7 @@ class TestShowModelData:
     def test_catalog_and_installed_merged(self, fake_manager, native_manifests):
         entry = _catalog_model()
         with (
-            patch("lilbee.catalog.find_catalog_entry", return_value=entry),
+            patch("lilbee.catalog.find_pick", return_value=entry),
             patch(
                 "lilbee.app.models._resolve_native_path",
                 return_value="/fake/path.gguf",
@@ -404,7 +404,7 @@ class TestShowModelData:
         entry = _catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
         with (
             patch("lilbee.app.models._native_manifest_index", return_value={}),
-            patch("lilbee.catalog.find_catalog_entry", return_value=entry),
+            patch("lilbee.catalog.find_pick", return_value=entry),
         ):
             data = model_mod.show_model_data("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
         assert data.installed is False
@@ -414,7 +414,7 @@ class TestShowModelData:
     def test_unknown_ref_raises_not_found(self, empty_manager):
         with (
             patch("lilbee.app.models._native_manifest_index", return_value={}),
-            patch("lilbee.catalog.find_catalog_entry", return_value=None),
+            patch("lilbee.catalog.find_pick", return_value=None),
             pytest.raises(ModelNotFoundError, match="model not found: ghost"),
         ):
             model_mod.show_model_data("ghost:latest")
@@ -447,7 +447,7 @@ class TestShowCmd:
     def test_human_output_installed(self, fake_manager, native_manifests):
         entry = _catalog_model()
         with (
-            patch("lilbee.catalog.find_catalog_entry", return_value=entry),
+            patch("lilbee.catalog.find_pick", return_value=entry),
             patch(
                 "lilbee.app.models._resolve_native_path",
                 return_value="/fake/path.gguf",
@@ -462,7 +462,7 @@ class TestShowCmd:
     def test_json_output_roundtrips(self, fake_manager, native_manifests):
         entry = _catalog_model()
         with (
-            patch("lilbee.catalog.find_catalog_entry", return_value=entry),
+            patch("lilbee.catalog.find_pick", return_value=entry),
             patch("lilbee.app.models._resolve_native_path", return_value="/p.gguf"),
         ):
             result = runner.invoke(app, ["--json", "model", "show", _CHAT_REF])
@@ -476,7 +476,7 @@ class TestShowCmd:
     def test_json_not_found_exits_1(self, empty_manager):
         with (
             patch("lilbee.app.models._native_manifest_index", return_value={}),
-            patch("lilbee.catalog.find_catalog_entry", return_value=None),
+            patch("lilbee.catalog.find_pick", return_value=None),
         ):
             result = runner.invoke(app, ["--json", "model", "show", "ghost:1"])
         assert result.exit_code == 1
@@ -486,7 +486,7 @@ class TestShowCmd:
     def test_human_not_found_exits_1(self, empty_manager):
         with (
             patch("lilbee.app.models._native_manifest_index", return_value={}),
-            patch("lilbee.catalog.find_catalog_entry", return_value=None),
+            patch("lilbee.catalog.find_pick", return_value=None),
         ):
             result = runner.invoke(app, ["model", "show", "ghost:1"])
         assert result.exit_code == 1
