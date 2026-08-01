@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""tui-crawl: one web page into the knowledge base, then a question about it.
+
+The `/crawl` modal has flattened since the retired tape was written: recursion, the
+browser toggle, the page cap and the depth cap are all on one form now, with no Advanced
+section to expand. Tab order is URL, Recursive, Use browser, Max pages, Depth cap, then
+the Crawl button.
+
+Both checkboxes ship enabled. This reel turns them off: recursion because the point is a
+single page, and the browser because a Chromium render is neither needed for a static
+article nor honest about what the default path costs.
+"""
+from __future__ import annotations
+
+import pathlib
+import shutil
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import drive  # noqa: E402
+
+NAME = "tui-crawl"
+COLS, ROWS = 128, 41
+MUST_STRINGS = ("Recursive", "en.wikipedia.org", "9C1")
+
+ROOT = pathlib.Path.home() / ".cache/lilbee-reel/crawl"
+URL = "https://en.wikipedia.org/wiki/Chevrolet_Caprice"
+QUESTION = "When was the 9C1 Caprice police package introduced?"
+
+CONFIG = """chat_model = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+theme = "rose-pine"
+top_k = 8
+"""
+
+
+def fresh_root(path: pathlib.Path) -> pathlib.Path:
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True)
+    (path / "config.toml").write_text(CONFIG)
+    (path / "data/lancedb").mkdir(parents=True)
+    return path
+
+
+def record(cast: pathlib.Path) -> dict:
+    root = fresh_root(ROOT)
+
+    s = drive.Session("reel-crawl", COLS, ROWS, cast)
+    timings: dict[str, float] = {}
+    t0 = time.monotonic()
+    s.start("lilbee", env={"LILBEE_DATA": str(root)})
+    try:
+        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=120)
+        time.sleep(1.2)
+        s.repaint()
+        s.wait_for(r"personal encyclopedia", timeout=20)
+        time.sleep(0.6)
+        s.mark("boot_end")
+
+        # 1. Open the modal. The URL field takes focus on its own.
+        s.key("i", after=0.5)
+        s.wait_for(r"INSERT", timeout=10)
+        s.key("C-u", after=0.3)
+        s.type_text("/crawl", rate=0.05)
+        time.sleep(0.6)
+        s.key("Enter", after=1.0)
+        s.wait_for(r"Recursive", timeout=20)
+        time.sleep(1.0)
+
+        s.type_text(URL, rate=0.035)
+        time.sleep(1.0)
+
+        # 2. One page, fetched over plain HTTP. Both boxes start ticked.
+        s.key("Tab", after=0.6)
+        s.key("Space", after=0.8)
+        s.key("Tab", after=0.6)
+        s.key("Space", after=0.8)
+        s.key("Tab", after=0.6)
+        s.key("C-u", after=0.3)
+        s.type_text("1", rate=0.05)
+        time.sleep(0.4)
+        s.key("Tab", after=0.6)
+        s.key("C-u", after=0.3)
+        s.type_text("0", rate=0.05)
+        time.sleep(0.8)
+
+        # 3. Fire it.
+        s.key("Tab", after=0.6)
+        s.key("Enter", after=1.0)
+        s.wait_for(r"Recursive", absent=True, timeout=20)
+        time.sleep(0.8)
+
+        # 4. The crawl lands in the Task Center like any other ingest.
+        s.esc()
+        time.sleep(0.3)
+        s.key("t", after=0.8)
+        s.wait_for(r"Background Tasks", timeout=30)
+        timings["crawl"] = s.wait_for(r"(crawl|add)\s+(done|complete)|all caught up",
+                                      timeout=900)
+        time.sleep(2.0)
+
+        # 5. Ask something only that page can answer.
+        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        time.sleep(0.6)
+        s.key("i", after=0.5)
+        s.wait_for(r"INSERT", timeout=10)
+        s.key("C-u", after=0.3)
+        s.type_text(QUESTION, rate=0.045)
+        time.sleep(0.8)
+        s.key("Enter", after=0.8)
+        timings["answer"] = s.wait_for(r"9C1", timeout=900)
+        time.sleep(3.5)
+
+        timings["total"] = time.monotonic() - t0
+        s.mark("payload_end")
+        time.sleep(1.0)
+    finally:
+        s.kill()
+    timings["marks"] = dict(s.marks)
+    timings["motion_spans"] = list(s.motion_spans)
+    return timings
+
+
+if __name__ == "__main__":
+    print(record(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/tui-crawl.cast")))
