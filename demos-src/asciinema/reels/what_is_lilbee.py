@@ -21,6 +21,9 @@ import drive  # noqa: E402
 NAME = "what_is_lilbee"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Background Tasks", "what does lilbee do", "README.md")
+# Nothing may still be generating when the reel stops.
+TAIL_FORBID = ("Cancel stream",)
+
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/whatis"
 DOC = pathlib.Path.home() / "projects/lilbee/README.md"
@@ -88,15 +91,19 @@ def record(cast: pathlib.Path) -> dict:
         # 3. Back to chat and ask.
         s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
         time.sleep(0.6)
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.type_text(QUESTION, rate=0.02)
-        time.sleep(1.0)
-        s.key("Enter", after=0.8)
+        # Placement stays open through the answer: it shows which card the model is on
+        # while it is generating, which is the part of the story a chat pane alone
+        # cannot tell.
+        s.key("C-g", after=1.0)
+        s.wait_for(r"Placement", timeout=25)
+        time.sleep(1.4)
+        s.ask(QUESTION, rate=0.045)
 
         # 4. The answer, with its citation. Engine load is part of the wait on a cold
         # start, which is why the budget is generous rather than tuned to a warm run.
-        timings["answer"] = s.wait_for(r"README\.md", timeout=600)
+        s.mark("gen_start")
+        timings["answer"] = s.await_answer()
+        s.mark("gen_end")
         time.sleep(3.5)
 
         timings["total"] = time.monotonic() - t0

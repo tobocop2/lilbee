@@ -4,6 +4,12 @@
 Same modal as tui-crawl with the opposite settings: recursion left on, a page cap so the
 crawl is bounded and the reel ends, depth 1 so the answer has to come from more than the
 seed page. The Task Center shows several pages landing rather than one.
+
+Deliberately a different article from tui-crawl. Both reels pointed at the Caprice page
+for one take, which made the site reel look like the single-page reel with a bigger
+number in the page cap; the whole distinction it exists to draw was invisible. Full-size
+car is a hub article whose depth-1 neighbourhood is a set of related models, so the
+answer has to come from more than the page that was typed in.
 """
 from __future__ import annotations
 
@@ -17,12 +23,15 @@ from reels.tui_crawl import fresh_root  # noqa: E402
 
 NAME = "tui-crawl-site"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Recursive", "Max pages", "Caprice")
+MUST_STRINGS = ("Recursive", "Max pages", "Full-size_car")
+# Nothing may still be generating when the reel stops.
+TAIL_FORBID = ("Cancel stream",)
+
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/crawl-site"
-URL = "https://en.wikipedia.org/wiki/Chevrolet_Caprice"
+URL = "https://en.wikipedia.org/wiki/Full-size_car"
 MAX_PAGES = "5"
-QUESTION = "which engines were offered in the Caprice, and what replaced it?"
+QUESTION = "what defines a full-size car, and name two examples?"
 
 
 def record(cast: pathlib.Path) -> dict:
@@ -81,13 +90,16 @@ def record(cast: pathlib.Path) -> dict:
 
         s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
         time.sleep(0.6)
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
-        s.type_text(QUESTION, rate=0.04)
-        time.sleep(0.8)
-        s.key("Enter", after=0.8)
-        timings["answer"] = s.wait_for(r"Sources:", timeout=900)
+        # Placement stays open through the answer: it shows which card the model is on
+        # while it is generating, which is the part of the story a chat pane alone
+        # cannot tell.
+        s.key("C-g", after=1.0)
+        s.wait_for(r"Placement", timeout=25)
+        time.sleep(1.4)
+        s.ask(QUESTION, rate=0.04)
+        s.mark("gen_start")
+        timings["answer"] = s.await_answer()
+        s.mark("gen_end")
         time.sleep(4.0)
 
         timings["total"] = time.monotonic() - t0

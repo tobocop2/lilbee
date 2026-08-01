@@ -30,6 +30,9 @@ import lite  # noqa: E402
 NAME = "first-start"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("personal encyclopedia", "what is lilbee in one sentence", "README.md")
+# Nothing may still be generating when the reel stops.
+TAIL_FORBID = ("Cancel stream",)
+
 
 QUESTION = "what is lilbee in one sentence?"
 
@@ -59,14 +62,29 @@ def record(cast: pathlib.Path) -> dict:
         # person would not type into a window that has just appeared either.
         time.sleep(6.0)
 
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
-        s.type_text(QUESTION, rate=0.045)
+        # Placement stays open through the answer: it shows which card the model is on
+        # while it is generating, which is the part of the story a chat pane alone
+        # cannot tell.
+        s.key("C-g", after=1.0)
+        s.wait_for(r"Placement", timeout=25)
+        time.sleep(1.4)
+        s.ask(QUESTION, rate=0.045)
+        s.mark("gen_start")
+        timings["answer"] = s.await_answer()
+        s.mark("gen_end")
+        time.sleep(2.0)
+
+        # Scroll back through the exchange. Two purposes: the answer is longer than the
+        # pane on a first run with the placement drawer open, and this is the reel's only
+        # sustained driver motion that happens after the app has stopped doing startup
+        # work -- the question is typed while it is still busy, at about 8fps, which is
+        # too few frames to measure anything from.
+        s.esc()
+        time.sleep(0.4)
+        s.key(*(["k"] * 14), after=0.045)
         time.sleep(0.8)
-        s.key("Enter", after=0.8)
-        timings["answer"] = s.wait_for(r"README\.md", timeout=900)
-        time.sleep(3.5)
+        s.key(*(["j"] * 14), after=0.045)
+        time.sleep(1.6)
 
         timings["total"] = time.monotonic() - t0
         s.mark("payload_end")

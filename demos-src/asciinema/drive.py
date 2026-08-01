@@ -122,6 +122,43 @@ class Session:
         raise Timeout(f"{pattern!r} did not {state} within {timeout}s\n--- screen ---\n"
                       f"{self.screen()}")
 
+    def ask(self, question: str, *, rate: float = 0.045, dwell: float = 0.9) -> None:
+        """Put the chat input in insert mode, type a question, and confirm it arrived.
+
+        Does not wait for the INSERT chip. With the placement drawer open the header is
+        narrowed and the chip is pushed off it, so waiting on the chip fails on a reel
+        where the input is working perfectly well. What matters is whether the characters
+        landed in the input, so that is what gets checked -- and if they did not, they
+        went to the app as key bindings, which is worth failing the take over.
+        """
+        self.key("i", after=0.6)
+        self.key("C-u", after=0.35)
+        self.type_text(question, rate=rate)
+        time.sleep(dwell)
+        probe = re.escape(question[:24])
+        if not re.search(probe, self.screen()):
+            raise Timeout(f"question never reached the input: {question!r}\n"
+                          f"--- screen ---\n{self.screen()}")
+        self.key("Enter", after=0.8)
+
+    def await_answer(self, timeout: float = 900.0) -> float:
+        """Block until generation has finished, not until the answer looks likely.
+
+        Waiting on a phrase from the expected answer is the trap this replaces. The
+        question is on screen too, so ``wait_for("9C1")`` matched the text the driver had
+        just typed and returned in 0.0s -- the crawl reel cut to black with the thinking
+        spinner still running and every gate green, because the reel really did contain
+        every string it was asked for.
+
+        Two conditions, both about the app rather than the content: the citations block
+        exists, and the footer has stopped offering to cancel the stream.
+        """
+        start = time.monotonic()
+        self.wait_for(r"Sources:", timeout=timeout)
+        self.wait_for(r"Cancel stream", absent=True,
+                      timeout=max(5.0, timeout - (time.monotonic() - start)))
+        return time.monotonic() - start
+
     def wait_settled(self, quiet: float = 1.0, timeout: float = 120.0) -> float:
         """Block until the screen stops changing for `quiet` seconds."""
         start = time.monotonic()

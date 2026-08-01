@@ -50,6 +50,8 @@ HOLD_MS = 300
 # characters against a ~60ms repaint is a dozen frames. Asking for more than that
 # marks honest reels untested rather than catching anything.
 MIN_MOTION_FRAMES = 12
+# How much of the end of a reel counts as "where it stopped".
+TAIL_SECONDS = 3.0
 MAX_CONTENT_GAP = 4.0
 MAX_STALL_SHARE = 0.20
 MAX_GIF_MB = 10.0
@@ -90,7 +92,8 @@ def _events(cast: pathlib.Path) -> list[tuple[float, str]]:
 
 def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
               forbid: tuple[str, ...] = ("Traceback", "not ready yet", "Error 1213"),
-              window: tuple[float, float | None] | None = None) -> list[Row]:
+              window: tuple[float, float | None] | None = None,
+              tail_forbid: tuple[str, ...] = ()) -> list[Row]:
     """Everything checkable from the byte stream, before a frame is ever rendered.
 
     ``window`` restricts every check to the span that actually ships. Without it the boot
@@ -112,6 +115,17 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
     rows.append(Row("no_error_text", "FAIL" if hits else "PASS",
                     f"found {hits}" if hits else "clean"))
 
+    # What is still on screen when the reel stops. A reel that cuts while the model is
+    # mid-sentence passes every other row -- it really does contain the question, the
+    # citation and the strings it was asked for -- and ends on a spinner.
+    if tail_forbid and events:
+        cut = events[-1][0] - TAIL_SECONDS
+        tail = "".join(d for t_, d in events if t_ >= cut)
+        stuck = [f for f in tail_forbid if f in tail]
+        rows.append(Row("finished_before_cut", "FAIL" if stuck else "PASS",
+                        f"still showing {stuck} in the last {TAIL_SECONDS:.0f}s"
+                        if stuck else f"nothing in flight over the last {TAIL_SECONDS:.0f}s"))
+
     # Content-bearing gaps only. Measuring raw event gaps is the check that cannot fail:
     # the thinking header ticks at 0.1s, so there is always an event.
     #
@@ -131,6 +145,38 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
                         f"{stall:.1f}s of stall over {span:.1f}s = {share:.0%} "
                         f"(limit {MAX_STALL_SHARE:.0%}), longest gap {gaps.max():.1f}s"))
     return rows
+
+
+def artifact_gate(shipped: pathlib.Path, reference: pathlib.Path) -> Row:
+    """Compare the shipped gif against the frames agg drew, pixel for pixel.
+
+    Every step after the render -- optimisation, quantisation, whatever gets added next --
+    is supposed to be lossless. Nothing checked that, and a ``--lossy`` flag shipped ten
+    reels whose footer text rendered as two overlapping copies of itself: the compressor
+    judged the changed pixels close enough to skip, so the previous frame's glyphs stayed
+    underneath the new ones. Stroke weight and text colour barely move under that damage,
+    so the existing rows all stayed green.
+
+    Compared as exact pixels rather than as a statistic. A ghosted glyph is a handful of
+    wrong pixels in a 1404x907 frame; any tolerance wide enough to be "robust" is wide
+    enough to miss it.
+    """
+    a = [np.asarray(f.convert("RGB"), dtype=np.int16)
+         for f in ImageSequence.Iterator(Image.open(shipped))]
+    b = [np.asarray(f.convert("RGB"), dtype=np.int16)
+         for f in ImageSequence.Iterator(Image.open(reference))]
+    if len(a) != len(b):
+        return Row("no_render_artifacts", "FAIL",
+                   f"shipped gif has {len(a)} frames, the render had {len(b)}")
+    worst, dirty = 0, 0
+    for fa, fb in zip(a, b):
+        diff = int(np.abs(fa - fb).max())
+        worst = max(worst, diff)
+        if diff > 0:
+            dirty += 1
+    return Row("no_render_artifacts", "PASS" if worst == 0 else "FAIL",
+               "identical to the render" if worst == 0 else
+               f"{dirty} of {len(a)} frames differ from the render, worst channel {worst}")
 
 
 def render_gate(gif: pathlib.Path,
@@ -315,8 +361,20 @@ def selftest(gif: pathlib.Path, cast: pathlib.Path) -> str:
                  if x.name == "must_strings")
         out.append(f"  missing must      -> {r.status} ({r.detail})")
 
+        # 6. Lossy compression. This is the exact damage that shipped: gifsicle --lossy
+        # leaves stale pixels under changed text, and nothing else here notices.
+        import shutil as _shutil
+        import subprocess as _subprocess
+
+        lossy = d / "lossy.gif"
+        if _shutil.which("gifsicle"):
+            _subprocess.run(["gifsicle", "-O3", "--lossy=40", "--colors", "128",
+                             str(gif), "-o", str(lossy)], check=True, capture_output=True)
+            r = artifact_gate(lossy, gif)
+            out.append(f"  lossy artifacts   -> {r.status} ({r.detail})")
+
     reds = sum(1 for line in out[1:] if "-> FAIL" in line)
-    out.append(f"  {reds}/5 gates went red on demand")
+    out.append(f"  {reds}/{len(out) - 1} gates went red on demand")
     return "\n".join(out)
 
 

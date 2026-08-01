@@ -16,6 +16,7 @@ import argparse
 import importlib
 import json
 import pathlib
+import shutil
 import sys
 import time
 
@@ -48,19 +49,31 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     gif = OUT / f"{name}.gif"
     # Head-trim to the mark, not to zero: the boot banner and shell prompt are not the
     # reel. A reel with no marks ships whole rather than guessing a window.
+    # Compress the generation window if the reel marked one. On a laptop most of a chat
+    # reel can be a progress bar, and the answer is the part worth watching.
+    speedup = None
+    if "gen_start" in marks and "gen_end" in marks:
+        speedup = (marks["gen_start"], marks["gen_end"],
+                   getattr(mod, "SPEED_FACTOR", 6))
     info = frametrim.trim_gif(full.with_suffix(".gif"), gif,
                               start=marks.get("boot_end", 0.0),
-                              end=marks.get("payload_end"))
+                              end=marks.get("payload_end"),
+                              speedup=speedup)
     print("trimmed " + str({k: v for k, v in info.items() if k != "kept_starts"}))
     for stale in (full.with_suffix(".gif"), full.with_suffix(".mp4"), full.with_suffix(".png")):
         stale.unlink(missing_ok=True)
+    # Keep what the renderer produced, before anything optimises it, so the shipped file
+    # can be compared against it rather than trusted.
+    reference = OUT / f"{name}.reference.gif"
+    shutil.copy(gif, reference)
     _optimize(gif)
     _derive(gif)
 
     forbid = ("Traceback", "not ready yet", "Error 1213", "No space left on device",
               *getattr(mod, "FORBID_STRINGS", ()))
     rows = gates.cast_gate(cast, must=tuple(getattr(mod, "MUST_STRINGS", ())), forbid=forbid,
-                           window=(marks.get("boot_end", 0.0), marks.get("payload_end")))
+                           window=(marks.get("boot_end", 0.0), marks.get("payload_end")),
+                           tail_forbid=getattr(mod, "TAIL_FORBID", ()))
     # Map driver-motion spans onto frame indices using each frame's ORIGINAL time. Hold
     # clamping shortens frames, so a position in the finished gif no longer says when that
     # frame happened; matching on output timing put every span in the wrong place and
@@ -71,6 +84,8 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     motion_idx = {i for i, t in enumerate(starts)
                   if any(lo <= t <= hi for lo, hi in spans)}
     rows += gates.render_gate(gif, motion_idx=motion_idx or None)
+    rows.append(gates.artifact_gate(gif, reference))
+    reference.unlink(missing_ok=True)
     text, ok = gates.scorecard(name, rows)
     (OUT / f"{name}.score.txt").write_text(text + "\n")
     print(text)
@@ -78,13 +93,19 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
 
 
 def _optimize(gif: pathlib.Path) -> None:
-    """Shrink the gif with gifsicle rather than by cutting content out of the reel.
+    """Shrink the gif with gifsicle, losslessly.
 
-    A full-screen scroll changes nearly every pixel, so inter-frame deltas save almost
-    nothing and a scrolling reel lands twice the size of a static one. Colour-quantising
-    it is the cheap axis; the alternative is deleting beats to fit a byte budget, which
-    is the wrong thing to trade. The gates run afterwards, so a lossy setting that hurts
-    stroke weight or text colour still gets caught.
+    ``--lossy`` is not an option here and never was. It decides some changed pixels are
+    close enough to skip, so those pixels keep whatever the previous frame left in them,
+    and text that changes between frames renders as two overlapping copies of itself --
+    the footer hint in every reel came out looking struck through. It shipped once because
+    the gates measured stroke weight and text colour, which lossy quantisation barely
+    moves, and nothing compared the shipped frames against the ones agg drew. That
+    comparison is now its own gate row.
+
+    A full-screen scroll changes nearly every pixel, so inter-frame deltas save little and
+    a scrolling reel lands large. If that ever exceeds the size cap the answer is fewer
+    beats, not a dirtier picture.
     """
     import shutil
     import subprocess
@@ -92,8 +113,8 @@ def _optimize(gif: pathlib.Path) -> None:
     if not shutil.which("gifsicle"):
         return
     tmp = gif.with_suffix(".opt.gif")
-    subprocess.run(["gifsicle", "-O3", "--lossy=40", "--colors", "128",
-                    str(gif), "-o", str(tmp)], check=True, capture_output=True)
+    subprocess.run(["gifsicle", "-O3", str(gif), "-o", str(tmp)],
+                   check=True, capture_output=True)
     if tmp.stat().st_size < gif.stat().st_size:
         tmp.replace(gif)
     else:
