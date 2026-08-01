@@ -51,6 +51,9 @@ body {
   padding: 2.5rem var(--gutter) 4rem;
   position: relative;
   overflow-x: hidden;
+  /* clip, not hidden: hidden makes body a scroll container on mobile browsers,
+     which breaks the sticky nav. clip never creates one. */
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -749,6 +752,7 @@ section[id] { scroll-margin-top: 4.2rem; }
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
+  min-width: 0;
   padding: 6px 0;
   border-bottom: none;
   color: var(--ink);
@@ -757,6 +761,7 @@ section[id] { scroll-margin-top: 4.2rem; }
 .links a .dots {
   color: var(--rule-2);
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   letter-spacing: 0.12em;
