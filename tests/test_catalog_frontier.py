@@ -402,6 +402,21 @@ class TestFetchFamiliesWorker:
         assert screen._fetch_families.__wrapped__(screen) == []
 
 
+class TestFamiliesWorkerCancel:
+    def test_a_cancelled_families_worker_stops_the_spinner(self) -> None:
+        """A cancelled fetch must clear the in-flight flag, or the spinner runs forever."""
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_FAMILIES, CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._loading_more = False
+        screen._search_in_flight = False
+        screen._families_in_flight = True
+
+        screen._handle_worker_error_or_cancel(_WORKER_FETCH_FAMILIES)
+
+        assert screen._families_in_flight is False
+
+
 class TestFrontierSelection:
     """ModelList.Selected on the Frontier tab routes through _select_row."""
 
