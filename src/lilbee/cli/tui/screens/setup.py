@@ -222,7 +222,7 @@ class SetupWizard(Screen[str | None]):
         """
         chat_picks = picks_for(ModelTask.CHAT)
         embed_picks = picks_for(ModelTask.EMBEDDING)
-        self.app.call_from_thread(self._build_grid, chat_picks, embed_picks)
+        call_from_thread(self, self._build_grid, chat_picks, embed_picks)
 
     def _build_section(
         self,
