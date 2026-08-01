@@ -19,8 +19,9 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
+from conftest import PICKS_CHAT, PICKS_EMBEDDING
 from lilbee.app.services import reset_services as reset_provider
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+from lilbee.catalog import download_model
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
@@ -124,12 +125,12 @@ def _chat_model_entry():
     """Return the chat model catalog entry based on env var or default."""
     from tests.integration.conftest import _CI_CHAT_REPO
 
-    return next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    return next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
 
 
 def _embedding_model_entry():
     """Return the nomic-embed-text catalog entry."""
-    return FEATURED_EMBEDDING[0]
+    return PICKS_EMBEDDING[0]
 
 
 @pytest.fixture(scope="module")

@@ -13,7 +13,6 @@ import httpx
 from pydantic import BaseModel
 
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
-from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HF_API_URL,
@@ -22,6 +21,7 @@ from lilbee.catalog.hf_client import (
     repo_has_mmproj,
 )
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.picks import DEFAULT_MMPROJ_PATTERN
 from lilbee.catalog.refs import pick_best_gguf
 from lilbee.catalog.types import ModelTask
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -268,9 +268,7 @@ def download_mmproj(
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
-
-    mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, mmproj_pattern)
+    mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
     if not mmproj_filename:
         log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
         return None
@@ -324,48 +322,6 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
             if preference in f:
                 return f
     return mmproj_files[0]
-
-
-def _mmproj_in_repo_cache(hf_repo: str, pattern: str) -> Path | None:
-    """Return an mmproj ``*.gguf`` from *hf_repo*'s own HF cache subtree, or None.
-
-    Scoped to the repo's ``models--<org>--<repo>`` directory so a different vision
-    repo's mmproj is never returned. An unscoped models-dir walk would let a chat
-    model inherit another model's mmproj and be misreported as vision-capable.
-    """
-    from huggingface_hub.constants import REPO_ID_SEPARATOR
-
-    repo_cache = _models_dir() / f"models--{hf_repo.replace('/', REPO_ID_SEPARATOR)}"
-    if not repo_cache.exists():
-        return None
-    for p in repo_cache.rglob("*.gguf"):
-        if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
-            return p
-    return None
-
-
-def find_mmproj_file(model_ref: str) -> Path | None:
-    """Find the mmproj for a ``FEATURED_VISION`` entry under the models dir.
-
-    *model_ref* is matched against each featured vision entry's
-    ``hf_repo``. Returns ``None`` when nothing matches. Never falls back
-    to an arbitrary mmproj: that cross-contaminates non-vision chat
-    models (e.g. a chat model would inherit a vision model's mmproj and
-    be misreported as vision-capable).
-    """
-    # Local import to avoid pulling featured.py into hf_client/ etc.
-    from lilbee.catalog.featured import FEATURED_VISION
-
-    if not _models_dir().exists():
-        return None
-    for entry in FEATURED_VISION:
-        if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:
-            continue
-        pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
-        match = _mmproj_in_repo_cache(entry.hf_repo, pattern)
-        if match is not None:
-            return match
-    return None
 
 
 def resolve_filename(entry: CatalogModel) -> str:

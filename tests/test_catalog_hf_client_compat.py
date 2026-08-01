@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from conftest import SAMPLE_PICKS
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 
@@ -59,8 +60,7 @@ def test_fetch_populates_arch_cache(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_featured_catalog_models_are_supported_compat() -> None:
     """Curated featured entries carry SUPPORTED; the pull-time probe still re-checks arch."""
-    from lilbee.catalog.featured import FEATURED_ALL
 
-    for entry in FEATURED_ALL:
+    for entry in SAMPLE_PICKS:
         assert entry.compat is ModelCompat.SUPPORTED
         assert entry.architecture == ""

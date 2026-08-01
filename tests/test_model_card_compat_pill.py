@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import SAMPLE_PICKS
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.messages import COMPAT_PILL_UNKNOWN, COMPAT_PILL_UNSUPPORTED
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
@@ -96,10 +97,9 @@ def test_unknown_pill_text_is_self_explanatory() -> None:
 
 def test_featured_entries_carry_supported_compat() -> None:
     """Curated featured models are known to run; none may render an unknown pill."""
-    from lilbee.catalog import FEATURED_ALL
 
-    assert FEATURED_ALL
-    assert all(m.compat is ModelCompat.SUPPORTED for m in FEATURED_ALL)
+    assert SAMPLE_PICKS
+    assert all(m.compat is ModelCompat.SUPPORTED for m in SAMPLE_PICKS)
 
 
 def test_catalog_to_row_marks_installed_rows_supported() -> None:

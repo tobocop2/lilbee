@@ -16,6 +16,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.widgets import Footer
 
+from conftest import PICKS_CHAT
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -148,10 +149,9 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
 @pytest.mark.asyncio
 async def test_enter_on_installed_card_does_not_submit_download() -> None:
     """Installed cards save config but skip start_download (nothing to fetch)."""
-    from lilbee.catalog import FEATURED_CHAT
 
     app = LilbeeApp()
-    installed_chat = [FEATURED_CHAT[0].ref]
+    installed_chat = [PICKS_CHAT[0].ref]
     with _patch_setup_scan(chat=installed_chat), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
             wizard = await _wait_for_wizard_cards(app, pilot)

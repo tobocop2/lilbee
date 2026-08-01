@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import PICKS_CHAT, PICKS_EMBEDDING
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
@@ -107,7 +108,7 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     yields pipeline data, then restores config.
     """
     from lilbee.app.services import reset_services as reset_provider
-    from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+    from lilbee.catalog import download_model
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
@@ -140,11 +141,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
 
     reset_provider()
 
-    embed_entry = FEATURED_EMBEDDING[0]
+    embed_entry = PICKS_EMBEDDING[0]
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    chat_entry = next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    chat_entry = next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
     download_model(chat_entry)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
@@ -171,7 +172,7 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     runs sync, yields pipeline data, then restores config.
     """
     from lilbee.app.services import reset_services as reset_provider
-    from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+    from lilbee.catalog import download_model
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
@@ -206,11 +207,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
 
     reset_provider()
 
-    embed_entry = FEATURED_EMBEDDING[0]
+    embed_entry = PICKS_EMBEDDING[0]
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    chat_entry = next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    chat_entry = next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
     download_model(chat_entry)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 

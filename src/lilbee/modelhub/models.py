@@ -38,18 +38,18 @@ class ModelInfo:
     description: str
 
 
-def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
+def _catalog_from_picks(picks: tuple) -> tuple[ModelInfo, ...]:
     """Build a ModelInfo tuple from ``lilbee.catalog``'s CatalogModel entries."""
     return tuple(
-        ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in featured
+        ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in picks
     )
 
 
 @functools.cache
 def _get_model_catalog() -> tuple[ModelInfo, ...]:
-    from lilbee.catalog import FEATURED_CHAT
+    from lilbee.catalog import picks_for
 
-    return _catalog_from_featured(FEATURED_CHAT)
+    return _catalog_from_picks(picks_for(ModelTask.CHAT))
 
 
 def __getattr__(name: str) -> tuple[ModelInfo, ...]:

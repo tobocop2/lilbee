@@ -14,10 +14,9 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 from textual.widgets._tabbed_content import ContentTabs
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from conftest import PICKS_CHAT, PICKS_EMBEDDING, TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
 from lilbee.catalog import (
-    FEATURED_EMBEDDING,
     CatalogModel,
     CatalogResult,
 )
@@ -9920,7 +9919,7 @@ def test_pick_recommended_small_ram():
 
     chat, embed = _pick_recommended(3.0)
     assert chat.min_ram_gb <= 3.0
-    assert embed == FEATURED_EMBEDDING[0]
+    assert embed == PICKS_EMBEDDING[0]
 
 
 def test_pick_recommended_medium_ram():
@@ -9941,7 +9940,7 @@ def test_pick_recommended_always_nomic_embed():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
     _, embed = _pick_recommended(4.0)
-    assert embed.hf_repo == FEATURED_EMBEDDING[0].hf_repo
+    assert embed.hf_repo == PICKS_EMBEDDING[0].hf_repo
 
 
 def test_scan_installed_models_empty():
@@ -10076,12 +10075,11 @@ async def test_setup_wizard_deselects_previous():
 
 async def test_setup_wizard_commit_chat_selection_writes_settings():
     """An installed chat card applies synchronously (no download to defer behind)."""
-    from lilbee.catalog import FEATURED_CHAT
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    installed_ref = FEATURED_CHAT[0].ref
+    installed_ref = PICKS_CHAT[0].ref
     with _patch_setup_scan(chat=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -10098,12 +10096,11 @@ async def test_setup_wizard_commit_chat_selection_writes_settings():
 
 async def test_setup_wizard_commit_embed_selection_writes_settings():
     """An installed embedding card applies synchronously (no download to defer behind)."""
-    from lilbee.catalog import FEATURED_EMBEDDING
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    installed_ref = FEATURED_EMBEDDING[0].ref
+    installed_ref = PICKS_EMBEDDING[0].ref
     with _patch_setup_scan(embed=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()

@@ -32,6 +32,7 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
+from lilbee.catalog.types import ModelCompat
 from lilbee.core.config import cfg
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
@@ -690,6 +691,29 @@ TEST_EMBED_FILE = "test-embed-Q4_K_M.gguf"
 TEST_EMBED_REF = f"{TEST_EMBED_REPO}/{TEST_EMBED_FILE}"
 
 
+def _pick(
+    hf_repo: str,
+    task: str,
+    params: int,
+    size_gb: float,
+    min_ram_gb: float,
+    gguf_filename: str = "*Q4_K_M.gguf",
+) -> CatalogModel:
+    """Build one entry of :data:`SAMPLE_PICKS`."""
+    return CatalogModel(
+        hf_repo=hf_repo,
+        gguf_filename=gguf_filename,
+        size_gb=size_gb,
+        min_ram_gb=min_ram_gb,
+        description=f"Sample {task} pick",
+        featured=True,
+        downloads=1000,
+        task=task,
+        compat=ModelCompat.SUPPORTED,
+        params=params,
+    )
+
+
 def make_test_catalog_model(
     name: str = "TestModel",
     task: str = "chat",
@@ -711,6 +735,58 @@ def make_test_catalog_model(
         downloads=100,
         task=task,
     )
+
+
+# A deterministic stand-in for the live HuggingFace picks. Unit tests must not
+# depend on what is trending, and must not reach the network at all, so the
+# autouse fixture below seeds these instead. Chat entries cover all four
+# parameter tiers so tier-sensitive assertions have something to bite on.
+SAMPLE_PICKS: tuple[CatalogModel, ...] = (
+    _pick("tiny/Tiny-1B-GGUF", "chat", 1_000_000_000, 0.6, 2.0),
+    _pick("small/Small-3B-GGUF", "chat", 3_000_000_000, 1.8, 2.7),
+    _pick("mid/Mid-8B-GGUF", "chat", 8_000_000_000, 4.6, 6.9),
+    _pick("mid/Mid-13B-GGUF", "chat", 13_000_000_000, 7.4, 11.1),
+    _pick("large/Large-27B-GGUF", "chat", 27_000_000_000, 15.4, 23.1),
+    _pick("large/Large-34B-GGUF", "chat", 34_000_000_000, 19.4, 29.1),
+    _pick("huge/Huge-70B-GGUF", "chat", 70_000_000_000, 40.0, 60.0),
+    _pick("huge/Huge-120B-GGUF", "chat", 120_000_000_000, 68.6, 102.9),
+    _pick(
+        "embed/Test-Embedding-GGUF",
+        "embedding",
+        300_000_000,
+        0.2,
+        2.0,
+        gguf_filename="test-embedding-Q4_K_M.gguf",
+    ),
+    _pick("embed/Other-Embedding-GGUF", "embedding", 500_000_000, 0.3, 2.0),
+    _pick("embed/Third-Embedding-GGUF", "embedding", 700_000_000, 0.4, 2.0),
+    _pick("vision/Test-VL-GGUF", "vision", 4_000_000_000, 2.3, 3.5),
+    _pick("rerank/bge-reranker-test-GGUF", "rerank", 600_000_000, 0.4, 2.0),
+)
+
+
+PICKS_CHAT: tuple[CatalogModel, ...] = tuple(m for m in SAMPLE_PICKS if m.task == "chat")
+PICKS_EMBEDDING: tuple[CatalogModel, ...] = tuple(m for m in SAMPLE_PICKS if m.task == "embedding")
+PICKS_VISION: tuple[CatalogModel, ...] = tuple(m for m in SAMPLE_PICKS if m.task == "vision")
+PICKS_RERANK: tuple[CatalogModel, ...] = tuple(m for m in SAMPLE_PICKS if m.task == "rerank")
+
+
+@pytest.fixture(autouse=True)
+def _seed_model_picks(request):
+    """Seed deterministic picks so no unit test fetches HuggingFace trending.
+
+    Opt out with ``@pytest.mark.live_picks`` when a test drives the real
+    resolution path itself.
+    """
+    from lilbee.catalog import picks as picks_mod
+
+    if request.node.get_closest_marker("live_picks"):
+        yield
+        return
+    picks_mod.reset_picks()
+    picks_mod._picks = SAMPLE_PICKS
+    yield
+    picks_mod.reset_picks()
 
 
 def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:

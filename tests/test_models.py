@@ -4,6 +4,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import PICKS_CHAT
 from lilbee.modelhub import models
 from lilbee.modelhub.models import MODEL_CATALOG, ModelInfo
 from tests._mock_effects import repeat_last
@@ -18,11 +19,10 @@ class TestModelCatalog:
             assert isinstance(m, ModelInfo)
 
     def test_derived_from_catalog(self):
-        """MODEL_CATALOG entries match catalog.py's FEATURED_CHAT."""
-        from lilbee.catalog import FEATURED_CHAT
+        """MODEL_CATALOG entries match catalog.py's PICKS_CHAT."""
 
-        assert len(MODEL_CATALOG) == len(FEATURED_CHAT)
-        for mc, fc in zip(MODEL_CATALOG, FEATURED_CHAT, strict=True):
+        assert len(MODEL_CATALOG) == len(PICKS_CHAT)
+        for mc, fc in zip(MODEL_CATALOG, PICKS_CHAT, strict=True):
             assert mc.ref == fc.ref
 
     def test_frozen(self):

@@ -915,7 +915,8 @@ def catalog_browse(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Browse the lilbee model catalog. ``task``: chat/embedding/vision/rerank.
-    ``size``: small/medium/large. ``sort``: featured/downloads/name/size_asc/size_desc."""
+    ``size``: small/medium/large/huge, by parameter count.
+    ``sort``: featured/downloads/name/size_asc/size_desc."""
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 

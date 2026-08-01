@@ -346,9 +346,12 @@ def reset_services() -> None:
     entry point that would call this mid-flight is refused, so it only ever
     runs single-client (CLI, TUI, stdio MCP).
     """
+    from lilbee.catalog.picks import reset_picks
+
     with _reset_swap_lock:
         old = _state.singleton
         _state.singleton = None
+    reset_picks()
     if old is not None:
         old.provider.shutdown()
         old.store.close()

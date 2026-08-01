@@ -367,13 +367,12 @@ def _is_native_rerank_ref(model: str) -> bool:
 
     Two acceptance paths:
 
-    1. The ref resolves to a featured rerank catalog entry.
+    1. The ref names a reranker.
     2. The ref has the native HuggingFace GGUF shape
        ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix) and is
        not claimed by a local-server prefix (``ollama/``, ``lm_studio/``),
        matching :func:`parse_model_ref`'s exemption. This lets users point
-       ``cfg.reranker_model`` at any installed native GGUF reranker instead of
-       only the ones that ship in ``FEATURED_ALL``. Non-GGUF refs without a
+       ``cfg.reranker_model`` at any installed native GGUF reranker. Non-GGUF refs without a
        known SDK prefix still raise downstream through ``parse_model_ref``.
     """
     if not model:

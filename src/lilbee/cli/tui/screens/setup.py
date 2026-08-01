@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
@@ -30,11 +31,10 @@ from textual.widgets import Label, Static
 
 from lilbee.app.services import reset_services
 from lilbee.catalog import (
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
     CatalogModel,
     display_label_for_ref,
     extract_quant,
+    picks_for,
 )
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -105,11 +105,22 @@ def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
     )
 
 
-def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
-    """Pick chat + embedding models appropriate for system RAM."""
-    eligible = [m for m in FEATURED_CHAT if m.min_ram_gb <= ram_gb]
-    chat = max(eligible, key=lambda m: m.size_gb) if eligible else FEATURED_CHAT[0]
-    embed = FEATURED_EMBEDDING[0]
+def _pick_recommended(
+    ram_gb: float,
+    chat_picks: Sequence[CatalogModel],
+    embed_picks: Sequence[CatalogModel],
+) -> tuple[CatalogModel | None, CatalogModel | None]:
+    """Pick chat + embedding models appropriate for system RAM.
+
+    Chat is the largest pick that both fits RAM and runs on the bundled engine;
+    an unsupported architecture is never recommended even when it fits. Either
+    may be None when HuggingFace is unreachable and there are no picks.
+    """
+    eligible = [
+        m for m in chat_picks if m.min_ram_gb <= ram_gb and m.compat == ModelCompat.SUPPORTED
+    ]
+    chat = max(eligible, key=lambda m: m.size_gb) if eligible else None
+    embed = embed_picks[0] if embed_picks else None
     return chat, embed
 
 
@@ -219,7 +230,9 @@ class SetupWizard(Screen[str | None]):
     def _build_grid(self) -> None:
         """Build all model sections and pre-select recommended combo."""
         ram_gb = get_system_ram_gb()
-        rec_chat, rec_embed = _pick_recommended(ram_gb)
+        chat_picks = picks_for(ModelTask.CHAT)
+        embed_picks = picks_for(ModelTask.EMBEDDING)
+        rec_chat, rec_embed = _pick_recommended(ram_gb, chat_picks, embed_picks)
         self._recommended_chat = rec_chat
         self._recommended_embed = rec_embed
 
@@ -241,13 +254,13 @@ class SetupWizard(Screen[str | None]):
 
         chat_cards = self._build_section(
             msg.SETUP_HEADING_CHAT,
-            FEATURED_CHAT,
+            chat_picks,
             installed_refs,
             widgets_to_mount,
             grid_id=SETUP_CHAT_GRID_ID,
         )
         embed_cards = self._build_section(
-            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, installed_refs, widgets_to_mount
+            msg.SETUP_HEADING_EMBED, embed_picks, installed_refs, widgets_to_mount
         )
 
         container.mount_all(widgets_to_mount)

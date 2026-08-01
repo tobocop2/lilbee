@@ -3540,7 +3540,7 @@ class TestRoutingProviderRerank:
     def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
         """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
 
-        Users install community GGUF rerankers that are not in FEATURED_ALL.
+        Users install community GGUF rerankers that are not in SAMPLE_PICKS.
         Without this fall-back, the route silently falls through to the SDK
         provider and surfaces a misleading 'hosted rerank backend not
         available' error to the user (bb-4zvk).

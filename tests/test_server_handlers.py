@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import lilbee.app.services as svc_mod
+from conftest import PICKS_CHAT, PICKS_EMBEDDING, PICKS_RERANK
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
@@ -1876,9 +1877,8 @@ class TestListModels:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_reranker_installed_detected_via_registry(self, mock_get_mm):
         """Rerankers install as GGUFs like chat/embedding; the ref match marks them installed."""
-        from lilbee.catalog import FEATURED_RERANK
 
-        bge = FEATURED_RERANK[0]
+        bge = PICKS_RERANK[0]
         mock_get_mm.return_value.model_manager.list_installed.return_value = [bge.ref]
         result = await handlers.list_models()
         bge_entry = next(m for m in result.reranker.catalog if bge.display_name in m.name)
@@ -1887,9 +1887,8 @@ class TestListModels:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_embedding_installed_detected_via_registry(self, mock_get_mm):
         """Embedding installs surface via the same registry path as chat/reranker."""
-        from lilbee.catalog import FEATURED_EMBEDDING
 
-        entry = FEATURED_EMBEDDING[0]
+        entry = PICKS_EMBEDDING[0]
         mock_get_mm.return_value.model_manager.list_installed.return_value = [entry.ref]
         result = await handlers.list_models()
         embed_entry = next(m for m in result.embedding.catalog if entry.display_name in m.name)
@@ -2698,11 +2697,11 @@ class TestModelsCatalog:
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_size_variants_attached_for_featured_family(self, mock_get_catalog, mock_svc):
         """A featured row exposes its sibling family variants on the response."""
-        from lilbee.catalog import FEATURED_CHAT, CatalogResult
+        from lilbee.catalog import CatalogResult
 
         # Pick the first featured chat repo; its family should yield at least
         # one SizeVariantInfo regardless of how many siblings it has.
-        anchor = FEATURED_CHAT[0]
+        anchor = PICKS_CHAT[0]
         mock_get_catalog.return_value = CatalogResult(total=1, limit=20, offset=0, models=[anchor])
         mock_svc.registry.list_installed.return_value = []
         result = await handlers.models_catalog()

@@ -239,17 +239,13 @@ def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
 
-    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``,
-    (2) HuggingFace-cache ``snapshots/`` sibling of ``blobs/``,
-    (3) same-directory glob for flat sideloaded layouts.
-    Raises ``ProviderError`` if none find a file.
+    Resolution order: (1) the HuggingFace-cache ``snapshots/`` sibling of
+    ``blobs/``, (2) same-directory glob for flat sideloaded layouts. Both look
+    beside the model file itself, so a projector is never borrowed from another
+    repo. Raises ``ProviderError`` if neither finds a file.
     """
-    from lilbee.catalog import find_mmproj_file
-
-    found = (
-        find_mmproj_file(model_path.stem)
-        or _find_mmproj_in_hf_snapshots(model_path.parent)
-        or _find_mmproj_in_flat_dir(model_path.parent)
+    found = _find_mmproj_in_hf_snapshots(model_path.parent) or _find_mmproj_in_flat_dir(
+        model_path.parent
     )
     if found is not None:
         return found

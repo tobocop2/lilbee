@@ -44,8 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
 TESTS_DIR = REPO_ROOT / "tests"
 
-# featured_models.toml carries em dashes in legitimate model display names.
-EM_DASH_EXCLUDED_FILENAMES = {"featured_models.toml"}
+EM_DASH_EXCLUDED_FILENAMES: set[str] = set()
 
 EM_DASH = "—"
 DIVIDER_RE = re.compile(r"^\s*#\s*[-=]{4,}\s*$")

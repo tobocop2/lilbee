@@ -9,7 +9,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from lilbee.catalog import FEATURED_ALL
+from conftest import SAMPLE_PICKS
 from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers
 
 pytestmark = pytest.mark.slow
@@ -17,8 +17,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.mark.parametrize(
     "entry",
-    FEATURED_ALL,
-    ids=[e.hf_repo for e in FEATURED_ALL],
+    ids=[e.hf_repo for e in SAMPLE_PICKS],
 )
 def test_featured_models_all_have_gguf(entry) -> None:
     """Each featured model's HF repo must contain at least one .gguf file."""

@@ -3670,8 +3670,8 @@ class TestSetupWizard:
         large = _make_model("Large", size_gb=18.0, min_ram_gb=16, featured=True)
         embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
         with (
-            mock.patch.object(setup_mod, "FEATURED_CHAT", (tiny, small, medium, large)),
-            mock.patch.object(setup_mod, "FEATURED_EMBEDDING", (embed,)),
+            mock.patch.object(setup_mod, "PICKS_CHAT", (tiny, small, medium, large)),
+            mock.patch.object(setup_mod, "PICKS_EMBEDDING", (embed,)),
         ):
             # 64 GB: everything fits, largest wins.
             chat, picked_embed = setup_mod._pick_recommended(64.0)
@@ -3693,8 +3693,8 @@ class TestSetupWizard:
         big = _make_model("BigOnly", size_gb=40.0, min_ram_gb=64, featured=True)
         embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
         with (
-            mock.patch.object(setup_mod, "FEATURED_CHAT", (big,)),
-            mock.patch.object(setup_mod, "FEATURED_EMBEDDING", (embed,)),
+            mock.patch.object(setup_mod, "PICKS_CHAT", (big,)),
+            mock.patch.object(setup_mod, "PICKS_EMBEDDING", (embed,)),
         ):
             assert setup_mod._pick_recommended(4.0)[0] is big
 

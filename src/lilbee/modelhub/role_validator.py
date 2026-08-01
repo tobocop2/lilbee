@@ -3,13 +3,12 @@
 import os
 import sys
 
-from lilbee.catalog import CatalogModel, find_catalog_entry
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
+from lilbee.providers.model_ref import PROVIDER_PREFIXES
 
 # Test-only bypass. Both the env var and pytest must be present so a
 # leaked env var cannot disable validation in production.
@@ -61,18 +60,6 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
     return ref.split("/", 1)[0] in PROVIDER_PREFIXES
 
 
-def _canonical_featured_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
-    """Role-check a featured entry and pick the canonical ref to persist."""
-    if entry.task != want:
-        raise TaskMismatchError(ref, ModelTask(entry.task), want)
-    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
-    # the exact installed quant; fall back to the catalog ref otherwise.
-    if is_native_gguf_ref(ref):
-        return ref
-    canonical: str = entry.ref
-    return canonical
-
-
 def _validate_installed_ref(ref: str, want: ModelTask) -> str:
     """Role-check a non-featured ref by consulting the installed registry.
 
@@ -97,14 +84,12 @@ def _validate_installed_ref(ref: str, want: ModelTask) -> str:
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
     """Check *ref* is assignable to *field_name*; return the canonical ref.
 
-    Accepts featured catalog refs and installed non-featured refs (any model
-    the user has pulled). Raises ``TaskMismatchError`` on role mismatch and
-    ``ValueError`` when the model is neither featured nor installed.
+    The model must be installed: without a curated list there is nothing that
+    can vouch for an arbitrary repo's role, so the installed manifest is the
+    only trustworthy source of a model's task. Raises ``TaskMismatchError`` on
+    role mismatch and ``ValueError`` when the model is not installed.
     """
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
-    entry = find_catalog_entry(ref)
-    if entry is not None:
-        return _canonical_featured_ref(ref, entry, want)
     return _validate_installed_ref(ref, want)
