@@ -60,6 +60,8 @@ MAX_GIF_MB = 10.0
 MIN_STROKE_MEAN = 2.0
 NEAR_WHITE = (225, 225, 243)
 NEAR_WHITE_TOLERANCE = 45
+# Longest bright run still considered a glyph stroke rather than chrome.
+MAX_STROKE_RUN = 6
 MAX_SEAM_ALIGNMENT = 0.20
 
 
@@ -271,10 +273,24 @@ def render_gate(gif: pathlib.Path,
     for f in frames[:: max(1, len(frames) // 16)]:
         a = np.asarray(f)
         lum = a.mean(axis=2)
-        bright = a[lum > 170]
-        if bright.size < 3 * 200:      # essentially blank; nothing to judge
+        if (lum > 170).sum() < 200:    # essentially blank; nothing to judge
             continue
-        colour_per_frame.append(bright.reshape(-1, 3).mean(axis=0))
+        # Colour is judged on glyph strokes only. Sampling every bright pixel lets UI
+        # chrome decide the answer: the placement drawer is bordered and filled in iris,
+        # so a reel whose text is perfectly correct measured as purple and failed. A
+        # stroke is a short bright run; borders, bars and filled toggles are long ones.
+        stroke_px = []
+        for row_lum, row_px in zip(lum > 170, a):
+            n = 0
+            for x, on in enumerate(row_lum):
+                if on:
+                    n += 1
+                    continue
+                if 0 < n <= MAX_STROKE_RUN:
+                    stroke_px.extend(row_px[x - n:x])
+                n = 0
+        if len(stroke_px) >= 200:
+            colour_per_frame.append(np.array(stroke_px).reshape(-1, 3).mean(axis=0))
         runs: list[int] = []
         for row in lum > 140:
             n = 0
