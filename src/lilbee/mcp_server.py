@@ -289,13 +289,16 @@ def _entity_status_dict() -> dict[str, Any] | None:
 
 @contextmanager
 def _ingest_cancel_token() -> Iterator[threading.Event]:
-    """A cancel token for the ingest pipeline, set when the caller gives up.
+    """A cancel token for the ingest pipeline, set on any abnormal exit.
 
     An agent cancelling a tool call gets what the HTTP surface gets on a client
     disconnect: the pipeline stops between files, flushes the work it finished
     and raises, rather than indexing the rest of the corpus for a request that
     has gone away. The pipeline polls the token from its worker threads, which
     is why cancellation alone does not reach them.
+
+    Set on every exception, not only cancellation: a pass that raised is over
+    either way, and a caller vanishing does not always surface as a cancel.
     """
     token = threading.Event()
     try:
