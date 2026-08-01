@@ -1,0 +1,106 @@
+# Retrieval Benchmark: MS MARCO Passage
+
+Retrieval quality of lilbee's 8.8M-passage MS MARCO index, measured against the
+official human relevance judgments and compared to published baselines.
+
+**Headline: lilbee's dense retrieval scores MRR@10 = 0.346 on MS MARCO
+dev/small, between the ANCE (0.330) and TAS-B (0.347) baselines and 85% above
+BM25 (0.187).** Scored by Microsoft's own evaluation script and NIST's trec_eval,
+which agree to four decimals.
+
+## Test Setup
+
+- **Date:** 2026-08-01
+- **Hardware:** 1x NVIDIA H100 80GB SXM (RunPod, EUR-IS-3), 188 GB RAM, 20 vCPU
+- **lilbee:** commit `b87a0bec` (branch `feat/native-multi-gpu-ingest`)
+- **Engine:** lilbee_engine 0.6.90b420.dev728 (cu124), llama-server embedder
+- **Embedder:** Qwen3-Embedding-8B-Q8_0, 4096 dimensions
+- **Index:** 8,841,823 MS MARCO v1 passages (one passage per document), IVF_PQ + FTS built corpus-wide. Built with `concept_graph`, `wiki`, and `entity_extraction` off, and no chat model installed, so HyDE and query expansion are unavailable.
+- **Dataset:** `msmarco-passage/dev/small`, the official small dev set: 6,980 queries, 7,437 relevance judgments (~1.1 judged passages per query).
+- **Depth:** top 100 passages recorded per query.
+
+## Methodology
+
+Every query in the dev set was run through lilbee's search API and the ranked
+results written to a TREC run file. The measured arm is **`vec` (pure dense)**:
+the `vec:` mode prefix, which forces dense retrieval and skips fusion and
+re-ranking, so the number is comparable to a published dense-retrieval baseline.
+(The full-pipeline `default` arm could not be measured on this pod; see
+Limitations.)
+
+**Scoring is done by the official reference implementations, not by any harness
+of ours.** MRR@10 is computed by Microsoft's
+[`ms_marco_eval.py`](https://github.com/microsoft/MSMARCO-Passage-Ranking) (the
+script that produced the published baselines) and independently by NIST's
+[`trec_eval`](https://github.com/usnistgov/trec_eval) (via pytrec_eval, the same
+C source). nDCG@10 and Recall are trec_eval's. The two scorers agreeing is the
+check that the number is not an artifact of any one tool. The run file is
+published (`retrieval-msmarco/run.vec.trec.gz`) so anyone can re-score it without
+lilbee or any of our code.
+
+**Document-id join.** lilbee returns a source like `06949/6949140.txt`, whose
+basename without the extension is the MS MARCO passage id the qrels use. This
+join is the thing most easily got silently wrong: when the ids do not match,
+every metric is zero by construction, an id-join bug rather than a bad system. It
+was verified before scoring (a passage's own text self-retrieves at rank 1, and
+`judged@10` is non-zero).
+
+**Primary metric: MRR@10**, the official MS MARCO passage measure. Reciprocal
+rank is cut at depth 10 and averaged over all 6,980 queries; a query with no
+relevant passage in its top 10 scores zero.
+
+## Results
+
+| Metric | lilbee (vec, pure dense) |
+|--------|--------------------------|
+| **MRR@10** | **0.3458** |
+| nDCG@10 | 0.3960 |
+| Recall@100 | 0.6656 |
+| judged@10 (coverage diagnostic) | 5.9% |
+
+MRR@10 by the two official scorers: **ms_marco_eval.py 0.3458, trec_eval 0.3458**
+(identical to four decimals).
+
+### Against published baselines (same dev set)
+
+| System | MRR@10 |
+|--------|--------|
+| BM25 | 0.187 |
+| **lilbee (dense)** | **0.346** |
+| ANCE | 0.330 |
+| TAS-B | 0.347 |
+| ColBERTv2 | 0.397 |
+
+## Key Findings
+
+- **Lilbee's dense retrieval is competitive with strong published dense models.** MRR@10 0.346 sits between ANCE and TAS-B, well above BM25, and within reach of ColBERTv2. The Qwen3-Embedding-8B embeddings are strong: a passage's own text retrieves it at rank 1.
+- **The ANN index leaves recall on the table.** At the default IVF search width, recall@100 of the labeled passage is 67%; raising nprobe to 2048 lifts it to 87% on a 30-query sample. Tuning nprobe (at some latency cost) is an available, unrealized retrieval-quality gain and is worth a follow-up.
+- **Two independent official scorers agreeing to four decimals** is what makes this number defensible. During analysis a partial run scored 0.002 under ms_marco_eval.py because that script normalizes over the full reference set; the disagreement with trec_eval surfaced the cause immediately. Cross-checking with two reference tools, rather than one harness, is why the published number is trustworthy.
+
+## Limitations
+
+- **The `vec` arm is pure dense, not the full pipeline.** This index was built with concept graph, wiki, and entity extraction off, and no chat model is installed, so HyDE and query expansion do not run. The measured number is dense retrieval alone; the hybrid/default path was not measured (below).
+- **The `default` (hybrid) arm could not be measured on this pod.** Its search path performs in-process CUDA engine-planning that failed to initialize CUDA ("ggml_cuda_init: failed to initialize CUDA: initialization error"), while the `vec` path routes cleanly through the served embedder. This is a lilbee issue, not a property of the index, and is tracked separately.
+- **MS MARCO dev/small judgments are sparse** (~1.1 per query), so a passage lilbee ranks highly that no assessor labeled counts as non-relevant. This is standard for MS MARCO and is why every published baseline uses the same set; `judged@10` reports the exposure.
+- **One passage per document.** The chunk-to-document collapse is 1:1 on this corpus, so it exercises no collapse logic.
+- **This measures retrieval only.** Answer generation is a separate tier and is not evaluated here.
+
+## Reproducibility
+
+The run file (`retrieval-msmarco/run.vec.trec.gz`) and the public MS MARCO
+`dev/small` qrels are the artifacts. To reproduce the score without lilbee or
+this repository:
+
+```bash
+gunzip -k run.vec.trec.gz
+# qrels: msmarco-passage/dev/small qrels.dev.small.tsv, and its TREC form dev.qrels
+
+# Microsoft's official script (headline MRR@10) -- needs a qid<TAB>pid<TAB>rank candidate
+awk '{print $1"\t"$3"\t"$4}' run.vec.trec > run.vec.msmarco
+python ms_marco_eval.py qrels.dev.small.tsv run.vec.msmarco      # -> MRR @10: 0.3458
+
+# NIST trec_eval (independent cross-check + nDCG@10 + Recall)
+trec_eval -c -M 10 -m recip_rank -m ndcg_cut.10 -m recall.100 dev.qrels run.vec.trec
+```
+
+Both are unmodified official tools run on the emitted run file.
