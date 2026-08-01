@@ -3484,6 +3484,22 @@ class TestRoutingProviderRerank:
 
         assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF") is False
 
+    def test_unreadable_registry_falls_back_to_hosted(self, caplog) -> None:
+        """A broken registry must not silently claim a repo as native."""
+        from lilbee.providers import routing_provider
+
+        def boom():
+            raise RuntimeError("registry unreadable")
+
+        with (
+            mock.patch.object(routing_provider, "get_services", boom),
+            caplog.at_level("WARNING"),
+        ):
+            result = routing_provider._is_native_rerank_ref("gpustack/bge-reranker-GGUF")
+
+        assert result is False
+        assert any("Could not check the registry" in r.getMessage() for r in caplog.records)
+
     def test_supports_rerank_hosted_delegates_to_sdk(self) -> None:
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()
