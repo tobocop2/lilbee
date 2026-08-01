@@ -106,6 +106,15 @@ def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
     )
 
 
+def _runnable(picks: Sequence[CatalogModel]) -> tuple[CatalogModel, ...]:
+    """Picks the bundled engine can actually load.
+
+    First-run has no confirm gate, so an unsupported architecture here becomes a
+    failed download the user did not choose.
+    """
+    return tuple(m for m in picks if m.compat == ModelCompat.SUPPORTED)
+
+
 def _pick_recommended(
     ram_gb: float,
     chat_picks: Sequence[CatalogModel],
@@ -196,7 +205,9 @@ class SetupWizard(Screen[str | None]):
             yield ViewTabs()
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
-        yield VerticalScroll(id="setup-grid-container")
+        yield VerticalScroll(
+            Static(msg.SETUP_LOADING, id="setup-loading"), id="setup-grid-container"
+        )
         with BottomBars():
             yield Label(self._initial_hint_text(), id="setup-enter-hint")
             yield TaskBar()
@@ -250,6 +261,14 @@ class SetupWizard(Screen[str | None]):
         self._recommended_embed = rec_embed
 
         container = self.query_one("#setup-grid-container", VerticalScroll)
+        container.remove_children()
+        if (
+            not chat_picks
+            and not embed_picks
+            and not (self._chat_installed or self._embed_installed)
+        ):
+            container.mount(Static(msg.SETUP_PICKS_UNAVAILABLE, id="setup-picks-unavailable"))
+            return
         widgets_to_mount: list[Static | GridSelect] = []
         installed_refs = set(self._chat_installed) | set(self._embed_installed)
 
@@ -267,13 +286,13 @@ class SetupWizard(Screen[str | None]):
 
         chat_cards = self._build_section(
             msg.SETUP_HEADING_CHAT,
-            chat_picks,
+            _runnable(chat_picks),
             installed_refs,
             widgets_to_mount,
             grid_id=SETUP_CHAT_GRID_ID,
         )
         embed_cards = self._build_section(
-            msg.SETUP_HEADING_EMBED, embed_picks, installed_refs, widgets_to_mount
+            msg.SETUP_HEADING_EMBED, _runnable(embed_picks), installed_refs, widgets_to_mount
         )
 
         container.mount_all(widgets_to_mount)

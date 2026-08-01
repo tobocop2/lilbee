@@ -33,7 +33,6 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         param_count=derive_param_count(model),
         quant=extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
-        recommended=model.recommended,
     )
 
 
@@ -55,7 +54,7 @@ def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[M
     families: list[ModelFamily] = []
     for family_name in order:
         members = groups[family_name]
-        representative = next((m for m in members if m.recommended), members[0])
+        representative = members[0]
         variants = [_catalog_to_variant(m) for m in members]
         families.append(
             ModelFamily(

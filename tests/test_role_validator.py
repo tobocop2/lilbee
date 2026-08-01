@@ -52,3 +52,18 @@ class TestNonPickRefs:
             "chat_model", "other/Chat-Model-GGUF", allow_bypass=False
         )
         assert result == ref
+
+
+class TestNoNetworkOnTheWritePath:
+    def test_an_installed_ref_is_validated_without_resolving_picks(self, monkeypatch) -> None:
+        """The role write boundary runs on the TUI main thread; it must not fetch."""
+        from lilbee.catalog import picks as picks_mod
+
+        ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
+
+        def boom() -> tuple:
+            raise AssertionError("resolved picks on the role write path")
+
+        monkeypatch.setattr(picks_mod, "_resolve_picks", boom)
+        picks_mod.reset_picks()
+        assert validate_model_task_assignment("chat_model", ref, allow_bypass=False) == ref

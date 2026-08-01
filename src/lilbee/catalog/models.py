@@ -141,7 +141,6 @@ class CatalogModel:
     featured: bool
     downloads: int
     task: ModelTask
-    recommended: bool = False
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
     # Parameter count. Size buckets key off this rather than on-disk bytes so a
@@ -191,7 +190,6 @@ class ModelVariant:
     param_count: str
     quant: str
     size_mb: int
-    recommended: bool
     mmproj_filename: str = ""
 
 

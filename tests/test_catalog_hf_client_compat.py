@@ -5,7 +5,6 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from conftest import SAMPLE_PICKS
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 
@@ -58,9 +57,14 @@ def test_fetch_populates_arch_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.get_cached_arch("acme/test-GGUF") == "qwen3"
 
 
-def test_featured_catalog_models_are_supported_compat() -> None:
-    """Curated featured entries carry SUPPORTED; the pull-time probe still re-checks arch."""
+def test_fetch_classifies_compat_from_the_declared_architecture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows carry a real classify() verdict, not a blanket SUPPORTED."""
+    rows = [_hf_row("qwen3"), _hf_row("no-such-arch-xyz")]
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response(rows))
+    models = HfClient().fetch_models().models
 
-    for entry in SAMPLE_PICKS:
-        assert entry.compat is ModelCompat.SUPPORTED
-        assert entry.architecture == ""
+    by_arch = {m.architecture: m.compat for m in models}
+    assert by_arch["qwen3"] is ModelCompat.SUPPORTED
+    assert by_arch["no-such-arch-xyz"] is not ModelCompat.SUPPORTED

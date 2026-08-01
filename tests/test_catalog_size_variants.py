@@ -17,7 +17,6 @@ def _variant(quant: str, size_mb: int, *, hf_repo: str = "demo/repo") -> ModelVa
         param_count="8B",
         quant=quant,
         size_mb=size_mb,
-        recommended=False,
     )
 
 

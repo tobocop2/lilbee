@@ -106,7 +106,6 @@ class CatalogEntryData(BaseModel):
     description: str
     task: ModelTask
     featured: bool
-    recommended: bool
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
 
@@ -122,7 +121,6 @@ class CatalogEntryData(BaseModel):
             description=entry.description,
             task=entry.task,
             featured=entry.featured,
-            recommended=entry.recommended,
             architecture=entry.architecture,
             compat=entry.compat,
         )

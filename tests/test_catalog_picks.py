@@ -27,6 +27,13 @@ def _model(hf_repo: str, task: str, params: int) -> CatalogModel:
 
 # Trending order within each tier is the order these appear, so the first two of
 # each tier are the ones that must be picked.
+_ALL_ROLES = {
+    "chat": None,  # filled below
+    "embedding": [_model("e/gte-base-GGUF", "embedding", 100_000_000)],
+    "vision": [_model("v/Qwen-VL-GGUF", "vision", 8_000_000_000)],
+    "rerank": [_model("r/bge-reranker-GGUF", "rerank", 2_000_000_000)],
+}
+
 _CHAT_CANDIDATES = [
     _model("a/Small-1B-GGUF", "chat", 1_000_000_000),
     _model("a/Small-2B-GGUF", "chat", 2_000_000_000),
@@ -40,10 +47,16 @@ _CHAT_CANDIDATES = [
 ]
 
 
+_ALL_ROLES["chat"] = _CHAT_CANDIDATES
+
+
 @pytest.fixture(autouse=True)
-def _clean_picks():
+def _clean_picks(monkeypatch):
     from lilbee.catalog import picks as picks_mod
 
+    # Drive the retry deadline to zero so a re-resolve is observable without
+    # waiting out the production backoff.
+    monkeypatch.setattr(picks_mod, "_RETRY_BACKOFF_S", 0.0)
     picks_mod.reset_picks()
     yield
     picks_mod.reset_picks()
@@ -154,7 +167,7 @@ class TestRoleVerification:
         Neither candidate matches a vision name pattern, so only the projector
         probe can tell them apart.
         """
-        from lilbee.catalog import hf_client
+        from lilbee.catalog import picks as picks_mod
         from lilbee.catalog.picks import picks_for
 
         _stub_fetch(
@@ -172,14 +185,14 @@ class TestRoleVerification:
             probed.append(hf_repo)
             return hf_repo == "a/Qwen3-VL-GGUF"
 
-        monkeypatch.setattr(hf_client, "repo_has_mmproj", fake_probe)
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", fake_probe)
 
         assert [m.hf_repo for m in picks_for(ModelTask.VISION)] == ["a/Qwen3-VL-GGUF"]
         assert probed == ["a/Plain-Chat-GGUF", "a/Qwen3-VL-GGUF"]
 
     def test_vision_probe_stops_once_the_quota_is_met(self, monkeypatch) -> None:
         """The probe costs one request per candidate, so it must not scan on."""
-        from lilbee.catalog import hf_client
+        from lilbee.catalog import picks as picks_mod
         from lilbee.catalog.picks import picks_for
 
         _stub_fetch(
@@ -187,7 +200,7 @@ class TestRoleVerification:
             {"vision": [_model(f"a/VL-{i}-GGUF", "vision", 8_000_000_000) for i in range(5)]},
         )
         probed: list[str] = []
-        monkeypatch.setattr(hf_client, "repo_has_mmproj", lambda r: (probed.append(r), True)[1])
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: (probed.append(r), True)[1])
 
         assert len(picks_for(ModelTask.VISION)) == 1
         assert probed == ["a/VL-0-GGUF"]
@@ -203,9 +216,11 @@ class TestPickFlagAndCaching:
 
     def test_resolved_once_per_process(self, monkeypatch) -> None:
         """Rows must not reshuffle while the user types in the catalog search."""
+        from lilbee.catalog import picks as picks_mod
         from lilbee.catalog.picks import get_picks
 
-        calls = _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
+        calls = _stub_fetch(monkeypatch, _ALL_ROLES)
         first = get_picks()
         after_first = len(calls)
         second = get_picks()
@@ -222,6 +237,33 @@ class TestPickFlagAndCaching:
 
         _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
         assert get_picks() != ()
+
+    def test_a_role_missing_from_the_result_is_retried(self, monkeypatch) -> None:
+        """One role's failed fetch must not leave it empty for the process."""
+        from lilbee.catalog import picks as picks_mod
+        from lilbee.catalog.picks import get_picks, picks_for
+
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
+        partial = dict(_ALL_ROLES, embedding=[])
+        _stub_fetch(monkeypatch, partial)
+        assert get_picks()  # served despite the gap
+        assert picks_for(ModelTask.EMBEDDING) == ()
+
+        _stub_fetch(monkeypatch, _ALL_ROLES)
+        assert picks_for(ModelTask.EMBEDDING)  # refilled once HF recovered
+
+    def test_a_complete_result_is_not_re_resolved(self, monkeypatch) -> None:
+        """A full set is final; only a gap earns a retry."""
+        from lilbee.catalog import picks as picks_mod
+        from lilbee.catalog.picks import get_picks
+
+        monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
+        calls = _stub_fetch(monkeypatch, _ALL_ROLES)
+        get_picks()
+        settled = len(calls)
+        get_picks()
+        get_picks()
+        assert len(calls) == settled
 
     def test_a_fetch_failure_yields_no_picks(self, monkeypatch) -> None:
         from lilbee.app.services import get_services

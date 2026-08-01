@@ -73,16 +73,21 @@ def _canonical_pick_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
     return canonical
 
 
-def _validate_installed_ref(ref: str, want: ModelTask) -> str:
-    """Role-check a non-featured ref by consulting the installed registry.
+def _installed_ref_and_task(ref: str) -> tuple[str, str | None]:
+    """Canonical installed ref for *ref* and its manifest task, task None if absent.
 
-    A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full
-    ref so the persisted value always names the exact GGUF file.
+    A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full ref
+    so the persisted value always names the exact GGUF file.
     """
     registry = ModelRegistry(cfg.models_dir)
     if is_bare_hf_repo(ref):
         ref = registry.installed_ref_for_repo(ref) or ref
-    installed_task = _resolve_installed_task(registry, ref)
+    return ref, _resolve_installed_task(registry, ref)
+
+
+def _validate_installed_ref(ref: str, want: ModelTask) -> str:
+    """Role-check a ref by consulting the installed registry."""
+    ref, installed_task = _installed_ref_and_task(ref)
     if installed_task is None:
         raise ValueError(
             f"Model '{ref}' is not installed. "
@@ -90,7 +95,7 @@ def _validate_installed_ref(ref: str, want: ModelTask) -> str:
             "(or POST /api/models/pull) before assigning it to a role."
         )
     if installed_task != want:
-        raise TaskMismatchError(ref, installed_task, want)
+        raise TaskMismatchError(ref, ModelTask(installed_task), want)
     return ref
 
 
@@ -106,6 +111,14 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
+    # The manifest is consulted first because it answers without touching the
+    # network. This runs on the TUI main thread from /model and the model-bar
+    # picker, where resolving picks would block the UI.
+    installed_ref, installed_task = _installed_ref_and_task(ref)
+    if installed_task is not None:
+        if installed_task != want:
+            raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)
+        return installed_ref
     entry = find_pick(ref)
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)

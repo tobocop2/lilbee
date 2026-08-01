@@ -365,3 +365,26 @@ async def test_commit_selection_never_writes_a_ref_it_cannot_install() -> None:
             with patch.object(wizard, "_apply_selection") as mock_apply:
                 wizard._commit_selection(card, "chat")
             mock_apply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wizard_says_so_when_picks_cannot_be_fetched() -> None:
+    """An empty resolution must not render as two empty headings and a hint."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = LilbeeApp()
+    with (
+        _patch_setup_scan(),
+        _patch_setup_ram(),
+        patch("lilbee.cli.tui.screens.setup.picks_for", return_value=()),
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard) and app.screen.query(
+                    "#setup-picks-unavailable"
+                ):
+                    break
+            assert isinstance(app.screen, SetupWizard)
+            assert app.screen.query("#setup-picks-unavailable")
+            assert not app.screen.query(ModelCard)  # no empty headings over nothing

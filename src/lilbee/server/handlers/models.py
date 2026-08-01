@@ -173,18 +173,6 @@ def _resolve_via_available_repo(model: str, available: set[str]) -> str | None:
     return next((ref for ref in sorted(available) if ref.startswith(f"{model}/")), None)
 
 
-def _resolve_via_installed_repo(model: str, available: set[str]) -> str | None:
-    """Resolve a bare ``hf_repo`` to its installed quant.
-
-    Only refs the provider also lists are accepted, so remote-only
-    provider modes don't activate a model they can't serve.
-    """
-    if not is_bare_hf_repo(model):
-        return None
-    ref = get_services().registry.installed_ref_for_repo(model)
-    return ref if ref in available else None
-
-
 def _resolve_via_parse(model: str, available: set[str]) -> str | None:
     """Resolve a provider-prefixed ref against *available*.
 
@@ -227,7 +215,6 @@ def _require_model_available(model: str) -> str:
         return model
     hit = (
         _resolve_via_available_repo(model, available)
-        or _resolve_via_installed_repo(model, available)
         or _resolve_via_parse(model, available)
         or _resolve_via_provider_key(model)
     )
@@ -463,7 +450,9 @@ async def models_catalog(
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
-    result = get_catalog(
+    # get_catalog resolves the picks, which is HTTP on the first call.
+    result = await asyncio.to_thread(
+        get_catalog,
         task=parsed_task,
         search=search,
         size=parsed_size,

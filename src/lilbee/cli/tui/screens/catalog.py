@@ -265,6 +265,7 @@ class CatalogScreen(Screen[None]):
         # which hits HuggingFace on the first call of a session. Building it
         # here would block screen construction on the network.
         self._families: list[ModelFamily] = []
+        self._families_in_flight = True
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
         # Per-task pagination state. Each task tab tracks its own HF offset
@@ -901,6 +902,8 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+        if name == _WORKER_FETCH_FAMILIES:
+            self._families_in_flight = False
         self._sync_loading_spinner()
 
     def _apply_worker_result(self, name: str, result: list) -> bool:
@@ -929,6 +932,7 @@ class CatalogScreen(Screen[None]):
             self._populate_library_list()
         elif name == _WORKER_FETCH_FAMILIES:
             self._families = result
+            self._families_in_flight = False
         else:
             return False
         self._data_version += 1
@@ -1047,10 +1051,7 @@ class CatalogScreen(Screen[None]):
         for fam in self._families:
             if not fam.variants:
                 continue
-            primary = next(
-                (v for v in fam.variants if v.recommended),
-                min(fam.variants, key=lambda v: v.size_mb),
-            )
+            primary = min(fam.variants, key=lambda v: v.size_mb)
             family_installed = any(
                 self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 for v in fam.variants
@@ -1667,16 +1668,16 @@ class CatalogScreen(Screen[None]):
     def _sync_loading_spinner(self) -> None:
         """Show/hide the toolbar spinner based on active fetch state.
 
-        Visible when a paginated HF fetch or a remote search is in
-        flight (both grid and list views share the same toolbar
-        widget). Cycles braille frames on a 100 ms timer so the
+        Visible when a paginated HF fetch, a remote search, or the initial
+        families resolution is in flight (both grid and list views share the
+        same toolbar widget). Cycles braille frames on a 100 ms timer so the
         wait reads as "moving" rather than "frozen".
         """
         try:
             spinner = self.query_one("#catalog-loading-spinner", Static)
         except Exception:
             return
-        active = self._loading_more or self._search_in_flight
+        active = self._loading_more or self._search_in_flight or self._families_in_flight
         if active:
             spinner.styles.display = "block"
             spinner.update(f"{SPINNER_FRAMES[self._spinner_frame]} loading…")
@@ -1900,7 +1901,6 @@ class CatalogScreen(Screen[None]):
             featured=True,
             downloads=0,
             task=family.task,
-            recommended=variant.recommended,
         )
         self._install_model(entry)
 
