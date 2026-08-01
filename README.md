@@ -77,7 +77,6 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
 - [Wiki](#wiki)
-- [Semantic chunking](#semantic-chunking)
 - [Built on](#built-on)
 
 ---
@@ -606,12 +605,6 @@ Other projects generate wiki-style pages too; they differ in what they read, whe
 ⁸ lilbee's optional `[graph]` extra builds a concept co-occurrence graph (PMI-weighted) with flat Leiden communities, usable as the wiki synthesis clusterer; no typed entity relations or hierarchical communities.
 
 </details>
-
-## Semantic chunking
-
-An opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy collections like novels, essays, long-form research papers, or interview transcripts; the trade-off is roughly 9x more embedding calls during indexing.
-
-See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
 
 ## Built on
 

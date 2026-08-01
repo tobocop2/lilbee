@@ -43,9 +43,7 @@ Every sampled citation on a published page verified against the cited source's e
 
 ## Profile
 
-py-spy over a full index build: spaCy NER over the corpus dominates; the store layer (mention read, write, and aggregate) is negligible.
-
-![py-spy flame graph of a full wiki index over the 4,256-document corpus; spaCy NER dominates and the store layer is negligible](wiki-index-flame.svg)
+The index build is bound by spaCy NER over the corpus. The extractor runs the full spaCy pipeline single-threaded over every chunk (`nlp.pipe` with no `n_process`), and a full index over 4,212 sources took roughly 25 minutes single-threaded on an 8-vCPU L4. The store layer (mention read, write, and aggregate) is not on the hot path. Parallelizing the extractor is tracked as a follow-up.
 
 ## Comparison to other systems
 
