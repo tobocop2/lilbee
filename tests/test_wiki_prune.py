@@ -131,6 +131,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
+        store.source_ingested_at_map.return_value = {"a.md": "2024-01-01"}
         assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_concepts_page_above_threshold(self, tmp_path: Path):
@@ -143,7 +144,28 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="b.md", citation_key="src2"),
             make_citation(source_filename="c.md", citation_key="src3"),
         ]
+        store.source_ingested_at_map.return_value = {
+            "a.md": "2024-01-01",
+            "b.md": "2024-01-01",
+            "c.md": "2024-01-01",
+        }
         assert not _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
+
+    def test_unindexed_sources_drop_below_threshold(self, tmp_path: Path):
+        # Sources removed with `lilbee remove` stay on disk but leave the index;
+        # a synthesis page must count them gone and fall below the threshold, the
+        # same rule the all-sources-deleted check applies to entity pages.
+        write_source(tmp_path, "a.md", "a")
+        write_source(tmp_path, "b.md", "b")
+        write_source(tmp_path, "c.md", "c")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="b.md", citation_key="src2"),
+            make_citation(source_filename="c.md", citation_key="src3"),
+        ]
+        store.source_ingested_at_map.return_value = {}
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_non_synthesis_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
@@ -172,6 +194,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
+        store.source_ingested_at_map.return_value = {"a.md": "2024-01-01"}
         assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg)
 
     def test_no_citations(self, tmp_path: Path):

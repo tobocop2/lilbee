@@ -19,6 +19,7 @@ from pathlib import Path
 
 from lilbee.core.config import Config, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.types import CitationRecord
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.persistence import subdir_from_wiki_source
@@ -128,39 +129,43 @@ def _archive_page(
     _delete_wiki_rows(wiki_source, store)
 
 
+def _live_sources(citations: list[CitationRecord], store: Store, config: Config) -> set[str]:
+    """Return the distinct cited source files still backing a page.
+
+    A document source is live only when it is both registered in the store and
+    present on disk. ``lilbee remove`` unregisters a source while its file may
+    remain on disk, and an on-disk delete removes the file; either drops it. A
+    source whose raw chunks were pruned at publish (``wiki_prune_raw``) stays
+    registered and so stays live. Wiki-page sources (a synthesis page citing
+    other pages) never appear in the document registry, so they are judged by
+    file presence alone.
+    """
+    from lilbee.data.ingest.discovery import resolve_source_path
+
+    registered = store.source_ingested_at_map()
+    wiki_prefix = config.wiki_dir + "/"
+    live: set[str] = set()
+    for source_filename in {c["source_filename"] for c in citations}:
+        if not resolve_source_path(source_filename).exists():
+            continue
+        if source_filename.startswith(wiki_prefix) or source_filename in registered:
+            live.add(source_filename)
+    return live
+
+
 def _check_all_sources_deleted(
     wiki_source: str,
     store: Store,
     config: Config | None = None,
 ) -> bool:
-    """Return True if every cited source has left the library.
-
-    A document source is gone when its file is deleted from disk or it was
-    removed from the index: ``lilbee remove`` unregisters a source while its
-    file may remain on disk, so a filesystem check alone never fires for it.
-    Sources whose raw chunks were pruned at publish (``wiki_prune_raw``) stay
-    registered and so stay live. Wiki-page sources (a synthesis page citing
-    other pages) are judged by file presence only, as they are not documents in
-    the source registry.
-    """
-    from lilbee.data.ingest.discovery import resolve_source_path
-
+    """Return True if every cited source has left the library (file deleted or
+    the source removed from the index)."""
     if config is None:
         config = cfg
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    registered = store.source_ingested_at_map()
-    wiki_prefix = config.wiki_dir + "/"
-
-    def _gone(source_filename: str) -> bool:
-        if not resolve_source_path(source_filename).exists():
-            return True
-        if source_filename.startswith(wiki_prefix):
-            return False
-        return source_filename not in registered
-
-    return all(_gone(c["source_filename"]) for c in citations)
+    return not _live_sources(citations, store, config)
 
 
 def _check_cluster_below_threshold(
@@ -170,8 +175,6 @@ def _check_cluster_below_threshold(
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
-    from lilbee.data.ingest.discovery import resolve_source_path
-
     # Match the subdir component, not the substring: a summary whose slug is
     # ``synthesis/report`` or a wiki_dir ending in ``synthesis`` would satisfy a
     # substring test and get its rows deleted as a shrunken cluster.
@@ -180,9 +183,7 @@ def _check_cluster_below_threshold(
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    source_files = {c["source_filename"] for c in citations}
-    live_count = sum(1 for f in source_files if resolve_source_path(f).exists())
-    return live_count < min_sources
+    return len(_live_sources(citations, store, config)) < min_sources
 
 
 def _check_stale_majority(
