@@ -919,9 +919,13 @@ class Searcher:
             # trims to the context window, keeping the document's head.
             results = known_item
         else:
-            # search() retrieves the reranker's depth and reranks internally when
-            # a reranker is loaded, so the ask path neither bumps depth nor reranks.
+            # search() reranks internally now, so the ask path no longer reranks
+            # again. It still requests the reranker's candidate depth so context
+            # assembly (prepare_results, select_context) works from a deep
+            # reranked pool rather than only top_k*2.
             retrieve_k = top_k or self._config.top_k
+            if self._config.reranker_model:
+                retrieve_k = max(retrieve_k, self._config.rerank_candidates)
             results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
             results = filter_results(
                 results, self._config.max_distance, self._config.min_relevance_score
