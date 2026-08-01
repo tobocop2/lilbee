@@ -319,9 +319,8 @@ def self_check_extras_cmd() -> None:
     """Verify optional extras (crawler, litellm, graph) are bundled and importable.
 
     Catches every import-time failure, not just ImportError: an extra whose
-    dependencies are out of step with it raises from its own module body
-    (AttributeError, TypeError) and would otherwise abort the run with a
-    traceback, reporting nothing about the extras after it in the list.
+    dependencies are out of step with it raises from its own module body, which
+    would otherwise abort the run before the remaining extras are probed.
     """
     results: dict[str, Any] = {}
     failed: list[str] = []
@@ -333,8 +332,7 @@ def self_check_extras_cmd() -> None:
             results[name] = False
             results[f"{name}_error"] = f"{type(exc).__name__}: {exc}"
             # Absent only when the extra itself is the module that went missing;
-            # anything else (a broken dependency, a failing module body) means
-            # it is installed but unusable, which wants a different repair step.
+            # a broken dependency or a failing module body means installed but unusable.
             results[f"{name}_missing"] = (
                 isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == name
             )

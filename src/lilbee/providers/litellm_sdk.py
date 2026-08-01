@@ -242,12 +242,10 @@ _LITELLM_BROKEN_MSG = (
 def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with repair steps.
 
-    A present-but-unimportable litellm is reported apart from a missing one:
-    an environment assembled outside the declared constraints can leave a
-    dependency litellm cannot import against (an aiohttp below its own
-    ``>=3.10`` floor raises ``AttributeError`` on ``ConnectionTimeoutError``),
-    and the raw exception reaching the chat surface names neither litellm nor
-    a way out. ``find_spec`` separates the two cases without a second import.
+    Reports a present-but-unimportable litellm apart from a missing one; an
+    aiohttp below litellm's own ``>=3.10`` floor raises ``AttributeError`` on
+    ``ConnectionTimeoutError`` from its module body. ``litellm_available``
+    distinguishes the two without a second import.
     """
     try:
         import litellm
@@ -395,7 +393,7 @@ def _classify_litellm_error(exc: BaseException) -> ProviderErrorKind:
     """
     try:
         import litellm
-    except ImportError:  # pragma: no cover - unreachable after a real litellm call
+    except Exception:  # pragma: no cover - unreachable after a real litellm call
         return ProviderErrorKind.UNKNOWN
     table: dict[type, ProviderErrorKind] = {
         litellm.AuthenticationError: ProviderErrorKind.AUTH,
@@ -462,8 +460,10 @@ class LitellmSdkBackend:
             import litellm
 
             litellm.suppress_debug_info = True
-        except ImportError:
-            pass  # debug-suppression is best-effort when the litellm extra is absent
+        except Exception as exc:
+            # Best-effort when the extra is absent, and equally when it is present
+            # but unimportable; _require_litellm reports that where it matters.
+            log.debug("Could not suppress litellm debug info: %s", exc)
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         """Run a single-shot completion through ``litellm.completion``."""
@@ -626,7 +626,9 @@ class LitellmSdkBackend:
         """
         try:
             import litellm
-        except ImportError:
+        except Exception:
+            # Also empty when litellm is installed but unimportable: this feeds a
+            # model list, so a broken extra degrades to no entries rather than raising.
             return []
         return self._all_chat_models_for(provider, litellm)
 

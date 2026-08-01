@@ -1109,6 +1109,25 @@ class TestRequireLitellm:
             _require_litellm()
         assert "installed but fails to import" in str(excinfo.value)
 
+    def test_broken_litellm_degrades_the_model_list_instead_of_raising(self) -> None:
+        """Sibling import sites must survive a broken install, not just the chat path.
+
+        ``list_chat_models`` and ``configure_logging`` guarded only ImportError, so
+        the AttributeError a broken litellm raises from its module body escaped to
+        the model-list UI while the chat path reported it cleanly.
+        """
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        backend = LitellmSdkBackend()
+        with mock.patch(
+            "builtins.__import__",
+            side_effect=self._import_raising(
+                AttributeError("module aiohttp has no attribute ConnectionTimeoutError")
+            ),
+        ):
+            assert backend.list_chat_models("openai") == []
+            backend.configure_logging(suppress_debug=True)
+
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
