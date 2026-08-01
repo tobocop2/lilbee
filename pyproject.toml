@@ -68,16 +68,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# litellm <1.92: 1.92+ ships compiled (maturin) manylinux-only wheels, and the
-# beta channel's --prerelease=allow would resolve to 1.92.0rc1, whose sdist
-# fails to build on Windows/macOS. Raise the cap once litellm publishes wheels
-# for all supported platforms again.
 # The bundled llama-server and gguf-parser. Not a hard dependency because the
 # distribution is published on lilbee.sh rather than PyPI, and a hard reference
 # to a name PyPI answers 404 for made the documented install command backtrack
 # to a months-old release that predated it. Installing without this leaves a
 # working lilbee that says what to install the moment it needs an engine.
 engine = ["lilbee-engine"]
+# 1.92 moved litellm to a maturin build, and PyPI carries no macOS wheel for any
+# release since, so a mac install compiles the Rust crate out of the sdist or
+# fails outright without a toolchain. 1.93.1 added win_amd64 but no macOS, and
+# the beta channel's --prerelease=allow reaches the same line. Raise the cap
+# when macOS wheels land.
 litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
