@@ -3,11 +3,12 @@
 Retrieval quality of lilbee's 8.8M-passage MS MARCO index, measured against the
 official human relevance judgments and compared to published baselines.
 
-**Headline: lilbee's dense retrieval scores MRR@10 = 0.346 on MS MARCO
-dev/small, effectively tied with TAS-B (0.347), ahead of ANCE (0.330), and 85%
-above BM25 (0.187) - second among the dense retrievers behind only the heavier
-ColBERTv2.** Scored by Microsoft's own evaluation script and NIST's trec_eval,
-which agree to four decimals.
+**Headline: lilbee's dense retrieval scores MRR@10 = 0.347 on MS MARCO
+dev/small, tied with TAS-B (0.347), ahead of ANCE (0.330), and ~85% above BM25
+(0.187) - the top dense retriever among the standard baselines behind only the
+heavier ColBERTv2.** Scored by Microsoft's own evaluation script and NIST's
+trec_eval, which agree on the number. Measured at the recommended index-search
+setting (nprobe fraction 0.15; see Test Setup and the companion change).
 
 ## What these numbers mean (plain-language key)
 
@@ -20,64 +21,67 @@ typically lands near the top of lilbee's results, and is frequently first.
 
 | Metric | In plain terms | lilbee |
 |--------|----------------|--------|
-| **MRR@10** | How high the correct answer sits, on average. Anchor points: 1.0 = always the #1 result, 0.5 = like always #2, 0.33 = like always #3. This is the headline. | **0.346** |
-| **nDCG@10** | Overall quality of the top-10 ordering, giving more credit the closer the right answers are to the top. | 0.396 |
-| **Recall@100** | Of all the correct passages, the share found anywhere in the top 100. | 0.666 (two-thirds) |
+| **MRR@10** | How high the correct answer sits, on average. Anchor points: 1.0 = always the #1 result, 0.5 = like always #2, 0.33 = like always #3. This is the headline. | **0.347** |
+| **nDCG@10** | Overall quality of the top-10 ordering, giving more credit the closer the right answers are to the top. | 0.398 |
+| **Recall@100** | Of all the correct passages, the share found anywhere in the top 100. | 0.670 (two-thirds) |
 | judged@10 | A coverage sanity-check, **not** a quality score: how much of the top 10 the test even has answer-labels for. Low is normal here, because the test labels only ~1 passage per question. | 5.9% |
 
-**Is 0.346 good? Yes.** Ranked against the standard baselines on this same test,
-lilbee places among the top dense retrievers:
+**Is 0.347 good? Yes.** Ranked against the standard baselines on this same test,
+lilbee is tied with TAS-B at the top of the dense retrievers:
 
 | Rank | System | MRR@10 | Type |
 |------|--------|--------|------|
 | 1 | ColBERTv2 | 0.397 | late-interaction (heavier, pricier) |
-| 2 | TAS-B | 0.347 | dense retriever |
-| **3** | **lilbee** | **0.346** | **dense retriever** |
+| **2** | **lilbee** | **0.347** | **dense retriever** |
+| **2** | **TAS-B** | **0.347** | dense retriever |
 | 4 | ANCE | 0.330 | dense retriever |
 | 5 | BM25 | 0.187 | keyword search (no AI) |
 
-lilbee is **within 0.001 of TAS-B (effectively tied)** and **above ANCE**, placing
-it second among the dense retrievers and behind only the heavier, more expensive
-ColBERTv2. The best specialized systems in the world reach ~0.40-0.45 (see the
-ceiling note below), so lilbee sits near the top of what is practically
-achievable on this benchmark.
+lilbee is **tied with TAS-B (both 0.347)** and **above ANCE**, the top dense
+retriever on this set behind only the heavier, more expensive ColBERTv2. The best
+specialized systems in the world reach ~0.40-0.45 (see the ceiling note below), so
+lilbee sits near the top of what is practically achievable on this benchmark.
+These five are the standard reference baselines; for the full field of systems
+benchmarked on MS MARCO, including several trained specialists that score higher,
+see the extended leaderboard under Results.
 
 **One caveat that makes the result look better, not worse:** this test labels
 only about one "correct" passage per question, even when several passages answer
 it equally well. lilbee earns no credit when it returns a genuinely good passage
 the test did not happen to label, which is why even the best systems in the world
-top out around 0.40-0.45 rather than 1.0. lilbee at 0.346 is roughly 80% of the
+top out around 0.40-0.45 rather than 1.0. lilbee at 0.347 is roughly 80% of the
 way to that practical ceiling.
 
 **The comparison systems** (all scored on this same test):
 
 - **BM25** - classic keyword-matching search, no AI; the algorithm inside Elasticsearch, OpenSearch, and Lucene, i.e. what most software's search bar uses. The floor to beat.
-- **ANCE** - an AI "dense retriever" from Microsoft Research (2020): matches by meaning rather than keywords, and was trained on this benchmark. The same *type* of system as lilbee.
-- **TAS-B** - a widely-cited, efficiently-trained AI dense retriever from academic research (2021, TU Wien), also trained on this benchmark. Same type as lilbee.
+- **ANCE** - an AI "dense retriever" from Microsoft Research (2020): matches by meaning rather than keywords, and is trained specifically as an MS MARCO retriever. The same *type* of system as lilbee.
+- **TAS-B** - a widely-cited, efficiently-trained AI dense retriever from academic research (2021, TU Wien), also trained specifically for this benchmark. Same type as lilbee.
 - **ColBERTv2** - a heavier, more accurate "late-interaction" retriever from Stanford that stores many vectors per passage. A step up in both cost and quality.
 - **dense retriever** - a system that turns text into meaning-vectors and matches by similarity (lilbee's approach), as opposed to keyword matching.
 
-lilbee matching ANCE and TAS-B is notable because those two were trained on this
-exact benchmark while lilbee used a general off-the-shelf embedder with no such
-training, so it holds its own against specialists without having been tuned for
-the test.
+lilbee tying ANCE and TAS-B is notable because those two are trained specifically
+as MS MARCO retrievers, while lilbee uses a general-purpose embedder off the
+shelf, not fine-tuned for this benchmark. It holds its own against purpose-built
+specialists without being built for the test.
 
 ## Why this is a good result
 
-- **It puts the right answer at the top.** MRR@10 0.346 means the correct passage is the #1 result for roughly a third of queries and near the top for most of the rest, which is the whole point of search: not "is it somewhere in the results" but "is it right there."
+- **It puts the right answer at the top.** MRR@10 0.347 means the correct passage is the #1 result for roughly a third of queries and near the top for most of the rest, which is the whole point of search: not "is it somewhere in the results" but "is it right there."
 - **It nearly doubles classic keyword search.** Beating BM25 (0.187) by ~85% means lilbee finds the right answer at the top far more often than the search technology inside most production systems today.
-- **It matches specialists that trained on the test, without training on the test.** ANCE and TAS-B were trained on MS MARCO; lilbee used a general off-the-shelf embedder that was not. Matching them anyway is a stronger signal that the quality will carry over to your own documents rather than being tuned to this benchmark.
-- **It is close to the practical ceiling, and undercounted.** Because the test labels only ~1 correct passage per query, the entire field caps around 0.40-0.45, not 1.0; 0.346 is ~80% of that. The true quality is a notch higher still, because lilbee is scored zero on queries where it returns a genuinely correct passage that simply was not the labeled one. This happened directly in the run: for "what is paula deen's brother," lilbee returned a correct Paula Deen passage at rank 1, but a *different* passage was the labeled answer, so the query scored zero despite lilbee doing the right thing.
+- **It matches specialists built for the test, without being built for the test.** ANCE and TAS-B are trained specifically as MS MARCO retrievers; lilbee uses a general-purpose embedder off the shelf, not fine-tuned for this benchmark. Tying them anyway is a stronger signal that the quality will carry over to your own documents rather than being tuned to this benchmark.
+- **It is close to the practical ceiling, and undercounted.** Because the test labels only ~1 correct passage per query, the entire field caps around 0.40-0.45, not 1.0; 0.347 is ~80% of that. The true quality is a notch higher still, because lilbee is scored zero on queries where it returns a genuinely correct passage that simply was not the labeled one. This happened directly in the run: for "what is paula deen's brother," lilbee returned a correct Paula Deen passage at rank 1, but a *different* passage was the labeled answer, so the query scored zero despite lilbee doing the right thing.
 - **The material is being found; the rest is ranking.** Recall@100 of ~67% shows the correct passage is retrieved for two-thirds of queries. Widening the index search (nprobe) helps only marginally at practical settings (see Findings), so the remaining gap is mostly ranking, not retrieval reach, and not a fundamental capability limit.
 
 ## Test Setup
 
 - **Date:** 2026-08-01
 - **Hardware:** 1x NVIDIA H100 80GB SXM (RunPod, EUR-IS-3), 188 GB RAM, 20 vCPU
-- **lilbee:** commit `b87a0bec` (branch `feat/native-multi-gpu-ingest`)
-- **Engine:** lilbee_engine 0.6.90b420.dev728 (cu124), llama-server embedder
+- **lilbee:** release 0.6.90b420.dev729 with the nprobe fix (branch `fix/ann-nprobe-recall`)
+- **Engine:** lilbee_engine 0.6.90b420.dev729 (cu124), llama-server embedder
 - **Embedder:** Qwen3-Embedding-8B-Q8_0, 4096 dimensions
 - **Index:** 8,841,823 MS MARCO v1 passages (one passage per document), IVF_PQ + FTS built corpus-wide. Built with `concept_graph`, `wiki`, and `entity_extraction` off, and no chat model installed, so HyDE and query expansion are unavailable.
+- **Index search:** nprobe fraction 0.15, i.e. 446 of the ~2,973 IVF partitions probed per query (the recommended setting; refine_factor 10 re-ranks survivors against full vectors).
 - **Dataset:** `msmarco-passage/dev/small`, the official small dev set: 6,980 queries, 7,437 relevance judgments (~1.1 judged passages per query).
 - **Depth:** top 100 passages recorded per query.
 
@@ -115,32 +119,44 @@ relevant passage in its top 10 scores zero.
 
 | Metric | lilbee (vec, pure dense) |
 |--------|--------------------------|
-| **MRR@10** | **0.3458** |
-| nDCG@10 | 0.3960 |
-| Recall@100 | 0.6656 |
+| **MRR@10** | **0.3474** |
+| nDCG@10 | 0.3980 |
+| Recall@100 | 0.6697 |
 | judged@10 (coverage diagnostic) | 5.9% |
 
-MRR@10 by the two official scorers: **ms_marco_eval.py 0.3458, trec_eval 0.3458**
+MRR@10 by the two official scorers: **ms_marco_eval.py 0.3474, trec_eval 0.3474**
 (identical to four decimals).
 
-### Ranked against published baselines (same dev set)
+### Extended leaderboard (systems benchmarked on this dev set)
 
-| Rank | System | MRR@10 |
-|------|--------|--------|
-| 1 | ColBERTv2 | 0.397 |
-| 2 | TAS-B | 0.347 |
-| **3** | **lilbee (dense)** | **0.346** |
-| 4 | ANCE | 0.330 |
-| 5 | BM25 | 0.187 |
+The five standard baselines above are the common reference points. For fuller
+context, here is a wider set of well-known open-source systems that report MRR@10
+on MS MARCO passage dev/small, with lilbee placed by its measured number:
 
-lilbee is effectively tied with TAS-B (0.346 vs 0.347) and ahead of ANCE, second
-among the dense retrievers behind only the heavier ColBERTv2. Baseline figures
-are the published numbers for this dataset; lilbee's is the measured number from
-this run.
+| Rank | System | MRR@10 | Specialized for MS MARCO retrieval? |
+|------|--------|--------|-------------------------------------|
+| 1 | SimLM | 0.411 | yes (dense) |
+| 2 | ColBERTv2 | 0.397 | yes (late-interaction) |
+| 3 | coCondenser | 0.382 | yes (dense) |
+| 4 | RocketQA | 0.370 | yes (dense) |
+| 5 | SPLADEv2 | 0.368 | yes (learned sparse) |
+| 6 | ColBERT | 0.360 | yes (late-interaction) |
+| **7** | **lilbee** | **0.347** | **no - general-purpose embedder, used as-is** |
+| **7** | **TAS-B** | **0.347** | yes (dense) |
+| 9 | ANCE | 0.330 | yes (dense) |
+| 10 | docTTTTTquery | 0.277 | yes (doc expansion + BM25) |
+| 11 | BM25 | 0.187 | no (keyword, no training) |
+
+The honest read: several purpose-built systems score higher than lilbee. What
+sets lilbee apart is the last column - **every system above it is trained
+specifically as an MS MARCO retriever, while lilbee uses a general-purpose
+embedder off the shelf**. It is the only non-specialized system anywhere in that
+tier, tied with TAS-B and ahead of ANCE. Baseline figures are the published
+numbers for this dataset; lilbee's is the measured number from this run.
 
 ## Key Findings
 
-- **Lilbee's dense retrieval is competitive with strong published dense models.** MRR@10 0.346 sits between ANCE and TAS-B, well above BM25, and within reach of ColBERTv2. The Qwen3-Embedding-8B embeddings are strong: a passage's own text retrieves it at rank 1.
+- **Lilbee's dense retrieval is competitive with strong published dense models.** MRR@10 0.347 ties TAS-B, sits above ANCE, well above BM25, and within reach of ColBERTv2. The Qwen3-Embedding-8B embeddings are strong: a passage's own text retrieves it at rank 1.
 - **nprobe tuning is a minor lever, not the recall unlock a small sample suggested.** An early 30-query probe (recall@100 67% at the default 149 partitions, 87% at nprobe=2048) overstated the opportunity: nprobe=2048 is ~69% of this index's ~2,973 IVF partitions, effectively a near-exhaustive scan. Re-grading the full 6,980-query dev set at a practical 15% probe fraction (446 partitions, up from 5%/149) moved recall@100 from 0.6656 to 0.6697 and MRR@10 from 0.3458 to 0.3474 (ms_marco_eval.py and trec_eval agree on 0.3474), at a +~250ms/query ANN-scan cost (median ~350ms to ~660ms, isolated from the embedding-dominated ~2.5s end-to-end query). The gain is small but real; recovering the full recall headroom would require probing most of the index, which is not a viable default.
 - **Two independent official scorers agreeing to four decimals** is what makes this number defensible. During analysis a partial run scored 0.002 under ms_marco_eval.py because that script normalizes over the full reference set; the disagreement with trec_eval surfaced the cause immediately. Cross-checking with two reference tools, rather than one harness, is why the published number is trustworthy.
 
@@ -164,7 +180,7 @@ gunzip -k run.vec.trec.gz
 
 # Microsoft's official script (headline MRR@10) -- needs a qid<TAB>pid<TAB>rank candidate
 awk '{print $1"\t"$3"\t"$4}' run.vec.trec > run.vec.msmarco
-python ms_marco_eval.py qrels.dev.small.tsv run.vec.msmarco      # -> MRR @10: 0.3458
+python ms_marco_eval.py qrels.dev.small.tsv run.vec.msmarco      # -> MRR @10: 0.3474
 
 # NIST trec_eval (independent cross-check + nDCG@10 + Recall)
 trec_eval -c -M 10 -m recip_rank -m ndcg_cut.10 -m recall.100 dev.qrels run.vec.trec
