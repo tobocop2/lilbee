@@ -608,9 +608,15 @@ class Searcher:
             if known_item:
                 return known_item[: top_k * 2]
         query_vec = self._embedder.embed_query(question)
+        # Retrieve the reranker's candidate depth when one is loaded, else top_k.
+        retrieve_k = (
+            max(top_k, self._config.rerank_candidates)
+            if self._config.reranker_model
+            else top_k
+        )
         results = self._store.search(
             query_vec,
-            top_k=top_k,
+            top_k=retrieve_k,
             query_text=question,
             chunk_type=chunk_type,
         )
@@ -650,6 +656,11 @@ class Searcher:
             ]
         results = self._apply_concept_boost(results, question)
         results = order_by_fusion(results)
+        # Rerank when a cross-encoder is loaded so every search surface (HTTP,
+        # MCP, CLI, ask) gets reranked order, not just the ask/chat path. A
+        # mode: prefix returned earlier and stays unreranked by design.
+        if self._config.reranker_model:
+            results = self._reranker.rerank(question, results)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
@@ -908,14 +919,9 @@ class Searcher:
             # trims to the context window, keeping the document's head.
             results = known_item
         else:
+            # search() retrieves the reranker's depth and reranks internally when
+            # a reranker is loaded, so the ask path neither bumps depth nor reranks.
             retrieve_k = top_k or self._config.top_k
-            if self._config.reranker_model:
-                # A cross-encoder re-scores the pool, so fused order is only
-                # candidate generation here: retrieve deep enough that the
-                # reranker actually sees its configured candidate count.
-                # Without a reranker the fused order is final and stays at
-                # top_k, since deep rank-fused pools bury single-arm certainty.
-                retrieve_k = max(retrieve_k, self._config.rerank_candidates)
             results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
             results = filter_results(
                 results, self._config.max_distance, self._config.min_relevance_score
@@ -930,8 +936,6 @@ class Searcher:
                     return RagContext([], self.direct_messages(question, history))
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
-            if self._config.reranker_model:
-                results = self._reranker.rerank(retrieval_query, results)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
         return self._finalize_context(results, question, history)
