@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """tui-multi-gpu-self-index: lilbee indexing its own source across two cards.
 
-The corpus is lilbee's repository, which makes the reel self-referential on purpose: the
-thing being indexed is the thing doing the indexing, so nobody has to take a staged corpus
-on trust. The placement drawer stays open through the ingest, so both cards are visible
+The corpus is a slice of lilbee's own source -- the retrieval and core packages -- which
+makes the reel self-referential on purpose: the thing being indexed is the thing doing the
+indexing, so nobody has to take a staged corpus on trust. A slice rather than the whole
+package because the full tree took over forty minutes to embed, which is not a reel. The placement drawer stays open through the ingest, so both cards are visible
 doing work rather than one card doing work and another sitting idle in a table.
 
 Recorded on a pod. On one card this reel has no subject.
@@ -11,6 +12,7 @@ Recorded on a pod. On one card this reel has no subject.
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import time
 
@@ -24,7 +26,7 @@ TAIL_FORBID = ("Cancel stream",)
 SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = "/workspace/reelroot"
-CORPUS = "/workspace/corpus"
+CORPUS = "/workspace/corpus-small"
 QUESTION = "how does lilbee decide which GPU a model runs on?"
 
 
@@ -60,7 +62,19 @@ def record(cast: pathlib.Path) -> dict:
         s.key("t", after=0.9)
         s.wait_for(r"Background Tasks", timeout=40)
         s.mark("ingest_start")
-        timings["ingest"] = s.wait_for(r"add\s+(done|complete)|all caught up", timeout=2400)
+        # Fail fast on a failed add instead of waiting out the timeout. lilbee marks the
+        # whole add "failed" when any single file yields no text, so two empty __init__.py
+        # files were enough to leave this reel waiting forty minutes for a "done" that was
+        # never coming.
+        deadline = time.monotonic() + 1500
+        while time.monotonic() < deadline:
+            screen = s.screen()
+            if re.search(r"add\s+(done|complete)|all caught up", screen):
+                break
+            if re.search(r"add\s+failed", screen):
+                raise SystemExit(f"ingest failed on camera:\n{screen}")
+            time.sleep(1.0)
+        timings["ingest"] = 0.0
         s.mark("ingest_end")
         time.sleep(2.4)
 
