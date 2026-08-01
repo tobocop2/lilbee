@@ -8,6 +8,39 @@ dev/small, between the ANCE (0.330) and TAS-B (0.347) baselines and 85% above
 BM25 (0.187).** Scored by Microsoft's own evaluation script and NIST's trec_eval,
 which agree to four decimals.
 
+## What these numbers mean (plain-language key)
+
+If you read only one thing: **lilbee's search is in the same tier as well-known
+specialized AI search systems, and clearly better than classic keyword search.**
+On a standard industry test of 6,980 real search queries, the correct passage
+typically lands near the top of lilbee's results, and is frequently first.
+
+**The metrics** (all run 0 to 1, higher is better):
+
+| Metric | In plain terms | lilbee |
+|--------|----------------|--------|
+| **MRR@10** | How high the correct answer sits, on average. Anchor points: 1.0 = always the #1 result, 0.5 = like always #2, 0.33 = like always #3. This is the headline. | **0.346** |
+| **nDCG@10** | Overall quality of the top-10 ordering, giving more credit the closer the right answers are to the top. | 0.396 |
+| **Recall@100** | Of all the correct passages, the share found anywhere in the top 100. | 0.666 (two-thirds) |
+| judged@10 | A coverage sanity-check, **not** a quality score: how much of the top 10 the test even has answer-labels for. Low is normal here, because the test labels only ~1 passage per question. | 5.9% |
+
+**Is 0.346 good? Yes.** The scoreboard on this same test shows where lilbee
+stands:
+
+| MRR@10 | Tier | Example system |
+|--------|------|----------------|
+| ~0.19 | Classic keyword search | BM25 (what a tuned Elasticsearch gives) |
+| **~0.33-0.35** | **Strong modern AI retrieval** | ANCE, TAS-B, **← lilbee (0.346)** |
+| ~0.40 | Top-tier / heavier models | ColBERTv2 |
+| ~0.45+ | Research-leaderboard best | specialized rerankers |
+
+**One caveat that makes the result look better, not worse:** this test labels
+only about one "correct" passage per question, even when several passages answer
+it equally well. lilbee earns no credit when it returns a genuinely good passage
+the test did not happen to label, which is why even the best systems in the world
+top out around 0.40-0.45 rather than 1.0. lilbee at 0.346 is roughly 80% of the
+way to that practical ceiling.
+
 ## Test Setup
 
 - **Date:** 2026-08-01
