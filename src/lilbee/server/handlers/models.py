@@ -17,6 +17,7 @@ from lilbee.catalog import (
     enrich_catalog,
     get_catalog,
     get_families,
+    get_picks,
     picks_for,
 )
 from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
@@ -140,6 +141,10 @@ async def list_models() -> ModelsResponse:
     """
     # list_installed walks the model filesystem; offload it like list_external_models.
     installed = set(await asyncio.to_thread(get_services().model_manager.list_installed))
+    # Resolving the picks hits HuggingFace on the first call of the process, so
+    # offload it too rather than stalling the event loop. The four picks_for
+    # reads below are served from the memo this fills.
+    await asyncio.to_thread(get_picks)
 
     return ModelsResponse(
         chat=_catalog_section(picks_for(ModelTask.CHAT), cfg.chat_model, installed),
