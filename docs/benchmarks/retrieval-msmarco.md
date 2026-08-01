@@ -141,7 +141,7 @@ this run.
 ## Key Findings
 
 - **Lilbee's dense retrieval is competitive with strong published dense models.** MRR@10 0.346 sits between ANCE and TAS-B, well above BM25, and within reach of ColBERTv2. The Qwen3-Embedding-8B embeddings are strong: a passage's own text retrieves it at rank 1.
-- **The ANN index leaves recall on the table.** At the default IVF search width, recall@100 of the labeled passage is 67%; raising nprobe to 2048 lifts it to 87% on a 30-query sample. Tuning nprobe (at some latency cost) is an available, unrealized retrieval-quality gain and is worth a follow-up.
+- **The ANN index leaves recall on the table.** At the default IVF search width (5% of partitions probed), recall@100 of the labeled passage is 67%; raising nprobe to 2048 lifts it to 87% on a 30-query sample. Tuning nprobe (at some latency cost) is an available, unrealized retrieval-quality gain. A fix raising the probe fraction from 5% to 15% is in progress; a re-grade of the full dev set at the new setting is pending datacenter capacity and will update this section with the before/after MRR@10 and the latency cost.
 - **Two independent official scorers agreeing to four decimals** is what makes this number defensible. During analysis a partial run scored 0.002 under ms_marco_eval.py because that script normalizes over the full reference set; the disagreement with trec_eval surfaced the cause immediately. Cross-checking with two reference tools, rather than one harness, is why the published number is trustworthy.
 
 ## Limitations
