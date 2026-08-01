@@ -1,6 +1,5 @@
 """RAM detection, model selection, interactive picker, and auto-install for chat models."""
 
-import functools
 import logging
 import os
 import shutil
@@ -45,8 +44,9 @@ def _catalog_from_picks(picks: tuple) -> tuple[ModelInfo, ...]:
     )
 
 
-@functools.cache
 def _get_model_catalog() -> tuple[ModelInfo, ...]:
+    """Chat picks as ModelInfo. Not cached here: picks are already memoized for
+    the process, and a second cache would survive ``reset_picks()``."""
     from lilbee.catalog import picks_for
 
     return _catalog_from_picks(picks_for(ModelTask.CHAT))

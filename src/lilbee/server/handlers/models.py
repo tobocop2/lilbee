@@ -158,6 +158,16 @@ async def _set_model(
     return SetModelResponse(model=model)
 
 
+def _resolve_via_available_repo(model: str, available: set[str]) -> str | None:
+    """Resolve a bare ``hf_repo`` to whichever quant of it *available* lists.
+
+    Sorted scan so the pick is deterministic when several quants are installed.
+    """
+    if not is_bare_hf_repo(model):
+        return None
+    return next((ref for ref in sorted(available) if ref.startswith(f"{model}/")), None)
+
+
 def _resolve_via_installed_repo(model: str, available: set[str]) -> str | None:
     """Resolve a bare ``hf_repo`` to its installed quant.
 
@@ -211,7 +221,8 @@ def _require_model_available(model: str) -> str:
     if model in available:
         return model
     hit = (
-        _resolve_via_installed_repo(model, available)
+        _resolve_via_available_repo(model, available)
+        or _resolve_via_installed_repo(model, available)
         or _resolve_via_parse(model, available)
         or _resolve_via_provider_key(model)
     )
