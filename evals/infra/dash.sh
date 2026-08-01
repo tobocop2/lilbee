@@ -88,11 +88,18 @@ pane_ingest() {
       # list parses as an output redirection, and awk then fails the whole
       # statement rather than the comparison, so docs/s and the ETA vanish.
       pct=$(awk -v a="$total" -v b="$EXPECTED" 'BEGIN{printf "%.2f", (b ? a * 100 / b : 0)}')
-      started=$(cat "$VOL/status/ingest_started" 2>/dev/null || echo "$ts")
-      elapsed=$((ts - started))
-      rate=$(awk -v a="$total" -v s="$elapsed" 'BEGIN{printf "%.1f", (s > 0 ? a / s : 0)}')
-      eta=$(awk -v a="$total" -v b="$EXPECTED" -v r="$rate" \
-            'BEGIN{printf "%.1f", (r > 0 ? (b - a) / r / 3600 : 0)}')
+      # Rate over a TRAILING WINDOW, not since the sync started. The first six
+      # minutes of a run produce no rows at all (every worker walks the whole
+      # corpus, then eight llama-servers load an 8GB model each), so dividing by
+      # total elapsed reports about two thirds of the real rate and an ETA half
+      # again too long. The window is the last 30 samples, which is ten minutes.
+      read -r rate eta <<<"$(tail -30 "$VOL/prof/rows.csv" 2>/dev/null | awk -F, -v b="$EXPECTED" '
+        { m = $2 + 0; s = 0; for (i = 3; i <= NF; i++) s += $i; n = (m > s ? m : s)
+          if (!t0) { t0 = $1; n0 = n }
+          tN = $1; nN = n }
+        END { d = tN - t0
+              r = (d > 0 ? (nN - n0) / d : 0)
+              printf "%.1f %.1f", r, (r > 0 ? (b - nN) / r / 3600 : 0) }')"
       printf '\n   %sindexed%s %s%s%s %s/ %s%s   %s%s%%%s   %s%s docs/s%s   %seta %sh%s\n' \
         "$C_HDR" "$R" "$C_NUM" "$(commas "$total")" "$R" \
         "$C_DIM" "$(commas "$EXPECTED")" "$R" "$C_OK" "$pct" "$R" \
@@ -254,8 +261,16 @@ remote_prefix() {
   [ -n "$host" ] && [ -n "$port" ] || { echo "state has no endpoint" >&2; exit 1; }
   # Each pane reconnects on its own, so a dropped ssh leaves a retrying pane
   # rather than a dead one in the middle of a six-hour recording.
+  #
+  # One connection PER PANE, deliberately. Multiplexing them through a shared
+  # ControlMaster looks tidier and is worse: every client then dies together
+  # whenever the master drops, and five panes losing their data at once reads
+  # exactly like a dead pod. Five long-lived authenticated sessions are well
+  # inside sshd's limits; the apparent saturation that prompted the change was
+  # the shared socket failing, not sshd refusing.
   printf 'while :; do ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
   printf -- '-o ConnectTimeout=15 -o IdentitiesOnly=yes -o ServerAliveInterval=30 '
+  printf -- '-o ControlMaster=no -o ControlPath=none '
   printf -- '-i %s/.ssh/runpod_qa -p %s root@%s ' "$HOME" "$port" "$host"
   printf -- '"bash /root/dash.sh pane @PANE@" || echo "  [reconnecting]"; sleep 5; done'
 }

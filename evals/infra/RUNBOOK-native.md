@@ -111,20 +111,68 @@ hour and could not the next.
   ssh sessions for the run's whole length, so `who` never empties. `GRACE_MIN` is
   the whole hold.
 
-## Measured on the trial (2 x RTX 4090, 80k passages, Qwen3-Embedding-0.6B)
+## Measured on the full corpus (8x H100 SXM, 160 vCPU, EUR-IS-3, 2026-08-01)
 
-| | |
+8,841,823 passages, Qwen3-Embedding-8B-Q8_0 at 4096 dims, index on a network volume.
+
+| phase | wall time |
 |---|---|
-| throughput | 159 docs/s whole-run, 200 docs/s steady state |
-| per-card utilisation | 92-96% on both cards |
-| shard split | 40,041 / 39,959 of 80,000 |
-| extraction | p50 1 ms, mean 2.32 ms, 95.2% at or under 3 ms |
-| merge + ANN + FTS | under 45s at 80k |
-| resume | 14s, `Unchanged: 80000`, merged index still 80,000 (not doubled) |
-| index on disk | 408 files, 405 MB |
-| volume vs local disk | no penalty: 165.3 docs/s was the container-disk reference |
+| stage corpus, count it, pull the 8GB embedder | 9 min 25 s |
+| embed across 8 GPUs | 6 h 05 min |
+| merge 8 shards (147GB) into one index | 59 min |
+| corpus-wide IVF-PQ and BM25 build | 9 min |
+| **total** | **7 h 17 min** |
 
-The volume is not a throughput problem for the ingest phase. What the trial does
-NOT establish is the merge and ANN build at 8.8M x 4096, which is 110x the rows
-and 4x the dimensions; and the index folder at that scale is roughly 45,000 files
-and ~158GB, which is an upload the trial only exercised at 409 files.
+`expected=8841823 landed=8841823 shard_sources=8841823 sync_rc=0`, no count
+mismatch, every table at the corpus size and one `_meta` row.
+
+Throughput 406 docs/s while embedding, 337 docs/s end to end. Shards finished
+within 0.3% of each other and summed to exactly 8,841,823.
+
+Per-card utilisation, sampled every 2s on all eight cards. Report both windows or
+the number is misleading in one direction or the other:
+
+| window | mean | p10 | p50 | at zero |
+|---|---|---|---|---|
+| while embedding (6.05 h) | 84.9% | 47% | 94% | 5.0% |
+| whole run (7.29 h) | 70.7% | 0% | 94% | 20.8% |
+
+Extraction over all 8,841,823 files: mean 3.91 ms, p50 1 ms, p99 100 ms, max
+3454 ms, 94.7% at or under 3 ms.
+
+**The merge cost five times the estimate.** 59 minutes, against ~12 extrapolated
+from 800k rows on local NVMe. Folding 147GB over a network filesystem is a
+different operation, and the extrapolation had no business being trusted across
+11x the rows and a change of storage medium. It ran at ~2,990 rows/s, which is
+faster per row than the 80k trial managed, so the batching amortises well; the
+wall time is simply the bytes.
+
+## What the full run cost that the trial could not have shown
+
+- **A datacenter with GPU capacity may refuse network volumes.** AP-IN-1
+  advertises 8xH100 and rejects volume creation outright, and nothing in the
+  datacenter record says which datacenters support them. `pick_dc` returns every
+  viable datacenter ranked and `up` walks them until a volume actually creates.
+- **A datacenter pinned by a volume may have nothing cheap in it.** EUR-IS-3
+  serves only H100 SXM: no CPU pods, no consumer cards. The publish path's
+  hardcoded RTX 4090 fallback retried something that could never succeed there.
+  It now asks what the datacenter actually offers and takes its cheapest card.
+- **HuggingFace private storage is capped** (100GB on this account, reached at
+  97.6GB). A 146GB index cannot fit under it no matter what is deleted. Public
+  dataset storage is free and is what this run used in the end.
+- **A failed upload was being recorded as a successful publish.** `push()` caught
+  the exception, printed GAVE UP and returned None, so the script wrote
+  PUBLISH_DONE over a partial index. Quota-shaped errors now fail terminally
+  without retrying, and any failure is fatal to the publish.
+- **`lilbee export` cannot export this corpus** without 64-bit string offsets.
+  pyarrow's `string` caps a column at 2GB and the page text is ~3GB. Fixed on a
+  branch and verified here: parquet 1.63GB and jsonl 4.15GB, both 8,841,823 rows.
+  The export also holds the whole dataset in memory before writing: measured at
+  ~77GB peak for the 4.15GB jsonl, so it needs a large machine until a streaming
+  writer lands.
+- **py-spy cannot profile the fan-out's workers.** `ptrace_scope=1` permits
+  tracing descendants only, and the fan-out spawns its own workers, so the
+  profiler is always a sibling. The old harness wrapped each worker at launch and
+  was its parent. `/proc/sys` is read-only in the container, and `sysctl -w`
+  prints the new value while ignoring the write, so read it back rather than
+  trusting the echo. Checked up front now, with the reason logged.

@@ -117,7 +117,49 @@ for dc in dcs:
         ok.append((dc, price["uninterruptablePrice"], price.get("stockStatus") or "?"))
 for dc, price, stock in ok:
     print(f"{dc} {price} {stock}", file=sys.stderr)
-print(ok[0][0] if ok else "")
+# EVERY viable datacenter, best first, not just the winner. Having GPU capacity
+# does not imply supporting network volumes -- AP-IN-1 has 8-packs and refuses
+# volumes outright -- and nothing in the datacenter record says which do. The
+# caller therefore walks this list until a volume actually creates, which needs
+# no list of storage-capable datacenters to be kept correct by hand.
+for dc, _, _ in ok:
+    print(dc)
+PY
+}
+
+# The cheapest single GPU $DC can actually serve. Used by publish, where the job
+# is a network-bound upload and the card is irrelevant beyond being the ticket to
+# a machine that can reach the volume.
+cheapest_gpu_in_dc() {
+  runpodctl datacenter list 2>/dev/null > /tmp/pod_native.dc.json || return 1
+  python3 - "$(api_key)" "$DC" /tmp/pod_native.dc.json <<'PY'
+import json, sys, urllib.request
+key, dc, dcfile = sys.argv[1], sys.argv[2], sys.argv[3]
+gpus = [
+    g.get("gpuId")
+    for entry in json.load(open(dcfile))
+    if entry["id"] == dc
+    for g in entry.get("gpuAvailability") or []
+    if g.get("gpuId")
+]
+priced = []
+for gpu in gpus:
+    q = ('query{gpuTypes(input:{id:"%s"}){lowestPrice(input:{gpuCount:1,dataCenterId:"%s"})'
+         '{uninterruptablePrice}}}' % (gpu, dc))
+    req = urllib.request.Request(
+        f"https://api.runpod.io/graphql?api_key={key}",
+        data=json.dumps({"query": q}).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": "pod_native"},
+    )
+    try:
+        p = (json.loads(urllib.request.urlopen(req, timeout=30).read())
+             ["data"]["gpuTypes"][0] or {}).get("lowestPrice") or {}
+    except Exception:
+        continue
+    if p.get("uninterruptablePrice"):
+        priced.append((p["uninterruptablePrice"], gpu))
+priced.sort()
+print(priced[0][1] if priced else "")
 PY
 }
 
@@ -233,15 +275,21 @@ cmd_up() {
   [ -f "$STATE" ] && die "a run is already recorded. 'attach', 'down' or 'nuke' first"
 
   echo "looking for a datacenter that can serve ${GPUS}x${GPU_NAME}..."
-  DC=$(pick_dc)
-  [ -n "$DC" ] || die "no datacenter can assemble ${GPUS}x${GPU_NAME} right now"
-  echo "chosen: $DC"
+  local candidates; candidates=$(pick_dc)
+  [ -n "$candidates" ] || die "no datacenter can assemble ${GPUS}x${GPU_NAME} right now"
 
-  echo "creating a ${VOL_GB}GB network volume in $DC"
-  VOLUME=$(runpodctl network-volume create --name "msmarco9m" --size "$VOL_GB" \
-             --data-center-id "$DC" 2>/dev/null \
-           | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' | head -1)
-  [ -n "$VOLUME" ] || die "volume create failed in $DC"
+  # Walk the candidates until one takes a volume: GPU capacity and volume support
+  # are independent, and the create call is the only thing that knows which.
+  VOLUME=""
+  for candidate in $candidates; do
+    echo "creating a ${VOL_GB}GB network volume in $candidate"
+    VOLUME=$(runpodctl network-volume create --name "msmarco9m" --size "$VOL_GB" \
+               --data-center-id "$candidate" 2>/dev/null \
+             | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$VOLUME" ] && { DC="$candidate"; break; }
+    echo "  $candidate does not take network volumes; trying the next"
+  done
+  [ -n "$VOLUME" ] || die "no datacenter with ${GPUS}x${GPU_NAME} also supports volumes"
   save "{\"volume\": \"$VOLUME\", \"dc\": \"$DC\"}"
   echo "volume $VOLUME (kept when the pod goes; 'nuke' deletes it)"
 
@@ -281,11 +329,20 @@ cmd_publish() {
   echo "releasing the GPU pod: an upload is network-bound and does not need eight H100s"
   runpodctl pod delete "$POD" >/dev/null 2>&1
   sleep 5
-  if ATTEMPTS=20 provision "msmarco9m-publish" 0; then
+  # The volume pins the datacenter, and a datacenter that can assemble an 8xH100
+  # pack does not necessarily offer anything cheap: EUR-IS-3 serves H100 SXM and
+  # nothing else, no CPU pods and no consumer cards. So the fallback asks what
+  # this datacenter actually has and takes its cheapest single card, rather than
+  # naming one and retrying it forever.
+  if ATTEMPTS=10 provision "msmarco9m-publish" 0; then
     echo "publishing from a CPU pod"
   else
-    echo "no CPU pod in $DC; falling back to one cheap GPU pod"
-    GPU_NAME="NVIDIA GeForce RTX 4090" ATTEMPTS=20 provision "msmarco9m-publish" 1 \
+    echo "no CPU pod in $DC; finding the cheapest single GPU it does offer"
+    local cheapest
+    cheapest=$(cheapest_gpu_in_dc)
+    [ -n "$cheapest" ] || die "no pod of any kind available in $DC to publish from"
+    echo "  cheapest in $DC: $cheapest"
+    GPU_NAME="$cheapest" ATTEMPTS=30 provision "msmarco9m-publish" 1 \
       || die "no pod available to publish from"
   fi
   upload_scripts

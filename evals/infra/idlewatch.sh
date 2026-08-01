@@ -48,11 +48,16 @@ running() {
   n=$(pgrep -fc "$1" 2>/dev/null | head -1)
   echo "${n:-0}"
 }
+# Prefixes, not filenames: the run script is launched as a per-launch snapshot
+# (native9m.289.sh), and "native9m.sh" read as a regex needs exactly one
+# character between the stem and "sh", so it matches the original and not the
+# snapshot. The watchdog then reports "no run script" through a healthy setup
+# phase and would delete the pod mid-run once staging passed IDLE_MIN.
 activity() {
   echo "$(( $(busy_cards) \
           + $(running "[l]ilbee sync") \
-          + $(running "[n]ative9m.sh") \
-          + $(running "[p]ublish9m.sh") ))"
+          + $(running "[n]ative9m") \
+          + $(running "[p]ublish9m") ))"
 }
 
 end_pod() {

@@ -115,12 +115,18 @@ DOCS=$(find_docs)
 if [ -z "$DOCS" ] || [ -z "$(ls -A "$DOCS" 2>/dev/null)" ]; then
   [ -n "${HF_TOKEN:-}" ] || die "no HF_TOKEN"
   mkdir -p "$CORPUS_DIR"
-  curl -fsSL --retry 8 --retry-delay 5 -H "Authorization: Bearer $HF_TOKEN" \
-    "$CORPUS_URL" -o /tmp/corpus.tgz || die "corpus download"
+  # The tarball is cached on the VOLUME, the unpacked tree is not. A replacement
+  # pod has to re-unpack (the 8.8M-file tree belongs on the container disk) but
+  # never has to re-download, and 1.3GB on the volume is free next to the index.
+  TARBALL="$VOL/corpus.tgz"
+  if [ ! -s "$TARBALL" ]; then
+    curl -fsSL --retry 8 --retry-delay 5 -H "Authorization: Bearer $HF_TOKEN" \
+      "$CORPUS_URL" -o "$TARBALL.part" || die "corpus download"
+    mv "$TARBALL.part" "$TARBALL"
+  fi
   # shellcheck disable=SC2086  # EXTRACT_GLOB is deliberately word-split
-  tar xzf /tmp/corpus.tgz -C "$CORPUS_DIR" \
+  tar xzf "$TARBALL" -C "$CORPUS_DIR" \
     ${EXTRACT_GLOB:+--wildcards $EXTRACT_GLOB} || die "untar"
-  rm -f /tmp/corpus.tgz
   DOCS=$(find_docs)
 fi
 [ -n "$DOCS" ] && [ -d "$DOCS" ] || die "no documents/ under $CORPUS_DIR"
@@ -235,6 +241,21 @@ log "sync pid $SYNC_PID (under a pty so the progress bar renders)"
 
 # py-spy attaches to two workers once they exist. It cannot wrap them at launch
 # the way the env-var harness did, because the branch spawns them itself.
+# py-spy needs ptrace. yama's ptrace_scope=1 permits tracing DESCENDANTS ONLY,
+# and the native fan-out spawns its own workers, so py-spy can only ever attach
+# to them as a sibling. The env-var harness wrapped each worker at launch and was
+# therefore the parent; that option is gone with the fan-out. Checked up front
+# and recorded, because the alternative is discovering at the end of a six-hour
+# run that the profiles were never written. /proc/sys is read-only in a RunPod
+# container, so this cannot be fixed from inside one: it needs a pod created with
+# CAP_SYS_PTRACE.
+PTRACE_SCOPE=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
+if [ "$PROFILE" = "1" ] && [ "$PTRACE_SCOPE" != "0" ]; then
+  PROFILE=0
+  echo "ptrace_scope=$PTRACE_SCOPE: py-spy cannot attach to workers it did not spawn" \
+    > "$PROF/spy.status"
+  log "PROFILING OFF: ptrace_scope=$PTRACE_SCOPE blocks attaching to the fan-out's workers"
+fi
 if [ "$PROFILE" = "1" ]; then
   # Matched by spawn_main, not by parenthood: the sync now runs behind script and
   # a filter pipeline, so the workers are grandchildren, and lilbee's other
@@ -247,9 +268,9 @@ if [ "$PROFILE" = "1" ]; then
     done
     [ "${#kids[@]}" -ge 2 ] || { echo "no workers to profile" > "$PROF/spy.status"; exit 0; }
     /root/venv/bin/py-spy record --gil --nonblocking --rate "$PROFILE_RATE" --format raw \
-      --output "$PROF/w0.gil.folded" --pid "${kids[0]}" >/dev/null 2>&1 &
+      --output "$PROF/w0.gil.folded" --pid "${kids[0]}" >>"$PROF/spy.err" 2>&1 &
     /root/venv/bin/py-spy record --idle --nonblocking --rate "$PROFILE_RATE" --format raw \
-      --output "$PROF/w1.wall.folded" --pid "${kids[1]}" >/dev/null 2>&1 &
+      --output "$PROF/w1.wall.folded" --pid "${kids[1]}" >>"$PROF/spy.err" 2>&1 &
     echo "gil=${kids[0]} wall=${kids[1]}" > "$PROF/spy.status" ) &
 fi
 

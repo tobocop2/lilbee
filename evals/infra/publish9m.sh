@@ -94,12 +94,21 @@ variables).
 | `sys.csv` | ts, total GPU watts, bytes used on the volume (30s) |
 | `w0.gil.folded` | py-spy samples holding the GIL, one worker (folded stacks) |
 | `w1.wall.folded` | py-spy samples of all wall time, one worker (folded stacks) |
+| `spy.status` | whether profiling ran, and why not when it did not |
 | `ingest.log` | the run's own log |
 
 The folded files load directly in https://speedscope.app and render with
 flamegraph.pl. GIL-held fraction of sampled wall time is
 `sum(w0.gil.folded) / sum(w1.wall.folded)`, and the two are different workers,
 so read it as a fleet-level ratio rather than one process's.
+
+The folded files are ABSENT when `spy.status` says so. py-spy needs ptrace, and
+yama's `ptrace_scope=1` allows tracing descendants only; the native fan-out
+spawns its own workers, so py-spy can only reach them as a sibling. The earlier
+environment-variable harness wrapped each worker at launch and was therefore its
+parent, which is why its profiles exist and these do not. `/proc/sys` is
+read-only inside a RunPod container, so it cannot be lifted from within one: the
+pod has to be created with CAP_SYS_PTRACE. Every other file here is unaffected.
 TEOF
 log "  telemetry: $(du -sh "$TELEMETRY" 2>/dev/null | cut -f1)"
 
@@ -162,6 +171,14 @@ api.create_repo(
 )
 
 
+failures: list[str] = []
+
+# Errors that no amount of retrying will fix. A storage quota is the one that
+# matters here: retrying it burns a paid pod against a wall and, worse, the
+# partial upload left behind is a CORRUPT index rather than a smaller one.
+_TERMINAL = ("storage limit", "quota", "402", "payment required")
+
+
 def push(folder: str, path_in_repo: str, message: str, *, ignore=None) -> None:
     """Upload *folder*, retrying: a six-hour run must not lose its artifacts to one 502."""
     if not folder or not os.path.isdir(folder):
@@ -177,8 +194,13 @@ def push(folder: str, path_in_repo: str, message: str, *, ignore=None) -> None:
             return
         except Exception as exc:  # noqa: BLE001 - any transport failure is retryable here
             print(f"[publish] {path_in_repo}/ attempt {attempt} failed: {exc}", flush=True)
+            if any(t in str(exc).lower() for t in _TERMINAL):
+                print(f"[publish] {path_in_repo}/ FAILED TERMINALLY: not retryable", flush=True)
+                failures.append(path_in_repo)
+                return
             time.sleep(30 * attempt)
     print(f"[publish] {path_in_repo}/ GAVE UP after 5 attempts", flush=True)
+    failures.append(path_in_repo)
 
 
 push(os.environ["TELEMETRY"], "telemetry", "ingest telemetry")
