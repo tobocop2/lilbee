@@ -37,6 +37,37 @@ The 1,600 cross-source pages are the headline: each draws its evidence from two 
 
 Surface parity: CLI (`status`, `lint`, `index`), MCP (`wiki_index` returns 2,261 entries, `wiki_lint` returns clean), and HTTP all agree; HTTP enforces the bearer token, so authorized reads and lint succeed while every unauthenticated route returns 401.
 
+## Run 3: modern models on a single RTX 4090
+
+Same 4,256-document corpus, re-run with 2026-class models on one NVIDIA RTX 4090 (24 GB, 32 vCPU, RunPod EU-RO-1). Embeddings: **Qwen3-Embedding-0.6B**. Page generation: **Qwen3-8B** (Q4_K_M). 3,906 sources ingested (OCR on the scans; the rest are blank/unreadable pages).
+
+Timings (wall clock):
+
+| Phase | Work | Time | Rate |
+|---|---|---|---|
+| Ingest (OCR) | 3,906 sources from 14 GB of scanned PDFs | 44 min | ~89 docs/min |
+| Index build | store-backed stub index over the corpus | ~9 min | NER-bound |
+| Index rebuild | second build, unchanged corpus | ~9 min | idempotent |
+| Generation | 50 pages, single-page path | 16 min | ~3.1 pages/min |
+
+Index: 18,831 mention rows, 16,197 distinct subjects, **1,514 published pages, of which 969 (64%) draw evidence from 2+ documents**. Rebuild reproduces 1,514 pages with zero slug churn.
+
+Generation sample (the 50 highest-mention subjects):
+
+| Measure | Result | Bar |
+|---|---|---|
+| Draft-routing rate | 4 of 52 = **7.7%** | ≤20% |
+| Citation verify rate | **100%** (81/81 `VALID`) | ≥95% |
+| Pages with zero verified citations | **0** | 0 |
+| Faithfulness score | 0.52–0.85, mean 0.68 | gate at 0.50 |
+
+The mechanism holds on modern models: citations verify, the faithfulness gate publishes grounded pages and drafts weak ones, and the draft rate stays in bounds. Findings from this run, each an honest limitation rather than a mechanism failure:
+
+- **OCR is a hard dependency for scanned corpora.** Without tesseract installed, scanned pages extract no text and are skipped; installing it recovered the corpus.
+- **Model size is bounded by the card.** A 24 GB GPU cannot serve a 27–30B model with enough context for the ~1.7–8k-token wiki prompts (the served window shrinks below the prompt), so this run used an 8B. The corpus datacenter offered no engine-supported card above 24 GB. Bigger prose quality needs a bigger card, not a mechanism change.
+- **The batch `wiki build` path needs a capable model.** An 8B cannot reliably format the multi-entity batch response, so ~98% of batch pages became parse-pending drafts; the single-page `wiki generate` path formats cleanly and publishes. Tracked as a follow-up (make the batch path degrade to per-entity calls on parse failure).
+- **NER over structured OCR records yields spurious subjects.** Phone bills and DMV forms in the corpus repeat tokens (`bronx-nye`, form-field fragments) that rank as high-mention "subjects"; their pages are technically faithful (they cite real source lines) but low value. Subject-selection quality, not citation integrity.
+
 ## Claim-support audit
 
 Every sampled citation on a published page verified against the cited source's extracted text as `VALID`, with genuine verbatim excerpts (an entity page's testimony quote, a billing page's `Customer Service Number 1.800.937-8997`). Page-level faithfulness scores ranged 0.73–0.91; the generation gate quarantined lower-scoring drafts for review.
