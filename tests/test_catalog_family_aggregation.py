@@ -72,24 +72,16 @@ async def test_family_row_carries_all_size_variants() -> None:
     assert {v.quant for v in rows[0].size_variants} == {"Q4_K_M", "Q5_K_M", "F16"}
 
 
-async def test_recommended_variant_drives_primary_metadata() -> None:
+async def test_smallest_variant_drives_primary_metadata() -> None:
+    """The row shows the cheapest quant of the family, whatever else it holds."""
     fam = _family(
         _variant("Q4_K_M", size_mb=4_600),
         _variant("Q5_K_M", size_mb=5_700),
         _variant("F16", size_mb=16_000),
     )
     rows = await _build_screen_with_family(fam)
-    assert rows[0].quant == "Q5_K_M"
-    assert rows[0].variant is not None
-
-
-async def test_smallest_variant_chosen_when_none_recommended() -> None:
-    fam = _family(
-        _variant("Q4_K_M", size_mb=4_600),
-        _variant("F16", size_mb=16_000),
-    )
-    rows = await _build_screen_with_family(fam)
     assert rows[0].quant == "Q4_K_M"
+    assert rows[0].variant is not None
 
 
 async def test_empty_variant_family_is_skipped() -> None:
