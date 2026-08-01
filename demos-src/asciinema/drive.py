@@ -227,8 +227,20 @@ class Session:
         """
         probe = marker or screen
         for _ in range(limit):
-            if re.search(probe, self.screen(), re.IGNORECASE):
+            current = self.screen()
+            if re.search(probe, current, re.IGNORECASE):
                 return
+            # Close an overlay before walking. The Sessions and Fleet drawers sit on top
+            # of whatever screen is showing and swallow the ring keys, so a walk that
+            # starts under one presses its limit without moving and fails on a reel whose
+            # navigation is otherwise correct.
+            if re.search(r"Filter conversations|No saved conversations", current):
+                self.key("C-o", after=0.6)
+                continue
+            if re.search(r"Placement", current):
+                self.esc()
+                time.sleep(0.3)
+                continue
             self.key("]" if forward else "[")
         raise Timeout(f"never reached {screen!r} in {limit} steps\n--- screen ---\n"
                       f"{self.screen()}")

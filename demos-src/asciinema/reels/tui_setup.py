@@ -6,14 +6,14 @@ embedding model, and shows every candidate it can see, marking the ones already 
 The second half is the first useful thing a new user does -- add a document and watch it
 land -- so the reel ends on a working knowledge base rather than on a form.
 
-Known scorecard exception: motion_fps measures about 11fps against a floor of 15. That
-is the application repainting while a first run does its startup work in the background,
-not the pipeline: the same driver typing the same way against an established data root
-(tui-settings, tui-catalog) renders at 20fps. Recorded rather than waived.
+The reel waits for the task bar to go idle before it scrolls anything. TaskBar polls at
+10Hz while any task is non-idle and 1Hz otherwise, and the screen's repaint cadence
+follows it, so a scroll during engine warm-up renders at 10fps however fast the keys are
+sent. Waiting is also honest: it is what the screen looks like once the app has finished
+starting. The wait itself is a marked speed window rather than dead air.
 
-A scroll on the Status screen was tried as a second, later motion beat and removed: `j`
-produces no repaint there at all, so it was dead keys on camera and zero frames in the
-measurement.
+A scroll on the Status screen was tried as the motion beat and removed: `j` produces no
+repaint there at all, so it was dead keys on camera and zero frames in the measurement.
 
 The reel deliberately does not press Enter on a card. Card focus is not addressable from
 the outside: the grid scrolls under the selection, and capture-pane strips the attributes
@@ -93,27 +93,27 @@ def record(cast: pathlib.Path) -> dict:
         timings["ingest"] = s.wait_for(r"add\s+(done|complete)", timeout=600)
         time.sleep(1.6)
 
-        # 6. Status, which counts what is actually indexed. A first-run reel should end on
-        # a number, not on an empty chat pane with a toast still fading.
-        # Settings, scrolled, before the ending. Two reasons: a first run is the moment
-        # someone wants to see what there is to configure, and it is the only screen in
-        # this reel where the driver can produce sustained motion. Status cannot be
-        # scrolled at all -- j and k produce no repaint there -- and typing during a first
-        # run renders at about 12fps because the app is still doing startup work, so
-        # without this beat the reel has nothing measurable in it.
-        # Wait out the engine load before the scroll, and compress that wait rather than
-        # sit through it. A first run keeps repainting at about 10fps while it is loading
-        # a model in the background, so a scroll started before then renders choppy --
-        # honestly, but choppy. The wait is marked as a speed window, so it plays back
-        # six times faster with a label saying so.
+        # 6. Let startup finish before scrolling anything, and compress the wait rather
+        # than sit through it.
         s.mark("gen_start")
         try:
-            s.wait_for(r"warming up|starting engine|loading into", absent=True, timeout=300)
+            # Wait for the task bar to go fully idle, not just for the warm-up wording.
+            # TaskBar polls at 10Hz while anything is non-idle and 1Hz when it is not,
+            # and the screen's repaint cadence follows it, so scrolling during startup
+            # renders at 10fps however fast the keys arrive. The leading bullet is the
+            # bar's own activity indicator.
+            s.wait_for(r"●", absent=True, timeout=300)
         except drive.Timeout:
             pass
-        time.sleep(2.0)
+        # The bullet clearing is not the same as the machine being quiet: embedding
+        # finishes in a background thread after the task row is gone. Sit out a real
+        # settle rather than a token one. It costs nothing on screen because the whole
+        # wait is inside the speed window.
+        time.sleep(25.0)
         s.mark("gen_end")
 
+        # 7. Settings, scrolled: a first run is the moment someone wants to see what
+        # there is to configure, and it is the reel's only sustained driver motion.
         s.key("C-p", after=0.8)
         s.wait_for(r"Search for commands", timeout=15)
         s.type_text("settings", rate=0.045)
@@ -128,9 +128,10 @@ def record(cast: pathlib.Path) -> dict:
         s.key(*(["j"] * 18), after=0.045)
         time.sleep(1.2)
 
+        # 8. End on Status, which counts what is actually indexed: a first-run reel should
+        # close on a number rather than on an empty pane with a toast still fading.
         s.goto("Status", forward=False, limit=8, marker=r"Indexed|Documents")
-        time.sleep(1.6)
-        time.sleep(2.6)
+        time.sleep(2.8)
 
         timings["total"] = time.monotonic() - t0
         s.mark("payload_end")
