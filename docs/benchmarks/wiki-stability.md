@@ -59,7 +59,9 @@ Against the criteria:
 - **Draft-routing rate: not established.** 4 of 17 generated pages routed to drafts (23.5%), but the sample is under-powered: 13 of 30 requested pages exceeded the 300 s per-page generation cap because fp16 7B generation on the L4 is slow. A faster card (or a raised cap) is needed to sample the rate against the 20% bar.
 - **Lifecycle — delete source then prune archives its page: fails.** Removing a page's only source (via `lilbee remove`) leaves its citation in place but pointing at absent chunks; `verify_citation` returns `UNVERIFIABLE`, which `_lint_excerpt` reports as no issue at all, so prune's stale-majority check (`_STALE_TYPES = {STALE_HASH, EXCERPT_MISSING}`) never fires and the orphaned page is not archived. Reproduced through the real user path; filed as a follow-up. The other lifecycle drills (edit-source stale lint; accept/reject round-trip) were not exercised in this run.
 
-Profile ([py-spy flame graph](wiki-index-flame.svg), full corpus): spaCy NER over the corpus dominates the index build; the store layer (mention read/write/aggregate) is negligible. A full index over 4,212 sources runs single-threaded NER-bound.
+Profile (py-spy, full corpus): spaCy NER over the corpus dominates the index build; the store layer (mention read/write/aggregate) is negligible. A full index over 4,212 sources runs single-threaded NER-bound.
+
+![py-spy flame graph of a full wiki index over the 4,256-document corpus; spaCy NER dominates and the store layer is negligible](wiki-index-flame.svg)
 
 ### Claim-support audit
 
