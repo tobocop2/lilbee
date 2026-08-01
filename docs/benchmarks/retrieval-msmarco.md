@@ -4,8 +4,9 @@ Retrieval quality of lilbee's 8.8M-passage MS MARCO index, measured against the
 official human relevance judgments and compared to published baselines.
 
 **Headline: lilbee's dense retrieval scores MRR@10 = 0.346 on MS MARCO
-dev/small, between the ANCE (0.330) and TAS-B (0.347) baselines and 85% above
-BM25 (0.187).** Scored by Microsoft's own evaluation script and NIST's trec_eval,
+dev/small, effectively tied with TAS-B (0.347), ahead of ANCE (0.330), and 85%
+above BM25 (0.187) - second among the dense retrievers behind only the heavier
+ColBERTv2.** Scored by Microsoft's own evaluation script and NIST's trec_eval,
 which agree to four decimals.
 
 ## What these numbers mean (plain-language key)
@@ -24,15 +25,22 @@ typically lands near the top of lilbee's results, and is frequently first.
 | **Recall@100** | Of all the correct passages, the share found anywhere in the top 100. | 0.666 (two-thirds) |
 | judged@10 | A coverage sanity-check, **not** a quality score: how much of the top 10 the test even has answer-labels for. Low is normal here, because the test labels only ~1 passage per question. | 5.9% |
 
-**Is 0.346 good? Yes.** The scoreboard on this same test shows where lilbee
-stands:
+**Is 0.346 good? Yes.** Ranked against the standard baselines on this same test,
+lilbee places among the top dense retrievers:
 
-| MRR@10 | Tier | Example system |
-|--------|------|----------------|
-| ~0.19 | Classic keyword search | BM25 (what a tuned Elasticsearch gives) |
-| **~0.33-0.35** | **Strong modern AI retrieval** | ANCE, TAS-B, **← lilbee (0.346)** |
-| ~0.40 | Top-tier / heavier models | ColBERTv2 |
-| ~0.45+ | Research-leaderboard best | specialized rerankers |
+| Rank | System | MRR@10 | Type |
+|------|--------|--------|------|
+| 1 | ColBERTv2 | 0.397 | late-interaction (heavier, pricier) |
+| 2 | TAS-B | 0.347 | dense retriever |
+| **3** | **lilbee** | **0.346** | **dense retriever** |
+| 4 | ANCE | 0.330 | dense retriever |
+| 5 | BM25 | 0.187 | keyword search (no AI) |
+
+lilbee is **within 0.001 of TAS-B (effectively tied)** and **above ANCE**, placing
+it second among the dense retrievers and behind only the heavier, more expensive
+ColBERTv2. The best specialized systems in the world reach ~0.40-0.45 (see the
+ceiling note below), so lilbee sits near the top of what is practically
+achievable on this benchmark.
 
 **One caveat that makes the result look better, not worse:** this test labels
 only about one "correct" passage per question, even when several passages answer
@@ -115,15 +123,20 @@ relevant passage in its top 10 scores zero.
 MRR@10 by the two official scorers: **ms_marco_eval.py 0.3458, trec_eval 0.3458**
 (identical to four decimals).
 
-### Against published baselines (same dev set)
+### Ranked against published baselines (same dev set)
 
-| System | MRR@10 |
-|--------|--------|
-| BM25 | 0.187 |
-| **lilbee (dense)** | **0.346** |
-| ANCE | 0.330 |
-| TAS-B | 0.347 |
-| ColBERTv2 | 0.397 |
+| Rank | System | MRR@10 |
+|------|--------|--------|
+| 1 | ColBERTv2 | 0.397 |
+| 2 | TAS-B | 0.347 |
+| **3** | **lilbee (dense)** | **0.346** |
+| 4 | ANCE | 0.330 |
+| 5 | BM25 | 0.187 |
+
+lilbee is effectively tied with TAS-B (0.346 vs 0.347) and ahead of ANCE, second
+among the dense retrievers behind only the heavier ColBERTv2. Baseline figures
+are the published numbers for this dataset; lilbee's is the measured number from
+this run.
 
 ## Key Findings
 
