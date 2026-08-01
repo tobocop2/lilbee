@@ -22,16 +22,16 @@ def _search_blob(m: CatalogModel) -> str:
     return f"{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
 
 
-# Parameter-count bounds per bucket, in billions. Keyed on parameters rather
-# than on-disk bytes so a model keeps its bucket whichever quant is picked, and
-# so buckets match how model sizes are actually talked about ("a 70B"). HUGE
-# starts where consumer hardware stops.
-_PARAM_RANGES: dict[CatalogSize, tuple[float, float]] = {
-    CatalogSize.SMALL: (0.0, 4.0),
-    CatalogSize.MEDIUM: (4.0, 20.0),
-    CatalogSize.LARGE: (20.0, 70.0),
-    CatalogSize.HUGE: (70.0, float("inf")),
-}
+# Upper bound in billions of parameters for each bucket below HUGE, which takes
+# everything above the last one. Keyed on parameters rather than on-disk bytes so
+# a model keeps its bucket whichever quant is picked, and so buckets match how
+# model sizes are actually talked about ("a 70B"). HUGE starts where consumer
+# hardware stops.
+_PARAM_TIER_CEILINGS: tuple[tuple[float, CatalogSize], ...] = (
+    (4.0, CatalogSize.SMALL),
+    (20.0, CatalogSize.MEDIUM),
+    (70.0, CatalogSize.LARGE),
+)
 
 _PARAMS_PER_BILLION = 1e9
 
@@ -41,10 +41,10 @@ def size_bucket(params: int) -> CatalogSize | None:
     if params <= 0:
         return None
     billions = params / _PARAMS_PER_BILLION
-    for bucket, (lo, hi) in _PARAM_RANGES.items():
-        if lo <= billions < hi:
+    for ceiling, bucket in _PARAM_TIER_CEILINGS:
+        if billions < ceiling:
             return bucket
-    return None
+    return CatalogSize.HUGE
 
 
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least

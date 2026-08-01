@@ -19,7 +19,6 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
-from conftest import PICKS_CHAT, PICKS_EMBEDDING
 from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import download_model
 from lilbee.cli.app import app
@@ -123,14 +122,16 @@ out of the box. Set appropriate timeouts and max connections.
 
 def _chat_model_entry():
     """Return the chat model catalog entry based on env var or default."""
-    from tests.integration.conftest import _CI_CHAT_REPO
+    from tests.integration.conftest import CHAT_ENTRY
 
-    return next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    return CHAT_ENTRY
 
 
 def _embedding_model_entry():
     """Return the nomic-embed-text catalog entry."""
-    return PICKS_EMBEDDING[0]
+    from tests.integration.conftest import EMBED_ENTRY
+
+    return EMBED_ENTRY
 
 
 @pytest.fixture(scope="module")

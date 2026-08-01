@@ -9,12 +9,38 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PICKS_CHAT, PICKS_EMBEDDING
+from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
+_EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+_EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+
+
+def _real_entry(hf_repo: str, gguf_filename: str, task: str, size_gb: float) -> CatalogModel:
+    """A catalog entry for a repo that really exists on HuggingFace.
+
+    Integration tests perform real downloads, so they need real repos and
+    cannot use the picks: those are whatever is trending today, which is both
+    unstable and potentially enormous. Pinned repo ids are the point here, the
+    same way ``tools/qa`` pins them.
+    """
+    return CatalogModel(
+        hf_repo=hf_repo,
+        gguf_filename=gguf_filename,
+        size_gb=size_gb,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=task,
+    )
+
+
+CHAT_ENTRY = _real_entry(_CI_CHAT_REPO, "*Q8_0.gguf", "chat", 0.5)
+EMBED_ENTRY = _real_entry(_EMBED_REPO, _EMBED_FILE, "embedding", 0.3)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
@@ -141,11 +167,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
 
     reset_provider()
 
-    embed_entry = PICKS_EMBEDDING[0]
+    embed_entry = EMBED_ENTRY
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    chat_entry = next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    chat_entry = CHAT_ENTRY
     download_model(chat_entry)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
@@ -207,11 +233,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
 
     reset_provider()
 
-    embed_entry = PICKS_EMBEDDING[0]
+    embed_entry = EMBED_ENTRY
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    chat_entry = next(m for m in PICKS_CHAT if m.hf_repo == _CI_CHAT_REPO)
+    chat_entry = CHAT_ENTRY
     download_model(chat_entry)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 

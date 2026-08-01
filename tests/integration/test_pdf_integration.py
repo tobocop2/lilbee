@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PICKS_EMBEDDING
 from lilbee.app.services import get_services
 from lilbee.app.services import reset_services as reset_provider
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
+from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
 
@@ -64,7 +64,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     reset_services()
 
     # Download embedding model
-    embed_entry = PICKS_EMBEDDING[0]
+    embed_entry = EMBED_ENTRY
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
