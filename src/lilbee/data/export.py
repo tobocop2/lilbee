@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import IO, TYPE_CHECKING, cast
 
 from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
@@ -167,33 +167,56 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
     return rows
 
 
-def _serialize_parquet(table: pa.Table) -> bytes:
-    import io
+# Rows encoded per write. A page row is a few hundred bytes of text, so this
+# keeps a batch in the low megabytes whatever the corpus size.
+_WRITE_BATCH_ROWS = 10_000
 
+
+def _write_parquet(table: pa.Table, sink: IO[bytes]) -> None:
+    """Encode *table* into *sink* as parquet, one row group per batch.
+
+    Build-vs-buy: pyarrow's own writer does the batching, and feeding a
+    ParquetWriter row group by row group produces byte-identical output.
+    """
     import pyarrow.parquet as pq
 
-    buffer = io.BytesIO()
-    pq.write_table(table, buffer)
-    return buffer.getvalue()
+    pq.write_table(table, sink, row_group_size=_WRITE_BATCH_ROWS)
 
 
-def _serialize_jsonl(table: pa.Table) -> bytes:
-    # One JSON object per row, keyed by the table's columns, so jsonl stays in
-    # step with the schema (and with parquet) rather than a hardcoded field list.
-    return "".join(json.dumps(row) + "\n" for row in table.to_pylist()).encode("utf-8")
+def _write_jsonl(table: pa.Table, sink: IO[bytes]) -> None:
+    """Encode *table* into *sink* as jsonl, one write per batch.
+
+    One JSON object per row, keyed by the table's columns, so jsonl stays in step
+    with the schema (and with parquet) rather than a hardcoded field list. Only a
+    batch is converted to Python objects at a time: converting the whole table
+    cost about 19x the size of the file it produced (77GB peak for a 4.15GB
+    export of an 8.8M-row corpus), because the row dicts, the joined string and
+    its encoded bytes were all live at once.
+    """
+    for batch in table.to_batches(max_chunksize=_WRITE_BATCH_ROWS):
+        sink.write("".join(json.dumps(row) + "\n" for row in batch.to_pylist()).encode("utf-8"))
 
 
-_SERIALIZERS = {DatasetFormat.PARQUET: _serialize_parquet, DatasetFormat.JSONL: _serialize_jsonl}
+_WRITERS = {DatasetFormat.PARQUET: _write_parquet, DatasetFormat.JSONL: _write_jsonl}
 
 
 def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
-    """Encode the dataset *table* to bytes in the given format."""
-    return _SERIALIZERS[fmt](table)
+    """Encode the dataset *table* to bytes in the given format.
+
+    For callers that must hand back one buffer (the HTTP download). A file
+    export uses :func:`write_dataset`, which never holds the encoded dataset.
+    """
+    import io
+
+    buffer = io.BytesIO()
+    _WRITERS[fmt](table, buffer)
+    return buffer.getvalue()
 
 
 def write_dataset(table: pa.Table, path: Path, fmt: DatasetFormat) -> None:
-    """Write the dataset *table* to *path* in the given format."""
-    path.write_bytes(serialize_dataset(table, fmt))
+    """Write the dataset *table* to *path* in the given format, a batch at a time."""
+    with path.open("wb") as sink:
+        _WRITERS[fmt](table, sink)
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:

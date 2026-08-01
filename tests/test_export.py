@@ -1,5 +1,6 @@
 """Tests for the per-page text dataset export/import (lilbee.data.export)."""
 
+import io
 from pathlib import Path
 
 import pyarrow as pa
@@ -7,6 +8,7 @@ import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.data import export as export_mod
 from lilbee.data.export import (
     DatasetFormat,
     _source_meta_from_rows,
@@ -14,6 +16,7 @@ from lilbee.data.export import (
     import_dataset,
     load_page_dataset,
     resolve_format,
+    serialize_dataset,
     write_dataset,
 )
 from lilbee.data.store import EmbeddingModelMismatchError, SourceType, Store
@@ -283,6 +286,92 @@ class TestSixtyFourBitOffsets:
         write_dataset(build_page_dataset(store), path, fmt)
         loaded = load_page_dataset(path, fmt)
         assert [(r["source"], r["page"], r["text"]) for r in loaded] == [("a.pdf", 1, "body text")]
+
+
+class _CountingSink:
+    """A binary sink that keeps each write separate, rather than one buffer.
+
+    Not a BytesIO subclass: subclassing would mean overriding ``write`` against a
+    wider signature than it accepts. Good enough for the jsonl writer, which uses
+    nothing else; the parquet writer needs a real file object (pyarrow reaches
+    for ``closed``), so its test writes into a BytesIO.
+    """
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    @property
+    def writes(self) -> int:
+        return len(self.chunks)
+
+    def write(self, data: bytes) -> int:
+        self.chunks.append(data)
+        return len(data)
+
+    def getvalue(self) -> bytes:
+        return b"".join(self.chunks)
+
+
+class TestStreamingWrites:
+    """An export is written batch by batch, never assembled whole in memory.
+
+    A full-corpus jsonl export measured ~77GB of peak memory for a 4.15GB file,
+    because the old path built a dict per row, joined them into one string and
+    then encoded that: three copies of the corpus alive at once. The writers take
+    a sink and feed it one batch at a time, so peak memory is a batch, not a
+    corpus.
+    """
+
+    def _table(self, rows):
+        return pa.table(
+            {
+                "source": pa.array([f"s{i}.pdf" for i in range(rows)], pa.large_string()),
+                "page": pa.array(list(range(rows)), pa.int32()),
+                "text": pa.array([f"body {i}" for i in range(rows)], pa.large_string()),
+                "content_type": pa.array(["pdf"] * rows, pa.large_string()),
+            }
+        )
+
+    def test_jsonl_writes_once_per_batch_not_once_per_export(self, monkeypatch):
+        monkeypatch.setattr(export_mod, "_WRITE_BATCH_ROWS", 2)
+        sink = _CountingSink()
+        export_mod._write_jsonl(self._table(5), sink)
+        # 5 rows in batches of 2 is three batches; a single write means the whole
+        # corpus was assembled before anything reached the sink.
+        assert sink.writes == 3
+        assert len(sink.getvalue().decode().strip().splitlines()) == 5
+
+    def test_parquet_writes_one_row_group_per_batch(self, monkeypatch):
+        import pyarrow.parquet as pq
+
+        monkeypatch.setattr(export_mod, "_WRITE_BATCH_ROWS", 2)
+        sink = io.BytesIO()
+        export_mod._write_parquet(self._table(5), sink)
+        parquet = pq.ParquetFile(io.BytesIO(sink.getvalue()))
+        assert parquet.num_row_groups == 3
+        assert parquet.metadata.num_rows == 5
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_write_dataset_does_not_encode_to_bytes_first(self, tmp_path, monkeypatch, fmt):
+        # The file export is the one that handles a full corpus, so it must go
+        # straight to the file. Routing it through the byte-returning API is the
+        # regression: that is what held a whole encoded corpus in memory.
+        def boom(*_args, **_kwargs):
+            raise AssertionError("write_dataset must stream to the file, not encode to bytes")
+
+        monkeypatch.setattr(export_mod, "serialize_dataset", boom)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(self._table(5), path, fmt)
+        assert len(load_page_dataset(path, fmt)) == 5
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_serialize_and_write_agree(self, tmp_path, fmt):
+        # The HTTP download encodes to bytes and the CLI writes a file; both go
+        # through the same writer, so the two must not drift.
+        table = self._table(5)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(table, path, fmt)
+        assert path.read_bytes() == serialize_dataset(table, fmt)
 
 
 class TestImportDataset:
