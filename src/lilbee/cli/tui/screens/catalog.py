@@ -116,6 +116,7 @@ _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
 _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
+_WORKER_FETCH_FAMILIES = "fetch_families"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -260,7 +261,10 @@ class CatalogScreen(Screen[None]):
     def __init__(self, *, focus_task: str | None = None) -> None:
         super().__init__()
         self._focus_task: str | None = focus_task
-        self._families: list[ModelFamily] = get_families()
+        # Empty until the worker lands: get_families() resolves the picks,
+        # which hits HuggingFace on the first call of a session. Building it
+        # here would block screen construction on the network.
+        self._families: list[ModelFamily] = []
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
         # Per-task pagination state. Each task tab tracks its own HF offset
@@ -443,6 +447,7 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
+        self._fetch_families()
         # Force Chat as the initial active tab. Deliberately not
         # `TabbedContent(initial=...)`: that arms `Tabs._on_mount` to assign the
         # active tab unconditionally, and when the app tears down mid-mount
@@ -771,6 +776,20 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         return classify_all_remote_models()
 
+    @work(thread=True, name=_WORKER_FETCH_FAMILIES)
+    def _fetch_families(self) -> list[ModelFamily]:
+        """Group the picks into families off the UI thread.
+
+        ``get_families`` resolves the picks, which is an HTTP round trip on the
+        first call of a session. Doing it during screen construction froze the
+        catalog on open for as long as HuggingFace took to answer.
+        """
+        try:
+            return get_families()
+        except Exception:
+            log.debug("get_families failed in worker", exc_info=True)
+            return []
+
     @work(thread=True, name=_WORKER_FETCH_FRONTIER, exit_on_error=False)
     def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:
         """Discover cloud chat models off the UI thread.
@@ -908,6 +927,8 @@ class CatalogScreen(Screen[None]):
         elif name == _WORKER_FETCH_FRONTIER:
             self._frontier_rows = result
             self._populate_library_list()
+        elif name == _WORKER_FETCH_FAMILIES:
+            self._families = result
         else:
             return False
         self._data_version += 1
