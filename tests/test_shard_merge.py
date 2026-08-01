@@ -193,6 +193,21 @@ class TestFragmentAdoption:
         assert merged[CHUNKS_TABLE] == 2
         assert store.open_table(CHUNKS_TABLE).count_rows() == 2
 
+    def test_adopting_nothing_is_a_no_op(self, store):
+        # A guard on a public method: merge_shards never calls it with an empty
+        # list, but the method does not get to assume its only caller.
+        assert store.adopt_fragments(CHUNKS_TABLE, []) == 0
+
+    def test_a_shard_whose_chunks_table_is_empty_contributes_nothing(self, tmp_path, store):
+        # A worker that indexed nothing still creates its tables. There is no
+        # fragment to take over, and the merge has to carry on regardless.
+        database = lancedb.connect(str(tmp_path / "w0"))
+        database.create_table(CHUNKS_TABLE, schema=_chunk_rows([]).schema)
+        database.create_table(SOURCES_TABLE, pa.table({"filename": ["a.txt"]}))
+        merged = merge_shards(store, [tmp_path / "w0"])
+        assert merged[CHUNKS_TABLE] == 0
+        assert store.open_table(SOURCES_TABLE).count_rows() == 1
+
     def test_a_shard_that_cannot_be_linked_falls_back_to_copying(self, tmp_path, store):
         # Hard links cannot cross a filesystem, and a data file name could already
         # be taken. Either way the merge has to complete, just more slowly.
