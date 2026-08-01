@@ -27,7 +27,11 @@ from mcp.client.stdio import stdio_client
 
 from mcp import ClientSession, StdioServerParameters
 
-_CORE_TOOLS = frozenset(
+# Exposed on every build regardless of config gating, so an absence is a real
+# regression rather than a setting. The wiki, session and memory tools come and
+# go with config and are deliberately not listed. Shared with the conformance
+# suite, which asserts the same inventory over the in-process transport.
+CORE_TOOLS = frozenset(
     {"search", "sync", "add", "remove", "status", "list_documents", "settings_list"}
 )
 
@@ -38,10 +42,9 @@ class Probe:
     def __init__(self) -> None:
         self.results: list[tuple[bool, str, str]] = []
 
-    def check(self, ok: bool, name: str, detail: str = "") -> bool:
+    def check(self, ok: bool, name: str, detail: str = "") -> None:
         self.results.append((ok, name, detail))
         print(f"  {'PASS' if ok else 'FAIL'}  {name}{f' -- {detail}' if detail else ''}")
-        return ok
 
     @property
     def failed(self) -> int:
@@ -73,7 +76,7 @@ async def run(args: argparse.Namespace) -> int:
         tools = (await session.list_tools()).tools
         names = {t.name for t in tools}
         probe.check(bool(tools), "tools/list is non-empty", f"{len(tools)} tools")
-        missing = sorted(_CORE_TOOLS - names)
+        missing = sorted(CORE_TOOLS - names)
         probe.check(not missing, "core tools present", f"missing={missing}" if missing else "")
 
         dirty = [

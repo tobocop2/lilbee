@@ -20,18 +20,13 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import pytest
 from mcp.shared.memory import create_client_server_memory_streams
+from tools.qa.mcp_stdio_probe import CORE_TOOLS
 
 from lilbee.mcp_server import _offload_sync, build_mcp_server
 from mcp import ClientSession
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-# Present on every build regardless of config gating (wiki, sessions and memory
-# tools come and go with settings, so they are not asserted here).
-_CORE_TOOLS = frozenset(
-    {"search", "sync", "add", "remove", "status", "list_documents", "settings_list"}
-)
 
 
 @asynccontextmanager
@@ -67,7 +62,7 @@ async def test_the_handshake_identifies_lilbee() -> None:
 async def test_the_core_tools_reach_a_real_client() -> None:
     async with _client() as (session, _init):
         names = {tool.name for tool in (await session.list_tools()).tools}
-    assert names >= _CORE_TOOLS
+    assert names >= CORE_TOOLS
 
 
 async def test_the_wire_schema_stays_trimmed_through_the_client() -> None:
