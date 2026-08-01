@@ -230,6 +230,61 @@ class TestBuildPageDataset:
         ]
 
 
+class TestSixtyFourBitOffsets:
+    """Every string column of an export carries 64-bit offsets.
+
+    A 32-bit `string` column holds at most 2GB, and the concat, metadata append
+    and sort in `build_page_dataset` all materialize one array per column, so a
+    corpus past that ceiling fails the export outright. A fixture that actually
+    crosses 2GB costs the RAM and minutes CI does not have, so what is asserted
+    is the type that removes the ceiling, on a table that has been through the
+    whole pipeline.
+    """
+
+    # Named rather than derived from the table: comparing the schema against
+    # itself would pass on a table that had lost its text columns entirely.
+    TEXT_COLUMNS = ("source", "text", "content_type", "title", "authors", "created_at")
+
+    def _text_types(self, table):
+        return {
+            field.name: field.type for field in table.schema if not pa.types.is_integer(field.type)
+        }
+
+    def test_captured_scan_is_large_string_through_sort_and_metadata(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2)
+        types = self._text_types(build_page_dataset(store))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    def test_reconstructed_rows_are_large_string(self, store):
+        # The chunk-reconstructed table is concatenated onto the scanned one, so a
+        # 32-bit column here would overflow the concat regardless of the scan.
+        store.add_page_texts([_page("cap.pdf", 1, "captured")])
+        store.upsert_source("cap.pdf", "h", 1)
+        store.add_chunks([_chunk("recon.pdf", 1, 0, "rebuilt")])
+        store.upsert_source("recon.pdf", "h", 1)
+        types = self._text_types(build_page_dataset(store))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    def test_single_source_export_is_large_string(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one")])
+        store.upsert_source("a.pdf", "h", 1)
+        types = self._text_types(build_page_dataset(store, source="a.pdf"))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_large_string_round_trips_back_to_rows(self, tmp_path, store, fmt):
+        # Both writers have to accept the wider type, and the import path has to
+        # read back what the export wrote: a table export cannot be fixed by
+        # breaking the pair.
+        store.add_page_texts([_page("a.pdf", 1, "body text")])
+        store.upsert_source("a.pdf", "h", 1)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(build_page_dataset(store), path, fmt)
+        loaded = load_page_dataset(path, fmt)
+        assert [(r["source"], r["page"], r["text"]) for r in loaded] == [("a.pdf", 1, "body text")]
+
+
 class TestImportDataset:
     async def test_round_trip_into_fresh_store(self, services):
         store = services
