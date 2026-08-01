@@ -2649,14 +2649,15 @@ class TestAnnNprobesScaling:
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
         assert _ann_nprobes(0) == _ANN_NPROBES_FLOOR
-        assert _ann_nprobes(50_000) == _ANN_NPROBES_FLOOR
+        # isqrt(10_000) = 100 partitions, ceil(100 * 0.15) = 15 < floor.
+        assert _ann_nprobes(10_000) == _ANN_NPROBES_FLOOR
 
     def test_large_corpus_scales_past_floor(self):
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
-        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.05) = 354 probes.
+        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.15) = 1061 probes.
         fifty_million = 50_000_000
-        assert _ann_nprobes(fifty_million) == 354
+        assert _ann_nprobes(fifty_million) == 1061
         assert _ann_nprobes(fifty_million) > _ANN_NPROBES_FLOOR
 
     def test_negative_row_count_clamps_to_floor(self):
