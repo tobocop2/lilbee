@@ -44,7 +44,7 @@ dependencies = [
     "textual>=0.75",
     # mcp <2: the 2.x line is a breaking rewrite still in beta; the beta
     # channel's --prerelease=allow would resolve to 2.0.0b1 otherwise.
-    "mcp>=1.26.0,<2",
+    "mcp>=1.26.0,<3",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
