@@ -1,6 +1,6 @@
 ---
 name: lilbee-mcp-wiki
-description: Experimental wiki layer for lilbee. Use only when the user explicitly asks about wiki / concept / entity / synthesis pages, or when `lilbee_status` shows a built wiki. Requires the lilbee-mcp skill to be active for the underlying MCP connection.
+description: Wiki layer for lilbee. Use only when the user explicitly asks about wiki / concept / entity / synthesis pages, or when `lilbee_status` shows a built wiki. Requires the lilbee-mcp skill to be active for the underlying MCP connection.
 ---
 
 # lilbee-mcp-wiki

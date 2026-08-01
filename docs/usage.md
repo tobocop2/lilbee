@@ -164,7 +164,7 @@ Tabs for features that aren't installed are hidden, not greyed out:
 
 - **API-Keys** appears only when the `litellm` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
-- **Wiki** appears only when the experimental wiki layer is enabled
+- **Wiki** appears only when the wiki layer is enabled
   (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
 
 Install the relevant extra (or flip the wiki flag) and the tab shows up on
@@ -536,7 +536,7 @@ lilbee --json init [path]                      # create a .lilbee/ in a director
 through it, and indexing happens in the same call. Long ops take seconds to
 minutes; the final JSON includes per-file outcomes and counts.
 
-**Wiki (experimental, opt-in):**
+**Wiki (opt-in):**
 
 ```bash
 lilbee --json wiki status                      # page counts + wiki_enabled flag
@@ -959,7 +959,7 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
-| `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_SEMANTIC_CHUNKING` | `false` | Topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
 | `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
 | `LILBEE_LAYOUT_DETECTION` | `true` | Layout-aware PDF extraction (xberg AUTO strategy): text follows the detected reading order and running headers/footers are stripped |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
@@ -1006,7 +1006,7 @@ Only relevant when running the HTTP server.
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
 
-### Wiki tuning (experimental)
+### Wiki tuning
 
 Only relevant if you use the wiki layer. `LILBEE_WIKI` and `LILBEE_WIKI_DIR` need to be set before the first build; the rest tune generation.
 
@@ -1358,8 +1358,8 @@ Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al.
 
 ## Semantic chunking
 
-Experimental. Off by default. lilbee ships with two chunking strategies; which
-one serves you depends on what you're indexing.
+Off by default. lilbee ships with two chunking strategies; which one serves you
+depends on what you're indexing.
 
 **Fixed-size (default).** Breaks documents into roughly equal token windows
 with overlap. Fast, deterministic, works well on code, reference manuals, user
@@ -1367,7 +1367,7 @@ guides, API specs, and anything with clear structural boundaries. The
 assumption is that each chunk only needs to be coherent enough for retrieval,
 and the model will handle the rest from a small window of context.
 
-**Semantic (experimental).** Uses embedding similarity to detect topic
+**Semantic.** Uses embedding similarity to detect topic
 boundaries and splits there instead of at fixed sizes. Each chunk tends to
 represent one coherent thought rather than an arbitrary slice through one. The
 benefit shows up on prose-heavy material: novels, essays, long-form research
