@@ -91,7 +91,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(1.8)
 
         # 3. Ask it, with the placement drawer open.
-        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.6)
         s.key("C-g", after=1.0)
         s.wait_for(r"Placement", timeout=25)

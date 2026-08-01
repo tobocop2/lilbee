@@ -92,7 +92,7 @@ def record(cast: pathlib.Path) -> dict:
                                       timeout=1200)
         time.sleep(2.2)
 
-        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.6)
         # Placement stays open through the answer: it shows which card the model is on
         # while it is generating, which is the part of the story a chat pane alone

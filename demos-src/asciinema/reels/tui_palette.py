@@ -111,7 +111,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(0.5)
 
         # 8. Back to Chat, then a real /add so the Task Center does visible work.
-        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.5)
         s.key("i", after=0.5)
         s.wait_for(r"INSERT", timeout=10)
@@ -128,7 +128,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(1.2)
 
         # 9. The slash-command catalogue.
-        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.4)
         s.key("i", after=0.5)
         s.wait_for(r"INSERT", timeout=10)

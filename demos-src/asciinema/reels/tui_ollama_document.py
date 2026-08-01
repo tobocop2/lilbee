@@ -8,6 +8,12 @@ names the model and the placement drawer shows the card, so both halves are on s
 
 The document is a real 2.3 MB PDF rather than a text file, so the ingest is the ingest a
 viewer would actually have: extraction, chunking and embedding, not a one-second add.
+
+The question targets prose rather than a spec table on purpose. Asked about coolant
+capacity, the answer was correct and cited page 278, but it quoted the retrieved chunk
+back verbatim -- and this manual's tables extract as scrambled word salad without OCR, so
+a correct answer read as a broken one. What a demo shows is not only whether the answer
+is right.
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/ollama"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
-QUESTION = "what does the manual say about coolant capacity?"
+QUESTION = "what should I do if the engine overheats?"
 
 # Served by Ollama, not by lilbee's own engine. The embedder stays local: the reel is
 # about where the chat model lives, and swapping the embedder as well would only make
@@ -91,7 +97,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(1.8)
 
         # 3. Ask it, with the placement drawer open.
-        s.goto("Chat", forward=False, limit=8, marker=r"personal encyclopedia")
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.6)
         s.key("C-g", after=1.0)
         s.wait_for(r"Placement", timeout=25)
