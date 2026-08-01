@@ -12,7 +12,8 @@ import os
 import re
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -128,13 +129,22 @@ def _offload_sync(fn: _F) -> _F:
     under the shared streamable-http daemon one slow handler would stall every
     connected agent. ``functools.wraps`` preserves the wrapped signature so the
     generated tool schema is unchanged.
+
+    ``abandon_on_cancel`` releases the caller the moment it cancels. A worker
+    thread cannot be interrupted, so the handler still runs to completion; the
+    default would additionally hold the cancelling task until it did, which on
+    the shared mount keeps a connection open for a request nobody is waiting
+    for. Work that must actually stop takes a cancel token instead, as the
+    ingest tools do.
     """
     if inspect.iscoroutinefunction(fn):
         return fn
 
     @functools.wraps(fn)
     async def _runner(*args: Any, **kwargs: Any) -> Any:
-        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
+        )
 
     return cast("_F", _runner)
 
@@ -277,6 +287,24 @@ def _entity_status_dict() -> dict[str, Any] | None:
     return section.model_dump() if section is not None else None
 
 
+@contextmanager
+def _ingest_cancel_token() -> Iterator[threading.Event]:
+    """A cancel token for the ingest pipeline, set when the caller gives up.
+
+    An agent cancelling a tool call gets what the HTTP surface gets on a client
+    disconnect: the pipeline stops between files, flushes the work it finished
+    and raises, rather than indexing the rest of the corpus for a request that
+    has gone away. The pipeline polls the token from its worker threads, which
+    is why cancellation alone does not reach them.
+    """
+    token = threading.Event()
+    try:
+        yield token
+    except BaseException:
+        token.set()
+        raise
+
+
 @_tool
 async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
@@ -286,9 +314,15 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
     """
     from lilbee.data.ingest import sync as run_sync
 
-    return (
-        await run_sync(quiet=True, force_rebuild=force_rebuild, retry_skipped=retry_skipped)
-    ).model_dump()
+    with _ingest_cancel_token() as cancel:
+        return (
+            await run_sync(
+                quiet=True,
+                force_rebuild=force_rebuild,
+                retry_skipped=retry_skipped,
+                cancel=cancel,
+            )
+        ).model_dump()
 
 
 @_tool
@@ -345,8 +379,8 @@ async def add(
 
     from lilbee.app.ingest import temporary_ocr_config
 
-    with temporary_ocr_config(enable_ocr, ocr_timeout):
-        sync_result = (await run_sync(quiet=True)).model_dump()
+    with temporary_ocr_config(enable_ocr, ocr_timeout), _ingest_cancel_token() as cancel:
+        sync_result = (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
     result: dict[str, Any] = {
         "command": "add",

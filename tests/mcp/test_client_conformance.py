@@ -13,16 +13,16 @@ unit suite would leak llama-server processes onto the developer's machine.
 
 from __future__ import annotations
 
-import time
+import threading
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import anyio
-import pytest
 from mcp.shared.memory import create_client_server_memory_streams
 from tools.qa.mcp_stdio_probe import CORE_TOOLS
 
 from lilbee.mcp_server import _offload_sync, build_mcp_server
+from lilbee.mcp_server import sync as mcp_sync
 from mcp import ClientSession
 
 if TYPE_CHECKING:
@@ -110,32 +110,53 @@ async def test_an_unknown_tool_is_a_protocol_error() -> None:
     assert result.is_error
 
 
-@pytest.mark.xfail(
-    reason="offloaded sync handlers ignore cancellation; the work runs to completion",
-    strict=True,
-)
-async def test_a_cancelled_sync_tool_stops_working() -> None:
-    """Pins that cancelling an agent's tool call does not stop the work.
+async def test_a_cancelled_sync_handler_releases_the_caller() -> None:
+    """A cancelling caller is freed while the worker thread is still blocked.
 
-    Sync handlers run on a worker thread through anyio.to_thread.run_sync, which
-    neither interrupts the thread nor returns early, so a cancelled extraction
-    keeps going. A pure-async handler does honour the cancellation, so the SDK
-    and the protocol are not what break this. Flip to a passing test when the
-    MCP tools take the cancel token the ingest pipeline already accepts.
+    Deterministic rather than timed: the handler parks until *release* is set,
+    so the cancel scope can only exit if the wait was abandoned. Without
+    abandon_on_cancel the scope stays open until the thread returns, which on
+    the shared mount holds a connection open for a request nobody awaits.
     """
-    state = {"ticks": 0}
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def slow(seconds: float) -> str:
-        for _ in range(int(seconds * 10)):
-            time.sleep(0.1)
-            state["ticks"] += 1
+    def parked() -> str:
+        started.set()
+        release.wait(timeout=10)
+        finished.set()
         return "done"
 
-    server = build_mcp_server()
-    server.add_tool(_offload_sync(slow), name="slow")
-    async with _client(server) as (session, _init):
-        with anyio.move_on_after(0.3):
-            await session.call_tool("slow", {"seconds": 1.0})
-        at_cancel = state["ticks"]
-        await anyio.sleep(1.2)
-    assert state["ticks"] == at_cancel, "work continued after the client cancelled"
+    runner = _offload_sync(parked)
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(runner)
+            while not started.is_set():  # the thread is inside the handler
+                await anyio.sleep(0.01)
+            tg.cancel_scope.cancel()
+        # The discriminator: without abandon_on_cancel the scope cannot close
+        # until the thread returns, so finished would be set by the time we
+        # get here. Still parked means the wait really was abandoned.
+        assert not finished.is_set(), "the cancel waited for the worker thread"
+    finally:
+        release.set()
+
+
+async def test_a_cancelled_ingest_tool_signals_the_pipeline(monkeypatch) -> None:
+    """Cancelling sync hands the pipeline the stop token, as a disconnect does on HTTP.
+
+    A worker thread cannot be interrupted, so this token is the only thing that
+    actually stops an extraction: the pipeline polls it and halts between files.
+    """
+    import lilbee.data.ingest as ingest_mod
+
+    seen: dict[str, threading.Event] = {}
+
+    async def fake_sync(*_args, cancel=None, **_kwargs):
+        assert cancel is not None, "sync tool called the pipeline with no cancel token"
+        seen["token"] = cancel
+        await anyio.sleep(10)  # still running when the caller gives up
+
+    monkeypatch.setattr(ingest_mod, "sync", fake_sync)
+    with anyio.move_on_after(0.2):
+        await mcp_sync()
+    assert seen["token"].is_set(), "the pipeline was never told to stop"
