@@ -30,6 +30,12 @@ MUST_STRINGS = ("personal encyclopedia", "what is lilbee in one sentence", "READ
 
 QUESTION = "what is lilbee in one sentence?"
 
+# The README carries a "Beta software" callout, and retrieval sometimes ranks it above the
+# tagline, which turns a one-sentence answer about what lilbee does into one about its
+# release status. Forbidden rather than hoped for: a take that surfaces it fails the gate
+# and gets recorded again.
+FORBID_STRINGS = ("beta", "Beta")
+
 
 def record(cast: pathlib.Path) -> dict:
     root = lite.ensure()

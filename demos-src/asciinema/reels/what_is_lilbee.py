@@ -20,11 +20,23 @@ import drive  # noqa: E402
 
 NAME = "what_is_lilbee"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Background Tasks", "what is lilbee in one sentence", "README.md")
+MUST_STRINGS = ("Background Tasks", "what does lilbee do", "README.md")
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/whatis"
 DOC = pathlib.Path.home() / "projects/lilbee/README.md"
-QUESTION = "what is lilbee in one sentence?"
+QUESTION = "what does lilbee do, in one sentence?"
+
+# Asked as "what does lilbee do" rather than "what is lilbee". Against a knowledge base
+# that holds only the README, "what is lilbee" reliably retrieves the "Beta software"
+# callout -- it is one of the most self-descriptive chunks in the file -- and the answer
+# comes back about release status instead of about the product. Asking what it does moves
+# retrieval onto the tagline and the feature list.
+#
+# The README carries a "Beta software" callout, and retrieval sometimes ranks it above the
+# tagline, which turns a one-sentence answer about what lilbee does into one about its
+# release status. Forbidden rather than hoped for: a take that surfaces it fails the gate
+# and gets recorded again.
+FORBID_STRINGS = ("beta", "Beta")
 
 # 4B rather than 8B: it loads fast enough that the engine bar does not become the reel,
 # and the answer is a single sentence off a README either way.
