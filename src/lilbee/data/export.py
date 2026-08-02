@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import IO, TYPE_CHECKING, cast
 from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.data.title import derive_title
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -159,18 +161,24 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
 _WRITE_BATCH_ROWS = 10_000
 
 
-def _write_parquet(table: pa.Table, sink: IO[bytes]) -> None:
+def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
     """Encode *table* into *sink* as parquet, one row group per batch.
 
-    Build-vs-buy: pyarrow's own writer does the batching, and feeding a
-    ParquetWriter row group by row group produces byte-identical output.
+    Driving a ParquetWriter row group by row group rather than calling
+    write_table is what gives the export a boundary to stop on; the two produce
+    byte-identical output, so the only cost is the loop.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
-    pq.write_table(table, sink, row_group_size=_WRITE_BATCH_ROWS)
+    with pq.ParquetWriter(sink, table.schema) as writer:
+        for batch in table.to_batches(max_chunksize=_WRITE_BATCH_ROWS):
+            if cancel is not None and cancel.is_set():
+                raise TaskCancelledError
+            writer.write_table(pa.Table.from_batches([batch], table.schema))
 
 
-def _write_jsonl(table: pa.Table, sink: IO[bytes]) -> None:
+def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
     """Encode *table* into *sink* as jsonl, one write per batch.
 
     One JSON object per row, keyed by the table's columns, so jsonl stays in step
@@ -181,6 +189,8 @@ def _write_jsonl(table: pa.Table, sink: IO[bytes]) -> None:
     its encoded bytes were all live at once.
     """
     for batch in table.to_batches(max_chunksize=_WRITE_BATCH_ROWS):
+        if cancel is not None and cancel.is_set():
+            raise TaskCancelledError
         sink.write("".join(json.dumps(row) + "\n" for row in batch.to_pylist()).encode("utf-8"))
 
 
@@ -196,14 +206,25 @@ def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
     import io
 
     buffer = io.BytesIO()
-    _WRITERS[fmt](table, buffer)
+    _WRITERS[fmt](table, buffer, None)
     return buffer.getvalue()
 
 
-def write_dataset(table: pa.Table, path: Path, fmt: DatasetFormat) -> None:
-    """Write the dataset *table* to *path* in the given format, a batch at a time."""
-    with path.open("wb") as sink:
-        _WRITERS[fmt](table, sink)
+def write_dataset(
+    table: pa.Table, path: Path, fmt: DatasetFormat, cancel: threading.Event | None = None
+) -> None:
+    """Write the dataset *table* to *path* in the given format, a batch at a time.
+
+    A cancelled write removes the partial file: half a dataset is not a smaller
+    dataset, and leaving one behind would be indistinguishable from a complete
+    export to anything that reads it later.
+    """
+    try:
+        with path.open("wb") as sink:
+            _WRITERS[fmt](table, sink, cancel)
+    except TaskCancelledError:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:

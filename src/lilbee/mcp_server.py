@@ -694,7 +694,7 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
     from lilbee.app.dataset import DatasetError, export_to_path
 
     try:
-        summary = export_to_path(Path(output), fmt, source or None)
+        summary = export_to_path(Path(output), fmt, source or None, cancel=_caller_cancelled())
     except DatasetError as exc:
         return _error(str(exc))
     return summary.model_dump()

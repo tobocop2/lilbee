@@ -3296,15 +3296,15 @@ def _citation_row(**overrides: object) -> dict:
     }
 
 
-class TestWikiSigintCancel:
+class TestSigintCancel:
     """Ctrl-C stops a build at a boundary instead of dropping it mid-page."""
 
     def test_the_token_is_set_when_sigint_arrives(self) -> None:
         import signal
 
-        from lilbee.cli.commands.wiki import _sigint_cancel
+        from lilbee.cli.helpers import sigint_cancel
 
-        with _sigint_cancel() as token:
+        with sigint_cancel() as token:
             assert not token.is_set()
             signal.raise_signal(signal.SIGINT)
             assert token.is_set(), "SIGINT did not reach the cancel token"
@@ -3313,10 +3313,10 @@ class TestWikiSigintCancel:
         """A pass that ignores the token must still be interruptible."""
         import signal
 
-        from lilbee.cli.commands.wiki import _sigint_cancel
+        from lilbee.cli.helpers import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
-        with _sigint_cancel():
+        with sigint_cancel():
             signal.raise_signal(signal.SIGINT)
             assert signal.getsignal(signal.SIGINT) is previous, (
                 "the handler stayed installed, so a second Ctrl-C would be swallowed"
@@ -3328,13 +3328,13 @@ class TestWikiSigintCancel:
         import signal
         import threading as _threading
 
-        from lilbee.cli.commands.wiki import _sigint_cancel
+        from lilbee.cli.helpers import sigint_cancel
 
         result: dict[str, object] = {}
 
         def worker() -> None:
             before = signal.getsignal(signal.SIGINT)
-            with _sigint_cancel() as token:
+            with sigint_cancel() as token:
                 result["token_set"] = token.is_set()
                 result["handler_untouched"] = signal.getsignal(signal.SIGINT) is before
 
@@ -3347,10 +3347,10 @@ class TestWikiSigintCancel:
     def test_the_previous_handler_is_restored_on_exit(self) -> None:
         import signal
 
-        from lilbee.cli.commands.wiki import _sigint_cancel
+        from lilbee.cli.helpers import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
-        with _sigint_cancel():
+        with sigint_cancel():
             pass
         assert signal.getsignal(signal.SIGINT) is previous
 
