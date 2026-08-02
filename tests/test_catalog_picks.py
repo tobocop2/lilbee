@@ -195,15 +195,20 @@ class TestRoleVerification:
         from lilbee.catalog import picks as picks_mod
         from lilbee.catalog.picks import picks_for
 
+        quota = picks_mod._PICKS_PER_ROLE
         _stub_fetch(
             monkeypatch,
-            {"vision": [_model(f"a/VL-{i}-GGUF", "vision", 8_000_000_000) for i in range(5)]},
+            {
+                "vision": [
+                    _model(f"a/VL-{i}-GGUF", "vision", 8_000_000_000) for i in range(quota + 5)
+                ]
+            },
         )
         probed: list[str] = []
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: (probed.append(r), True)[1])
 
-        assert len(picks_for(ModelTask.VISION)) == 1
-        assert probed == ["a/VL-0-GGUF"]
+        assert len(picks_for(ModelTask.VISION)) == quota
+        assert len(probed) == quota  # stopped at the quota, did not scan the rest
 
 
 class TestPickFlagAndCaching:

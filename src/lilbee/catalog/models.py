@@ -191,6 +191,7 @@ class ModelVariant:
     quant: str
     size_mb: int
     mmproj_filename: str = ""
+    compat: ModelCompat = ModelCompat.UNKNOWN
 
 
 @dataclass(frozen=True)

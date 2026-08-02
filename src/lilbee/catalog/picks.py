@@ -11,7 +11,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.hf_client import repo_has_mmproj
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import hf_repo_from_ref
-from lilbee.catalog.types import CatalogSize, ModelTask
+from lilbee.catalog.types import CatalogSize, ModelCompat, ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -19,22 +19,20 @@ log = logging.getLogger(__name__)
 # "downloads in the last 24 hours" field.
 TRENDING_SORT = "trendingScore"
 
-_CHAT_PICKS_PER_TIER = 2
+# Every role shows the same number of picks. Chat reaches it by taking an equal
+# share from each parameter tier; the other roles have no tier spread.
+_PICKS_PER_ROLE = 8
+_CHAT_PICKS_PER_TIER = _PICKS_PER_ROLE // len(CatalogSize)
 
-# Roles with no tier spread: embedders and rerankers are uniformly small.
-_UNTIERED_PICKS: dict[ModelTask, int] = {
-    ModelTask.EMBEDDING: 3,
-    ModelTask.VISION: 1,
-    ModelTask.RERANK: 1,
-}
+_UNTIERED_ROLES = (ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
 
 # Wide enough to populate every tier. A live trending fetch at 200 holds
 # 34 / 59 / 64 / 42 candidates across the four tiers.
 _CANDIDATE_WINDOW = 200
 
-# Scanned past the quota because mistagged entries get dropped; the scan
-# short-circuits once the quota is met.
-_UNTIERED_WINDOW = 50
+# Scanned past the quota because mistagged and unsupported entries get dropped;
+# the scan short-circuits once the quota is met.
+_UNTIERED_WINDOW = 100
 
 # Minimum gap between resolution attempts after one comes back short, so a
 # degraded network cannot turn every read into a fresh fan-out.
@@ -52,6 +50,10 @@ def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
     # circular: query -> picks via get_picks
     from lilbee.catalog.query import reclassify_by_name
 
+    if model.compat is not ModelCompat.SUPPORTED:
+        # A pick is a recommendation. Offering an architecture the bundled
+        # engine cannot load turns one click into a failed download.
+        return False
     if task == ModelTask.VISION:
         return repo_has_mmproj(model.hf_repo)
     return reclassify_by_name(model.hf_repo, ModelTask.CHAT) == task
@@ -106,8 +108,8 @@ def _chat_picks() -> list[CatalogModel]:
 def _resolve_picks() -> tuple[CatalogModel, ...]:
     """One full set of picks across every role, flagged for the picks section."""
     picks = list(_chat_picks())
-    for task, count in _UNTIERED_PICKS.items():
-        picks.extend(_fetch_trending(task, _UNTIERED_WINDOW, needed=count))
+    for task in _UNTIERED_ROLES:
+        picks.extend(_fetch_trending(task, _UNTIERED_WINDOW, needed=_PICKS_PER_ROLE))
     # The flag is what puts a row in the picks section and keeps the browse
     # list from duplicating it.
     return tuple(replace(m, featured=True) for m in picks)
@@ -116,7 +118,7 @@ def _resolve_picks() -> tuple[CatalogModel, ...]:
 def _is_complete(picks: tuple[CatalogModel, ...]) -> bool:
     """True when every role has at least one pick."""
     roles = {m.task for m in picks}
-    return ModelTask.CHAT in roles and all(task in roles for task in _UNTIERED_PICKS)
+    return ModelTask.CHAT in roles and all(task in roles for task in _UNTIERED_ROLES)
 
 
 class ModelPicks:

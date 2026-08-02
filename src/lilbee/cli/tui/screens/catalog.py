@@ -35,7 +35,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
-    for_you_sort_key,
+    _for_you_by_role,
     group_frontier_rows,
     group_rows_for_grid,
     group_task_rows_with_picks,
@@ -1863,8 +1863,9 @@ class CatalogScreen(Screen[None]):
     def _populate_discover_rails(self) -> None:
         """Push three curated row slices into the Discover landing.
 
-        - For You: featured rows ranked by fit (FITS first, TIGHT, then
-          WONT_RUN), capped at 6 to keep the rail compact.
+        - For You: one runnable pick per role, in role order. Only rows the
+          engine can load and the machine can hold, so every card is a
+          one-click install rather than a coin flip.
         - Your Collection: every installed local row + every activated
           cloud API. Mirrors the Library tab's spirit but capped to a
           single rail-friendly slice.
@@ -1879,10 +1880,7 @@ class CatalogScreen(Screen[None]):
         family_rows = self._all_family_rows()
         hf_rows = self._all_hf_rows() if self._hf_fetched_any() else []
         remote_rows = self._all_remote_rows()
-        for_you = sorted(
-            (r for r in family_rows + hf_rows if r.featured),
-            key=for_you_sort_key,
-        )[:6]
+        for_you = _for_you_by_role(family_rows + hf_rows)
         collection = [r for r in family_rows + remote_rows if r.installed][:6]
         fresh = sorted(
             (r for r in hf_rows if not r.featured),

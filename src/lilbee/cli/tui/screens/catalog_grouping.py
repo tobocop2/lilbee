@@ -40,6 +40,32 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
     return (row.name, row.installed)
 
 
+def _for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
+    """Runnable picks grouped by role: chat, embedding, vision, rerank.
+
+    A row qualifies only when the engine supports its architecture and the
+    machine can hold it, so every card in the rail is installable as-is.
+    Rows with no fit chip are excluded: an unknown size cannot be promised.
+    """
+    from lilbee.catalog.types import ModelCompat, ModelTask
+    from lilbee.runtime.hardware import FitLevel
+
+    runnable = [
+        r
+        for r in rows
+        if r.featured
+        and r.compat is ModelCompat.SUPPORTED
+        and r.fit is not None
+        and r.fit.level is not FitLevel.WONT_RUN
+    ]
+    out: list[LocalCatalogRow] = []
+    for task in (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK):
+        for row in sorted((r for r in runnable if r.task == task), key=for_you_sort_key):
+            out.append(row)
+            break
+    return out
+
+
 def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
     """Rank Discover 'For You' rows: best fit first, then alphabetical.
 

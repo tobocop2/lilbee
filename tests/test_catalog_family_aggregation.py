@@ -5,16 +5,24 @@ from __future__ import annotations
 from textual.app import ComposeResult
 
 from lilbee.catalog import ModelFamily, ModelVariant
+from lilbee.catalog.types import ModelCompat
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
-def _variant(quant: str, size_mb: int, *, hf_repo: str = "demo/qwen") -> ModelVariant:
+def _variant(
+    quant: str,
+    size_mb: int,
+    *,
+    hf_repo: str = "demo/qwen",
+    compat: ModelCompat = ModelCompat.SUPPORTED,
+) -> ModelVariant:
     return ModelVariant(
         hf_repo=hf_repo,
         filename=f"model-{quant}.gguf",
         param_count="8B",
         quant=quant,
         size_mb=size_mb,
+        compat=compat,
     )
 
 
@@ -89,3 +97,14 @@ async def test_empty_variant_family_is_skipped() -> None:
     fam = ModelFamily(slug="x", name="X", task="chat", description="", variants=())
     rows = await _build_screen_with_family(fam)
     assert rows == []
+
+
+def test_family_row_carries_the_variants_compat() -> None:
+    """Regression: family rows hardcoded SUPPORTED, so an architecture the
+    engine cannot load rendered as installable and only failed at download."""
+    from lilbee.catalog.types import ModelCompat
+    from lilbee.cli.tui.screens.catalog_utils import variant_to_row
+
+    fam = _family(_variant("Q4_K_M", size_mb=4_600, compat=ModelCompat.UNSUPPORTED))
+    row = variant_to_row(fam.variants[0], fam, installed=False)
+    assert row.compat is ModelCompat.UNSUPPORTED
