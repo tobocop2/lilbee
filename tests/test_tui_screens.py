@@ -13636,3 +13636,54 @@ async def test_model_swap_worker_returns_quietly_when_cancelled():
             await pilot.pause()
         assert screen.swapping_model is True  # gate still held by the newer swap
         assert not any("Now using" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_settings_masks_credentials_but_keeps_the_value():
+    """API keys and the HF token render masked; the stored value is untouched.
+
+    Textual masks only the rendering, so a pasted key never appears on screen
+    while the real value still submits and saves.
+    """
+    from textual.widgets import Input, TabbedContent
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import EDITOR_ID_PREFIX
+
+    secret_keys = [k for k, d in SETTINGS_MAP.items() if d.secret]
+    assert secret_keys, "no setting is marked secret"
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.15)
+        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        # Panes compose lazily, so every group has to be visited to reach its
+        # editors; a credential hiding in an unvisited pane is the whole risk.
+        checked: list[str] = []
+        for pane in list(tabbed.query("TabPane")):
+            if not pane.id:
+                continue
+            tabbed.active = pane.id
+            await pilot.pause(0.15)
+            for key in secret_keys:
+                for editor in app.screen.query(f"#{EDITOR_ID_PREFIX}{key}").results(Input):
+                    assert editor.password is True, f"{key} renders in plain text"
+                    checked.append(key)
+        missing = set(secret_keys) - set(checked)
+        assert not missing, f"credential editors never rendered: {missing}"
+
+        editor = app.screen.query(f"#{EDITOR_ID_PREFIX}{checked[-1]}").first(Input)
+        editor.value = "sk-proj-REALSECRET123"
+        await pilot.pause()
+        assert editor.value == "sk-proj-REALSECRET123"
+
+
+async def test_settings_leaves_non_credentials_visible():
+    """Masking is opt-in: ordinary settings stay readable."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        for editor in app.screen.query(Input):
+            key = editor.name or ""
+            if not key.endswith("_api_key") and key != "hf_token":
+                assert editor.password is False, f"{key} is masked but is not a credential"
