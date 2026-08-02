@@ -10,7 +10,7 @@ import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -29,6 +29,9 @@ from lilbee.runtime.progress import (
     ProgressEvent,
     SyncDoneEvent,
 )
+
+if TYPE_CHECKING:
+    from lilbee.data.types import SyncResult
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +146,19 @@ def unregister_added_roots(labels: list[str]) -> None:
 
     if labels:
         unregister_roots(labels)
+
+
+def add_indexed_anything(registered: list[str], result: SyncResult) -> bool:
+    """Whether any file under this add's registered roots reached the index.
+
+    Sync is global, so its added/updated/relocated lists can name files from
+    other sources; only names keyed under a registered label count. A directory
+    root keys files as ``label/relpath``; a single-file root keys as ``label``.
+    """
+    indexed = (*result.added, *result.updated, *result.relocated)
+    return any(
+        name == root or name.startswith(f"{root}/") for root in registered for name in indexed
+    )
 
 
 def _throttled_embed_tick(reporter: ProgressReporter) -> Callable[[EmbedEvent], None]:
