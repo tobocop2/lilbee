@@ -1642,10 +1642,21 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
     to the in-process Vulkan probe there could hang this thread unkillably.
     """
     from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
+    from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
     from lilbee.providers.fleet.rocm_runtime import assert_rocm_devices_usable
 
     probe = probe_devices(binary)
+    # An engine that answered but listed no device while a GPU is physically
+    # present may be hitting a transient init error (the card momentarily held by
+    # another process, e.g. an embedder served alongside -- the "ggml_cuda_init:
+    # initialization error" symptom). Re-probe before treating the empty list as
+    # fatal; a persistently empty list still hits the fail-loud asserts below.
+    for _ in range(_DEVICE_PROBE_EMPTY_RETRIES):
+        if probe.devices or not probe.spoke_protocol or not installed_gpu_vendor_ids():
+            break
+        time.sleep(_DEVICE_PROBE_EMPTY_RETRY_DELAY_S)
+        probe = probe_devices(binary)
     devices = probe.devices
     # A GPU build that links a runtime it cannot serve the host's GPU with must
     # fail loud, not silently fall back to CPU (the Vulkan VRAM probe below
@@ -1697,6 +1708,11 @@ _DEVICE_PROBE_TTL_S = 2.0
 # wedged GPU driver costs a full probe timeout, so a per-poll retry would stall
 # every placement read for a minute at a time.
 _DEVICE_PROBE_FAILURE_TTL_S = 60.0
+# An engine that lists no device on a GPU host may be hitting a transient GPU-init
+# error (the card momentarily held by another process); re-probe before treating
+# the empty list as fatal.
+_DEVICE_PROBE_EMPTY_RETRIES = 3
+_DEVICE_PROBE_EMPTY_RETRY_DELAY_S = 0.5
 
 
 class _ReadDeviceCache:
