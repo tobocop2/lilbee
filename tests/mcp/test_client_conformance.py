@@ -14,10 +14,13 @@ unit suite would leak llama-server processes onto the developer's machine.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import pytest
 from mcp.shared.memory import create_client_server_memory_streams
 from tools.qa.mcp_stdio_probe import CORE_TOOLS
 
@@ -181,3 +184,81 @@ async def test_a_running_crawl_can_be_cancelled_through_a_real_client(monkeypatc
     assert not result.is_error
     assert task.cancel.is_set(), "the running crawl was never told to stop"
     assert "No task found" in str(missing.content)
+
+
+async def test_a_cancelled_model_pull_aborts_the_download(monkeypatch) -> None:
+    """The download runs on a thread, so the stop has to reach it through the
+    progress callback: returning would leave a multi-GB pull running."""
+    import lilbee.app.models as models_mod
+    from lilbee.mcp_server import model_pull
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    state = {"ticks": 0, "aborted": False}
+
+    def fake_pull(_ref, _src, *, on_update, allow_unsupported=False):
+        for _ in range(200):
+            time.sleep(0.01)
+            state["ticks"] += 1
+            try:
+                on_update(SimpleNamespace(percent=1.0, detail="x"))
+            except TaskCancelledError:
+                state["aborted"] = True
+                raise
+
+    monkeypatch.setattr(models_mod, "pull_model_data", fake_pull)
+    with anyio.move_on_after(0.3):
+        await model_pull("some/model")
+    at_cancel = state["ticks"]
+    await anyio.sleep(0.5)
+    assert state["aborted"], "the download never saw the cancellation"
+    assert state["ticks"] < at_cancel + 40, "the download kept going well past the cancel"
+
+
+async def test_a_cancelled_dataset_import_stops_re_embedding(monkeypatch) -> None:
+    """Import re-embeds on a worker thread, so cancelling the await stops the
+    loop only between sources. The progress hook is what stops it mid-batch."""
+    import lilbee.app.dataset as dataset_mod
+    from lilbee.mcp_server import import_dataset
+    from lilbee.runtime.cancellation import TaskCancelledError
+    from lilbee.runtime.progress import EventType
+
+    state = {"rows": 0, "aborted": False}
+
+    async def fake_import(_path, _fmt, *, on_progress):
+        def _embed_batch() -> None:  # the real embed runs off the loop
+            for _ in range(200):
+                time.sleep(0.01)
+                state["rows"] += 1
+                try:
+                    on_progress(EventType.EMBED, object())
+                except TaskCancelledError:
+                    state["aborted"] = True
+                    raise
+
+        await anyio.to_thread.run_sync(_embed_batch, abandon_on_cancel=True)
+
+    monkeypatch.setattr(dataset_mod, "import_from_path", fake_import)
+    with anyio.move_on_after(0.3):
+        await import_dataset("/tmp/does-not-matter.jsonl")
+    at_cancel = state["rows"]
+    await anyio.sleep(0.5)
+    assert state["aborted"], "the import never saw the cancellation"
+    assert state["rows"] < at_cancel + 30, "the import kept re-embedding past the cancel"
+
+
+def test_the_real_download_callback_propagates_the_cancel() -> None:
+    """The MCP tool's stop only works if the real byte-callback chain lets it out.
+
+    pull_model_data wraps on_update in make_download_callback, so a swallowed
+    exception there would leave the download running with the tool none the
+    wiser. The tool's own test fakes pull_model_data and cannot see this link.
+    """
+    from lilbee.catalog.download_progress import make_download_callback
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    def cancelling_on_update(_progress: object) -> None:
+        raise TaskCancelledError
+
+    on_bytes = make_download_callback(cancelling_on_update, throttle_interval=0.0)
+    with pytest.raises(TaskCancelledError):
+        on_bytes(1, 100)
