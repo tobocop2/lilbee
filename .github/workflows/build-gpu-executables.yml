@@ -182,7 +182,7 @@ jobs:
       # hours before the Windows terminus).
       - name: Restore Nuitka cache (Windows)
         if: runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: nuitka-cache
           key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
@@ -253,7 +253,7 @@ jobs:
       # and make the retry fast. Non-tag only, like ccache.
       - name: Save Nuitka cache (Windows)
         if: runner.os == 'Windows' && github.ref_type != 'tag'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: nuitka-cache
           key: nuitka-${{ matrix.os }}-${{ matrix.asset_name }}-${{ github.run_id }}
