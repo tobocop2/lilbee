@@ -196,7 +196,7 @@ jobs:
       - name: Restore CI models
         uses: ./.github/actions/restore-ci-models
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install the wheels and run the sweep

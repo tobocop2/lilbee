@@ -95,7 +95,7 @@ runs:
       if: steps.engine.outputs.needs-build == 'true'
       uses: actions/setup-go@v5
       with:
-        go-version: "1.23"
+        go-version: "1.26"
     - name: Build the self-contained engine
       if: steps.engine.outputs.needs-build == 'true'
       shell: bash
