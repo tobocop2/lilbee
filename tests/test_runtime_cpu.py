@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest import mock
 
-from lilbee.runtime.cpu import _cgroup_cpu_quota, available_cpu_count, cpu_quota
+from lilbee.runtime.cpu import (
+    _cgroup_cpu_quota,
+    available_cpu_count,
+    cpu_quota,
+    engine_thread_count,
+)
 
 
 def test_default_is_half_of_available() -> None:
@@ -115,3 +120,19 @@ def test_available_cpu_count_floors_at_one() -> None:
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=None),
     ):
         assert available_cpu_count() >= 1
+
+
+def test_engine_thread_count_is_none_when_nothing_constrains_the_process() -> None:
+    with (
+        mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=16),
+        mock.patch("lilbee.runtime.cpu.available_cpu_count", return_value=16),
+    ):
+        assert engine_thread_count() is None
+
+
+def test_engine_thread_count_is_the_quota_when_it_is_below_visible_cores() -> None:
+    with (
+        mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        mock.patch("lilbee.runtime.cpu.available_cpu_count", return_value=8),
+    ):
+        assert engine_thread_count() == 8

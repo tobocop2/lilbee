@@ -9,6 +9,9 @@ storm is in flight.
 Do NOT use this for HTTP request concurrency: that lives under
 ``cfg.crawl_max_concurrent`` and is governed by remote-side rate
 limits, not local CPU.
+
+``engine_thread_count()`` is the out-of-process counterpart, sizing a
+spawned llama-server's thread count.
 """
 
 from __future__ import annotations
@@ -98,3 +101,20 @@ def cpu_quota() -> int:
             override,
         )
     return max(1, available_cpu_count() // 2)
+
+
+def engine_thread_count() -> int | None:
+    """Threads for a spawned engine, or None to keep the engine's own default.
+
+    llama.cpp sizes its default from host topology (physical cores, minus
+    efficiency cores) and cannot see a CFS quota or an affinity mask, so inside a
+    CPU-limited container it starts several times more threads than the quota
+    admits and generation slows down: 33.75 tok/s at 8 threads against 13.45 at
+    32, on a pod with 96 visible cores and a 7.65-core quota. Where nothing caps
+    this process, upstream's count is the better informed one and stays.
+
+    Not ``cpu_quota()``: that halves the budget to leave the asyncio scheduler a
+    share, which an out-of-process engine does not compete with.
+    """
+    quota = available_cpu_count()
+    return quota if quota < (os.cpu_count() or 1) else None
