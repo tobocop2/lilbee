@@ -58,6 +58,20 @@ _PROCESS_TERMINATE = 0x0001
 _death_pipe_write_fds: dict[int, int] = {}
 
 
+def bind_lifetime_to_parent(parent_pid: int) -> None:
+    """Bind this process's lifetime to *parent_pid*, where the kernel supports it.
+
+    For a process lilbee spawned that holds resources of its own (an ingest
+    worker owns a GPU fleet): orphaning one leaves the card allocated with
+    nothing left to release it. A no-op off Linux. Exits when the parent is
+    already gone, which the death signal alone would miss.
+    """
+    if _libc is not None:
+        _libc.prctl(_PR_SET_PDEATHSIG, _PDEATHSIG, 0, 0, 0)
+    if os.getppid() != parent_pid:
+        raise SystemExit(1)
+
+
 def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
     """A preexec binding the child's death to *parent_pid*, or None if libc is absent.
 
