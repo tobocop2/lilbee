@@ -35,7 +35,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
-    for_you_sort_key,
+    for_you_by_role,
     group_frontier_rows,
     group_rows_for_grid,
     group_task_rows_with_picks,
@@ -116,6 +116,7 @@ _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
 _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
+_WORKER_FETCH_FAMILIES = "fetch_families"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -260,7 +261,11 @@ class CatalogScreen(Screen[None]):
     def __init__(self, *, focus_task: str | None = None) -> None:
         super().__init__()
         self._focus_task: str | None = focus_task
-        self._families: list[ModelFamily] = get_families()
+        # Empty until the worker lands: get_families() resolves the picks,
+        # which hits HuggingFace on the first call of a session. Building it
+        # here would block screen construction on the network.
+        self._families: list[ModelFamily] = []
+        self._families_in_flight = True
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
         # Per-task pagination state. Each task tab tracks its own HF offset
@@ -443,6 +448,7 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
+        self._fetch_families()
         # Force Chat as the initial active tab. Deliberately not
         # `TabbedContent(initial=...)`: that arms `Tabs._on_mount` to assign the
         # active tab unconditionally, and when the app tears down mid-mount
@@ -771,6 +777,20 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         return classify_all_remote_models()
 
+    @work(thread=True, name=_WORKER_FETCH_FAMILIES)
+    def _fetch_families(self) -> list[ModelFamily]:
+        """Group the picks into families off the UI thread.
+
+        ``get_families`` resolves the picks, which is an HTTP round trip on the
+        first call of a session. Doing it during screen construction froze the
+        catalog on open for as long as HuggingFace took to answer.
+        """
+        try:
+            return get_families()
+        except Exception:
+            log.debug("get_families failed in worker", exc_info=True)
+            return []
+
     @work(thread=True, name=_WORKER_FETCH_FRONTIER, exit_on_error=False)
     def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:
         """Discover cloud chat models off the UI thread.
@@ -882,6 +902,8 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+        if name == _WORKER_FETCH_FAMILIES:
+            self._families_in_flight = False
         self._sync_loading_spinner()
 
     def _apply_worker_result(self, name: str, result: list) -> bool:
@@ -908,6 +930,9 @@ class CatalogScreen(Screen[None]):
         elif name == _WORKER_FETCH_FRONTIER:
             self._frontier_rows = result
             self._populate_library_list()
+        elif name == _WORKER_FETCH_FAMILIES:
+            self._families = result
+            self._families_in_flight = False
         else:
             return False
         self._data_version += 1
@@ -1026,10 +1051,7 @@ class CatalogScreen(Screen[None]):
         for fam in self._families:
             if not fam.variants:
                 continue
-            primary = next(
-                (v for v in fam.variants if v.recommended),
-                min(fam.variants, key=lambda v: v.size_mb),
-            )
+            primary = min(fam.variants, key=lambda v: v.size_mb)
             family_installed = any(
                 self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 for v in fam.variants
@@ -1646,16 +1668,16 @@ class CatalogScreen(Screen[None]):
     def _sync_loading_spinner(self) -> None:
         """Show/hide the toolbar spinner based on active fetch state.
 
-        Visible when a paginated HF fetch or a remote search is in
-        flight (both grid and list views share the same toolbar
-        widget). Cycles braille frames on a 100 ms timer so the
+        Visible when a paginated HF fetch, a remote search, or the initial
+        families resolution is in flight (both grid and list views share the
+        same toolbar widget). Cycles braille frames on a 100 ms timer so the
         wait reads as "moving" rather than "frozen".
         """
         try:
             spinner = self.query_one("#catalog-loading-spinner", Static)
         except Exception:
             return
-        active = self._loading_more or self._search_in_flight
+        active = self._loading_more or self._search_in_flight or self._families_in_flight
         if active:
             spinner.styles.display = "block"
             spinner.update(f"{SPINNER_FRAMES[self._spinner_frame]} loading…")
@@ -1841,8 +1863,9 @@ class CatalogScreen(Screen[None]):
     def _populate_discover_rails(self) -> None:
         """Push three curated row slices into the Discover landing.
 
-        - For You: featured rows ranked by fit (FITS first, TIGHT, then
-          WONT_RUN), capped at 6 to keep the rail compact.
+        - For You: one runnable pick per role, in role order. Only rows the
+          engine can load and the machine can hold, so every card is a
+          one-click install rather than a coin flip.
         - Your Collection: every installed local row + every activated
           cloud API. Mirrors the Library tab's spirit but capped to a
           single rail-friendly slice.
@@ -1857,10 +1880,7 @@ class CatalogScreen(Screen[None]):
         family_rows = self._all_family_rows()
         hf_rows = self._all_hf_rows() if self._hf_fetched_any() else []
         remote_rows = self._all_remote_rows()
-        for_you = sorted(
-            (r for r in family_rows + hf_rows if r.featured),
-            key=for_you_sort_key,
-        )[:6]
+        for_you = for_you_by_role(family_rows + hf_rows)
         collection = [r for r in family_rows + remote_rows if r.installed][:6]
         fresh = sorted(
             (r for r in hf_rows if not r.featured),
@@ -1879,7 +1899,6 @@ class CatalogScreen(Screen[None]):
             featured=True,
             downloads=0,
             task=family.task,
-            recommended=variant.recommended,
         )
         self._install_model(entry)
 

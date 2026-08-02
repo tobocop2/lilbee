@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import lilbee.app.services as svc_mod
+from conftest import PICKS_CHAT, PICKS_EMBEDDING, PICKS_RERANK
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
@@ -1914,23 +1915,22 @@ class TestListModels:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_installed_flag_in_catalog(self, mock_get_mm):
-        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        installed = "tiny/Tiny-1B-GGUF/tiny-1b-Q4_K_M.gguf"
         mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
-        qwen_entry = next(m for m in catalog if "Qwen3 0.6B" in m.name)
-        assert qwen_entry.installed is True
+        installed_entry = next(m for m in catalog if "Tiny 1B" in m.name)
+        assert installed_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if "Mistral" in m.name)
-        assert mistral_entry.installed is False
+        other_entry = next(m for m in catalog if "Mid 8B" in m.name)
+        assert other_entry.installed is False
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_reranker_installed_detected_via_registry(self, mock_get_mm):
         """Rerankers install as GGUFs like chat/embedding; the ref match marks them installed."""
-        from lilbee.catalog import FEATURED_RERANK
 
-        bge = FEATURED_RERANK[0]
+        bge = PICKS_RERANK[0]
         mock_get_mm.return_value.model_manager.list_installed.return_value = [bge.ref]
         result = await handlers.list_models()
         bge_entry = next(m for m in result.reranker.catalog if bge.display_name in m.name)
@@ -1939,9 +1939,8 @@ class TestListModels:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_embedding_installed_detected_via_registry(self, mock_get_mm):
         """Embedding installs surface via the same registry path as chat/reranker."""
-        from lilbee.catalog import FEATURED_EMBEDDING
 
-        entry = FEATURED_EMBEDDING[0]
+        entry = PICKS_EMBEDDING[0]
         mock_get_mm.return_value.model_manager.list_installed.return_value = [entry.ref]
         result = await handlers.list_models()
         embed_entry = next(m for m in result.embedding.catalog if entry.display_name in m.name)
@@ -1985,15 +1984,15 @@ class TestSetChatModel:
     async def test_resolves_bare_repo_to_installed_quant(self, tmp_path, mock_svc):
         """Bare ``hf_repo`` resolves to whichever quant of that repo is installed."""
         mock_svc.provider.list_models.return_value = [_CHAT_REF]
-        result = await handlers.set_chat_model("Qwen/Qwen3-0.6B-GGUF")
+        result = await handlers.set_chat_model("tiny/Tiny-1B-GGUF")
         assert result.model == _CHAT_REF
         assert cfg.chat_model == _CHAT_REF
 
     async def test_bare_repo_with_two_quants_resolves_deterministically(self, tmp_path, mock_svc):
         """With several quants installed, the alphabetically-first ref wins."""
-        other = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        other = "tiny/Tiny-1B-GGUF/tiny-1b-Q2_K.gguf"
         mock_svc.provider.list_models.return_value = [_CHAT_REF, other]
-        result = await handlers.set_chat_model("Qwen/Qwen3-0.6B-GGUF")
+        result = await handlers.set_chat_model("tiny/Tiny-1B-GGUF")
         assert result.model == other
 
     async def test_resolves_bare_non_featured_repo_to_installed_quant(self, tmp_path, mock_svc):
@@ -2750,11 +2749,11 @@ class TestModelsCatalog:
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_size_variants_attached_for_featured_family(self, mock_get_catalog, mock_svc):
         """A featured row exposes its sibling family variants on the response."""
-        from lilbee.catalog import FEATURED_CHAT, CatalogResult
+        from lilbee.catalog import CatalogResult
 
         # Pick the first featured chat repo; its family should yield at least
         # one SizeVariantInfo regardless of how many siblings it has.
-        anchor = FEATURED_CHAT[0]
+        anchor = PICKS_CHAT[0]
         mock_get_catalog.return_value = CatalogResult(total=1, limit=20, offset=0, models=[anchor])
         mock_svc.registry.list_installed.return_value = []
         result = await handlers.models_catalog()
@@ -3366,8 +3365,8 @@ class TestUpdateConfig:
             )
 
 
-_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+_EMBED_REF = "embed/Test-Embedding-GGUF/test-embedding-Q4_K_M.gguf"
+_CHAT_REF = "tiny/Tiny-1B-GGUF/tiny-1b-Q4_K_M.gguf"
 
 
 class TestSetEmbeddingModel:
@@ -3394,7 +3393,7 @@ class TestSetEmbeddingModel:
         quant of that repo is currently installed.
         """
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        repo = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+        repo = "embed/Test-Embedding-GGUF"
         result = await handlers.set_embedding_model(repo)
         assert result.model == _EMBED_REF
         assert cfg.embedding_model == _EMBED_REF
@@ -3658,10 +3657,13 @@ class TestGetConfigDefaults:
         reset each slot. The defaults endpoint must surface the canonical
         blank/default values so clients don't hardcode them locally.
         """
+        from lilbee.core.config import Config
+
+        blank = Config()
         result = await handlers.get_config_defaults()
         dumped = result.model_dump()
-        assert dumped["chat_model"] == _CHAT_REF
-        assert dumped["embedding_model"] == _EMBED_REF
+        assert dumped["chat_model"] == blank.chat_model
+        assert dumped["embedding_model"] == blank.embedding_model
         assert dumped["vision_model"] == ""
         assert dumped["reranker_model"] == ""
 
@@ -3673,7 +3675,7 @@ class TestGetConfigDefaults:
         assert "temperature" in dumped
 
 
-_VISION_REF = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
+_VISION_REF = "vision/Test-VL-GGUF/test-vl-Q4_K_M.gguf"
 
 
 class TestSetVisionModel:
@@ -3724,7 +3726,7 @@ class TestSetVisionModel:
         assert cfg.vision_model == custom
 
 
-_RERANK_REF = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
+_RERANK_REF = "rerank/bge-reranker-test-GGUF/bge-reranker-Q4_K_M.gguf"
 
 
 class TestSetRerankerModel:
@@ -3762,7 +3764,7 @@ class TestSetRerankerModel:
         ``hf_repo/filename`` and returns the canonical full ref.
         """
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
-        result = await handlers.set_reranker_model("gpustack/bge-reranker-v2-m3-GGUF")
+        result = await handlers.set_reranker_model("rerank/bge-reranker-test-GGUF")
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 

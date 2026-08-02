@@ -518,6 +518,11 @@ SETUP_INTRO = (
     "Pick one of each below: highlight a card and press [b]Enter[/b] to install. "
     "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
 )
+SETUP_LOADING = "Finding popular models…"
+SETUP_PICKS_UNAVAILABLE = (
+    "Couldn't reach HuggingFace. Check your connection, or press Esc and use "
+    "'lilbee model pull <ref>'."
+)
 SETUP_HEADING_CHAT = "Chat Models"
 SETUP_HEADING_EMBED = "Embedding Models"
 SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"

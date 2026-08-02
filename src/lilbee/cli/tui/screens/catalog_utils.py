@@ -275,8 +275,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCat
         backend=NATIVE_BACKEND,
         variant=v,
         family=f,
-        # Families are built exclusively from the curated featured catalog.
-        compat=ModelCompat.SUPPORTED,
+        compat=v.compat,
     )
 
 

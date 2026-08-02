@@ -15,9 +15,10 @@ import pytest
 
 from lilbee.app.services import get_services
 from lilbee.app.services import reset_services as reset_provider
-from lilbee.catalog import FEATURED_EMBEDDING, download_model
+from lilbee.catalog import download_model
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
+from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
 
@@ -473,7 +474,7 @@ class TestDownloadProgressCallbacks:
             progress_calls.append((downloaded, total))
 
         # Re-download the embedding model (cached: returns from HF cache immediately)
-        download_model(FEATURED_EMBEDDING[0], on_progress=on_progress)
+        download_model(EMBED_ENTRY, on_progress=on_progress)
         # Cached download fires a single completion callback
         assert len(progress_calls) == 1
         downloaded, total = progress_calls[0]

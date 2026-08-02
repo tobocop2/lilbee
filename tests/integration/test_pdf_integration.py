@@ -21,6 +21,7 @@ from lilbee.app.services import get_services
 from lilbee.app.services import reset_services as reset_provider
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
+from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
 
@@ -35,7 +36,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     Uses the llama-server fleet with real models so the full RAG pipeline works.
     """
     from lilbee.app.services import reset_services
-    from lilbee.catalog import FEATURED_EMBEDDING, download_model
+    from lilbee.catalog import download_model
     from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()
@@ -63,7 +64,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     reset_services()
 
     # Download embedding model
-    embed_entry = FEATURED_EMBEDDING[0]
+    embed_entry = EMBED_ENTRY
     download_model(embed_entry)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 

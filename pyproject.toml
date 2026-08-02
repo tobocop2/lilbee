@@ -157,6 +157,7 @@ markers = [
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
+    "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
 ]
 
 [tool.coverage.run]

@@ -27,7 +27,7 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 # Pull by HuggingFace repo ID rather than friendly alias. Friendly aliases
 # (qwen3:0.6b, nomic-embed-text:v1.5) are only registered in lilbee builds
-# that include FEATURED_ALL. Repo IDs go straight to the catalog and work
+# that shipped a curated list. Repo IDs go straight to the catalog and work
 # across every published version.
 #
 # Defaults are the smallest models that produce assertable output on a
