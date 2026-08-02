@@ -41,6 +41,7 @@ from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
+    add_indexed_anything,
     build_add_progress_callback,
     build_import_progress_callback,
     build_sync_progress_callback,
@@ -768,8 +769,13 @@ class ChatScreen(Screen[None]):
             unregister_added_roots(registered)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
-            unregister_added_roots(registered)
-            raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
+            # Files yielding no text beside indexed siblings are a partial
+            # success; only an add whose own roots contributed nothing failed.
+            skipped_msg = msg.sync_skipped_message(", ".join(sync_result.skipped))
+            if registered and not add_indexed_anything(registered, sync_result):
+                unregister_added_roots(registered)
+                raise RuntimeError(skipped_msg)
+            call_from_thread(self, self.notify, skipped_msg, severity="warning")
         if sync_result.relocated:
             call_from_thread(
                 self,
