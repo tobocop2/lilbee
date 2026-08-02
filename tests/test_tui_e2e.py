@@ -410,6 +410,7 @@ class TestDownloadProgressSlow:
 def _mock_catalog_deps():
     """Context manager that mocks all catalog network calls."""
     from lilbee.catalog import ModelFamily, ModelVariant
+    from lilbee.catalog.types import ModelCompat
 
     families = [
         ModelFamily(
@@ -424,6 +425,7 @@ def _mock_catalog_deps():
                     param_count="7B",
                     quant="Q4_K_M",
                     size_mb=4000,
+                    compat=ModelCompat.SUPPORTED,
                 ),
             ),
         ),
@@ -439,6 +441,7 @@ def _mock_catalog_deps():
                     param_count="0.5B",
                     quant="Q8_0",
                     size_mb=500,
+                    compat=ModelCompat.SUPPORTED,
                 ),
             ),
         ),
