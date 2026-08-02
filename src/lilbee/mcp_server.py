@@ -680,22 +680,30 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
     loop = asyncio.get_running_loop()
 
-    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        # EMBED events carry chunk/total_chunks; other event types don't map to a percent.
-        if ctx is None or not isinstance(data, EmbedEvent):
-            return
-        future = asyncio.run_coroutine_threadsafe(
-            ctx.report_progress(
-                progress=float(data.chunk), total=float(data.total_chunks), message=data.file
-            ),
-            loop,
-        )
-        future.add_done_callback(_log_progress_failure)
+    with _cancel_token() as cancel:
 
-    try:
-        summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-    except DatasetError as exc:
-        return _error(str(exc))
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            # Raise rather than return: the embed work runs off the loop, so a
+            # quiet return would re-embed the whole dataset for a caller that
+            # has gone. Checked before the isinstance filter so the stop lands
+            # on every event, not only the ones that map to a percent.
+            if cancel.is_set():
+                raise TaskCancelledError
+            # EMBED events carry chunk/total_chunks; other event types don't map to a percent.
+            if ctx is None or not isinstance(data, EmbedEvent):
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                ctx.report_progress(
+                    progress=float(data.chunk), total=float(data.total_chunks), message=data.file
+                ),
+                loop,
+            )
+            future.add_done_callback(_log_progress_failure)
+
+        try:
+            summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
+        except DatasetError as exc:
+            return _error(str(exc))
     return summary.model_dump()
 
 

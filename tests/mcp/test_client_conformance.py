@@ -211,3 +211,35 @@ async def test_a_cancelled_model_pull_aborts_the_download(monkeypatch) -> None:
     await anyio.sleep(0.5)
     assert state["aborted"], "the download never saw the cancellation"
     assert state["ticks"] < at_cancel + 40, "the download kept going well past the cancel"
+
+
+async def test_a_cancelled_dataset_import_stops_re_embedding(monkeypatch) -> None:
+    """Import re-embeds on a worker thread, so cancelling the await stops the
+    loop only between sources. The progress hook is what stops it mid-batch."""
+    import lilbee.app.dataset as dataset_mod
+    from lilbee.mcp_server import import_dataset
+    from lilbee.runtime.cancellation import TaskCancelledError
+    from lilbee.runtime.progress import EventType
+
+    state = {"rows": 0, "aborted": False}
+
+    async def fake_import(_path, _fmt, *, on_progress):
+        def _embed_batch() -> None:  # the real embed runs off the loop
+            for _ in range(200):
+                time.sleep(0.01)
+                state["rows"] += 1
+                try:
+                    on_progress(EventType.EMBED, object())
+                except TaskCancelledError:
+                    state["aborted"] = True
+                    raise
+
+        await anyio.to_thread.run_sync(_embed_batch, abandon_on_cancel=True)
+
+    monkeypatch.setattr(dataset_mod, "import_from_path", fake_import)
+    with anyio.move_on_after(0.3):
+        await import_dataset("/tmp/does-not-matter.jsonl")
+    at_cancel = state["rows"]
+    await anyio.sleep(0.5)
+    assert state["aborted"], "the import never saw the cancellation"
+    assert state["rows"] < at_cancel + 30, "the import kept re-embedding past the cancel"
