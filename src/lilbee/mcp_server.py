@@ -14,6 +14,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -122,6 +123,16 @@ def set_http_mounted(value: bool) -> None:
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
+# Set by the offload for the duration of one sync handler and read by the long
+# ones. A parameter would reach the generated tool schema and invite an agent to
+# pass it; the handlers keep the plain signature that in-process callers use.
+_CANCEL: ContextVar[threading.Event | None] = ContextVar("lilbee_mcp_cancel", default=None)
+
+
+def _caller_cancelled() -> threading.Event | None:
+    """The stop token for the handler running on this thread, if the offload set one."""
+    return _CANCEL.get()
+
 
 def _offload_sync(fn: _F) -> _F:
     """Run a sync tool handler off the event loop; async handlers pass through.
@@ -143,9 +154,11 @@ def _offload_sync(fn: _F) -> _F:
 
     @functools.wraps(fn)
     async def _runner(*args: Any, **kwargs: Any) -> Any:
-        return await anyio.to_thread.run_sync(
-            functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
-        )
+        with _cancel_token() as token:
+            _CANCEL.set(token)
+            return await anyio.to_thread.run_sync(
+                functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
+            )
 
     return cast("_F", _runner)
 
@@ -875,7 +888,7 @@ def wiki_build(dry_run: bool = False) -> dict[str, Any]:
             "count": len(rows),
             "note": DRY_RUN_CONCEPT_NOTE,
         }
-    return {"command": "wiki_build", **run_full_build(cfg)}
+    return {"command": "wiki_build", **run_full_build(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool
@@ -883,7 +896,7 @@ def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. A full rebuild; blocks until done."""
     from lilbee.wiki import run_full_build
 
-    return {"command": "wiki_update", **run_full_build(cfg)}
+    return {"command": "wiki_update", **run_full_build(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool
@@ -891,7 +904,7 @@ def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
     from lilbee.wiki import run_full_synthesize
 
-    return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
+    return {"command": "wiki_synthesize", **run_full_synthesize(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool

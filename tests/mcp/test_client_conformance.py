@@ -262,3 +262,103 @@ def test_the_real_download_callback_propagates_the_cancel() -> None:
     on_bytes = make_download_callback(cancelling_on_update, throttle_interval=0.0)
     with pytest.raises(TaskCancelledError):
         on_bytes(1, 100)
+
+
+async def test_a_cancelled_wiki_build_stops_the_pass(monkeypatch) -> None:
+    """A build is minutes of GPU work on a thread asyncio cannot interrupt.
+
+    The handler stays sync so in-process callers keep the plain signature, so
+    the offload publishes the token and the handler picks it up.
+    """
+    import lilbee.wiki as wiki_mod
+    from lilbee.core.config import cfg
+    from lilbee.mcp_server import _offload_sync, wiki_build
+
+    monkeypatch.setattr(cfg, "wiki", True, raising=False)
+    seen: dict[str, threading.Event] = {}
+    started = threading.Event()
+
+    def fake_build(_config, *, cancel=None, on_progress=None):
+        assert cancel is not None, "the wiki build was given no stop token"
+        seen["token"] = cancel
+        started.set()
+        for _ in range(200):
+            time.sleep(0.01)
+            if cancel.is_set():
+                return {"paths": [], "entities": 0, "count": 0}
+        raise AssertionError("the build ran to completion despite the cancel")
+
+    monkeypatch.setattr(wiki_mod, "run_full_build", fake_build)
+    runner = _offload_sync(wiki_build)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner)
+        while not started.is_set():
+            await anyio.sleep(0.01)
+        tg.cancel_scope.cancel()
+    await anyio.sleep(0.4)
+    assert seen["token"].is_set(), "the build was never told to stop"
+
+
+async def test_each_concurrent_handler_gets_its_own_stop_token() -> None:
+    """The server runs tool calls concurrently, so a shared token would let one
+    agent's cancel abort another's work. Each task copies the context, so the
+    token the offload publishes is per-call; this pins that."""
+    from lilbee.mcp_server import _caller_cancelled, _offload_sync
+
+    seen: dict[str, object] = {}
+    parked = {"a": threading.Event(), "b": threading.Event()}
+
+    def handler(name: str) -> str:
+        seen[name] = _caller_cancelled()  # read on the worker thread
+        parked[name].set()
+        for _ in range(300):
+            time.sleep(0.01)
+            token = seen[name]
+            if token is not None and token.is_set():
+                return f"{name}-stopped"
+        return f"{name}-ran-to-end"
+
+    runner = _offload_sync(handler)
+    results: dict[str, str] = {}
+    try:
+        async with anyio.create_task_group() as tg:
+
+            async def call(name: str) -> None:
+                results[name] = await runner(name)
+
+            tg.start_soon(call, "a")
+            tg.start_soon(call, "b")
+            while not (parked["a"].is_set() and parked["b"].is_set()):
+                await anyio.sleep(0.01)
+            assert seen["a"] is not None, "the token never reached the worker thread"
+            assert seen["a"] is not seen["b"], "concurrent calls shared one token"
+            seen["a"].set()  # cancel only a
+            while "a" not in results:
+                await anyio.sleep(0.01)
+            assert not seen["b"].is_set(), "cancelling one call set another's token"
+            seen["b"].set()
+    finally:
+        for event in parked.values():
+            event.set()
+    assert results["a"] == "a-stopped"
+
+
+@pytest.mark.parametrize("tool_name", ["wiki_build", "wiki_update", "wiki_synthesize"])
+async def test_every_long_wiki_tool_passes_the_stop_token(monkeypatch, tool_name) -> None:
+    """Only wiki_build was covered; update and synthesize are wired the same way
+    and would silently drop the token unnoticed."""
+    import lilbee.mcp_server as mcp_mod
+    import lilbee.wiki as wiki_mod
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "wiki", True, raising=False)
+    seen: dict[str, object] = {}
+
+    def fake(_config, *, cancel=None, on_progress=None):
+        seen["token"] = cancel
+        return {"paths": [], "entities": 0, "count": 0}
+
+    monkeypatch.setattr(wiki_mod, "run_full_build", fake)
+    monkeypatch.setattr(wiki_mod, "run_full_synthesize", fake)
+    await _offload_sync(getattr(mcp_mod, tool_name))()
+    assert seen["token"] is not None, f"{tool_name} called the wiki with no stop token"

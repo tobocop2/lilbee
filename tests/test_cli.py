@@ -3296,6 +3296,65 @@ def _citation_row(**overrides: object) -> dict:
     }
 
 
+class TestWikiSigintCancel:
+    """Ctrl-C stops a build at a boundary instead of dropping it mid-page."""
+
+    def test_the_token_is_set_when_sigint_arrives(self) -> None:
+        import signal
+
+        from lilbee.cli.commands.wiki import _sigint_cancel
+
+        with _sigint_cancel() as token:
+            assert not token.is_set()
+            signal.raise_signal(signal.SIGINT)
+            assert token.is_set(), "SIGINT did not reach the cancel token"
+
+    def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
+        """A pass that ignores the token must still be interruptible."""
+        import signal
+
+        from lilbee.cli.commands.wiki import _sigint_cancel
+
+        previous = signal.getsignal(signal.SIGINT)
+        with _sigint_cancel():
+            signal.raise_signal(signal.SIGINT)
+            assert signal.getsignal(signal.SIGINT) is previous, (
+                "the handler stayed installed, so a second Ctrl-C would be swallowed"
+            )
+
+    def test_off_the_main_thread_it_installs_no_handler(self) -> None:
+        """signal.signal raises off the main thread (xdist workers run there),
+        so the token is simply never set and Ctrl-C keeps its default."""
+        import signal
+        import threading as _threading
+
+        from lilbee.cli.commands.wiki import _sigint_cancel
+
+        result: dict[str, object] = {}
+
+        def worker() -> None:
+            before = signal.getsignal(signal.SIGINT)
+            with _sigint_cancel() as token:
+                result["token_set"] = token.is_set()
+                result["handler_untouched"] = signal.getsignal(signal.SIGINT) is before
+
+        thread = _threading.Thread(target=worker)
+        thread.start()
+        thread.join(timeout=5)
+        assert result["token_set"] is False
+        assert result["handler_untouched"] is True
+
+    def test_the_previous_handler_is_restored_on_exit(self) -> None:
+        import signal
+
+        from lilbee.cli.commands.wiki import _sigint_cancel
+
+        previous = signal.getsignal(signal.SIGINT)
+        with _sigint_cancel():
+            pass
+        assert signal.getsignal(signal.SIGINT) is previous
+
+
 class TestWikiRunProgress:
     """Build, update and synthesize show the events every other surface consumes."""
 
@@ -3303,7 +3362,7 @@ class TestWikiRunProgress:
     def _emitting_run(seen: list):
         """Stand-in for a wiki run that records and exercises its progress callback."""
 
-        def run(config=None, on_progress=noop_callback):
+        def run(config=None, on_progress=noop_callback, cancel=None):
             seen.append(on_progress)
             on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=2))
             on_progress(
@@ -3333,6 +3392,30 @@ class TestWikiRunProgress:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert seen and seen[0] is not noop_callback
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            (["wiki", "build"], "lilbee.wiki.run_full_build"),
+            (["wiki", "update"], "lilbee.wiki.run_full_build"),
+            (["wiki", "synthesize"], "lilbee.wiki.run_full_synthesize"),
+        ],
+    )
+    @pytest.mark.usefixtures("wiki_enabled")
+    def test_the_run_receives_a_cancel_token(
+        self, mock_svc, isolated_env, monkeypatch, command, target
+    ):
+        """Without one, Ctrl-C drops the pass mid-page instead of at a boundary."""
+        seen: list = []
+
+        def run(config=None, on_progress=noop_callback, cancel=None):
+            seen.append(cancel)
+            return _stub_build_summary([], 0)
+
+        monkeypatch.setattr(target, run)
+        result = runner.invoke(app, command)
+        assert result.exit_code == 0
+        assert seen and seen[0] is not None, f"{command} ran the wiki with no cancel token"
 
     @pytest.mark.usefixtures("wiki_enabled")
     def test_json_mode_leaves_stdout_a_single_document(self, mock_svc, isolated_env, monkeypatch):
