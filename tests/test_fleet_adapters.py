@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_SPEC,
     ROLE_SPECS,
@@ -182,12 +183,13 @@ def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
     assert argv[argv.index("--ubatch-size") + 1] == "8192"
 
 
-def test_build_argv_never_sets_a_thread_count() -> None:
+def test_build_argv_leaves_the_thread_count_alone_on_an_unconstrained_host(monkeypatch) -> None:
     """llama-server counts physical math cores and skips efficiency cores itself.
 
-    Any count lilbee computes here is worse informed than that default, so the
-    knob is gone rather than merely unused.
+    Where nothing caps this process, that default is better informed than any
+    count lilbee could compute.
     """
+    monkeypatch.setattr(adapters, "engine_thread_count", lambda: None)
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.VISION],
@@ -201,6 +203,22 @@ def test_build_argv_never_sets_a_thread_count() -> None:
     assert "--threads-batch" not in argv
 
 
+def test_build_argv_caps_threads_at_the_cpu_budget_when_one_applies(monkeypatch) -> None:
+    monkeypatch.setattr(adapters, "engine_thread_count", lambda: 8)
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+    )
+    assert argv[argv.index("--threads") + 1] == "8"
+    # llama-server's batch threads default to --threads, so one flag covers both.
+    assert "--threads-batch" not in argv
+
+
 def test_build_argv_omits_optional_flags_by_default() -> None:
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
@@ -211,7 +229,7 @@ def test_build_argv_omits_optional_flags_by_default() -> None:
         slots=4,
         ctx_per_slot=4096,
     )
-    for flag in ("--flash-attn", "--cache-type-k", "--cache-type-v", "--batch-size", "--threads"):
+    for flag in ("--flash-attn", "--cache-type-k", "--cache-type-v", "--batch-size"):
         assert flag not in argv
 
 

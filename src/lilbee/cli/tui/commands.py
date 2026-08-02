@@ -58,6 +58,16 @@ class LilbeeCommandProvider(Provider):
                 self._action_delete_document,
             ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
+            (
+                "Wikify",
+                "Generate wiki pages from indexed documents (GPU-heavy)",
+                self._action_wikify,
+            ),
+            (
+                "Delete wiki",
+                "Remove every generated wiki page and its indexed rows",
+                self._action_wipe_wiki,
+            ),
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",
@@ -156,6 +166,22 @@ class LilbeeCommandProvider(Provider):
 
     def _action_open_wiki(self) -> None:
         self._app.switch_view("Wiki")
+
+    def _action_wikify(self) -> None:
+        from lilbee.cli.tui.screens.wiki import start_wikify
+
+        start_wikify(self._app)
+
+    def _action_wipe_wiki(self) -> None:
+        """Delete the generated wiki.
+
+        The palette is the only TUI route to this while the wiki is off, since
+        the wiki view (and its ``W`` binding) is dropped from the nav in that
+        state, which is exactly when the leftover pages need removing.
+        """
+        from lilbee.cli.tui.screens.wiki import confirm_wiki_wipe
+
+        confirm_wiki_wipe(self._app)
 
     def _action_reset(self) -> None:
         """Trigger /reset from the palette so the ConfirmDialog flow fires."""

@@ -75,6 +75,7 @@ from lilbee.server.handlers.sse import (
     sse_error,
     sse_event,
 )
+from lilbee.server.handlers.wiki import wiki_build_stream, wiki_synthesize_stream
 from lilbee.server.models import (
     GpusResponse,
     HealthResponse,
@@ -340,4 +341,6 @@ __all__ = [
     "validate_add_paths",
     "validate_upload_names",
     "warm_stream",
+    "wiki_build_stream",
+    "wiki_synthesize_stream",
 ]

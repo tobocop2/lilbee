@@ -73,3 +73,20 @@ def _citations_schema() -> pa.Schema:
             pa.field("created_at", pa.utf8()),
         ]
     )
+
+
+def _wiki_mentions_schema() -> pa.Schema:
+    """One row per (subject, source): the subject's mention evidence in that
+    source. ``slug`` is the make_slug key the wiki stub index uses; the wiki
+    aggregates these rows across sources to judge the corpus-wide floor."""
+    return pa.schema(
+        [
+            pa.field("slug", pa.utf8()),
+            pa.field("label", pa.utf8()),
+            pa.field("kind", pa.utf8()),
+            pa.field("type_hint", pa.utf8()),
+            pa.field("source", pa.utf8()),
+            pa.field("mention_count", pa.int32()),
+            pa.field("chunk_indices", pa.list_(pa.int32())),
+        ]
+    )

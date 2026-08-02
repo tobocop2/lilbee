@@ -1,4 +1,4 @@
-"""Coverage for chat + wiki flows after migration to TaskBarController.start_task.
+"""Coverage for the chat screen's TaskBarController-backed flows.
 
 These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 ``_run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
@@ -17,7 +17,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
-from tests._lilbee_app_test_host import await_chat, ready_services
+from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +52,9 @@ async def test_reporter_task_id_property_exposes_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_success_exception_is_swallowed() -> None:
-    """An exception raised inside on_success must not propagate."""
+async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
+    """An on_success failure leaves the task DONE and is reported in the log."""
+    caplog.set_level("WARNING", logger="lilbee.cli.tui.widgets.task_bar_controller")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await await_chat(app, pilot)
@@ -63,12 +64,23 @@ async def test_on_success_exception_is_swallowed() -> None:
             raise RuntimeError("boom")
 
         task_id = controller.start_task("demo", TaskType.SYNC, lambda r: None, on_success=_oops)
-        for _ in range(20):
-            await pilot.pause()
+
+        def _finalized() -> bool:
             task = controller.queue.get_task(task_id)
-            if task is not None and task.status == TaskStatus.DONE:
-                break
-        # Test passes as long as we didn't blow up.
+            return (
+                task is not None
+                and task.status == TaskStatus.DONE
+                and any("on_success" in r.message for r in caplog.records)
+            )
+
+        assert await pump_until(pilot, _finalized), "the task never finalized"
+
+    task = controller.queue.get_task(task_id)
+    assert task is not None
+    assert task.status == TaskStatus.DONE
+    raised = [r for r in caplog.records if "on_success" in r.message]
+    assert raised, "the swallowed on_success failure was never logged"
+    assert "boom" in raised[0].exc_text
 
 
 @pytest.mark.asyncio
@@ -789,6 +801,23 @@ async def test_indexing_active_true_during_import_task() -> None:
         assert screen is not None
         tid = app.task_bar.queue.enqueue(lambda: None, "Import x", TaskType.IMPORT.value)
         app.task_bar.queue.advance(TaskType.IMPORT.value)
+        assert screen._indexing_active() is True
+        app.task_bar.queue.complete_task(tid)
+        assert screen._indexing_active() is False
+
+
+@pytest.mark.asyncio
+async def test_indexing_active_true_during_wiki_task() -> None:
+    """Wiki builds and draft accepts re-chunk and embed, the contention the gate
+    exists to avoid."""
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        tid = app.task_bar.queue.enqueue(lambda: None, "Wikify", TaskType.WIKI.value)
+        app.task_bar.queue.advance(TaskType.WIKI.value)
         assert screen._indexing_active() is True
         app.task_bar.queue.complete_task(tid)
         assert screen._indexing_active() is False

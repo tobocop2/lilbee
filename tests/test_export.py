@@ -1,5 +1,6 @@
 """Tests for the per-page text dataset export/import (lilbee.data.export)."""
 
+import io
 from pathlib import Path
 
 import pyarrow as pa
@@ -7,6 +8,7 @@ import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.data import export as export_mod
 from lilbee.data.export import (
     DatasetFormat,
     _source_meta_from_rows,
@@ -14,9 +16,10 @@ from lilbee.data.export import (
     import_dataset,
     load_page_dataset,
     resolve_format,
+    serialize_dataset,
     write_dataset,
 )
-from lilbee.data.store import EmbeddingModelMismatchError, SourceType, Store
+from lilbee.data.store import EmbeddingModelMismatchError, SourceMeta, SourceType, Store
 from tests.conftest import make_mock_services
 
 
@@ -228,6 +231,209 @@ class TestBuildPageDataset:
             ("a.pdf", 2),
             ("b.pdf", 1),
         ]
+
+
+class TestSixtyFourBitOffsets:
+    """Every string column of an export carries 64-bit offsets.
+
+    A 32-bit `string` column holds at most 2GB, and the concat, metadata append
+    and sort in `build_page_dataset` all materialize one array per column, so a
+    corpus past that ceiling fails the export outright. A fixture that actually
+    crosses 2GB costs the RAM and minutes CI does not have, so what is asserted
+    is the type that removes the ceiling, on a table that has been through the
+    whole pipeline.
+    """
+
+    # Named rather than derived from the table: comparing the schema against
+    # itself would pass on a table that had lost its text columns entirely.
+    TEXT_COLUMNS = ("source", "text", "content_type", "title", "authors", "created_at")
+
+    def _text_types(self, table):
+        return {
+            field.name: field.type for field in table.schema if not pa.types.is_integer(field.type)
+        }
+
+    def test_captured_scan_is_large_string_through_sort_and_metadata(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2)
+        types = self._text_types(build_page_dataset(store))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    def test_reconstructed_rows_are_large_string(self, store):
+        # The chunk-reconstructed table is concatenated onto the scanned one, so a
+        # 32-bit column here would overflow the concat regardless of the scan.
+        store.add_page_texts([_page("cap.pdf", 1, "captured")])
+        store.upsert_source("cap.pdf", "h", 1)
+        store.add_chunks([_chunk("recon.pdf", 1, 0, "rebuilt")])
+        store.upsert_source("recon.pdf", "h", 1)
+        types = self._text_types(build_page_dataset(store))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    def test_single_source_export_is_large_string(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one")])
+        store.upsert_source("a.pdf", "h", 1)
+        types = self._text_types(build_page_dataset(store, source="a.pdf"))
+        assert types == dict.fromkeys(self.TEXT_COLUMNS, pa.large_string())
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_large_string_round_trips_back_to_rows(self, tmp_path, store, fmt):
+        # Both writers have to accept the wider type, and the import path has to
+        # read back what the export wrote: a table export cannot be fixed by
+        # breaking the pair.
+        store.add_page_texts([_page("a.pdf", 1, "body text")])
+        store.upsert_source("a.pdf", "h", 1)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(build_page_dataset(store), path, fmt)
+        loaded = load_page_dataset(path, fmt)
+        assert [(r["source"], r["page"], r["text"]) for r in loaded] == [("a.pdf", 1, "body text")]
+
+
+class TestColumnarSourceMetadata:
+    """The export reads tracked sources columnar, never as Python rows.
+
+    get_sources() returns a dict per source and the old metadata denormalization
+    built another dict per source plus a Python list per column. On a corpus of
+    8.8M single-page sources that is its own multi-GB cost, independent of the
+    encoded output, so it has to come out of the Python heap entirely.
+    """
+
+    def test_build_page_dataset_never_reads_sources_as_python_rows(self, store, monkeypatch):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2)
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("the export must read sources columnar, not row by row")
+
+        monkeypatch.setattr(store, "get_sources", boom)
+        assert build_page_dataset(store).num_rows == 2
+
+    def test_metadata_lands_on_every_page_of_its_source(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "one"), _page("a.pdf", 2, "two")])
+        store.upsert_source("a.pdf", "h", 2, meta=SourceMeta("Alpha", "Ada", "2020-01-01"))
+        rows = build_page_dataset(store).to_pylist()
+        assert [(r["page"], r["title"], r["authors"]) for r in rows] == [
+            (1, "Alpha", "Ada"),
+            (2, "Alpha", "Ada"),
+        ]
+
+    def test_a_duplicate_source_row_does_not_multiply_its_pages(self, store):
+        # A join fans out on duplicate keys where the dict it replaced took the
+        # last one, so a doubled source row (a re-merged shard) would silently
+        # export every one of its pages twice.
+        import pyarrow as pa
+
+        store.add_page_texts([_page("a.pdf", 1, "one")])
+        store.get_db().create_table(
+            "_sources",
+            pa.table(
+                {
+                    "filename": pa.array(["a.pdf", "a.pdf"]),
+                    "file_hash": pa.array(["h1", "h2"]),
+                    "title": pa.array(["First", "Second"]),
+                    "authors": pa.array(["x", "y"]),
+                    "created_at": pa.array(["2020", "2021"]),
+                }
+            ),
+        )
+        rows = build_page_dataset(store).to_pylist()
+        assert len(rows) == 1
+        # Last wins, as the dict did, and the metadata comes from one row.
+        assert (rows[0]["title"], rows[0]["authors"]) == ("Second", "y")
+
+    def test_a_source_without_metadata_joins_to_nulls(self, store):
+        # Left outer, not inner: a source row with no captured title must keep its
+        # pages rather than drop them out of the export.
+        store.add_page_texts([_page("bare.pdf", 1, "text")])
+        store.upsert_source("bare.pdf", "h", 1)
+        rows = build_page_dataset(store).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["title"] in (None, "")
+
+
+class _CountingSink:
+    """A binary sink that keeps each write separate, rather than one buffer.
+
+    Not a BytesIO subclass: subclassing would mean overriding ``write`` against a
+    wider signature than it accepts. Good enough for the jsonl writer, which uses
+    nothing else; the parquet writer needs a real file object (pyarrow reaches
+    for ``closed``), so its test writes into a BytesIO.
+    """
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    @property
+    def writes(self) -> int:
+        return len(self.chunks)
+
+    def write(self, data: bytes) -> int:
+        self.chunks.append(data)
+        return len(data)
+
+    def getvalue(self) -> bytes:
+        return b"".join(self.chunks)
+
+
+class TestStreamingWrites:
+    """An export is written batch by batch, never assembled whole in memory.
+
+    A full-corpus jsonl export measured ~77GB of peak memory for a 4.15GB file,
+    because the old path built a dict per row, joined them into one string and
+    then encoded that: three copies of the corpus alive at once. The writers take
+    a sink and feed it one batch at a time, so peak memory is a batch, not a
+    corpus.
+    """
+
+    def _table(self, rows):
+        return pa.table(
+            {
+                "source": pa.array([f"s{i}.pdf" for i in range(rows)], pa.large_string()),
+                "page": pa.array(list(range(rows)), pa.int32()),
+                "text": pa.array([f"body {i}" for i in range(rows)], pa.large_string()),
+                "content_type": pa.array(["pdf"] * rows, pa.large_string()),
+            }
+        )
+
+    def test_jsonl_writes_once_per_batch_not_once_per_export(self, monkeypatch):
+        monkeypatch.setattr(export_mod, "_WRITE_BATCH_ROWS", 2)
+        sink = _CountingSink()
+        export_mod._write_jsonl(self._table(5), sink)
+        # 5 rows in batches of 2 is three batches; a single write means the whole
+        # corpus was assembled before anything reached the sink.
+        assert sink.writes == 3
+        assert len(sink.getvalue().decode().strip().splitlines()) == 5
+
+    def test_parquet_writes_one_row_group_per_batch(self, monkeypatch):
+        import pyarrow.parquet as pq
+
+        monkeypatch.setattr(export_mod, "_WRITE_BATCH_ROWS", 2)
+        sink = io.BytesIO()
+        export_mod._write_parquet(self._table(5), sink)
+        parquet = pq.ParquetFile(io.BytesIO(sink.getvalue()))
+        assert parquet.num_row_groups == 3
+        assert parquet.metadata.num_rows == 5
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_write_dataset_does_not_encode_to_bytes_first(self, tmp_path, monkeypatch, fmt):
+        # The file export is the one that handles a full corpus, so it must go
+        # straight to the file. Routing it through the byte-returning API is the
+        # regression: that is what held a whole encoded corpus in memory.
+        def boom(*_args, **_kwargs):
+            raise AssertionError("write_dataset must stream to the file, not encode to bytes")
+
+        monkeypatch.setattr(export_mod, "serialize_dataset", boom)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(self._table(5), path, fmt)
+        assert len(load_page_dataset(path, fmt)) == 5
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_serialize_and_write_agree(self, tmp_path, fmt):
+        # The HTTP download encodes to bytes and the CLI writes a file; both go
+        # through the same writer, so the two must not drift.
+        table = self._table(5)
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(table, path, fmt)
+        assert path.read_bytes() == serialize_dataset(table, fmt)
 
 
 class TestImportDataset:

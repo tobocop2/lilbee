@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,13 +22,15 @@ from lilbee.core.config import Config
 from lilbee.core.text import make_slug
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     ParsedCitation,
-    parse_wiki_citations,
+    footnote_marker_keys,
     render_citation_block,
+    scrub_unverified_markers,
     strip_citation_block,
+    verify_citations,
+    wiki_sourced_count,
 )
-from lilbee.wiki.citations import verify_citations
 from lilbee.wiki.entity_extractor import EntityKind
 from lilbee.wiki.page import assemble_content, build_frontmatter
 from lilbee.wiki.persistence import (
@@ -41,14 +43,11 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
     WikiSubdir,
+    atomic_write_text,
 )
+from lilbee.wiki.stats import BuildStats
 
 log = logging.getLogger(__name__)
-
-# In-body ``[^keyN]`` footnote-marker pattern. Module-scope so the
-# batched-generation hot path (`finalize_section`) does not recompile
-# it on every recovered section.
-_FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
 
 # Sentinel file for the one-time legacy-concepts archival. Lives under
 # data_dir (NOT inside wiki/) so Obsidian sync and wiki tree-walkers
@@ -73,27 +72,39 @@ def hash_existing_sources(source_names: list[str]) -> dict[str, str]:
     return out
 
 
-def match_label(
-    lowered_name: str,
-    expected: set[str],
-    kind: EntityKind,
+def _first_label_where(
+    candidates: list[tuple[list[str], EntityKind]],
+    predicate: Callable[[str], bool],
 ) -> tuple[EntityKind, str] | None:
-    """Case-insensitive substring match of *lowered_name* against *expected*.
-
-    Returns ``(kind, original_label)`` on hit, ``None`` otherwise.
-    A substring match (not equality) accommodates the LLM adding
-    qualifiers ("Brake System (hydraulic)" vs "brake system").
-    """
-    for label in expected:
-        low = label.lower()
-        if low and (low in lowered_name or lowered_name in low):
-            return (kind, label)
+    for labels, kind in candidates:
+        for label in labels:
+            if predicate(label.lower()):
+                return (kind, label)
     return None
 
 
-def chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
-    """Return the subset of *chunks* whose ``source`` matches, preserving order."""
-    return [c for c in chunks if c.source == source]
+def match_label(
+    lowered_name: str,
+    candidates: Sequence[tuple[set[str], EntityKind]],
+) -> tuple[EntityKind, str] | None:
+    """Case-insensitive match of *lowered_name* against ordered *candidates*.
+
+    Each candidate is an ``(expected labels, kind)`` pair. Returns
+    ``(kind, original_label)`` on hit, ``None`` otherwise. Every candidate set
+    is tried for an exact match before any is tried for a substring match, so a
+    header naming one set's label exactly is not taken by another set's label
+    that merely contains it. Substring overlap in either direction accommodates
+    the LLM adding qualifiers ("Brake System (hydraulic)" vs "brake system").
+    Labels are ordered by length then alphabetically, so overlapping labels
+    ("Ford" and "Henry Ford") bind the same way on every run.
+    """
+    ordered = [
+        (sorted(expected, key=lambda label: (-len(label), label)), kind)
+        for expected, kind in candidates
+    ]
+    return _first_label_where(ordered, lambda low: low == lowered_name) or _first_label_where(
+        ordered, lambda low: bool(low) and (low in lowered_name or lowered_name in low)
+    )
 
 
 def short_source_hash(source: str) -> str:
@@ -101,30 +112,19 @@ def short_source_hash(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
 
 
-def _group_chunks_by_page(
-    chunks: list[SearchChunk],
-) -> list[tuple[int, list[SearchChunk]]]:
-    """Group chunks by ``page_start``, preserving in-document order within a page.
-
-    Returns ``(page_start, chunks)`` tuples sorted ascending by page number.
-    Chunks with ``page_start=0`` (non-paginated sources) collapse to a single
-    entry keyed at 0, so a markdown or code source still emits exactly one
-    summary file until structure detection arrives in a later stage.
-    """
-    grouped: dict[int, list[SearchChunk]] = {}
-    for chunk in chunks:
-        grouped.setdefault(chunk.page_start, []).append(chunk)
-    return sorted(grouped.items())
-
-
-def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
+def archive_legacy_concept_pages(
+    wiki_root: Path, data_dir: Path, store: Store, config: Config
+) -> None:
     """One-time migration: archive legacy concept pages.
 
     Runs idempotently, gated by ``{data_dir}/.phase-d-migrated``:
 
-    1. Move every ``wiki/concepts/*.md`` to ``wiki/archive/concepts/``
-       preserving relative subpaths. Older concept pages stay
-       readable but drop out of the active wiki browse surface.
+    1. Delete each ``wiki/concepts/*.md`` page's chunk and citation
+       rows, then move the file to ``wiki/archive/concepts/``
+       preserving relative subpaths. Store cleanup comes first so an
+       interrupted migration leaves the page on disk rather than rows
+       serving a page nothing scans. Older concept pages stay readable
+       but drop out of retrieval and the active browse surface.
     2. Unwrap stale ``[[archived-slug]]`` references across the
        remaining pages so a reader clicking a link does not hit a
        404. Archived slugs become plain text.
@@ -144,8 +144,19 @@ def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
             rel = src.relative_to(concepts_dir)
             dest = archive_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
+            slug = str(rel.with_suffix("")).replace("\\", "/")
+            wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/{slug}.md"
+            store.delete_by_source(wiki_source)
+            if not store.delete_citations_for_wiki(wiki_source):
+                # Sentinel unwritten: the next build retries the migration. Pages
+                # already moved this pass still need their inbound links unwrapped,
+                # since the retry only sees what is left in concepts/ and would
+                # never revisit them, leaving those links pointing at a 404.
+                log.warning("Citation delete failed for %s; migration will retry", wiki_source)
+                _unwrap_archived_links(wiki_root, archived_slugs)
+                return
             src.replace(dest)
-            archived_slugs.append(str(rel.with_suffix("")).replace("\\", "/"))
+            archived_slugs.append(slug)
 
     if archived_slugs:
         _unwrap_archived_links(wiki_root, archived_slugs)
@@ -183,7 +194,7 @@ def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
             for pattern, replacement in patterns:
                 rewritten = pattern.sub(replacement, rewritten)
             if rewritten != original:
-                md_path.write_text(rewritten, encoding="utf-8")
+                atomic_write_text(md_path, rewritten)
 
 
 def finalize_section(
@@ -200,6 +211,8 @@ def finalize_section(
     written_concept_slugs: dict[str, str],
     drafts_dir: Path,
     shared_parsed_citations: list[ParsedCitation],
+    scoring_chunks_by_label: dict[str, list[SearchChunk]],
+    stats: BuildStats | None = None,
 ) -> Path | None:
     """Citation-check, faithfulness-check, write one batched section.
 
@@ -210,26 +223,39 @@ def finalize_section(
     definition list parsed once over the whole response: every
     section replays it so pages other than the last one still have
     their footnotes resolved.
+
+    ``scoring_chunks_by_label`` maps an entity label to the chunks its
+    extraction refs named. Faithfulness scores against those rather
+    than the whole-source mean, so a section about one entity in a
+    multi-topic source is not compared to the document-wide centroid.
+    A label with no entry (concepts, or refs that fell outside the
+    budgeted chunks) scores against the full pool.
+
+    Citation counts and the section's outcome are recorded on *stats*.
     """
+    stats = BuildStats.ensure(stats)
     slug = make_slug(header_label)
     if not slug:
         log.info("Empty slug for batched section %r; skipping", header_label)
         return None
 
-    # Only replay citation keys that this section actually references
-    # in the body; otherwise every section would claim every citation.
-    section_keys = {ref.citation_key for ref in parse_wiki_citations(body)}
-    # Fall back to in-body ``[^keyN]`` references when no definitions
-    # live inside the section: count occurrences of the footnote
-    # marker against the shared definition set.
-    section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
+    # Only replay citation keys the section's prose references. Keys are read
+    # from the citation-stripped body: the response's trailing block lands in
+    # the last section, whose definitions would otherwise make it claim every
+    # citation in the response.
+    section_keys = footnote_marker_keys(strip_citation_block(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
-    verified = verify_citations(citation_resolver(relevant), chunks, header_label, config)
+    resolved = citation_resolver(relevant)
+    verified = verify_citations(resolved, chunks, header_label, config)
+    dropped = len(relevant) - wiki_sourced_count(resolved, config) - len(verified)
     if not verified:
+        stats.record_citations(0, dropped)
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None
 
-    score = check_faithfulness(chunks, body, header_label, config)
+    score = check_faithfulness(
+        scoring_chunks_by_label.get(header_label, chunks), body, header_label, config
+    )
     threshold = config.wiki_embedding_faithfulness_threshold
     page_type = WikiSubdir.CONCEPTS if kind is EntityKind.CONCEPT else WikiSubdir.ENTITIES
     subdir = page_type if score >= threshold else WikiSubdir.DRAFTS
@@ -241,10 +267,14 @@ def finalize_section(
             threshold,
         )
 
-    clean_body = strip_citation_block(body)
+    clean_body = scrub_unverified_markers(strip_citation_block(body), verified)
     frontmatter = build_frontmatter(config, source_names, score, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, clean_body, citation_block)
+
+    # Recorded before the collision return: the section's footnotes were parsed and
+    # verified either way, and the verify rate counts every outcome that got that far.
+    stats.record_citations(len(verified), dropped)
 
     # Concept collision: the second source proposing a slug loses and writes to a
     # drafts collision marker; the winning source's page stays untouched. This
@@ -254,13 +284,16 @@ def finalize_section(
     if kind is EntityKind.CONCEPT:
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
-            return divert_concept_collision(
+            stats.record_pending_marker()
+            divert_concept_collision(
                 slug=slug,
                 source=source,
                 first_source=first_source,
                 content=full_content,
                 drafts_dir=drafts_dir,
+                origin_subdir=page_type,
             )
+            return None
         written_concept_slugs.setdefault(slug, source)
 
     # Successful regen of a previously-PENDING slug: remove the old
@@ -276,7 +309,9 @@ def finalize_section(
         page_type=page_type,
         label=header_label,
     )
-    page_path = persist_and_finalize(full_content, target, verified, source_names, store, config)
+    page_path = persist_and_finalize(
+        full_content, target, verified, source_names, store, config, stats=stats
+    )
     log.info(
         "Generated batched page for %s -> %s (score=%.2f, citations=%d)",
         header_label,

@@ -11,38 +11,47 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from litestar import delete, get, patch, post
+from litestar import MediaType, Response, delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
+from litestar.response import Stream
+from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.data.store import Store
+from lilbee.server import handlers
 from lilbee.server.models import (
     DraftInfoResponse,
-    WikiBuildResult,
+    WikiBuildDryRunResult,
     WikiCitationRecord,
     WikiCitationsResult,
     WikiDraftAcceptResponse,
     WikiDraftDiffResponse,
     WikiDraftRejectResponse,
+    WikiEntityCandidateResponse,
+    WikiGenerateResult,
+    WikiIndexResult,
     WikiLintIssueItem,
     WikiLintResult,
     WikiPageDetail,
     WikiPruneRecordResponse,
     WikiPruneResult,
     WikiStatusResult,
-    WikiSynthesizeResult,
+    WikiWipeResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
-from lilbee.wiki import run_full_build, run_full_synthesize
+from lilbee.wiki import wipe as wipe_mod
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
     read_page,
 )
 from lilbee.wiki.drafts import (
+    DraftAcceptError,
     accept_draft,
     diff_draft,
     list_drafts,
@@ -76,11 +85,9 @@ def _find_page(slug: str) -> Path | None:
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
-    Reads the tree without touching it. This route is unauthenticated, so it
-    used to hand any caller a way to rewrite index.md on repeat and to race the
-    build path over the same file. The listing never depended on that write
-    anyway: it is built by walking pages, and every path that changes the tree
-    (build, update, synthesize, prune, draft-accept) refreshes the index itself.
+    Reads the tree without touching it. The listing is built by walking pages,
+    and every path that changes the tree (build, update, synthesize, prune,
+    draft-accept) refreshes index.md itself, so a read never rewrites it.
     """
     _require_wiki()
     # list_pages walks the whole tree; offload so the listing doesn't block
@@ -93,7 +100,10 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
-    return [DraftInfoResponse(**d.to_dict()) for d in list_drafts(_wiki_root())]
+    # list_drafts reads every draft and stats its published counterpart;
+    # offload like the page listing.
+    drafts = await asyncio.to_thread(list_drafts, _wiki_root())
+    return [DraftInfoResponse(**d.to_dict()) for d in drafts]
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
@@ -108,7 +118,8 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
     _require_wiki()
     slug = slug.lstrip("/")
     try:
-        diff = diff_draft(slug, _wiki_root())
+        # diff_draft reads both files and diffs them; offload like the listing.
+        diff = await asyncio.to_thread(diff_draft, slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -126,13 +137,13 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        # accept_draft overwrites a published page and refreshes the index, the
-        # same artifacts a build writes, so it shares the build mutex. It also
-        # re-chunks and embeds, so it runs off the event loop.
-        async with _wiki_build_lock():
-            result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
+        # accept_draft re-chunks and embeds, so it runs off the event loop; it
+        # takes the wiki build mutex itself.
+        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except DraftAcceptError as exc:
+        raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftAcceptResponse(**result.to_dict())
@@ -144,7 +155,8 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
     _require_wiki()
     slug = slug.lstrip("/")
     try:
-        reject_draft(slug, _wiki_root())
+        # reject takes the wiki build mutex, so it runs off the event loop.
+        await asyncio.to_thread(reject_draft, slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -159,7 +171,7 @@ async def wiki_citations_reverse_route(
     """Reverse citation lookup: which wiki pages cite a given source."""
     _require_wiki()
     if not source:
-        return []
+        raise ClientException(detail="pass ?source=<document path> to look up citing wiki pages")
     # get_citations_for_source queries LanceDB; offload like wiki_lint_route.
     records = await asyncio.to_thread(svc_mod.get_services().store.get_citations_for_source, source)
     return [WikiCitationRecord(**r) for r in records]
@@ -180,6 +192,7 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
         slug=result.slug,
         title=result.title,
         content=result.content,
+        frontmatter=result.frontmatter,
     )
 
 
@@ -197,103 +210,178 @@ async def _citations_for_slug(slug: str) -> WikiCitationsResult:
 
 
 @post("/api/wiki/lint")
-async def wiki_lint_route() -> WikiLintResult:
-    """Trigger a full wiki lint."""
+async def wiki_lint_route(
+    wiki_source: str = Parameter(query="wiki_source", default=""),
+) -> WikiLintResult:
+    """Lint the wiki; an empty ``wiki_source`` lints every page.
+
+    Same single-page argument as ``lilbee wiki lint <page>`` and the
+    ``wiki_lint`` MCP tool, and the same issue counts.
+    """
     _require_wiki()
-    # lint_all scans every page and embeds; offload so it doesn't block the loop.
-    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
+    store = svc_mod.get_services().store
+    # Either arm reads every cited source and embeds; offload so a lint of a
+    # large wiki does not block the loop.
+    report = await asyncio.to_thread(_lint_report, wiki_source, store)
     return WikiLintResult(
         issues=[WikiLintIssueItem(**i.to_dict()) for i in report.issues],
+        total=len(report.issues),
         errors=report.error_count,
         warnings=report.warning_count,
     )
+
+
+def _lint_report(wiki_source: str, store: Store) -> lint_mod.LintReport:
+    """Lint one page or the whole wiki, as the CLI and MCP surfaces do."""
+    if wiki_source:
+        return lint_mod.LintReport(issues=lint_mod.lint_wiki_page(wiki_source, store))
+    return lint_mod.lint_all(store)
 
 
 @post("/api/wiki/prune")
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    # prune archives pages and rewrites the index, so it takes the build mutex
-    # like the other writers. It also walks the whole tree and store, so it runs
-    # off the event loop.
-    async with _wiki_build_lock():
-        report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
+    # prune walks the whole tree and store, so it runs off the event loop; it
+    # takes the wiki build mutex itself.
+    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
         flagged=report.flagged_count,
+        reconciled=report.reconciled_count,
     )
 
 
-# Serialize wiki builds: ``run_full_build`` writes pages, the wiki index, and
-# the wiki log; two concurrent calls would corrupt those. The lock is created
-# lazily because ``Lock()`` requires a running event loop.
-_WIKI_BUILD_LOCK: asyncio.Lock | None = None
+@post("/api/wiki/index")
+async def wiki_index_route() -> WikiIndexResult:
+    """Rebuild the browse index of pages the corpus could have.
 
-
-def _wiki_build_lock() -> asyncio.Lock:
-    """Return the per-process wiki-build mutex, creating it on first call."""
-    global _WIKI_BUILD_LOCK
-    if _WIKI_BUILD_LOCK is None:
-        _WIKI_BUILD_LOCK = asyncio.Lock()
-    return _WIKI_BUILD_LOCK
-
-
-def _reset_wiki_build_lock() -> None:
-    """Test hook: clear the per-process wiki-build mutex.
-
-    Mirrors ``handlers._reset_ingest_locks`` so a test that creates the
-    lock under one event loop doesn't leak it into the next test.
-    """
-    global _WIKI_BUILD_LOCK
-    _WIKI_BUILD_LOCK = None
-
-
-@post("/api/wiki/build")
-async def wiki_build_route() -> WikiBuildResult:
-    """Build the concept and entity wiki across all ingested sources.
-
-    The build is CPU- and IO-bound (LLM calls, embeddings, file writes) so
-    it runs in a worker thread; concurrent build/update requests serialize
-    on a per-process lock so they don't corrupt the wiki index.
+    Spends no LLM call. Extraction walks every chunk, so it runs off the event
+    loop and takes the wiki build mutex itself.
     """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_build, cfg)
-    return WikiBuildResult(**result)
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    stubs = await asyncio.to_thread(refresh_stub_index, svc_mod.get_services().store)
+    return WikiIndexResult(entries=len(stubs))
+
+
+@post("/api/wiki/generate/{slug:path}")
+async def wiki_generate_route(slug: str) -> WikiGenerateResult:
+    """Generate one indexed page. Costs a single LLM call.
+
+    404 when the slug names nothing in the index, 409 when the index entry is
+    stale and its sources are gone, so a client can tell "never heard of it"
+    from "nothing left to write it from".
+    """
+    _require_wiki()
+    slug = slug.lstrip("/")
+    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+
+    store = svc_mod.get_services().store
+    try:
+        # One LLM call plus embeddings, and it takes the wiki mutex.
+        path = await asyncio.to_thread(generate_stub_page, slug, store)
+    except UnknownStubError as exc:
+        raise NotFoundException(detail=str(exc)) from exc
+    if path is None:
+        raise ClientException(
+            detail=f"index entry for {slug} is stale; its sources are gone",
+            status_code=HTTP_409_CONFLICT,
+        )
+    return WikiGenerateResult(slug=slug, path=path.as_posix())
+
+
+@delete("/api/wiki", status_code=200)
+async def wiki_wipe_route() -> WikiWipeResult:
+    """Delete every generated wiki page and its indexed rows.
+
+    Answers while the wiki is disabled, unlike the other write routes: turning
+    the setting off is exactly when a client needs to clear what was already
+    generated. The wipe touches the whole tree and the store, so it runs off
+    the event loop and takes the wiki build mutex itself.
+    """
+    report = await asyncio.to_thread(wipe_mod.wipe_wiki, svc_mod.get_services().store)
+    return WikiWipeResult(
+        pages_removed=report.pages_removed,
+        sources_cleared=report.sources_cleared,
+        rows_deleted=report.rows_deleted,
+    )
+
+
+@post(
+    "/api/wiki/build",
+    responses={
+        201: ResponseSpec(
+            data_container=WikiBuildDryRunResult,
+            description="Entity candidates a build would cover, when dry_run=true.",
+        )
+    },
+)
+async def wiki_build_route(
+    dry_run: bool = Parameter(query="dry_run", default=False),
+) -> Stream | Response[WikiBuildDryRunResult]:
+    """Build the concept and entity wiki across all ingested sources.
+
+    A build issues per-source LLM calls and embeddings and can run for a long
+    time, so the response is an SSE stream: wiki_phase and wiki_page events
+    while it runs, then a done event carrying the summary. The work runs in a
+    worker thread and holds the wiki build mutex, so a second request streams
+    its own progress only once the first run finishes.
+
+    ``dry_run=true`` answers with plain JSON instead: the NER entity candidates
+    a build would cover, with no LLM call made. The dry run returns a Response
+    carrying its own media type, and the annotation says so: a union of Stream
+    and a bare model resolves the whole route to JSON, which breaks every SSE
+    client on the streaming arm.
+    """
+    _require_wiki()
+    if dry_run:
+        return await _build_dry_run()
+    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
+
+
+async def _build_dry_run() -> Response[WikiBuildDryRunResult]:
+    """Extract entity candidates off the event loop and shape them for the wire."""
+    from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE, preview_build_entities
+
+    rows = await asyncio.to_thread(preview_build_entities, cfg)
+    result = WikiBuildDryRunResult(
+        entities=[WikiEntityCandidateResponse(**row) for row in rows],
+        count=len(rows),
+        note=DRY_RUN_CONCEPT_NOTE,
+    )
+    return Response(result, media_type=MediaType.JSON)
 
 
 @patch("/api/wiki/update")
-async def wiki_update_route() -> WikiBuildResult:
-    """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
+async def wiki_update_route() -> Stream:
+    """Refresh the concept and entity wiki after an ingest.
+
+    A full rebuild, streamed like /api/wiki/build.
+    """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_build, cfg)
-    return WikiBuildResult(**result)
+    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
 
 
 @post("/api/wiki/synthesize")
-async def wiki_synthesize_route() -> WikiSynthesizeResult:
+async def wiki_synthesize_route() -> Stream:
     """Generate synthesis pages for concept clusters spanning 3+ sources.
 
-    Shares the wiki-build mutex so synthesis can't race a build/update
-    over the same on-disk wiki tree.
+    Streams per-cluster progress and shares the wiki build mutex, so synthesis
+    can't race a build over the same on-disk wiki tree.
     """
     _require_wiki()
-    async with _wiki_build_lock():
-        result = await asyncio.to_thread(run_full_synthesize, cfg)
-    return WikiSynthesizeResult(**result)
+    return Stream(handlers.wiki_synthesize_stream(), media_type="text/event-stream")
 
 
 @get("/api/wiki/status")
 async def wiki_status_route() -> WikiStatusResult:
     """Wiki layer status: page counts and recent lint counts.
 
-    Token-gated, unlike the other wiki reads: the lint behind it walks every
-    page and issues a store query each, so leaving it open made it an
-    unauthenticated way to spend the machine's IO budget. It still answers
-    while the wiki is disabled so a client can render the disabled state
-    without a second round trip to /api/config.
+    Answers while the wiki is disabled so a client can render the disabled
+    state without a second round trip to /api/config.
     """
     root = _wiki_root()
     if not cfg.wiki or not root.exists():

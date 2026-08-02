@@ -44,7 +44,7 @@ def install_lancedb_thread_error_suppressor() -> None:
     threading.excepthook = _hook
 
 
-def _table_names(db: lancedb.DBConnection) -> list[str]:
+def table_names(db: lancedb.DBConnection) -> list[str]:
     """Get list of table names, handling the ListTablesResponse object."""
     result = db.list_tables()
     try:
@@ -54,7 +54,7 @@ def _table_names(db: lancedb.DBConnection) -> list[str]:
 
 
 def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
-    if name in _table_names(db):
+    if name in table_names(db):
         return db.open_table(name)
     try:
         return db.create_table(name, schema=schema)
@@ -123,13 +123,14 @@ def agent_recall_predicate(owner: str) -> str:
 def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     """SQL predicate that matches ``chunk_type`` while tolerating NULL rows.
 
-    Rows written before ``chunk_type`` was populated land as NULL. They
-    are semantically raw, so a ``'raw'`` filter still includes them; a
-    ``'wiki'`` filter excludes them.
+    ``'raw'`` means document content, so it matches extracted table rows as
+    well as raw ones, and the NULL rows written before the column existed.
+    Scoping a search to the user's documents must not silently drop their
+    tables. A ``'wiki'`` filter matches only generated pages.
     """
     escaped = escape_sql_string(chunk_type)
     if chunk_type == ChunkType.RAW:
-        return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
+        return f"(chunk_type IN ('{ChunkType.RAW}', '{ChunkType.TABLE}') OR chunk_type IS NULL)"
     return f"chunk_type = '{escaped}'"
 
 

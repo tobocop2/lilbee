@@ -257,13 +257,26 @@ jobs:
       # The lilbee-engine wheel ships these only in the release build, so build the
       # pinned versions from source here; resolve_llama_swap()/resolve_gguf_parser()
       # then find them on PATH. Same Go toolchain the release wheel uses.
+      - name: Read the pinned Go toolchain
+        shell: bash
+        run: |
+          source engine-versions.env
+          echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
+
       - name: Set up Go (engine helpers)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: ${{ env.ENGINE_GO_VERSION }}
+          # Key the module cache on the pins: this repo has no go.sum, and the
+          # helper module graph only changes when engine-versions.env does.
+          cache-dependency-path: engine-versions.env
 
       - name: Install llama-swap + gguf-parser (engine helpers)
         shell: bash
+        env:
+          # A go.mod bump past the installed toolchain must fail here, not
+          # silently download one.
+          GOTOOLCHAIN: local
         run: |
           set -euxo pipefail
           # Shared pins with tools/wheel-build/build_llama_server.sh.

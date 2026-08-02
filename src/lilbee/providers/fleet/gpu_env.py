@@ -104,6 +104,28 @@ def _apply_gpu_devices_pin() -> bool:
     return True
 
 
+def shard_visible_devices(device: int) -> dict[str, str]:
+    """The backend visible-device vars that pin a process to one card.
+
+    Composed against whatever mask this process already carries, so *device* names
+    the card at that position in lilbee's own enumeration rather than the host's.
+    """
+    from lilbee.providers.fleet.devices import amd_visible_var
+
+    return {
+        name: _mask_entry(os.environ.get(name, ""), device)
+        for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var())
+    }
+
+
+def _mask_entry(mask: str, device: int) -> str:
+    """The *device*-th entry of a visible-devices *mask*, or its index when unmasked."""
+    entries = [entry.strip() for entry in mask.split(",") if entry.strip()]
+    if not entries:
+        return str(device)
+    return entries[device % len(entries)]
+
+
 def _clear_empty_visible_device_vars() -> None:
     """Drop an empty ``CUDA_VISIBLE_DEVICES`` only when the container runtime contradicts it.
 

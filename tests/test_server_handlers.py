@@ -1808,6 +1808,58 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert crawl_done in drained
 
+    async def test_wiki_page_sheds_under_backpressure_while_wiki_phase_lands(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(10):
+            queue.put_event_nowait(f'event: wiki_page\ndata: {{"i": {i}}}\n\n', EventType.WIKI_PAGE)
+        assert queue.qsize() == 2
+        phase = 'event: wiki_phase\ndata: {"phase": "index"}\n\n'
+        queue.put_event_nowait(phase, EventType.WIKI_PHASE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert phase in drained
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["DONE", "CRAWL_DONE", "WIKI_PHASE"],
+    )
+    async def test_an_undroppable_event_lands_with_nothing_left_to_shed(self, event_type):
+        """A queue holding only undroppable events offers no victim, so a type
+        wrongly classed as sheddable is discarded here. Filling with progress
+        instead lets either path find room, which is why the sibling cases
+        cannot tell the two classifications apart. DONE is the one that hangs a
+        client forever if it goes."""
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        kind = getattr(EventType, event_type)
+        queue = SseEventQueue(max_events=2)
+        for i in range(2):
+            queue.put_nowait(f'event: token\ndata: {{"i": {i}}}\n\n')
+        payload = f"event: {kind.value}\ndata: {{}}\n\n"
+        queue.put_event_nowait(payload, kind)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert payload in drained
+
+    async def test_eviction_scans_past_an_undroppable_head(self):
+        """The head is undroppable and a sheddable page sits behind it. Checking
+        only the head would report nothing to shed and drop the incoming page,
+        which is the regression the scan was written for."""
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        head = 'event: crawl_done\ndata: {"i": 0}\n\n'
+        queue.put_event_nowait(head, EventType.CRAWL_DONE)
+        queue.put_event_nowait('event: wiki_page\ndata: {"i": 1}\n\n', EventType.WIKI_PAGE)
+        newest = 'event: wiki_page\ndata: {"i": 2}\n\n'
+        queue.put_event_nowait(newest, EventType.WIKI_PAGE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert head in drained
+        assert newest in drained
+
     async def test_callback_routes_progress_through_shedding_path(self):
         from lilbee.runtime.progress import EventType, FileDoneEvent
         from lilbee.server.handlers import SseStream

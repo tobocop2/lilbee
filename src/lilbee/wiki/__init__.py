@@ -11,7 +11,7 @@ from lilbee.wiki.browse import (
     list_pages,
     read_page,
 )
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
     find_unmarked_claims,
@@ -34,6 +34,7 @@ from lilbee.wiki.shared import (
     PageTarget,
     parse_frontmatter,
 )
+from lilbee.wiki.wipe import WipeReport, wipe_wiki
 
 __all__ = [
     "SUBDIR_TO_TYPE",
@@ -42,6 +43,7 @@ __all__ = [
     "ParsedCitation",
     "WikiPageContent",
     "WikiPageInfo",
+    "WipeReport",
     "append_wiki_log",
     "build_page_info",
     "build_wiki",
@@ -64,4 +66,5 @@ __all__ = [
     "strip_citation_block",
     "update_wiki_index",
     "verify_citation",
+    "wipe_wiki",
 ]

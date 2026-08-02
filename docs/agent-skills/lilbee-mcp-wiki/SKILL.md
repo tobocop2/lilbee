@@ -1,6 +1,6 @@
 ---
 name: lilbee-mcp-wiki
-description: Experimental wiki layer for lilbee. Use only when the user explicitly asks about wiki / concept / entity / synthesis pages, or when `lilbee_status` shows a built wiki. Requires the lilbee-mcp skill to be active for the underlying MCP connection.
+description: Wiki layer for lilbee. Use only when the user explicitly asks about wiki / concept / entity / synthesis pages, or when `lilbee_status` shows a built wiki. Requires the lilbee-mcp skill to be active for the underlying MCP connection.
 ---
 
 # lilbee-mcp-wiki
@@ -11,12 +11,13 @@ it as opt-in, not part of normal answer flow. Skip everything here unless the
 user explicitly asks about wiki / synthesis pages, or `lilbee_status` already
 shows a wiki built.
 
-The build / read tools (`lilbee_wiki_list`, `lilbee_wiki_read`,
-`lilbee_wiki_build`, `lilbee_wiki_update`, `lilbee_wiki_synthesize`) return
-`{"error": "wiki not enabled"}` until the user enables it with
-`lilbee_settings_set({"wiki": true})`. The remaining wiki tools operate on the
-on-disk wiki directory regardless of the flag and report empty results when
-there's nothing to read.
+`lilbee_wiki_status` is the only wiki tool available regardless of the flag; it
+reports `wiki_enabled` with zeroed counts when the wiki is off. Every other wiki
+tool is absent from the surface when the server started with the wiki disabled,
+and returns `{"error": "wiki not enabled"}` if the flag is turned off while the
+server is running. Enabling the wiki with `lilbee_settings_set({"wiki": true})`
+brings the rest of the tools back on the next server session, not the current
+one.
 
 The shared-embedder rule from the parent `lilbee-mcp` skill still applies: any
 LLM-bound wiki op (`build`, `update`, `synthesize`) goes through the
@@ -35,11 +36,13 @@ LLM-bound wiki op (`build`, `update`, `synthesize`) goes through the
 
 | Tool | Use |
 |---|---|
-| `lilbee_wiki_status()` | Page counts, generator settings, last build, and the `wiki_enabled` flag. |
+| `lilbee_wiki_status()` | The `wiki_enabled` flag, summary/draft/page counts, and lint error and warning counts. |
 | `lilbee_wiki_list()` | Every wiki page with slug, title, type, source count. |
 | `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
 | `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |
 | `lilbee_wiki_citations(wiki_source)` | Per-section citation coverage for one wiki page. |
+| `lilbee_wiki_citations(source=...)` | Reverse lookup: the wiki pages citing one source document. |
+| `lilbee_wiki_build(dry_run=True)` | Preview the entity candidates a build would cover. No LLM calls, so it runs inline. |
 | `lilbee_wiki_drafts_list()` | Pending drafts with drift, faithfulness, and pairing info. |
 | `lilbee_wiki_drafts_diff(slug)` | Unified diff between a pending draft and the live page. |
 

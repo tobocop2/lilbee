@@ -252,6 +252,9 @@ fi
 # process supervisor + OpenAI proxy; gguf-parser is the UMA-aware VRAM estimator.
 # Both are single static binaries with no shared libs (unlike llama-server).
 command -v go >/dev/null || { echo "go toolchain required to build llama-swap/gguf-parser" >&2; exit 1; }
+# A go.mod bump past the installed toolchain must fail, not silently download
+# one: the shipped helpers' compiler is pinned by the builder, not the network.
+export GOTOOLCHAIN=local
 go_build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}/go-engine"
 exe_suffix=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe_suffix=".exe" ;; esac

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -216,6 +217,9 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
     return settings.mutate_value(config.data_root, "linked_roots", _mutate)
 
 
+log = logging.getLogger(__name__)
+
+
 def remove_documents_durably(names: list[str], targets: list[str] | None = None) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
@@ -255,7 +259,25 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
             reasons[name] = _REMOVED_SKIP_REASON
     write_skip_markers(cfg.data_root, markers)
     write_skip_reasons(cfg.data_root, reasons)
+    _forget_removed_from_wiki_index(list(result.removed))
     return result
+
+
+def _forget_removed_from_wiki_index(removed: list[str]) -> None:
+    """Drop removed documents from the wiki's browse index.
+
+    Their skip markers keep them out of later syncs, so no refresh would ever
+    revisit their entries and the tree would keep offering pages the library
+    can no longer support. Best effort: the removal itself already succeeded.
+    """
+    if not cfg.wiki or not removed:
+        return
+    from lilbee.wiki.stubs import drop_sources_from_index
+
+    try:
+        drop_sources_from_index(set(removed))
+    except Exception:
+        log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
 
 
 @contextmanager

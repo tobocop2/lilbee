@@ -3368,6 +3368,37 @@ class TestTaskQueue:
         q = TaskQueue()
         assert q.history == []
 
+    def test_complete_after_cancel_leaves_the_row_cancelled(self) -> None:
+        """A worker that finishes after the user cancelled must not flip the
+        cancelled row to DONE or re-append it to history."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        history_len = len(q.history)
+        q.complete_task(tid)
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED
+        assert len(q.history) == history_len
+
+    def test_fail_after_cancel_leaves_the_row_cancelled(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        history_len = len(q.history)
+        q.fail_task(tid, "boom")
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED
+        assert task.detail == ""
+        assert len(q.history) == history_len
+
     def test_cancel_nonexistent_returns_false(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
 

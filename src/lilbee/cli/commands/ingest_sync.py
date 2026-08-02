@@ -82,9 +82,8 @@ _processes_option = typer.Option(
     "--processes",
     min=0,
     help=(
-        "Worker processes for extract/embed: N explicit, 0 = auto-size, unset = off."
-        " Only helps a small/fast embedder filling a multi-GPU fleet; leave off for"
-        " a large/GPU-bound one."
+        "Ingest worker processes, one GPU each: N explicit, 0 = auto (one per card),"
+        " 1 = this process only."
     ),
 )
 _crawl_option = typer.Option(

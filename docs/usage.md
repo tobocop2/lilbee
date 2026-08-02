@@ -41,7 +41,7 @@
 
 `lilbee` (no args) launches the full Textual app: streaming chat with clickable
 citations, a model bar, a Task Center for background jobs, and screens for the
-catalog, settings, the setup wizard, and the auto-built wiki.
+catalog, settings, the setup wizard, and the generated wiki.
 
 Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
 command palette, and `/help` for the slash-command catalog. Every action lilbee
@@ -164,7 +164,7 @@ Tabs for features that aren't installed are hidden, not greyed out:
 
 - **API-Keys** appears only when the `litellm` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
-- **Wiki** appears only when the experimental wiki layer is enabled
+- **Wiki** appears only when the wiki layer is enabled
   (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
 
 Install the relevant extra (or flip the wiki flag) and the tab shows up on
@@ -183,7 +183,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/delete <name>` | | Remove a document from the index |
 | `/remove <name>` | | Remove an installed model |
-| `/wiki` | | Open the auto-generated wiki |
+| `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
 | `/memories` | | Browse, delete, or share saved memories |
 | `/setup` | | Run the first-time setup wizard |
@@ -212,9 +212,15 @@ vision) runs in its own subprocess so a stuck model doesn't lock the chat.
 
 lilbee analyzes the documents you've indexed and writes a wiki about them,
 inspired by Andrej Karpathy's [LLM Wiki](https://karpathy.ai/llmwiki/). Pages
-compound across sources instead of being one-per-document, so concepts and
-entities that show up repeatedly in your library get their own page with
-citations from every source that mentions them.
+are per concept or entity rather than per document, so something that shows up
+repeatedly in your library gets its own page, written and cited from the source
+that mentions it most. Coverage across sources comes from synthesis pages
+(`lilbee wiki synthesize`) and the `[[wiki link]]` graph.
+
+A build spends one LLM call per source document, so it is GPU-heavy and its cost
+scales with the size of your library, not with how many pages you read. A few dozen
+documents takes minutes; a few thousand takes hours. Nothing generates until you ask
+for it.
 
 Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 
@@ -223,10 +229,11 @@ Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness or parse-failure pages awaiting your accept/reject |
+| `summaries/` | Fallback landing spot for an accepted draft with no published counterpart and no recorded origin type |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
-| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+| `log.md` | Append-only audit trail of every build, synthesize, ingest, lint, and prune, with a per-run line reporting what the quality gates did |
 
 Every section is citation-verified against the source chunks and scored for
 embedding faithfulness; low-confidence output routes to `drafts/`. Plain-text
@@ -234,10 +241,40 @@ concept slugs inside page bodies are rewritten to Obsidian `[[wiki links]]` so
 the graph view shows how ideas connect. The directory is Obsidian-compatible
 out of the box.
 
-The wiki is built incrementally during sync (default cap of 20 changed sources
-per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
-from scratch, lint, drafts review, and prune are also available as CLI
-commands (see [Wiki commands](#wiki-1)) and as MCP tools.
+Turning the wiki on does not generate anything by itself. You wikify
+explicitly: run `lilbee wiki build` (`wiki update` is the same full rebuild),
+press `b` on the wiki screen in the TUI, pick **Wikify** from the command
+palette, or call the build endpoints over HTTP or MCP. In the TUI the run
+happens in the background with progress in the Task Center; over HTTP the
+build, update, and synthesize routes stream per-phase and per-page progress as
+server-sent events.
+
+If you would rather the wiki keep itself current, set `wiki_auto_update` (or
+`LILBEE_WIKI_AUTO_UPDATE=1`). Every sync then regenerates the pages its changed
+documents touched, without proposing new concepts, so day-to-day re-ingest
+never churns existing concept slugs. A sync that touches more than
+`LILBEE_WIKI_INGEST_UPDATE_CAP` pages (default 20) skips the regeneration and
+tells you to run `lilbee wiki update` yourself, so a bulk import cannot fire
+hundreds of LLM calls behind your back.
+
+A build writes every page at once and spends one LLM call per source document,
+so its cost tracks how large your library is rather than how much of it you
+read. The browse index is the cheap half: `lilbee wiki index` (and every sync)
+extracts the names your documents mention with no LLM call at all, so the tree
+lists a page as soon as its document lands. `lilbee wiki generate <slug>` then
+writes one of those pages for one call, drawing on that subject's chunks across
+every source naming it, which is more evidence than a build gives it.
+
+Turning the wiki back off stops new pages being written, but the pages already
+generated stay on disk and their rows stay in the index. Remove them with
+`lilbee wiki wipe`, the **Delete wiki** command in the TUI palette (or `W` on
+the wiki screen while the wiki is still on), `DELETE /api/wiki`, or the
+`wiki_wipe` MCP tool. The TUI offers it for you when you switch the setting off. A wipe deletes only what the wiki generated; your documents are untouched.
+While the wiki is off, generated pages are excluded from search results even if
+you never wipe them.
+
+Lint, drafts review, and prune are available as CLI commands (see
+[Wiki commands](#wiki-1)) and as MCP tools.
 
 ## Sessions
 
@@ -499,7 +536,7 @@ lilbee --json init [path]                      # create a .lilbee/ in a director
 through it, and indexing happens in the same call. Long ops take seconds to
 minutes; the final JSON includes per-file outcomes and counts.
 
-**Wiki (experimental, opt-in):**
+**Wiki (opt-in):**
 
 ```bash
 lilbee --json wiki status                      # page counts + wiki_enabled flag
@@ -507,12 +544,16 @@ lilbee --json wiki build                       # generate the topic / entity wik
 lilbee --json wiki update                      # refresh after a sync (full rebuild today)
 lilbee --json wiki synthesize                  # cross-source synthesis pages
 lilbee --json wiki lint                        # orphans, stale citations, pending drafts
-lilbee --json wiki citations <source>          # per-section citation coverage for one source
+lilbee --json wiki citations <page>            # citations a page makes
+lilbee --json wiki citations --source <doc>    # pages citing a source document
 lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
 lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
-lilbee --json wiki drafts accept <slug>        # promote a draft to concepts/ or entities/
+lilbee --json wiki drafts accept <slug>        # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee --json wiki drafts reject <slug>        # discard a draft
+lilbee --json wiki index                       # rebuild the browse index (no LLM call)
+lilbee --json wiki generate <slug>             # write one indexed page (one LLM call)
 lilbee --json wiki prune                       # archive stale pages
+lilbee --json wiki wipe --yes                  # delete every generated page and its rows
 ```
 
 **Two patterns worth knowing:**
@@ -656,17 +697,28 @@ lilbee ask "Explain this" --model qwen3
 
 ```bash
 lilbee wiki build                      # build the wiki from the current index
+lilbee wiki build --dry-run            # preview the entity candidates, no LLM calls
+lilbee wiki list                       # list pages with type, source count, date
+lilbee wiki read <slug>                # print a page's markdown
+lilbee wiki citations <page>           # citations a page makes
+lilbee wiki citations --source <doc>   # pages citing a source document
 lilbee wiki lint                       # find orphan pages, stale links, pending drafts
 lilbee wiki synthesize                 # generate cross-source synthesis pages
 lilbee wiki drafts list                # list pending drafts
-lilbee wiki drafts accept <slug>       # promote a draft to concepts/ or entities/
+lilbee wiki drafts accept <slug>       # publish a draft (concepts/, entities/, synthesis/, or summaries/)
 lilbee wiki drafts reject <slug>       # discard a draft
+lilbee wiki index                      # rebuild the browse index (no LLM call)
+lilbee wiki generate <slug>            # write one indexed page (one LLM call)
 lilbee wiki prune                      # move stale pages to archive/
+lilbee wiki wipe                       # delete every generated page and its rows
 ```
 
-MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_synthesize`,
-`wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`,
-`wiki_prune`.
+MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_status`,
+`wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`,
+`wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`. Accepting and rejecting
+drafts is left off MCP on purpose: deciding whether a low-confidence page is
+good enough to publish is your call, so use the CLI, the TUI, or the
+authenticated HTTP API.
 
 ### Memory
 
@@ -895,8 +947,6 @@ something feels off.
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
 | `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
 | `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
-| `LILBEE_WIKI_CLUSTERER` | `embedding` | Wiki topic clusterer backend (`embedding` or `graph`) |
-| `LILBEE_WIKI_CLUSTERER_K` | `0` | Fixed wiki cluster count (`0` = choose automatically) |
 | `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 
 ### Ingestion and chunking
@@ -909,7 +959,7 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
-| `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_SEMANTIC_CHUNKING` | `false` | Topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
 | `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
 | `LILBEE_LAYOUT_DETECTION` | `true` | Layout-aware PDF extraction (xberg AUTO strategy): text follows the detected reading order and running headers/footers are stripped |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
@@ -956,14 +1006,30 @@ Only relevant when running the HTTP server.
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
 
-### Wiki tuning (experimental)
+### Wiki tuning
 
-Only relevant if you run `lilbee wiki build`.
+Only relevant if you use the wiki layer. `LILBEE_WIKI` and `LILBEE_WIKI_DIR` need to be set before the first build; the rest tune generation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Max changed sources processed by incremental wiki updates during `lilbee sync`. Prevents a big re-ingest from churning concepts |
-| `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` | `25` | Top-K chunks behind each wiki page section |
+| `LILBEE_WIKI` | `false` | Enable the wiki layer. On its own this only shows the Wiki tab and the chat scope picker; nothing is generated until you wikify |
+| `LILBEE_WIKI_AUTO_UPDATE` | `false` | Regenerate touched wiki pages after every sync. Off means you wikify explicitly (`lilbee wiki build` / `wiki update`, `b` on the TUI wiki screen, or the HTTP and MCP build endpoints) |
+| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Touched-page cap for auto-update. A sync that touches more pages than this skips regeneration and tells you to run `lilbee wiki update` |
+| `LILBEE_WIKI_DIR` | `wiki` | Directory under the data root where pages live. Set it before the first build; changing it later strands the pages already written |
+| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy. `ner_entities` (typed spaCy NER) is the only one implemented today; `ner_concepts_plus_llm_types` and `llm_tagged` are accepted but fall back to `ner_entities` with a warning |
+| `LILBEE_WIKI_ENTITY_MIN_MENTIONS` | `3` | Distinct chunk mentions an entity or concept needs before it earns its own page |
+| `LILBEE_WIKI_EXTRACT_CONCEPTS` | `true` | Ask the batched call to curate concept pages alongside the extracted entities. `false` writes entity sections only |
+| `LILBEE_WIKI_BATCH_MIN_CHUNKS` | `3` | Chunks a source must contribute before it is eligible for concept curation. Keeps tables of contents and appendices from burning a call to invent concepts |
+| `LILBEE_WIKI_TEMPERATURE` | `0.1` | Sampling temperature for wiki generation. Low on purpose: the model has to reproduce the section format and quote sources verbatim |
+| `LILBEE_WIKI_SUMMARY_MAX_TOKENS` | `2048` | Output token cap per wiki call. Also sets how much of the context window is left for chunks |
+| `LILBEE_WIKI_EMBEDDING_FAITHFULNESS_THRESHOLD` | `0.5` | Minimum cosine similarity between a page body and the mean of its source chunk vectors before the page publishes. Below it, the page routes to `drafts/` |
+| `LILBEE_WIKI_DRIFT_THRESHOLD` | `0.3` | Fraction of a page's content a rebuild may change before the new version goes to `drafts/` for review instead of overwriting |
+| `LILBEE_WIKI_STALE_CITATION_THRESHOLD` | `0.5` | Fraction of stale citations before `lilbee wiki prune` flags a page |
+| `LILBEE_WIKI_PRUNE_RAW` | `false` | Delete a source's raw chunks once it has been summarized into the wiki |
+| `LILBEE_WIKI_CLUSTERER` | `embedding` | Clusterer behind `lilbee wiki synthesize`: `embedding` or `concepts`. `concepts` needs the `[graph]` extra and falls back to `embedding` without it |
+| `LILBEE_WIKI_CLUSTERER_K` | `0` | Neighborhood size for the synthesis graph. `0` scales it from the corpus size |
+| `LILBEE_WIKI_SYNTHESIS_PROMPT` | *(built in)* | Prompt template for cross-source synthesis pages. Must keep the `{topic}`, `{source_list}`, and `{chunks_text}` placeholders |
+| `LILBEE_WIKI_ENTITY_BATCH_PROMPT` | *(built in)* | Prompt template for the per-source batched call. Must keep the `{source}`, `{entity_list}`, `{chunks_text}`, and `{concept_instruction}` placeholders |
 
 ### Advanced
 
@@ -1292,8 +1358,8 @@ Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al.
 
 ## Semantic chunking
 
-Experimental. Off by default. lilbee ships with two chunking strategies; which
-one serves you depends on what you're indexing.
+Off by default. lilbee ships with two chunking strategies; which one serves you
+depends on what you're indexing.
 
 **Fixed-size (default).** Breaks documents into roughly equal token windows
 with overlap. Fast, deterministic, works well on code, reference manuals, user
@@ -1301,7 +1367,7 @@ guides, API specs, and anything with clear structural boundaries. The
 assumption is that each chunk only needs to be coherent enough for retrieval,
 and the model will handle the rest from a small window of context.
 
-**Semantic (experimental).** Uses embedding similarity to detect topic
+**Semantic.** Uses embedding similarity to detect topic
 boundaries and splits there instead of at fixed sizes. Each chunk tends to
 represent one coherent thought rather than an arbitrary slice through one. The
 benefit shows up on prose-heavy material: novels, essays, long-form research

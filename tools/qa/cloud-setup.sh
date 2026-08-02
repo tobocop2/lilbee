@@ -60,8 +60,10 @@ ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine/bin"
 if [ ! -x "${ENGINE_BIN_DIR}/llama-server" ]; then
   command -v nvcc >/dev/null 2>&1 || { echo "nvcc not found; install the CUDA toolkit first (or pick a CUDA base image)" >&2; exit 1; }
   if ! command -v go >/dev/null 2>&1; then
-    # Go toolchain for the llama-swap / gguf-parser source builds.
-    curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -xz -C /usr/local
+    # Go toolchain for the llama-swap / gguf-parser source builds, pinned with
+    # the rest of the engine versions.
+    source "${WORK_DIR}/engine-versions.env"
+    curl -fsSL "https://go.dev/dl/go${ENGINE_GO_VERSION}.linux-amd64.tar.gz" | sudo tar -xz -C /usr/local
     export PATH="/usr/local/go/bin:${PATH}"
   fi
   BACKEND="${CUDA}" bash tools/wheel-build/build_llama_server.sh

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -26,6 +27,24 @@ PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
+
+
+@dataclass(frozen=True)
+class ShardId:
+    """Which slice of the corpus one ingest worker owns."""
+
+    index: int
+    count: int
+
+    def owns(self, key: str) -> bool:
+        """Whether source *key* belongs to this slice.
+
+        Hashed with blake2b, not ``hash()``, which is salted per process: two
+        runs would deal the same corpus differently and every resume would
+        re-embed what a sibling already holds.
+        """
+        digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big") % self.count == self.index
 
 
 class FileToProcess(NamedTuple):

@@ -153,9 +153,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Worker processes for extracting and embedding a large corpus. 1 (default)"
-            " = off; 0 = auto-size; N = explicit. Only helps a small/fast embedder that"
-            " one process cannot use to fill a multi-GPU fleet"
+            "Ingest worker processes, one GPU each (0 = auto, one per card). Used"
+            " once the corpus is big enough to pay for them; 1 keeps ingest in this"
+            " process"
         ),
     ),
     "mcp_tool_threads": SettingDef(
@@ -520,7 +520,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Enable the wiki layer (synthesis pages with citations)",
+        help_text=(
+            "Enable the wiki layer (cited concept and entity pages). "
+            "GPU-heavy: a build spends one LLM call per source document, "
+            "so a large library takes hours. Enabling this generates nothing "
+            "on its own: you wikify explicitly, or turn on wiki_auto_update"
+        ),
+    ),
+    "wiki_auto_update": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.WIKI,
+        help_text="Regenerate touched wiki pages after each sync (off: wikify explicitly)",
     ),
     "wiki_dir": SettingDef(
         str,
@@ -551,7 +562,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Fraction of stale citations that triggers page regeneration",
+        help_text="Fraction of stale citations before a page is flagged by wiki prune",
     ),
     "wiki_drift_threshold": SettingDef(
         float,
@@ -571,10 +582,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.WIKI,
         help_text=(
-            "Entity extraction strategy "
-            "(ner_entities = default, typed NER entities; "
-            "plus_llm_types = NER + LLM-proposed schema; "
-            "llm_tagged = LLM tags every chunk)"
+            "Entity extraction strategy. ner_entities (typed spaCy NER) is the "
+            "only implemented mode; the other values fall back to it with a warning"
         ),
         choices=tuple(m.value for m in WikiEntityMode),
     ),
@@ -584,17 +593,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.WIKI,
         help_text="Minimum chunk mentions before an entity or concept gets its own page",
     ),
-    "wiki_concept_max_chunks_per_page": SettingDef(
+    "wiki_stub_max_chunk_refs": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.WIKI,
-        help_text="Maximum chunks passed into each concept or entity page generation call",
-    ),
-    "wiki_related_max": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.WIKI,
-        help_text="Maximum related concepts listed in the `## Related` section of each page",
+        help_text=(
+            "How many source chunks a page kept for lazy generation draws on. "
+            "Caps the browse index's size; already more than one page's context "
+            "budget admits, so raising it rarely changes what a page says"
+        ),
     ),
     "wiki_ingest_update_cap": SettingDef(
         int,
@@ -605,16 +612,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Beyond this count, run `lilbee wiki update` manually."
         ),
     ),
-    "wiki_summary_prompt": SettingDef(
-        str,
-        nullable=False,
-        render=RenderStyle.FULL,
-        group=SettingGroup.WIKI,
-        help_text=(
-            "Prompt for per-source summary pages. "
-            "Must keep the {source_name} and {chunks_text} placeholders."
-        ),
-    ),
     "wiki_synthesis_prompt": SettingDef(
         str,
         nullable=False,
@@ -622,6 +619,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.WIKI,
         help_text=(
             "Prompt for cross-source synthesis pages. "
+            "Must keep {topic}, {source_list}, and {chunks_text}."
+        ),
+    ),
+    "wiki_entity_page_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group=SettingGroup.WIKI,
+        help_text=(
+            "Prompt for a single page generated on demand from one subject's "
+            "chunks across every source naming it. "
             "Must keep {topic}, {source_list}, and {chunks_text}."
         ),
     ),
