@@ -6685,13 +6685,21 @@ class TestModelGridCardRendering:
         assert str(_build_specs("--", "--", "--")) == "--"
 
     def test_pad_line_keeps_content_when_already_full(self) -> None:
-        """Content at the available width returns unmodified body."""
+        """Content at exactly the available width returns unmodified."""
         from textual.content import Content
 
         from lilbee.cli.tui.widgets.model_grid import _pad_line
 
         content = Content("0123456789")
-        assert _pad_line(content, 5) is content
+        assert _pad_line(content, 10) is content
+
+    def test_pad_line_truncates_when_too_wide(self) -> None:
+        """An over-wide line would push the card's right border out of line."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        assert _pad_line(Content("0123456789"), 5).cell_length == 5
 
     def test_pad_line_pads_with_spaces_when_short(self) -> None:
         """Short content gets right-padded with plain spaces to the requested width."""
@@ -7107,13 +7115,13 @@ def test_size_variant_strip_disambiguates_same_quant_families():
         SizeVariant(label="0.6B Q8_0", quant="Q8_0", size_gb=0.7, ref="r/a"),
         SizeVariant(label="1.7B Q8_0", quant="Q8_0", size_gb=1.9, ref="r/b"),
     ]
-    assert str(_build_size_variant_strip(same_quant)) == "0.6B Q8_0 · 1.7B Q8_0"
+    assert str(_build_size_variant_strip(same_quant, 60)) == "0.6B Q8_0 · 1.7B Q8_0"
 
     distinct = [
         SizeVariant(label="8B Q4_K_M", quant="Q4_K_M", size_gb=4.6, ref="r/q4"),
         SizeVariant(label="8B Q5_K_M", quant="Q5_K_M", size_gb=5.7, ref="r/q5"),
     ]
-    assert str(_build_size_variant_strip(distinct)) == "Q4_K_M · Q5_K_M"
+    assert str(_build_size_variant_strip(distinct, 60)) == "Q4_K_M · Q5_K_M"
 
 
 async def test_warm_line_survives_an_active_background_task() -> None:

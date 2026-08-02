@@ -207,3 +207,76 @@ class TestWorstCaseCardLayout:
         narrowest_column = 30  # GridSelect(min_column_width=30) on every catalog grid
         lines = _local_lines(self._worst_case_row(), selected=True)
         assert max(len(line.plain) for line in lines) <= narrowest_column
+
+
+class TestSizeVariantStripFitsTheCard:
+    """A family card's quant strip must never push the card border out of line."""
+
+    @staticmethod
+    def _variants(n: int):
+        from lilbee.cli.tui.screens.catalog_utils import SizeVariant
+
+        # Colliding quants force the long per-variant label, the widest form.
+        return [
+            SizeVariant(label=f"{27 + i}B Q4_K_M", quant="Q4_K_M", size_gb=15.0 + i, ref=f"a/{i}")
+            for i in range(n)
+        ]
+
+    def test_it_never_exceeds_the_width_it_is_given(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        for count in (2, 5, 12):
+            for width in (20, 27, 40):
+                strip = _build_size_variant_strip(self._variants(count), width)
+                assert strip.cell_length <= width, f"{count} variants at width {width}"
+
+    def test_dropped_chips_are_counted(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        strip = _build_size_variant_strip(self._variants(5), 27)
+        assert "+" in strip.plain
+
+    def test_duplicate_labels_collapse(self) -> None:
+        """Two repos in one family can share param count and quant."""
+        from lilbee.cli.tui.screens.catalog_utils import SizeVariant
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        dupes = [
+            SizeVariant(label="27B Q4_K_M", quant="Q4_K_M", size_gb=15.7, ref="a/1"),
+            SizeVariant(label="27B Q4_K_M", quant="Q4_K_M", size_gb=15.8, ref="a/2"),
+        ]
+        assert _build_size_variant_strip(dupes, 60).plain.count("27B Q4_K_M") == 1
+
+    def test_pad_line_truncates_an_over_wide_line(self) -> None:
+        """The frame holds by construction, whatever a line builder produces."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        assert _pad_line(Content("x" * 80), 27).cell_length == 27
+
+    def test_a_family_card_row_stays_within_the_narrowest_column(self) -> None:
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+        from lilbee.runtime.hardware import FitChip, FitLevel
+
+        row = LocalCatalogRow(
+            name="Qwen3.6 27B",
+            task="vision",
+            params="27B",
+            size="15.4 GB",
+            quant="Q4_K_M",
+            downloads="1M",
+            featured=True,
+            installed=False,
+            sort_downloads=1,
+            sort_size=15.4,
+            ref="a/1",
+            compat=ModelCompat.SUPPORTED,
+        )
+        row.fit = FitChip(level=FitLevel.FITS, headroom_gb=10.0)
+        row.size_variants = self._variants(5)
+        body_width = 27
+        lines = _local_lines(row, selected=True, body_width=body_width)
+        assert max(line.cell_length for line in lines) <= body_width
