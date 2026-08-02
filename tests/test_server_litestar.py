@@ -1158,6 +1158,17 @@ class TestOpenAPISchema:
         assert "/api/health" in schema["paths"]
         assert "/api/ask" in schema["paths"]
 
+    def test_dry_run_payload_stays_in_the_schema(self, client):
+        """The build route's return annotation unions a Stream with a generic
+        Response, which litestar does not unwrap, so the dry-run payload is
+        declared on the decorator. Without that the published schema shows an
+        empty object and the model is not registered at all. The route is
+        registered unconditionally, so this holds with the wiki disabled."""
+        schema = client.get("/schema/openapi.json").json()
+        content = schema["paths"]["/api/wiki/build"]["post"]["responses"]["201"]["content"]
+        assert "WikiBuildDryRunResult" in content["application/json"]["schema"]["$ref"]
+        assert "WikiBuildDryRunResult" in schema["components"]["schemas"]
+
     def test_redoc_endpoint(self, client):
         resp = client.get("/schema/redoc")
         assert resp.status_code == 200

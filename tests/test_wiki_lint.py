@@ -9,7 +9,7 @@ import pytest
 
 from conftest import make_citation, source_hash, write_source, write_wiki_page
 from lilbee.core.config import cfg
-from lilbee.data.store import Store
+from lilbee.data.store import SearchChunk, Store
 from lilbee.wiki.lint import (
     IssueSeverity,
     LintIssue,
@@ -45,6 +45,21 @@ class TestLintReport:
         assert report.warning_count == 2
 
 
+def _chunk(text: str, source: str = "doc.md") -> SearchChunk:
+    return SearchChunk(
+        source=source,
+        content_type="text",
+        chunk_type="raw",
+        page_start=0,
+        page_end=0,
+        line_start=0,
+        line_end=0,
+        chunk=text,
+        chunk_index=0,
+        vector=[0.1] * cfg.embedding_dim,
+    )
+
+
 class TestLintWikiPage:
     def test_valid_citation_no_issues(self, tmp_path: Path):
         source = write_source(tmp_path, "doc.md", "Python supports gradual typing.")
@@ -64,8 +79,40 @@ class TestLintWikiPage:
                 excerpt="gradual typing",
             ),
         ]
+        store.get_chunks_by_source.return_value = [_chunk("Python supports gradual typing.")]
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert issues == []
+
+    def test_excerpt_from_extracted_text_verifies_against_a_binary_source(self, tmp_path: Path):
+        """The excerpt came from the extracted chunks; a PDF's raw bytes never contain it."""
+        source = write_source(tmp_path, "manual.pdf", "%PDF-1.4 binary garble")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Brakes wear.[^src1]\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(
+                source_filename="manual.pdf",
+                source_hash=source_hash(source),
+                excerpt="Brakes wear over time",
+            ),
+        ]
+        store.get_chunks_by_source.return_value = [
+            _chunk("Brakes wear over time.", source="manual.pdf")
+        ]
+        issues = lint_wiki_page("wiki/summaries/doc.md", store)
+        assert issues == []
+
+    def test_source_pruned_of_its_chunks_is_not_flagged(self, tmp_path: Path):
+        """``wiki_prune_raw`` deletes a published page's source chunks, leaving the
+        file present and unchanged. Those citations were verified at build time and
+        must not warn on every lint run afterwards."""
+        source = write_source(tmp_path, "doc.md", "Python supports gradual typing.")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_hash=source_hash(source), excerpt="gradual typing"),
+        ]
+        store.get_chunks_by_source.return_value = []
+        assert lint_wiki_page("wiki/summaries/doc.md", store) == []
 
     def test_deleted_source_is_error(self, tmp_path: Path):
         write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
@@ -99,6 +146,7 @@ class TestLintWikiPage:
                 excerpt="not in source at all",
             ),
         ]
+        store.get_chunks_by_source.return_value = [_chunk("Completely different text.")]
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert any("excerpt" in i.message.lower() for i in issues)
 
@@ -231,6 +279,7 @@ class TestLintAll:
                 excerpt="Content.",
             )
         ]
+        store.get_chunks_by_source.return_value = [_chunk("Content.", source="cv-manual.pdf")]
         report = lint_all(store)
         # Reverse lookup must have been called with the nested wiki_source key.
         store.get_citations_for_wiki.assert_any_call("wiki/summaries/cv-manual/page-0001.md")

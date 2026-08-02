@@ -1483,34 +1483,41 @@ class TestWikiEmptyStateSpacyBranches:
         with mock.patch.object(mod, "_spacy_available", return_value=False):
             assert wiki_empty_state_detail() == WIKI_EMPTY_NEEDS_SPACY_DETAIL
 
-    def test_spacy_available_returns_false_on_import_error(self) -> None:
+    @pytest.mark.parametrize(
+        ("present", "expected"),
+        [
+            ([mock.MagicMock(), mock.MagicMock()], True),
+            ([mock.MagicMock(), None], False),
+            ([None, None], False),
+        ],
+    )
+    def test_spacy_available_checks_package_presence(self, present, expected) -> None:
+        """Availability is a presence probe: loading the pipeline to render an
+        empty state stalled the UI thread for a second per paint."""
         from lilbee.cli.tui.messages import _spacy_available
 
-        with mock.patch(
-            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
-            side_effect=ImportError,
-        ):
-            assert _spacy_available() is False
+        _spacy_available.cache_clear()
+        try:
+            with mock.patch("lilbee.cli.tui.messages.find_spec", side_effect=present) as find_spec:
+                assert _spacy_available() is expected
+            assert find_spec.call_args_list[0].args[0] == "spacy"
+        finally:
+            _spacy_available.cache_clear()
 
-    def test_spacy_available_returns_false_on_unexpected_exception(self) -> None:
-        """An unexpected spaCy error must not fail open to 'available' (which
-        would hide the install guidance)."""
+    def test_spacy_available_is_cached(self) -> None:
+        """The probe runs once: the empty state repaints per keystroke."""
         from lilbee.cli.tui.messages import _spacy_available
 
-        with mock.patch(
-            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
-            side_effect=RuntimeError,
-        ):
-            assert _spacy_available() is False
-
-    def test_spacy_available_returns_true_on_success(self) -> None:
-        from lilbee.cli.tui.messages import _spacy_available
-
-        with mock.patch(
-            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
-            return_value=mock.MagicMock(),
-        ):
-            assert _spacy_available() is True
+        _spacy_available.cache_clear()
+        try:
+            with mock.patch(
+                "lilbee.cli.tui.messages.find_spec", return_value=mock.MagicMock()
+            ) as find_spec:
+                assert _spacy_available() is True
+                assert _spacy_available() is True
+            assert find_spec.call_count == 2
+        finally:
+            _spacy_available.cache_clear()
 
     def test_wiki_empty_state_leaf_when_spacy_present(self) -> None:
         from lilbee.cli.tui import messages as mod

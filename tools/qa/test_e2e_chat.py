@@ -19,11 +19,11 @@ from conftest import (
     SEARCH_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
+    auth_headers,
     extract_search_results,
     run_lilbee_with_env,
     seed_fixture_corpus,
     serve_lilbee_with,
-    skip_if_search_unauthenticated,
 )
 
 
@@ -76,12 +76,9 @@ def test_http_search_returns_battery_source(
             f"{base_url}/api/search",
             params={"q": "lithium-ion battery technology", "top_k": 3},
             timeout=SEARCH_TIMEOUT,
+            headers=auth_headers(lilbee_env_with_models),
         )
-        assert response.status_code in (
-            httpx.codes.OK,
-            httpx.codes.UNAUTHORIZED,
-        ), response.text
-        skip_if_search_unauthenticated(response)
+        assert response.status_code == httpx.codes.OK, response.text
         payload = response.json()
         results = extract_search_results(payload)
         sources = [r.get("source", r.get("source_path", "")) for r in results]

@@ -18,7 +18,7 @@ from lilbee.core.config import Config
 from lilbee.core.text import clean_label_for_display, is_valid_label
 from lilbee.core.vectors import Vector
 from lilbee.data.store import SearchChunk
-from lilbee.wiki.citation import strip_citation_block
+from lilbee.wiki.citations import strip_citation_block
 
 log = logging.getLogger(__name__)
 
@@ -179,10 +179,10 @@ def check_faithfulness(
         log.warning("No source vectors for %s; scoring 0.0", label)
         return 0.0
 
-    # Strip the frontmatter + citation block so we embed only the body
-    # prose. render_citation_block may not have run yet when the score
-    # is computed (it is appended later), but strip_citation_block is
-    # idempotent on missing trailers.
+    # Strip the citation block so we embed only the body prose.
+    # Frontmatter is not attached yet at this point: build_frontmatter
+    # runs after scoring. strip_citation_block is idempotent on a body
+    # whose trailer has not been rendered yet.
     body_text = strip_citation_block(wiki_text).strip()
     if not body_text:
         log.warning("Empty body for %s; scoring 0.0", label)

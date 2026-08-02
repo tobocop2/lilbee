@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import WikiEntityMode
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
@@ -85,30 +86,37 @@ class TestIncrementalWikiUpdate:
         assert args[0] == [touched]
 
     @pytest.mark.asyncio
-    async def test_new_entity_without_existing_page_is_touched(
-        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    @pytest.mark.parametrize("existing_page", [None, "concepts/braking.md", "drafts/braking.md"])
+    async def test_changed_source_is_touched_whatever_the_page_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        _isolated_wiki: Path,
+        existing_page: str | None,
     ) -> None:
-        brand_new = _entity("fresh", EntityKind.CONCEPT, ["untouched.txt"])
-        _install_service_stubs(monkeypatch, [brand_new])
-        with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
-            await incremental_update({"untouched.txt"})
-        build.assert_called_once()
-        assert build.call_args.args[0] == [brand_new]
-
-    @pytest.mark.asyncio
-    async def test_existing_page_with_changed_source_is_touched(
-        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
-    ) -> None:
-        """Existing-page + cited-source-changed is the separate branch from new-entity."""
-        existing = _entity("braking", EntityKind.CONCEPT, ["changed.txt"])
-        wiki_root = _isolated_wiki / "wiki"
-        (wiki_root / "concepts").mkdir(parents=True)
-        (wiki_root / "concepts" / "braking.md").write_text("stale\n")
-        _install_service_stubs(monkeypatch, [existing])
+        """A changed cited source is the only trigger: page state does not gate it."""
+        entity = _entity("braking", EntityKind.CONCEPT, ["changed.txt"])
+        if existing_page is not None:
+            page = _isolated_wiki / "wiki" / existing_page
+            page.parent.mkdir(parents=True)
+            page.write_text("stale\n")
+        _install_service_stubs(monkeypatch, [entity])
         with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
             await incremental_update({"changed.txt"})
         build.assert_called_once()
-        assert build.call_args.args[0] == [existing]
+        assert build.call_args.args[0] == [entity]
+
+    @pytest.mark.asyncio
+    async def test_entity_whose_sources_are_unchanged_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """Only a changed source queues a rebuild. An entity whose chunk trail
+        names none of them is dropped from ``touched``, and an empty ``touched``
+        returns before any page is generated."""
+        held = _entity("braking", EntityKind.CONCEPT, ["other.txt"])
+        _install_service_stubs(monkeypatch, [held])
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"changed.txt"})
+        build.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_cap_exceeded_skips_regeneration_and_logs_hint(
@@ -152,11 +160,32 @@ class TestIncrementalWikiUpdate:
         assert "changed.txt" in log_path.read_text()
 
     @pytest.mark.asyncio
+    async def test_ingest_log_entry_reports_what_the_gates_did(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """An auto-update is a run like any other, so its log line carries the numbers."""
+        cfg.wiki_ingest_update_cap = 10
+        touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])
+        _install_service_stubs(monkeypatch, [touched])
+        page = _isolated_wiki / "wiki" / "concepts" / "braking.md"
+
+        def fake_build(entities, provider, store, config, *, extract_concepts, stats):
+            stats.record_published("wiki/concepts/braking.md", 2)
+            stats.record_pending_marker()
+            stats.record_citations(rendered=2, dropped=1)
+            return [page]
+
+        with patch("lilbee.wiki.build_wiki", side_effect=fake_build):
+            await incremental_update({"changed.txt"})
+        log_text = (_isolated_wiki / "wiki" / "log.md").read_text()
+        assert "1 published, 0 drafted, 1 markers, 2/3 citations verified" in log_text
+
+    @pytest.mark.asyncio
     async def test_returns_when_no_entities_touched(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
-        """Sources exist but every extracted entity has an existing page and is
-        unrelated to changed_sources -> touched stays empty -> early return.
+        """Sources exist but every extracted entity is unrelated to
+        changed_sources -> touched stays empty -> early return.
 
         Exercises both the source-iteration branch (chunks.extend on a non-empty
         get_sources()) and the empty-touched-list early return.
@@ -189,3 +218,64 @@ class TestIncrementalWikiUpdate:
             await incremental_update({"changed.txt"})
         build.assert_called_once()
         assert build.call_args.kwargs.get("extract_concepts") is False
+
+
+class TestIncrementalUpdateHonorsThePassedConfig:
+    """An embedded instance's scoped config governs the update its sync triggered.
+
+    Falling back to the global ``cfg`` for the gate or the cap would regenerate
+    one config's wiki tree from another config's corpus.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_gate_reads_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki = True
+        scoped = cfg.model_copy(update={"wiki": False})
+        # Stubs a passing gate would regenerate from, so the gate is what is measured.
+        _install_service_stubs(monkeypatch, [_entity("braking", EntityKind.CONCEPT, ["a.txt"])])
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"a.txt"}, scoped)
+        build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_reads_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki_ingest_update_cap = 10
+        scoped = cfg.model_copy(update={"wiki_ingest_update_cap": 1})
+        _install_service_stubs(
+            monkeypatch,
+            [
+                _entity("a", EntityKind.CONCEPT, ["changed.txt"]),
+                _entity("b", EntityKind.CONCEPT, ["changed.txt"]),
+            ],
+        )
+        with patch("lilbee.wiki.build_wiki") as build:
+            await incremental_update({"changed.txt"}, scoped)
+        build.assert_not_called()
+        assert "exceeds cap 1" in (_isolated_wiki / "wiki" / "log.md").read_text()
+
+    @pytest.mark.asyncio
+    async def test_the_extractor_and_the_build_read_the_passed_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        cfg.wiki_ingest_update_cap = 10
+        extractor, _services = _install_service_stubs(
+            monkeypatch, [_entity("braking", EntityKind.ENTITY, ["changed.txt"])]
+        )
+        built: dict[str, object] = {}
+
+        def _capture(mode: object, provider: object, config: object) -> MagicMock:
+            built["mode"] = mode
+            built["config"] = config
+            return extractor
+
+        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", _capture)
+        scoped = cfg.model_copy(update={"wiki_entity_mode": WikiEntityMode.LLM_TAGGED})
+        with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
+            await incremental_update({"changed.txt"}, scoped)
+        assert built["mode"] is WikiEntityMode.LLM_TAGGED
+        assert built["config"] is scoped
+        assert build.call_args.args[3] is scoped

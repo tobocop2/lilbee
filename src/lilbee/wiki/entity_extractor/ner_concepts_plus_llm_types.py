@@ -24,5 +24,8 @@ class NerConceptsPlusLlmTypesExtractor:
         self._provider = provider
         self._config = config
 
+    def available(self) -> bool:
+        return True
+
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         raise NotImplementedError("NerConceptsPlusLlmTypesExtractor.extract is not yet implemented")

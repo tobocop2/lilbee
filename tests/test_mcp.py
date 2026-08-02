@@ -36,6 +36,8 @@ from lilbee.mcp_server import (
     wiki_citations,
     wiki_drafts_diff,
     wiki_drafts_list,
+    wiki_generate,
+    wiki_index,
     wiki_lint,
     wiki_list,
     wiki_prune,
@@ -43,6 +45,7 @@ from lilbee.mcp_server import (
     wiki_status,
     wiki_synthesize,
     wiki_update,
+    wiki_wipe,
 )
 from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
@@ -987,6 +990,48 @@ class TestWikiLint:
         result = wiki_lint()
         assert result["command"] == "wiki_lint"
         assert result["total"] >= 1
+        # An unmarked claim is a warning, so an agent can gate on errors == 0.
+        assert result["errors"] == 0
+        assert result["warnings"] == result["total"]
+
+    def test_lint_counts_errors_apart_from_warnings(self, mock_svc, tmp_path, monkeypatch):
+        """The severity split is the whole point of the two counts, and every
+        other fixture here yields warnings only, so both numbers would agree
+        with a hardcoded zero and a plain issue total."""
+        from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
+
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        cfg.wiki = True
+        report = LintReport(
+            issues=[
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.ERROR,
+                    message="cited source is gone",
+                    issue_type=IssueType.SOURCE_MISSING,
+                ),
+                LintIssue(
+                    wiki_source="wiki/concepts/brakes.md",
+                    severity=IssueSeverity.WARNING,
+                    message="unmarked claim",
+                    issue_type=IssueType.UNMARKED_CLAIM,
+                ),
+                LintIssue(
+                    wiki_source="wiki/concepts/gearbox.md",
+                    severity=IssueSeverity.WARNING,
+                    message="unmarked claim",
+                    issue_type=IssueType.UNMARKED_CLAIM,
+                ),
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.lint.lint_all", lambda *a, **kw: report)
+        result = wiki_lint()
+        # One error and two warnings, not one apiece: equal counts could be
+        # crossed and an agent gating on errors would read the warning total.
+        assert result["total"] == 3
+        assert result["errors"] == 1
+        assert result["warnings"] == 2
 
     def test_lint_single_page(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
@@ -1003,16 +1048,20 @@ class TestWikiLint:
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_lint(wiki_source="wiki/summaries/doc.md")
         assert result["total"] == 0
+        assert result["errors"] == 0
+        assert result["warnings"] == 0
 
     def test_lint_no_wiki_dir(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
+        cfg.wiki = True
         result = wiki_lint()
         assert result["total"] == 0
 
 
 class TestWikiCitations:
     def test_returns_citations(self, mock_svc):
+        cfg.wiki = True
         mock_svc.store.get_citations_for_wiki.return_value = [
             {
                 "wiki_source": "wiki/summaries/doc.md",
@@ -1035,9 +1084,29 @@ class TestWikiCitations:
         assert result["citations"][0]["citation_key"] == "src1"
 
     def test_no_citations(self, mock_svc):
+        cfg.wiki = True
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_citations("wiki/summaries/missing.md")
         assert result["total"] == 0
+
+    def test_source_gives_the_reverse_lookup(self, mock_svc):
+        cfg.wiki = True
+        mock_svc.store.get_citations_for_source.return_value = [
+            {"wiki_source": "wiki/entities/ford.md", "citation_key": "src1"}
+        ]
+        result = wiki_citations(source="doc.md")
+        assert result["source"] == "doc.md"
+        assert result["citations"][0]["wiki_source"] == "wiki/entities/ford.md"
+        mock_svc.store.get_citations_for_wiki.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{}, {"wiki_source": "wiki/summaries/doc.md", "source": "doc.md"}],
+        ids=["neither", "both"],
+    )
+    def test_ambiguous_direction_returns_error(self, mock_svc, kwargs):
+        cfg.wiki = True
+        assert "error" in wiki_citations(**kwargs)
 
 
 class TestWikiStatus:
@@ -1076,13 +1145,41 @@ class TestWikiBuildTool:
         assert wiki_build() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
+        from lilbee.wiki.stats import BuildStats
+
         cfg.wiki = True
-        result_dict = {"paths": [str(tmp_path / "p.md")], "entities": 7, "count": 1}
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/p.md", 2)
+        result_dict = {
+            "paths": [str(tmp_path / "p.md")],
+            "entities": 7,
+            "count": 1,
+            "stats": stats.as_dict(),
+        }
         monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: result_dict)
         result = wiki_build()
         assert result["command"] == "wiki_build"
         assert result["count"] == 1
         assert result["entities"] == 7
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["verified_by_page"] == {"wiki/concepts/p.md": 2}
+
+    def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
+        cfg.wiki = True
+
+        def build_boom(*a, **kw):
+            raise AssertionError("dry_run must not build")
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", build_boom)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.preview_build_entities",
+            lambda *a, **kw: [{"slug": "ford", "label": "Ford", "mentions": 2}],
+        )
+        result = wiki_build(dry_run=True)
+        assert result["dry_run"] is True
+        assert result["count"] == 1
+        assert result["entities"][0]["slug"] == "ford"
+        assert result["note"]
 
 
 class TestWikiUpdateTool:
@@ -1114,6 +1211,7 @@ class TestWikiSynthesizeTool:
         assert result["command"] == "wiki_synthesize"
         assert result["count"] == 1
         assert result["paths"] == [str(paths[0])]
+        assert result["stats"]["pages_generated"] == 0
 
     def test_no_clusters_returns_empty(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -1131,7 +1229,123 @@ class TestWikiPrune:
         assert result["command"] == "wiki_prune"
         assert result["archived"] == 0
         assert result["flagged"] == 0
+        assert result["reconciled"] == 0
         assert result["records"] == []
+
+    def test_prune_reports_reconciled_rows(self, mock_svc, tmp_path, monkeypatch):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+        cfg.wiki_dir = "wiki"
+        cfg.wiki = True
+        # An archived record alongside the reconciled one, so the counts have
+        # to tell the actions apart. With one record of one action, counting
+        # RECONCILED is the same number as counting every record.
+        report = PruneReport(
+            records=[
+                PruneRecord(
+                    wiki_source="wiki/concepts/gone.md",
+                    action=PruneAction.RECONCILED,
+                    reason="indexed rows without a page on disk",
+                ),
+                PruneRecord(
+                    wiki_source="wiki/concepts/retired.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="every source it cited is gone",
+                ),
+                PruneRecord(
+                    wiki_source="wiki/entities/ford.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="every source it cited is gone",
+                ),
+            ]
+        )
+        monkeypatch.setattr("lilbee.wiki.prune.prune_wiki", lambda *a, **kw: report)
+        result = wiki_prune()
+        # Different counts. At one apiece the two could be crossed and an agent
+        # gating on pages retired would read the swept-rows number instead.
+        assert result["reconciled"] == 1
+        assert result["archived"] == 2
+
+
+class TestWikiIndexAndGenerate:
+    def test_index_reports_its_size(self, mock_svc, monkeypatch):
+        from lilbee.wiki import stubs as stubs_mod
+
+        cfg.wiki = True
+        # Three, not one: with a single entry the count is the same number as
+        # a hardcoded 1, and the tool would report "1 page" for a whole corpus.
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2, "c": 3})
+        assert wiki_index()["entries"] == 3
+
+    def test_generate_returns_the_path(self, mock_svc, monkeypatch):
+        from pathlib import Path
+
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("w/ford.md"))
+        assert wiki_generate("ford")["path"] == "w/ford.md"
+
+    def test_generate_reports_an_unknown_slug_as_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+
+        def boom(slug, store):
+            raise lazy_mod.UnknownStubError("no indexed page")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", boom)
+        assert "error" in wiki_generate("nope")
+
+    def test_generate_reports_a_stale_entry_as_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        cfg.wiki = True
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: None)
+        assert "stale" in wiki_generate("ford")["error"]
+
+    @pytest.mark.parametrize("tool", ["index", "generate"], ids=["index", "generate"])
+    def test_both_refuse_when_the_wiki_is_disabled(self, mock_svc, tool):
+        cfg.wiki = False
+        result = wiki_index() if tool == "index" else wiki_generate("ford")
+        assert result["error"] == WIKI_DISABLED_ERROR
+
+
+class TestWikiWipe:
+    """``wiki_wipe`` needs an explicit confirm and works with the wiki off."""
+
+    @pytest.fixture
+    def report(self, monkeypatch):
+        from lilbee.wiki import wipe as wipe_mod
+
+        stub = wipe_mod.WipeReport(pages_removed=4, sources_cleared=4, rows_deleted=True)
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: stub)
+        return stub
+
+    def test_refuses_without_confirm(self, mock_svc, monkeypatch):
+        """No confirm, no delete: an agent must not wipe on a vague instruction."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        called: list[object] = []
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: called.append(store))
+        result = wiki_wipe()
+        assert "confirm=true" in result["error"]
+        assert called == []
+
+    @pytest.mark.parametrize("wiki_enabled", [True, False], ids=["enabled", "disabled"])
+    def test_wipes_with_confirm_whether_or_not_enabled(self, mock_svc, report, wiki_enabled):
+        cfg.wiki = wiki_enabled
+        result = wiki_wipe(confirm=True)
+        assert result["command"] == "wiki_wipe"
+        assert result["pages_removed"] == 4
+
+    def test_failed_row_delete_is_an_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki import wipe as wipe_mod
+
+        stub = wipe_mod.WipeReport(pages_removed=4, sources_cleared=4, rows_deleted=False)
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", lambda store: stub)
+        result = wiki_wipe(confirm=True)
+        assert "error" in result
 
 
 class TestWikiList:
@@ -1270,6 +1484,61 @@ class TestWikiDraftsMcp:
         result = wiki_drafts_diff("../../secret")
         assert result == {"error": "invalid draft slug"}
         assert str(isolated_env) not in str(result)
+
+
+class TestWikiRuntimeGate:
+    """Every wiki tool re-reads cfg.wiki per call. The build-time gate alone left
+    a live daemon executing stale tools (including the mutating wiki_prune)
+    after the setting was turned off."""
+
+    @pytest.mark.parametrize(
+        ("handler", "args"),
+        [
+            (wiki_lint, ()),
+            (wiki_citations, ("wiki/summaries/doc.md",)),
+            (wiki_list, ()),
+            (wiki_read, ("summaries/doc",)),
+            (wiki_build, ()),
+            (wiki_update, ()),
+            (wiki_synthesize, ()),
+            (wiki_prune, ()),
+            (wiki_drafts_list, ()),
+            (wiki_drafts_diff, ("x",)),
+        ],
+    )
+    def test_handler_refuses_once_the_wiki_is_turned_off(
+        self, mock_svc, isolated_env, handler, args
+    ):
+        cfg.wiki = False
+        cfg.data_root = isolated_env
+        assert handler(*args) == {"error": WIKI_DISABLED_ERROR}
+
+    def test_status_still_answers_while_disabled(self, mock_svc, isolated_env):
+        """Matches the HTTP status route: report the disabled state, don't lint."""
+        cfg.wiki = False
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "leftover.md").write_text("content")
+        with mock.patch("lilbee.wiki.lint.lint_all") as lint_all:
+            result = wiki_status()
+        assert result == {
+            "wiki_enabled": False,
+            "summaries": 0,
+            "drafts": 0,
+            "pages": 0,
+            "lint_errors": 0,
+            "lint_warnings": 0,
+        }
+        lint_all.assert_not_called()
+
+    def test_drafts_list_names_the_real_promotion_policy(self):
+        """The docstring claimed accept/reject were CLI-only while HTTP and the
+        TUI both promote drafts."""
+        doc = wiki_drafts_list.__doc__ or ""
+        assert "CLI-only" not in doc
+        assert "CLI, TUI" in doc
+        assert "HTTP" in doc
 
 
 class TestSettingsMcp:
@@ -1805,8 +2074,14 @@ class TestToolsSchemaSize:
         with pytest.raises(TypeError, match="zero-arg callable"):
             _tool_if(True)  # type: ignore[arg-type]
 
-    async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
-        """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
+    async def test_only_wiki_status_is_registered_when_wiki_disabled(self) -> None:
+        """``cfg.wiki=False`` (the default) keeps the wiki tools off the wire.
+
+        Two exceptions, both matching their HTTP routes: wiki_status so a
+        client can read the disabled state rather than finding no tool, and
+        wiki_wipe because turning the wiki off is exactly when the pages it
+        already generated need deleting.
+        """
         from lilbee.core.config import cfg as _cfg
         from lilbee.mcp_server import build_mcp_server
 
@@ -1815,7 +2090,7 @@ class TestToolsSchemaSize:
         assert _cfg.wiki is False
         tools = await _mcp.list_tools()
         wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
-        assert wiki_tool_names == []
+        assert sorted(wiki_tool_names) == ["wiki_status", "wiki_wipe"]
 
     async def test_default_install_registers_exactly_the_pinned_tools(self) -> None:
         """The unconditionally-registered surface is exactly ``_DEFAULT_TOOL_NAMES``.

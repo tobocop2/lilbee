@@ -112,6 +112,7 @@ _DROPPABLE_EVENT_TYPES: frozenset[EventType | SseEvent] = frozenset(
         EventType.EMBED,
         EventType.EXTRACT,
         EventType.CRAWL_PAGE,
+        EventType.WIKI_PAGE,
         EventType.SETUP_PROGRESS,
         SseEvent.PROGRESS,
     }

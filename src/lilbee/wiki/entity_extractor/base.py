@@ -45,6 +45,16 @@ class ExtractedEntity:
 class EntityExtractor(Protocol):
     """Strategy that turns a chunk corpus into ``ExtractedEntity`` records."""
 
+    def available(self) -> bool:
+        """Whether the backend can run.
+
+        ``extract`` returns an empty list both when the corpus names nothing
+        and when the backend (e.g. the spaCy model) is not installed. A writer
+        that persists over an existing index must tell the two apart: an empty
+        result from an unavailable backend must not overwrite a good index.
+        """
+        ...
+
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         """Return the deduplicated set of concepts and entities in *chunks*."""
         ...

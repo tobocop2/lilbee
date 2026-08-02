@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from lilbee.core.config import (
     META_TABLE,
     PAGE_TEXTS_TABLE,
     SOURCES_TABLE,
+    WIKI_MENTIONS_TABLE,
     Config,
 )
 from lilbee.core.vectors import Vector
@@ -51,6 +52,7 @@ from .schema import (
     _meta_schema,
     _page_texts_schema,
     _sources_schema,
+    _wiki_mentions_schema,
 )
 from .types import (
     ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
@@ -183,6 +185,12 @@ _TITLE_COLUMN = "title"
 _PER_SOURCE_TABLES = tuple(
     (name, INGEST_SOURCE_COLUMNS[name])
     for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
+) + (
+    # Per-(subject, source), so removing a source drops its mention evidence
+    # here with its chunks; the wiki refresh only ever re-adds a source, never
+    # has to remember to subtract a deleted one. Not in INGEST_SOURCE_COLUMNS
+    # (a wiki table, not an ingest one), so its column is named directly.
+    (WIKI_MENTIONS_TABLE, "source"),
 )
 
 # (table, source column) pairs re-keyed when a source is relocated (moved on
@@ -228,6 +236,11 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
                 f"Vector dimension mismatch: expected {embedding_dim}, "
                 f"got {len(vec)} (source={rec.get('source', '?')})"
             )
+
+
+def _citations_for_wiki_predicate(wiki_source: str) -> str:
+    """SQL predicate selecting every citation row belonging to *wiki_source*."""
+    return f"wiki_source = '{escape_sql_string(wiki_source)}'"
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -778,6 +791,22 @@ class Store:
                 )
                 return False
 
+    def _add_chunks_unlocked(self, records: list[dict]) -> int:
+        """Add chunk records and return the count. Caller must hold ``write_lock()``."""
+        embedding_model = self._config.embedding_model
+        embedding_dim = self._config.embedding_dim
+        self._ensure_embedding_compat()
+        self._fts_ready = False
+        self._scalar_ready = False
+        if not records:
+            return 0
+        _check_vector_dims(records, embedding_dim)
+        table = self._chunks_table()
+        table.add(records)
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+        return len(records)
+
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added.
 
@@ -790,18 +819,26 @@ class Store:
         compatibility check.
         """
         with self._write_lock():
-            embedding_model = self._config.embedding_model
-            embedding_dim = self._config.embedding_dim
+            return self._add_chunks_unlocked(records)
+
+    def replace_chunks(self, records: list[dict], predicate: str) -> int:
+        """Replace the chunk rows matching *predicate* with *records* under one write lock.
+
+        Same compatibility and dimension gates as :meth:`add_chunks`, both run
+        before the delete so a rejected write leaves the existing rows in place.
+        The lock serializes writers; delete and add are separate commits, so a
+        concurrent reader can briefly see the rows absent, and callers retry on
+        a crash between the two. A delete failure propagates, following the same
+        rule as :meth:`_delete_by_sources_unlocked`: swallowed, the caller would
+        read a success-shaped result over rows still describing the old body.
+        Returns the count added.
+        """
+        with self._write_lock():
             self._ensure_embedding_compat()
-            self._fts_ready = False
-            self._scalar_ready = False
-            if not records:
-                return 0
-            _check_vector_dims(records, embedding_dim)
+            _check_vector_dims(records, self._config.embedding_dim)
             table = self._chunks_table()
-            table.add(records)
-            self._stamp_meta_unlocked(embedding_model, embedding_dim)
-            return len(records)
+            table.delete(predicate)
+            return self._add_chunks_unlocked(records)
 
     def _stamp_meta_unlocked(self, embedding_model: str, embedding_dim: int) -> None:
         """Write the embedder identity on the first write to a fresh store."""
@@ -1479,6 +1516,28 @@ class Store:
         )
         return renamed.select(columns)
 
+    def wiki_chunk_sources(self) -> set[str]:
+        """Return the distinct sources of the chunk rows written by the wiki layer."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return set()
+        rows = (
+            table.search()
+            .where(f"chunk_type = '{ChunkType.WIKI}'")
+            .select(["source"])
+            .limit(None)
+            .to_list()
+        )
+        return {row["source"] for row in rows}
+
+    def wiki_citation_sources(self) -> set[str]:
+        """Return the distinct wiki_source values present in the citations table."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return set()
+        rows = table.search().select(["wiki_source"]).limit(None).to_list()
+        return {row["wiki_source"] for row in rows}
+
     def get_sources(
         self,
         *,
@@ -1796,25 +1855,32 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
-    def clear_table(self, name: str, predicate: str) -> None:
-        """Delete rows matching *predicate* from *name*. Acquires write lock."""
+    def clear_table(self, name: str, predicate: str) -> bool:
+        """Delete rows matching *predicate* from *name*. Acquires write lock.
+
+        Returns whether the delete succeeded, so a caller recording the
+        outcome (prune, the legacy migration) does not report success over a
+        swallowed failure.
+        """
         with self._write_lock():
             table = self.open_table(name)
-            if table is not None:
-                _safe_delete_unlocked(table, predicate)
+            if table is None:
+                return True
+            return _safe_delete_unlocked(table, predicate)
 
     def clear_and_add(self, name: str, schema: pa.Schema, rows: list[dict], predicate: str) -> None:
         """Replace the rows matching *predicate* with *rows* in one locked write.
 
         Delete and add run under a single write lock, so a reader never observes
-        the table emptied mid-rebuild. The add is skipped when the delete failed,
-        to avoid duplicating rows whose predecessors were not removed.
+        the table emptied mid-rebuild. A delete failure propagates, following the
+        same rule as :meth:`_delete_by_sources_unlocked`: adding over rows whose
+        predecessors are still there duplicates them, and reporting success would
+        leave the caller acting on state it thinks it replaced.
         """
         with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, name, schema)
-            if not _safe_delete_unlocked(table, predicate):
-                return
+            table.delete(predicate)
             if rows:
                 table.add(rows)
 
@@ -1848,12 +1914,84 @@ class Store:
         )
         return rows
 
-    def delete_citations_for_wiki(self, wiki_source: str) -> None:
-        """Delete all citations for a wiki page (used before regeneration)."""
-        self.clear_table(
+    def delete_citations_for_wiki(self, wiki_source: str) -> bool:
+        """Delete all citations for a wiki page. Returns whether the delete succeeded."""
+        return self.clear_table(CITATIONS_TABLE, _citations_for_wiki_predicate(wiki_source))
+
+    def delete_all_wiki_rows(self) -> bool:
+        """Delete every wiki chunk row, every citation, and every mention.
+        Returns whether all deletes succeeded, so a caller cannot report a wipe
+        over a swallowed failure. Only the wiki layer writes citations and
+        mentions, so wiping it empties those tables outright. All deletes run
+        before the results combine.
+        """
+        chunks_cleared = self.clear_table(CHUNKS_TABLE, f"chunk_type = '{ChunkType.WIKI}'")
+        citations_cleared = self.clear_table(CITATIONS_TABLE, "1 = 1")
+        mentions_cleared = self.clear_wiki_mentions()
+        return chunks_cleared and citations_cleared and mentions_cleared
+
+    def replace_citations_for_wiki(self, wiki_source: str, records: list[CitationRecord]) -> None:
+        """Swap a wiki page's citations for *records* under one write lock.
+
+        The lock keeps another writer from landing between the delete and the
+        add; the two remain separate commits, so a crash in between leaves the
+        rows absent until the page is regenerated or accepted again.
+        """
+        self.clear_and_add(
             CITATIONS_TABLE,
-            f"wiki_source = '{escape_sql_string(wiki_source)}'",
+            _citations_schema(),
+            [dict(rec) for rec in records],
+            _citations_for_wiki_predicate(wiki_source),
         )
+
+    def replace_wiki_mentions_for_source(self, source: str, rows: list[dict]) -> None:
+        """Swap one source's wiki mention rows for *rows* under one write lock.
+
+        A source contributes its whole mention set at once, so an incremental
+        wiki refresh replaces exactly that source's rows and leaves every other
+        source's evidence in place for the corpus-wide aggregate.
+        """
+        escaped = escape_sql_string(source)
+        self.clear_and_add(
+            WIKI_MENTIONS_TABLE,
+            _wiki_mentions_schema(),
+            rows,
+            f"source = '{escaped}'",
+        )
+
+    def wiki_mention_rows(self, slugs: Iterable[str] | None = None) -> list[dict]:
+        """Every wiki mention row, or only those for *slugs*.
+
+        The wiki aggregates these across sources to rebuild the stub index. A
+        full refresh reads them all; an incremental one reads only the slugs it
+        touched, to recompute their corpus-wide totals without a full scan.
+        """
+        table = self.open_table(WIKI_MENTIONS_TABLE)
+        if table is None:
+            return []
+        query = table.search()
+        if slugs is not None:
+            wanted = list(slugs)
+            if not wanted:
+                return []
+            joined = ", ".join(f"'{escape_sql_string(s)}'" for s in wanted)
+            query = query.where(f"slug IN ({joined})")
+        rows: list[dict] = query.limit(None).to_list()
+        return rows
+
+    def clear_wiki_mentions(self) -> bool:
+        """Drop every wiki mention row (a full rebuild starts from nothing)."""
+        return self.clear_table(WIKI_MENTIONS_TABLE, "1 = 1")
+
+    def has_wiki_mentions(self) -> bool:
+        """Whether any wiki mention row exists.
+
+        A cold store or one migrated from the file-only index has none, which
+        forces a refresh to rebuild in full and seed the table before an
+        incremental pass can aggregate over it.
+        """
+        table = self.open_table(WIKI_MENTIONS_TABLE)
+        return table is not None and table.count_rows() > 0
 
     def _memories_schema(self) -> pa.Schema:
         return pa.schema(

@@ -52,8 +52,8 @@ full setup.
 ## The shared-embedder rule (read this first)
 
 The MCP server hosts one embedder worker. Indexing (`lilbee_add`, `lilbee_sync`,
-`lilbee_crawl`, `lilbee_import_dataset`, `lilbee_model_pull`, plus the
-experimental wiki builds) pins it;
+`lilbee_crawl`, `lilbee_import_dataset`, `lilbee_model_pull`, plus wiki builds)
+pins it;
 `lilbee_search` also needs it to embed the query. Run them
 concurrently and `lilbee_search` will hang until your host times out.
 
@@ -126,7 +126,7 @@ On the shared HTTP daemon, `set`/`clear` are refused unless the host enables
 `get`/`preview` always work. Prefer preview-then-set, and only change placement
 when the user asks.
 
-(Experimental wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
+(Wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
 ## Common workflows
 
@@ -295,5 +295,5 @@ Never assume you can read a key back.
 
 ## Other skills
 
-- **Wiki tools** (experimental per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`docs/agent-skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
+- **Wiki tools** (per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`docs/agent-skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
 - **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the JSON CLI fallback section of the usage guide (`docs/usage.md` in the lilbee repository).

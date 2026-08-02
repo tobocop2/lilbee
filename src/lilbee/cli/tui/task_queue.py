@@ -41,6 +41,9 @@ class TaskType(StrEnum):
     EXPORT = "export"
 
 
+TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
+
+
 STATUS_ICONS: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "⏳",
     TaskStatus.ACTIVE: "▶",
@@ -214,13 +217,17 @@ class TaskQueue:
     def complete_task(self, task_id: str) -> None:
         """Mark a task as done and append it to history.
 
+        A row that already reached a terminal state is left alone, so a
+        worker that finishes after the user cancelled it does not flip the
+        cancelled row to DONE and append it to history twice.
+
         The task record stays in ``_tasks`` so callers can still look it
         up by id. Bulk removal happens in ``clear_history`` or targeted
         removal via ``remove_task``.
         """
         with self._lock:
             task = self._tasks.get(task_id)
-            if task:
+            if task and task.status not in TERMINAL_STATUSES:
                 task.status = TaskStatus.DONE
                 task.progress = 100
                 task.indeterminate = False
@@ -233,13 +240,16 @@ class TaskQueue:
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark a task as failed and append it to history.
 
+        Terminal rows are immutable here too: a cancelled task whose worker
+        then raises stays cancelled.
+
         The task record stays in ``_tasks`` so callers can still inspect
         its detail. Bulk removal happens in ``clear_history`` or
         targeted removal via ``remove_task``.
         """
         with self._lock:
             task = self._tasks.get(task_id)
-            if task:
+            if task and task.status not in TERMINAL_STATUSES:
                 task.status = TaskStatus.FAILED
                 task.detail = detail
                 task.completed_at = time.monotonic()
@@ -264,7 +274,7 @@ class TaskQueue:
             task = self._tasks.get(task_id)
             if not task:
                 return False
-            if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            if task.status in TERMINAL_STATUSES:
                 return False
             task.status = TaskStatus.CANCELLED
             task.completed_at = time.monotonic()

@@ -42,21 +42,14 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq cmake ninja-build build-essential ccache git curl tmux time ffmpeg
 
-# 2. Go toolchain for the engine helpers (llama-swap, gguf-parser).
-if [ ! -x /usr/local/go/bin/go ] && ! command -v go >/dev/null; then
-  log "installing Go"
-  curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | tar -C /usr/local -xz
-fi
-export PATH="/usr/local/go/bin:$PATH"
-
-# 3. uv.
+# 2. uv.
 if [ ! -x "$HOME/.local/bin/uv" ] && ! command -v uv >/dev/null; then
   log "installing uv"
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-# 4. Repo on the persistent volume.
+# 3. Repo on the persistent volume.
 if [ ! -d "$REPO_DIR/.git" ]; then
   log "cloning lilbee ($BRANCH)"
   git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git "$REPO_DIR"
@@ -68,6 +61,15 @@ else
   git -C "$REPO_DIR" checkout -q -B "$BRANCH" FETCH_HEAD
 fi
 cd "$REPO_DIR"
+
+# 4. Go toolchain for the engine helpers (llama-swap, gguf-parser), pinned in
+#    engine-versions.env. After the clone because that file carries the pin.
+if [ ! -x /usr/local/go/bin/go ] && ! command -v go >/dev/null; then
+  log "installing Go"
+  source engine-versions.env
+  curl -fsSL "https://go.dev/dl/go${ENGINE_GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+fi
+export PATH="/usr/local/go/bin:$PATH"
 
 # 5. Sync into a LOCAL-disk venv (network FS stale-handles + can't hardlink).
 log "uv sync -> $UV_PROJECT_ENVIRONMENT"

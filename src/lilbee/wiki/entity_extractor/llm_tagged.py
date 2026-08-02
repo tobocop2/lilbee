@@ -23,5 +23,8 @@ class LlmTaggedExtractor:
         self._provider = provider
         self._config = config
 
+    def available(self) -> bool:
+        return True
+
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         raise NotImplementedError("LlmTaggedExtractor.extract is not yet implemented")
