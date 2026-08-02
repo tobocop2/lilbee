@@ -349,19 +349,64 @@ and convert once at the provider boundary. They are network-bound, so the conver
 does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
 to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
-#### Multiprocess extract/embed (`ingest_processes`), and why it is off by default
+#### One worker process per GPU (`ingest_processes`)
 
-Base64 raised the one-core decode ceiling; worker **processes** are the other lever for
-it, spreading decode across cores the GIL otherwise serializes. It is **off by default**
-(`ingest_processes = 1`) because it only pays when one process cannot saturate the fleet.
-A small, fast embedder on several GPUs leaves headroom a second process fills — 0.6B on
-4xA40 goes 174 → 220 docs/sec from 1 → 2 processes. A large or GPU-bound embedder does
-not: the single parent that collects worker records over IPC and writes the one index is
-itself serial, so throughput ties single-process no matter the process count — 8B on
-4xH100 measures ~168 docs/sec at both 1 and 4 processes, GPUs only ~67% (idle capacity
-the extra processes cannot reach). That parent drain, not the process count, is the
-binding ceiling for large models. Set `ingest_processes = 0` to auto-size, or an explicit
-N to opt in.
+**The problem.** One process cannot feed several cards. The work is serialized through
+one plan stream, one collect and one writer, and that serial stage is the bottleneck:
+on 8xH100 a plain `lilbee sync` measured 152 docs/sec across eight cards against 162
+across four, so the eighth card made the run slower.
+
+**The shape.** A sync large enough to pay for them fans out into one worker process per
+visible card. Each worker is an ordinary `lilbee sync` over a deterministic slice of the
+corpus, with its own store; the parent supervises and folds the shards into one index.
+
+```mermaid
+flowchart LR
+    C[corpus] --> S{"sync<br/>more than one card?<br/>corpus big enough?"}
+    S -->|no| P[one process, in-line]
+    S -->|yes| W0["worker 0<br/>slice 0 · GPU 0"]
+    S --> W1["worker 1<br/>slice 1 · GPU 1"]
+    S --> W2["worker N<br/>slice N · GPU N"]
+    W0 --> M[merge]
+    W1 --> M
+    W2 --> M
+    M --> I[("one index<br/>indexes built once, corpus-wide")]
+```
+
+**What each worker owns.**
+
+| What it owns | Why |
+|---|---|
+| One card, masked at the process | Sizing and placement read the mask, so a worker plans against its own card, not the box. |
+| An engine slot, keyed by card | Without one, every worker scans the machine-wide slot, finds worker 0's fleet and adopts it: one card at 95% and seven at 0%, run completes, index correct, no error. Workers sharing a card share its slot deliberately. |
+| A data root and store | No shared write drain, which is what capped the previous mechanism. |
+| Its share of the CPU pools | Eight workers each sizing to a 160-core box put 4208 threads on it, load average 254, GPUs idle. |
+| A slice of the corpus | Hashed with blake2b, not `hash()`, so a resume deals the corpus the same way and re-embeds nothing. |
+| Its own log | The parent shows one progress bar instead of N log files. |
+
+**The setting.** `ingest_processes` counts worker processes. `0` (the default) is one per
+card, `1` keeps ingest in this process, and `N` pins the count with worker *i* on card
+*i % card_count*, so more workers than cards is expressible without a second fleet on a
+card.
+
+**Why this replaced the old mechanism.** It used to be a pool inside one process: workers
+produced records, a single parent collected them over IPC and wrote the one store. That
+parent drain was the binding ceiling for a large embedder, which is why the setting was
+off by default and measured 1.00x. Per-card workers remove the drain instead of widening
+it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
+fraction of 0.93.
+
+**Where the work is skipped.** Workers build no indexes and run no corpus-wide passes:
+the merge rebuilds ANN and BM25 over the whole corpus anyway, and per-shard builds
+measured a third of an 800k run's wall clock before being thrown away.
+
+**Two costs.** The merge copies rows rather than committing metadata, so a first full
+ingest writes the corpus twice; and the shard stores are kept as the resume state, so
+vectors live on disk twice until the merge becomes a metadata-only Lance commit.
+
+**When something breaks.** A worker that fails leaves its shard in place, stops the merge
+and names itself and its log, rather than producing an index that is silently short of
+rows.
 
 ---
 
