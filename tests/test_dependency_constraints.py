@@ -29,12 +29,14 @@ def _extra_requirement(extra: str, name: str) -> Requirement:
     return next(r for r in reqs if r.name == name)
 
 
-def test_litellm_extra_rejects_compiled_prerelease_line() -> None:
-    # litellm >=1.92 switched to compiled (maturin) builds that ship
-    # manylinux-only wheels; under --prerelease=allow an unbounded range
-    # resolves to 1.92.0rc1 and Windows installs fail building the sdist.
+def test_litellm_extra_stops_below_the_compiled_line() -> None:
+    # litellm 1.92 moved to a maturin build. PyPI publishes no macOS wheel for
+    # any release since, so a mac install compiles the Rust crate out of the
+    # sdist or fails without a toolchain. 1.93.1 added win_amd64 but no macOS,
+    # so the whole line stays out, prereleases included.
     req = _extra_requirement("litellm", "litellm")
-    assert not req.specifier.contains("1.92.0rc1", prereleases=True)
+    for version in ("1.92.0rc1", "1.92.0", "1.93.0", "1.93.1", "1.94.1"):
+        assert not req.specifier.contains(version, prereleases=True), version
 
 
 def test_litellm_extra_admits_locked_stable() -> None:

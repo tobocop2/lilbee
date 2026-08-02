@@ -151,7 +151,13 @@ def _lexical_rows(
 # The index type is carried by the lancedb IvfPq config at build time.
 _VECTOR_METRIC = "cosine"
 _ANN_NPROBES_FLOOR = 20
-_ANN_NPROBES_PARTITION_FRACTION = 0.05
+# Fraction of IVF partitions probed per query. 0.05 was the "fast" end of the
+# recall/latency curve and measurably cost recall at scale: on the 8.8M-passage
+# MS MARCO index it gave recall@100 of 67%, where probing more partitions
+# reached 87% (docs/benchmarks/retrieval-msmarco.md). 0.15 is the "balanced /
+# high-recall" range for IVF and recovers most of that gap; refine_factor below
+# still re-ranks the survivors against full vectors.
+_ANN_NPROBES_PARTITION_FRACTION = 0.15
 _ANN_REFINE_FACTOR = 10
 
 # Stat columns of ``_sources``; mirrors the field names in ``schema._sources_schema``

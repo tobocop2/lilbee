@@ -121,6 +121,33 @@ class TestUserLocks:
             proc.kill()
             proc.wait()
 
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
+    def test_a_forked_child_does_not_reap_its_parents_membership(self, tmp_path: Path):
+        """A child inheriting a hold must not release or unlink the parent's lock.
+
+        Before filelock 3.30 the inherited instance released the parent's flock
+        through the shared file description and deleted the file, so the child
+        read as last out and would stop an engine its parent was still serving.
+        """
+        hold = hold_user_lock(tmp_path)
+        read_fd, write_fd = os.pipe()
+        if (pid := os.fork()) == 0:
+            os.close(read_fd)
+            verdict = b"E"
+            try:
+                verdict = b"1" if hold.release_and_check_last() else b"0"
+            finally:
+                os.write(write_fd, verdict)
+                os._exit(0)
+        os.close(write_fd)
+        try:
+            assert os.read(read_fd, 1) == b"0"  # the parent is still a live user
+        finally:
+            os.close(read_fd)
+            os.waitpid(pid, 0)
+        assert hold.path.exists()
+        assert hold.release_and_check_last() is True
+
     def test_two_holds_in_one_process_share_the_lock(self, tmp_path: Path):
         """Two providers in one process hold the same pid-named lock file.
 
