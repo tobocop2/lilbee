@@ -165,8 +165,11 @@ def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | N
     """Encode *table* into *sink* as parquet, one row group per batch.
 
     Driving a ParquetWriter row group by row group rather than calling
-    write_table is what gives the export a boundary to stop on; the two produce
-    byte-identical output, so the only cost is the loop.
+    write_table is what gives the export a boundary to stop on. For a table with
+    rows the two produce byte-identical output, so the only cost is the loop. A
+    table with no rows writes no row groups and its footer differs, which the
+    export path cannot reach because the build refuses an empty dataset before
+    it gets here; the file still reads back as zero rows either way.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq

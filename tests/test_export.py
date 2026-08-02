@@ -572,6 +572,16 @@ class TestWriteCancellation:
         assert path.exists()
         assert len(load_page_dataset(path, fmt)) == 60_000
 
+    def test_an_empty_table_still_writes_a_readable_file(self, tmp_path):
+        """The row-group loop does not run with no rows, so the footer differs
+        from write_table. The export path cannot reach this (the build refuses
+        an empty dataset first), but the file must still be valid."""
+        empty = pa.Table.from_pylist([], schema=self._big_table(1).schema)
+        path = tmp_path / "empty.parquet"
+        write_dataset(empty, path, DatasetFormat.PARQUET, None)
+        assert path.exists()
+        assert len(load_page_dataset(path, DatasetFormat.PARQUET)) == 0
+
     def test_the_parquet_writer_output_is_unchanged_by_the_batching(self, tmp_path):
         """The stop boundary comes from driving ParquetWriter per row group
         rather than calling write_table; the bytes must not move."""
