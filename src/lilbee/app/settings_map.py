@@ -875,6 +875,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         secret=True,
         help_text="DeepSeek API key (enables frontier models in chat picker)",
     ),
+    "llm_api_key": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.API_KEYS,
+        secret=True,
+        help_text="API key for the remote OpenAI-compatible endpoint (llm_provider = remote)",
+    ),
     "hf_token": SettingDef(
         str,
         nullable=False,

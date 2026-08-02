@@ -735,3 +735,37 @@ class TestConcurrentConfigWrites:
             held.release()
         assert settings.get(tmp_path, "key") == "value"
         assert "Timed out waiting" in caplog.text
+
+
+class TestCredentialsAreMaskable:
+    """Every credential must reach the settings surface marked as one.
+
+    ``llm_api_key`` was writable but absent from SETTINGS_MAP, so the remote
+    provider's key could not be set from the TUI at all, and nothing marked it
+    for masking.
+    """
+
+    @staticmethod
+    def _write_only_fields() -> set[str]:
+        from lilbee.core.config.model import Config
+
+        found = set()
+        for name, info in Config.model_fields.items():
+            extra = info.json_schema_extra or {}
+            if isinstance(extra, dict) and extra.get("write_only"):
+                found.add(name)
+        return found
+
+    def test_every_write_only_field_is_editable(self):
+        missing = self._write_only_fields() - set(SETTINGS_MAP)
+        assert not missing, f"credentials absent from the settings surface: {sorted(missing)}"
+
+    def test_every_write_only_field_is_marked_secret(self):
+        unmarked = {f for f in self._write_only_fields() if not SETTINGS_MAP[f].secret}
+        assert not unmarked, f"credentials that would render in the clear: {sorted(unmarked)}"
+
+    def test_no_credential_is_exposed_by_the_public_config_api(self):
+        from lilbee.config_meta import PUBLIC_CONFIG_FIELDS
+
+        leaked = self._write_only_fields() & set(PUBLIC_CONFIG_FIELDS)
+        assert not leaked, f"credentials returned by GET /api/config: {sorted(leaked)}"
