@@ -26,7 +26,7 @@ from rich.progress import (
 )
 
 from lilbee.app.services import get_services
-from lilbee.core.config import active_config
+from lilbee.core.config import Config, active_config
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_document,
@@ -660,6 +660,10 @@ class _StreamedPlan:
     # Processed files' content hashes, for the skip markers written after the run.
     pending_hashes: dict[str, str] = field(default_factory=dict)
     relocated: list[str] = field(default_factory=list)
+    # Old keys of relocated sources. The wiki index is keyed by source name, so
+    # without these a move leaves the old name in it forever: its mentions
+    # double-count and its dead chunk refs occupy the per-subject cap.
+    relocated_from: list[str] = field(default_factory=list)
     unchanged: int = 0
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
@@ -702,6 +706,7 @@ async def _absorb_plan_batch(
             _retry_after_lock_timeout, lambda: store.relocate_sources(relocations)
         )
         entries, relocated = _apply_moves(detected, entries, plan.added)
+        state.relocated_from.extend(m.old for m in detected)
         for name in relocated:
             state.added.pop(name, None)
         state.relocated.extend(relocated)
@@ -898,15 +903,45 @@ async def _run_post_ingest_passes(
         store.ensure_vector_index()
         store.optimize_sources()
         await _rebuild_concept_clusters()
-        # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
-        # post-ingest hook stays function-local at this boundary.
-        from lilbee.wiki.ingest import incremental_update
-
-        await incremental_update(touched)
+        await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
 
     await to_ingest_thread(ensure_entities, cancel)
+
+
+async def _update_wiki(changed_sources: set[str], config: Config) -> None:
+    """Refresh the wiki index, and regenerate pages when auto-update is on.
+
+    The index refresh runs whenever the wiki is enabled, because it spends no
+    LLM call and it is what lets the browse tree list a page the moment its
+    document lands. Regeneration is the expensive half and stays behind
+    wiki_auto_update.
+
+    Best effort: the ingest itself already succeeded and `lilbee wiki update`
+    re-runs the regeneration, so a wiki failure must not skip the post-ingest
+    entity pass or the reconciliation guard.
+    """
+    if not config.wiki:
+        return
+    # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
+    # post-ingest hook stays function-local at this boundary.
+    from lilbee.wiki.ingest import incremental_update
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    try:
+        await to_ingest_thread(
+            refresh_stub_index, get_services().store, config, sources=changed_sources
+        )
+    except Exception:
+        log.warning("Wiki index refresh failed after sync", exc_info=True)
+
+    if not config.wiki_auto_update:
+        return
+    try:
+        await incremental_update(changed_sources, config)
+    except Exception:
+        log.warning("Wiki auto-update failed after sync", exc_info=True)
 
 
 def _worker_failure_message(failures: list[ShardDone], specs: list[ShardSpec]) -> str:
@@ -1097,7 +1132,9 @@ async def sync(
         await _run_post_ingest_passes(
             _store,
             indexed_anything=bool(state.planned or relocated),
-            touched=set(added) | set(updated) | set(relocated),
+            # The old names of relocated sources ride along so the wiki index
+            # subtracts them in the same pass that merges their new ones.
+            touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),
             cancel=cancel,
         )
 

@@ -544,13 +544,16 @@ See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the full
 ## Wiki Conventions
 
 lilbee's wiki layer is modelled after Karpathy's LLM Wiki: concept and
-entity pages that compound across sources rather than one page per
-document. The layout under `$data_root/$wiki_dir/` is:
+entity pages rather than one page per document, each written and cited
+from the source that mentions it most, with coverage across sources
+coming from synthesis pages and the `[[wiki link]]` graph. The layout
+under `$data_root/$wiki_dir/` is:
 
 ```
 concepts/    one page per LLM-curated concept from the source (e.g. braking-systems.md)
 entities/    one page per proper-noun entity (e.g. henry-ford.md)
-summaries/   legacy per-source pages (still supported, not the default)
+summaries/   accepted drafts with no published counterpart and no recorded
+             origin type (plus any pre-existing legacy per-source pages)
 synthesis/   cross-source pages produced by `wiki synthesize`
 drafts/      low-faithfulness drafts, drift drafts, and PENDING markers
              (parse-failure or slug-collision) surfaced via `wiki drafts list`
@@ -563,7 +566,7 @@ log.md       append-only audit trail (## [YYYY-MM-DD HH:MM] op | details)
 
 **Slugs** are lowercase, hyphen-separated filenames that also double as
 the `[[link]]` target (`braking-systems`, not `Braking Systems`). The
-slug generator lives at `wiki/shared.py:make_slug`.
+slug generator lives at `core/text.py:make_slug`.
 
 **Page lifecycle**. `lilbee wiki build` runs the Phase D migration once
 (archives pre-Phase-D noun-chunk concept pages and unwraps stale
@@ -573,20 +576,23 @@ and then per source issues one batched LLM call that both identifies
 3–5 concepts worth a wiki page AND writes a section for each identified
 concept plus each extracted entity. Sections are split, citation-verified
 per section against the shared chunk pool, embedding-faithfulness scored
-(`wiki/gen.py:_check_faithfulness`, cosine of body vs mean chunk vector,
+(`wiki/quality.py:check_faithfulness`, cosine of body vs mean chunk vector,
 threshold `cfg.wiki_embedding_faithfulness_threshold`), and written to
 `concepts/` or `entities/`. Sections that fail to parse become PENDING
 markers in `drafts/` that the user resolves via `wiki drafts accept/reject`.
-`lilbee sync` runs `_incremental_wiki_update` afterward with
-`extract_concepts=False` so incremental re-ingest never churns concept
-slugs; the cap is `cfg.wiki_ingest_update_cap` (default 20).
+`lilbee sync` runs `lilbee.wiki.ingest.incremental_update` afterward only when
+`cfg.wiki_auto_update` is on, with `extract_concepts=False` so incremental
+re-ingest never churns concept slugs; the cap is
+`cfg.wiki_ingest_update_cap` (default 20 touched wiki pages).
 
-**Retrieval inside wiki/gen.py**. Each page is grounded in the top
-`cfg.wiki_concept_max_chunks_per_page` chunks returned by the store's
-hybrid search, optionally reordered by the native GGUF reranker when
-`cfg.reranker_model` is set. Every path respects
-`cfg.diversity_max_per_source` so one loud document can't monopolize a
-topic page.
+**Retrieval inside wiki generation**. There is none: nothing in the wiki
+path calls search. Extracted entities are assigned to the source that
+mentions them most (their `chunk_refs`), and the batched call for that
+source receives the source's own chunks from
+`store.get_chunks_by_source`. Synthesis pages take the chunks of every
+source in the cluster. Either way `wiki/page.py:truncate_chunks_to_budget`
+drops trailing chunks so the prompt plus its output cap fits the context
+window. No hybrid search, reranker, or diversity cap is involved.
 
 **`[[wiki links]]`**. After each build, `wiki/links.py:rewrite_wiki_links`
 rewrites plain-text slug surface forms to Obsidian `[[slug]]` links
@@ -597,21 +603,21 @@ with zero inbound `[[links]]`.
 
 **Adding a new entity-extraction strategy**. Implement
 `EntityExtractor` from `wiki/entity_extractor/base.py`, add a new
-`WikiEntityMode` enum value in `config.py`, wire it into
+`WikiEntityMode` enum value in `core/config/enums.py`, wire it into
 `wiki/entity_extractor/factory.py:_EXTRACTOR_BY_MODE`, and extend the
-`wiki_entity_mode` entry in `cli/settings_map.py` (its `choices` field
+`wiki_entity_mode` entry in `app/settings_map.py` (its `choices` field
 reads from the enum, so no update needed there).
 
 **Adding a new config knob**. All wiki settings live under the `Wiki`
-group in `config.py` and `cli/settings_map.py`. Prefix with `wiki_`
+group in `core/config/model.py` and `app/settings_map.py`. Prefix with `wiki_`
 (for module-level behaviour) or `wiki_concept_` / `wiki_entity_`
 (for strategy-scoped knobs). Use `ConfigField(writable=True)` so the
-setting appears in `/settings`, the HTTP `/set` route, and
-`LILBEE_*` env vars.
+setting appears in `/settings`, `PATCH /api/config`, the MCP
+`settings_set` tool, and `LILBEE_*` env vars.
 
 **Writing to log.md**. Use `append_wiki_log(action, details)` from
-`wiki/index.py` with one of the `WIKI_LOG_ACTION_*` constants in
-`wiki/shared.py` (`BUILD`, `INGEST`, `LINT`, `GENERATED`).
+`wiki/index.py` with a `WikiLogAction` member from `wiki/shared.py`
+(`GENERATED`, `BUILD`, `SYNTHESIZE`, `INGEST`, `LINT`, `PRUNE`).
 Don't hand-roll timestamps; the helper writes
 `## [YYYY-MM-DD HH:MM] action | details` so `grep '## \['` still
 surfaces every entry.

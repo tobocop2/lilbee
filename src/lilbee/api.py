@@ -36,7 +36,7 @@ from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.services import build_services, services_scope
 from lilbee.core.config import Config, cfg, config_scope
 from lilbee.core.system import canonical_data_root
-from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, SearchScope, scope_to_chunk_type
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
@@ -57,6 +57,11 @@ class Lilbee:
         bee = Lilbee("./docs")
         bee.sync()
         results = bee.search("authentication")
+
+    Retrieval only. Wiki building and browsing stay off this surface by design:
+    they are interactive, long-running operations that belong to the CLI, TUI,
+    HTTP API, and MCP tools. ``search(scope=...)`` is the library's whole wiki
+    story, since scoping a query is retrieval.
     """
 
     def __init__(
@@ -128,10 +133,17 @@ class Lilbee:
         with config_scope(self._config), services_scope(self._services):
             return asyncio.run(_sync(quiet=quiet))
 
-    def search(self, query: str, *, top_k: int = 0) -> list[SearchChunk]:
-        """Search indexed documents. Returns ranked chunks."""
+    def search(
+        self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
+    ) -> list[SearchChunk]:
+        """Search indexed documents. Returns ranked chunks.
+
+        ``scope`` selects raw document chunks, generated wiki chunks, or both.
+        """
         with config_scope(self._config), services_scope(self._services):
-            return self._services.searcher.search(query, top_k=top_k)
+            return self._services.searcher.search(
+                query, top_k=top_k, chunk_type=scope_to_chunk_type(scope)
+            )
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.

@@ -123,13 +123,14 @@ def agent_recall_predicate(owner: str) -> str:
 def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     """SQL predicate that matches ``chunk_type`` while tolerating NULL rows.
 
-    Rows written before ``chunk_type`` was populated land as NULL. They
-    are semantically raw, so a ``'raw'`` filter still includes them; a
-    ``'wiki'`` filter excludes them.
+    ``'raw'`` means document content, so it matches extracted table rows as
+    well as raw ones, and the NULL rows written before the column existed.
+    Scoping a search to the user's documents must not silently drop their
+    tables. A ``'wiki'`` filter matches only generated pages.
     """
     escaped = escape_sql_string(chunk_type)
     if chunk_type == ChunkType.RAW:
-        return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
+        return f"(chunk_type IN ('{ChunkType.RAW}', '{ChunkType.TABLE}') OR chunk_type IS NULL)"
     return f"chunk_type = '{escaped}'"
 
 

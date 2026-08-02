@@ -8,6 +8,7 @@ kwarg, and PENDING marker replacement on successful regen.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,20 +16,25 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
-from lilbee.wiki.batch import chunks_for_source
+from lilbee.wiki.batch import match_label
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
 from lilbee.wiki.generation import _all_sources_in_scope, build_wiki
-from lilbee.wiki.persistence import delete_pending_marker_if_present
+from lilbee.wiki.page import WIKI_DEFAULT_SEED
+from lilbee.wiki.persistence import delete_pending_marker_if_present, divert_to_drafts
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import (
+    _MAX_REUSE_CONCEPT_LABELS,
+    _existing_concept_labels,
+    _parse_declared_concepts,
     _prefix_heading,
     _split_batched_output,
     generate_source_batch,
@@ -78,12 +84,14 @@ def stub_embedder(monkeypatch):
     return svc
 
 
-def _mock_batch_provider(text: str) -> MagicMock:
+def _mock_batch_provider(text: str, *, truncated: bool = False) -> MagicMock:
     from lilbee.providers.base import ChatResult, FinishReason
 
     provider = MagicMock()
     provider.chat.return_value = ChatResult(
-        text=text, tool_calls=(), finish_reason=FinishReason.STOP
+        text=text,
+        tool_calls=(),
+        finish_reason=FinishReason.LENGTH if truncated else FinishReason.STOP,
     )
     provider.get_capabilities.return_value = []
     return provider
@@ -112,6 +120,11 @@ def _section(name: str, body: str | None = None) -> str:
     return f"## {name}\n\n{body}"
 
 
+def _declare(*concepts: str) -> str:
+    """Render the ``CONCEPTS:`` declaration line the batched prompt requires."""
+    return "CONCEPTS: " + "; ".join(concepts) + "\n\n"
+
+
 class TestSplitBatchedOutput:
     def test_matches_known_entities_case_insensitive(self):
         text = f"{_section('Henry Ford')}{_section('Ford Motor')}"
@@ -125,21 +138,34 @@ class TestSplitBatchedOutput:
         parsed = _split_batched_output(text, {"Henry Ford"})
         assert "Henry Ford" in parsed
 
-    def test_bold_line_header(self):
-        text = "**Henry Ford**\n\n> fact body.[^src1]\n"
+    def test_bold_line_does_not_split_a_section(self):
+        """A mid-body ``**emphasis**`` line is body text, not a section boundary."""
+        text = "## Henry Ford\n\n**Founder**\n\n> fact body.[^src1]\n"
         parsed = _split_batched_output(text, {"Henry Ford"})
-        assert "Henry Ford" in parsed
+        assert set(parsed) == {"Henry Ford"}
+        assert "**Founder**" in parsed["Henry Ford"][1]
 
     def test_unmatched_entity_header_dropped(self):
         text = _section("Unknown Widget")
         parsed = _split_batched_output(text, {"Henry Ford"})
         assert parsed == {}
 
-    def test_concept_tagged_when_concepts_expected(self):
+    def test_undeclared_concept_header_dropped(self):
+        """A header matching no declared concept is noise, not a concept page."""
+        text = _section("Key Takeaways")
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Brake System"})
+        assert parsed == {}
+
+    def test_declared_concept_header_is_tagged_concept(self):
         text = _section("Brake System")
-        parsed = _split_batched_output(text, set(), expected_concept_labels=set())
-        assert "Brake System" in parsed
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Brake System"})
         assert parsed["Brake System"][0] is EntityKind.CONCEPT
+
+    def test_heading_is_rewritten_to_the_matched_label(self):
+        """A header that matched only as a substring gets the full label as its H1."""
+        text = "## Ford\n\n> Henry Ford founded Ford Motor.[^src1]\n"
+        parsed = _split_batched_output(text, {"Henry Ford"})
+        assert parsed["Henry Ford"][1].startswith("# Henry Ford\n\n")
 
     def test_empty_body_section_is_dropped(self):
         text = "## Henry Ford\n\n## Ford Motor\n\n> body.[^src1]\n"
@@ -148,41 +174,156 @@ class TestSplitBatchedOutput:
         assert "Ford Motor" in parsed
         assert "Henry Ford" not in parsed
 
+    def test_a_declaration_rendered_as_a_heading_opens_no_section(self):
+        """``## CONCEPTS: a; b`` is the declaration line, not a section header:
+        its text substring-matches the labels it declares."""
+        text = "## CONCEPTS: Assembly Line; Model T\n\nIntro prose about the plant.\n"
+        parsed = _split_batched_output(
+            text, set(), expected_concept_labels={"Assembly Line", "Model T"}
+        )
+        assert parsed == {}
+
+    def test_a_real_section_after_the_declaration_still_parses(self):
+        text = "## CONCEPTS: Assembly Line\n\nIntro prose.\n\n" + _section("Assembly Line")
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Assembly Line"})
+        assert set(parsed) == {"Assembly Line"}
+        assert "Intro prose" not in parsed["Assembly Line"][1]
+
+    def test_a_body_line_starting_with_concepts_stays_in_its_section(self):
+        """The declaration lives in the preamble. A section line that opens with
+        "Concepts:" is prose, and deleting it would drop the claim it cites."""
+        prose = "Concepts: combustion, compression and timing all interact here.[^src1]"
+        text = _declare("Assembly Line") + _section("Assembly Line", f"{prose}\n")
+        parsed = _split_batched_output(text, set(), expected_concept_labels={"Assembly Line"})
+        assert prose in parsed["Assembly Line"][1]
+
+    @pytest.mark.parametrize("entity_first", [True, False], ids=["entity-first", "concept-first"])
+    def test_an_exact_concept_header_beats_an_entity_substring(self, entity_first: bool):
+        """An entity label contained in a declared concept ("Assembly" vs "Assembly
+        Line") used to steal the concept's section, dropping both pages' real body."""
+        sections = [_section("Assembly"), _section("Assembly Line", "> line body.[^src1]\n")]
+        if not entity_first:
+            sections.reverse()
+        text = _declare("Assembly Line") + "".join(sections)
+        parsed = _split_batched_output(
+            text, {"Assembly"}, expected_concept_labels={"Assembly Line"}
+        )
+        assert parsed["Assembly Line"][0] is EntityKind.CONCEPT
+        assert "line body" in parsed["Assembly Line"][1]
+        assert parsed["Assembly"][0] is EntityKind.ENTITY
+
     def test_no_headers_returns_empty_dict(self):
-        """A response that contains no H1/H2/bold headers recovers nothing."""
+        """A response that contains no H1/H2 headers recovers nothing."""
         text = "just a paragraph with no headings at all.\n\n> some body text\n"
         parsed = _split_batched_output(text, {"Henry Ford"})
         assert parsed == {}
 
-    def test_bold_header_matches_expected_entity(self):
-        """Bold-line header fallback (``**Name**``) hits the boldname group."""
-        text = "**Henry Ford**\n\n> Henry Ford founded the company.\n"
+    @pytest.mark.parametrize("divider", ["##", "# ", "##\t"])
+    def test_a_header_line_with_no_name_opens_no_section(self, divider: str):
+        """A bare header line is a malformed divider: the prose under it stays in
+        the section it interrupts instead of becoming that section's header."""
+        text = (
+            "## Henry Ford\n\n> Henry Ford founded Ford Motor Company.[^src1]\n\n"
+            f"{divider}\nHenry Ford also built tractors.\n"
+        )
         parsed = _split_batched_output(text, {"Henry Ford"})
-        assert "Henry Ford" in parsed
-        kind, _body = parsed["Henry Ford"]
-        assert kind is EntityKind.ENTITY
+        assert set(parsed) == {"Henry Ford"}
+        body = parsed["Henry Ford"][1]
+        assert "founded Ford Motor Company" in body
+        assert "also built tractors" in body
+
+    def test_a_second_header_binding_the_same_label_is_dropped(self, caplog):
+        """Two headers for one label must not let the later body replace the first."""
+        text = "## Henry Ford\n\n> first body.[^src1]\n\n## Ford\n\n> second body.[^src2]\n"
+        with caplog.at_level(logging.INFO, logger="lilbee.wiki.synthesis"):
+            parsed = _split_batched_output(text, {"Henry Ford"})
+        assert set(parsed) == {"Henry Ford"}
+        assert "first body" in parsed["Henry Ford"][1]
+        assert "second body" not in parsed["Henry Ford"][1]
+        assert any("already has a section" in r.message for r in caplog.records)
+
+
+class TestParseDeclaredConcepts:
+    def test_reads_semicolon_separated_labels(self):
+        text = _declare("Brake System", "Assembly Line") + _section("Brake System")
+        assert _parse_declared_concepts(text) == {"Brake System", "Assembly Line"}
+
+    def test_absent_declaration_curates_nothing(self):
+        assert _parse_declared_concepts(_section("Brake System")) == set()
+
+    def test_a_body_line_starting_with_concepts_is_not_a_declaration(self):
+        """Adopting section prose as the declaration makes any noise header that
+        substring-matches the sentence publish as a concept page named after it."""
+        text = _section("Henry Ford", "Concepts: combustion, compression and timing.\n")
+        assert _parse_declared_concepts(text) == set()
+
+    def test_blank_entries_are_dropped(self):
+        assert _parse_declared_concepts("CONCEPTS: Brakes; ;  \n") == {"Brakes"}
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "**CONCEPTS:** Brake System; Assembly Line",
+            "**CONCEPTS: Brake System; Assembly Line**",
+            "`CONCEPTS: Brake System; Assembly Line`",
+            "## CONCEPTS: Brake System; Assembly Line",
+            "> CONCEPTS:  Brake System ; Assembly Line ",
+            "concepts: Brake System; Assembly Line",
+        ],
+    )
+    def test_markdown_decoration_around_the_declaration_is_tolerated(self, line: str):
+        """Instruct models bold, quote and fence the label they are told to emit."""
+        assert _parse_declared_concepts(f"{line}\n\n## Brake System\n\nbody\n") == {
+            "Brake System",
+            "Assembly Line",
+        }
+
+
+class TestMatchLabel:
+    """Overlapping labels must bind the same way on every run."""
+
+    def test_exact_match_wins_over_a_longer_overlap(self):
+        matched = match_label("ford", [({"Henry Ford", "Ford"}, EntityKind.ENTITY)])
+        assert matched == (EntityKind.ENTITY, "Ford")
+
+    def test_longest_overlapping_label_wins(self):
+        matched = match_label("henry ford jr.", [({"Ford", "Henry Ford"}, EntityKind.ENTITY)])
+        assert matched == (EntityKind.ENTITY, "Henry Ford")
+
+    def test_header_that_is_a_substring_of_a_label_still_matches(self):
+        matched = match_label("ford", [({"Henry Ford"}, EntityKind.ENTITY)])
+        assert matched == (EntityKind.ENTITY, "Henry Ford")
+
+    def test_empty_label_never_matches(self):
+        assert match_label("ford", [({""}, EntityKind.ENTITY)]) is None
+
+    def test_no_overlap_returns_none(self):
+        assert match_label("chevrolet", [({"Henry Ford"}, EntityKind.ENTITY)]) is None
+
+    def test_an_exact_match_in_a_later_set_beats_an_earlier_substring(self):
+        matched = match_label(
+            "assembly line",
+            [({"Assembly"}, EntityKind.ENTITY), ({"Assembly Line"}, EntityKind.CONCEPT)],
+        )
+        assert matched == (EntityKind.CONCEPT, "Assembly Line")
+
+    def test_the_earlier_set_wins_when_both_only_overlap(self):
+        matched = match_label(
+            "assembly line (final)",
+            [({"Assembly"}, EntityKind.ENTITY), ({"Assembly Line"}, EntityKind.CONCEPT)],
+        )
+        assert matched == (EntityKind.ENTITY, "Assembly")
 
 
 class TestPrefixHeading:
-    def test_adds_h1_when_missing(self):
+    def test_builds_the_h1_from_the_label(self):
         out = _prefix_heading("Henry Ford", "body text")
         assert out.startswith("# Henry Ford\n\n")
         assert "body text" in out
 
-    def test_preserves_existing_h1(self):
-        # Body already starts with an H1: we keep it verbatim.
-        already = "# Henry Ford\n\nbody"
-        assert _prefix_heading("Henry Ford", already) == already
-
-
-class TestChunksForSource:
-    def test_filters_chunks_by_source(self):
-        c1 = _chunk("a.md", 0, "a0")
-        c2 = _chunk("b.md", 0, "b0")
-        c3 = _chunk("a.md", 1, "a1")
-        filtered = chunks_for_source([c1, c2, c3], "a.md")
-        assert [c.chunk_index for c in filtered] == [0, 1]
-        assert all(c.source == "a.md" for c in filtered)
+    def test_structural_characters_are_stripped_from_the_heading(self):
+        out = _prefix_heading("| | designer", "body")
+        assert out.startswith("# designer\n\n")
 
 
 class TestDeletePendingMarkerIfPresent:
@@ -231,7 +372,7 @@ class TestGenerateSourceBatchEdgeCases:
         assert pages == []
         provider.chat.assert_not_called()
 
-    def test_provider_exception_returns_empty_list(self, stub_embedder, caplog):
+    def test_provider_exception_marks_every_entity_pending(self, stub_embedder, caplog):
         chunks = [_chunk("s.txt", 0, "body")]
         provider = MagicMock()
         provider.chat.side_effect = RuntimeError("LLM down")
@@ -249,8 +390,10 @@ class TestGenerateSourceBatchEdgeCases:
         )
         assert pages == []
         assert any("Batched LLM call failed" in r.message for r in caplog.records)
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry.md"
+        assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
 
-    def test_empty_response_returns_empty_list(self, stub_embedder, caplog):
+    def test_empty_response_marks_every_entity_pending(self, stub_embedder, caplog):
         chunks = [_chunk("s.txt", 0, "body")]
         # strip_reasoning + .strip() produces an empty string.
         provider = _mock_batch_provider("   \n  \n")
@@ -267,6 +410,138 @@ class TestGenerateSourceBatchEdgeCases:
         )
         assert pages == []
         assert any("empty response" in r.message for r in caplog.records)
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry.md"
+        assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
+    def test_truncated_citation_block_publishes_nothing(self, stub_embedder):
+        """A response cut at max_tokens loses the shared citation block, so every
+        section it carried becomes a PENDING marker rather than an uncited page."""
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        entities = [
+            _entity("henry-ford", "Henry Ford", ["s.txt"]),
+            _entity("ford-motor", "Ford Motor", ["s.txt"]),
+        ]
+        text = _section("Henry Ford") + _section("Ford Motor") + "\n\n---\n<!-- citations (auto-"
+        provider = _mock_batch_provider(text, truncated=True)
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=entities,
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        for slug in ("henry-ford", "ford-motor"):
+            marker = wiki_root / WikiSubdir.DRAFTS / f"{slug}.md"
+            assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+        assert not (wiki_root / WikiSubdir.ENTITIES).exists()
+
+    def test_section_failing_the_citation_gate_leaves_a_pending_marker(self, stub_embedder):
+        """A parsed section dropped by a downstream gate is not silently lost."""
+        chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
+        # Section body cites nothing, so finalize_section drops it.
+        text = _section("Henry Ford", "Henry Ford ran the company.\n")
+        provider = _mock_batch_provider(text)
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry-ford.md"
+        assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
+    def test_a_marker_only_inside_a_fence_fails_the_citation_gate(self, stub_embedder):
+        """The parser and the scrubber read a fenced marker as example syntax; the
+        gate has to agree, or the section publishes with no cited prose and an
+        orphan footnote definition."""
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        body = "Henry Ford ran the company.\n\n```markdown\nUse [^src1] markers\n```\n"
+        text = _section("Henry Ford", body) + _valid_citation_block()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry-ford.md"
+        assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
+
+
+class TestSectionFaithfulnessScope:
+    """Which chunks a batched section is scored against."""
+
+    @staticmethod
+    def _record_scored_chunks(monkeypatch) -> list[list[int]]:
+        """Capture the chunk indices handed to each faithfulness check."""
+        scored: list[list[int]] = []
+
+        def _record(
+            chunks: list[SearchChunk], body: str, label: str, config: object = None
+        ) -> float:
+            scored.append([c.chunk_index for c in chunks])
+            return 1.0
+
+        monkeypatch.setattr("lilbee.wiki.batch.check_faithfulness", _record)
+        return scored
+
+    def test_entity_section_scores_against_its_own_chunk_refs(self, stub_embedder, monkeypatch):
+        """A niche section is compared to its entity's chunks, not the source centroid."""
+        chunks = [_chunk("s.txt", i, f"{_EXCERPT} passage {i}") for i in range(3)]
+        entity = ExtractedEntity(
+            slug="henry-ford",
+            kind=EntityKind.ENTITY,
+            label="Henry Ford",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef(source="s.txt", chunk_index=1),),
+        )
+        scored = self._record_scored_chunks(monkeypatch)
+        provider = _mock_batch_provider(_section("Henry Ford") + _valid_citation_block())
+
+        generate_source_batch(
+            source="s.txt",
+            entities=[entity],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert scored == [[1]]
+
+    def test_concept_section_scores_against_the_whole_source(self, stub_embedder, monkeypatch):
+        """Concepts have no extraction refs, so they keep the full chunk pool."""
+        chunks = [_chunk("s.txt", i, f"{_EXCERPT} passage {i}") for i in range(3)]
+        scored = self._record_scored_chunks(monkeypatch)
+        text = _declare("Assembly Line") + _section("Assembly Line") + _valid_citation_block()
+        provider = _mock_batch_provider(text)
+
+        generate_source_batch(
+            source="s.txt",
+            entities=[],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        assert scored == [[0, 1, 2]]
 
 
 class TestFinalizeSectionGuards:
@@ -279,7 +554,11 @@ class TestFinalizeSectionGuards:
         # make_slug, this yields the empty string and the section is
         # dropped with an INFO log. The downstream faithfulness /
         # citation checks never run.
-        text = "## ---\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
+        text = (
+            _declare("---")
+            + "## ---\n\n> Henry Ford founded Ford Motor. [^src1]\n"
+            + _valid_citation_block()
+        )
         provider = _mock_batch_provider(text)
         caplog.set_level("INFO", logger="lilbee.wiki.batch")
         # Concept-curation mode so the unmatched header is tagged as a
@@ -331,12 +610,284 @@ class TestFinalizeSectionGuards:
         assert any("sending to drafts" in r.message for r in caplog.records)
 
 
+class TestBatchSectionCitationRendering:
+    """A section publishes only the footnotes that verified."""
+
+    def test_a_dropped_citation_leaves_no_marker_in_the_body(self, stub_embedder):
+        text = _section(
+            "Henry Ford", f"> {_EXCERPT}[^src1]\n\n> Ford built a monorail.[^src2]\n"
+        ) + (
+            "\n\n---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: s.txt, excerpt: "{_EXCERPT}"\n'
+            '[^src2]: s.txt, excerpt: "Ford built a monorail."\n'
+        )
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        body = pages[0].read_text()
+        assert "[^src1]" in body
+        assert "[^src2]" not in body
+
+
+class TestBuildStatsForABatch:
+    """A batch run reports what its gates did, so a regression is measurable."""
+
+    def test_published_sections_count_with_their_verified_citations(self, stub_embedder):
+        chunks = [_chunk("s.txt", 0, _EXCERPT)]
+        entities = [
+            _entity("henry-ford", "Henry Ford", ["s.txt"]),
+            _entity("ford-motor", "Ford Motor", ["s.txt"]),
+        ]
+        text = (
+            _section("Henry Ford", f"> {_EXCERPT}[^src1]\n")
+            + _section("Ford Motor", f"> {_EXCERPT}[^src1]\n")
+            + _valid_citation_block()
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=entities,
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert len(pages) == 2
+        assert stats.pages_generated == 2
+        assert stats.pages_published == 2
+        assert stats.pages_drafted == 0
+        assert stats.pending_markers == 0
+        assert stats.publish_rate == 1.0
+        assert stats.verified_by_page == {
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/henry-ford.md": 1,
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/ford-motor.md": 1,
+        }
+        assert stats.citation_verify_rate == 1.0
+
+    def test_each_section_claims_only_the_citations_it_references(self, stub_embedder):
+        """The response's trailing citation block lands in the last section's body.
+        Its definitions must not make that page claim every citation in the run."""
+        second_excerpt = "The Model T sold widely."
+        chunks = [_chunk("s.txt", 0, _EXCERPT), _chunk("s.txt", 1, second_excerpt)]
+        text = (
+            _section("Henry Ford", f"> {_EXCERPT}[^src1]\n")
+            + _section("Model T", f"> {second_excerpt}[^src2]\n")
+            + "\n\n---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: s.txt, excerpt: "{_EXCERPT}"\n'
+            f'[^src2]: s.txt, excerpt: "{second_excerpt}"\n'
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("model-t", "Model T", ["s.txt"]),
+            ],
+            chunks=chunks,
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        last_page = next(page for page in pages if page.stem == "model-t")
+        rendered = last_page.read_text()
+        assert "[^src2]:" in rendered
+        assert "[^src1]:" not in rendered
+        assert stats.verified_by_page == {
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/henry-ford.md": 1,
+            f"{cfg.wiki_dir}/{WikiSubdir.ENTITIES}/model-t.md": 1,
+        }
+
+    def test_a_section_below_the_faithfulness_threshold_counts_as_drafted(
+        self, stub_embedder, monkeypatch
+    ):
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[0.0] * cfg.embedding_dim]
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.pages_generated == 1
+        assert stats.pages_published == 0
+        assert stats.pages_drafted == 1
+        assert stats.publish_rate == 0.0
+        assert stats.verified_by_page == {}
+
+    def test_an_unverifiable_excerpt_counts_as_a_dropped_citation_and_a_marker(self, stub_embedder):
+        """The citation gate rejecting a footnote is visible in the run's numbers."""
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "Nothing in this chunk matches the excerpt.")],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pages_generated == 0
+        assert stats.citations_rendered == 0
+        assert stats.citations_dropped_unverified == 1
+        assert stats.citation_verify_rate == 0.0
+        assert stats.pending_markers == 1
+
+    def test_a_section_lost_to_a_slug_collision_still_counts_its_citations(self, stub_embedder):
+        """The losing section becomes a collision marker, but its verified
+        citations still enter the counts so the verify rate covers them."""
+        text = (
+            _declare("Brake System")
+            + _section("Brake System", f"> {_EXCERPT}[^src1]\n")
+            + _valid_citation_block("second.txt")
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="second.txt",
+            entities=[],
+            chunks=[_chunk("second.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={"brake-system": "first.txt"},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pending_markers == 1
+        assert stats.citations_rendered == 1
+        assert stats.citations_dropped_unverified == 0
+
+    def test_a_marker_withheld_by_a_draft_under_review_is_not_counted(self, stub_embedder):
+        """The draft holding review content is kept, so no marker landed to count."""
+        drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
+        review_draft = divert_to_drafts(
+            "# Henry Ford\n\nReviewed body.\n",
+            drafts_dir,
+            "henry-ford",
+            0.5,
+            "diff",
+            WikiSubdir.ENTITIES,
+            ["s.txt"],
+        )
+        stats = BuildStats()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider("A response with no section headers at all.\n"),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert pages == []
+        assert stats.pending_markers == 0
+        assert "Reviewed body." in review_draft.read_text()
+
+    def test_a_failed_llm_call_counts_one_marker_per_expected_entity(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("LLM down")
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("ford-motor", "Ford Motor", ["s.txt"]),
+            ],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.pending_markers == 2
+        assert stats.pages_generated == 0
+
+    def test_a_concept_slug_collision_counts_a_marker_not_a_published_page(self, stub_embedder):
+        def _batch_text(source: str) -> str:
+            return (
+                _declare("Brake System") + "## Brake System\n\n> Brake system details. [^src1]\n"
+                "\n\n---\n"
+                "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+                f'[^src1]: {source}, excerpt: "Brake system details."\n'
+            )
+
+        written: dict[str, str] = {}
+        stats = BuildStats()
+        returned: list[list[Path]] = []
+        for source in ("s1.txt", "s2.txt"):
+            returned.append(
+                generate_source_batch(
+                    source=source,
+                    entities=[],
+                    chunks=[_chunk(source, 0, "Brake system details.")],
+                    provider=_mock_batch_provider(_batch_text(source)),
+                    store=MagicMock(),
+                    config=cfg,
+                    extract_concepts=True,
+                    written_concept_slugs=written,
+                    stats=stats,
+                )
+            )
+        assert stats.pages_published == 1
+        assert stats.pending_markers == 1
+        assert stats.pages_generated == 1
+        # The collision marker is a side channel, not a page: counting it would put
+        # the reported page count above pages_generated.
+        assert [len(pages) for pages in returned] == [1, 0]
+
+    def test_a_batch_without_a_collector_still_generates(self, stub_embedder):
+        """The stats argument is optional: callers that do not measure still build."""
+        text = _section("Henry Ford", f"> {_EXCERPT}[^src1]\n") + _valid_citation_block()
+        pages = generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=_mock_batch_provider(text),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert len(pages) == 1
+
+
 class TestAllSourcesInScope:
     def test_extract_concepts_false_returns_grouped_sources_only(self):
         store = MagicMock()
         grouped = {"a.md": []}
         result = _all_sources_in_scope(
-            entities=[],
             grouped=grouped,
             store=store,
             config=cfg,
@@ -352,7 +903,6 @@ class TestAllSourcesInScope:
         grouped = {"a.md": []}
         caplog.set_level("WARNING", logger="lilbee.wiki.generation")
         result = _all_sources_in_scope(
-            entities=[],
             grouped=grouped,
             store=store,
             config=cfg,
@@ -370,7 +920,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 1
         result = _all_sources_in_scope(
-            entities=[],
             grouped={},
             store=store,
             config=cfg,
@@ -385,7 +934,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 1
         result = _all_sources_in_scope(
-            entities=[],
             grouped={"a.md": []},
             store=store,
             config=cfg,
@@ -402,7 +950,6 @@ class TestAllSourcesInScope:
         ]
         cfg.wiki_batch_min_chunks = 5
         result = _all_sources_in_scope(
-            entities=[],
             grouped={},
             store=store,
             config=cfg,
@@ -463,16 +1010,17 @@ class TestBatchGeneration:
         assert all(WikiSubdir.ENTITIES in str(p) for p in pages)
 
     def test_batch_generation_llm_curates_concepts(self, stub_embedder):
-        """extract_concepts=True includes the concept-curation paragraph."""
+        """extract_concepts=True asks for concepts and for the declaration line."""
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
         entities = [_entity("henry-ford", "Henry Ford", ["s.txt"])]
         text = (
-            _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
+            _declare("Assembly Line")
+            + _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
             + _section("Assembly Line", "> Assembly Line innovation.[^src1]\n")
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        generate_source_batch(
+        pages = generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,
@@ -484,6 +1032,80 @@ class TestBatchGeneration:
         )
         prompt_arg = provider.chat.call_args[0][0][0]["content"]
         assert "identify 3-5 CONCEPTS" in prompt_arg
+        assert "CONCEPTS: first; second; third" in prompt_arg
+        assert {p.parent.name for p in pages} == {WikiSubdir.ENTITIES, WikiSubdir.CONCEPTS}
+
+    def test_existing_concept_names_are_offered_for_reuse(self, stub_embedder):
+        """Published concept slugs ride the prompt so rebuilds don't rename them."""
+        concepts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.CONCEPTS
+        concepts_dir.mkdir(parents=True, exist_ok=True)
+        (concepts_dir / "assembly-line.md").write_text("---\n---\n\n# Assembly Line\n")
+        provider = _mock_batch_provider(_declare("Assembly Line") + _section("Assembly Line"))
+        generate_source_batch(
+            source="s.txt",
+            entities=[],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        prompt_arg = provider.chat.call_args[0][0][0]["content"]
+        assert "Reuse these existing concept names verbatim" in prompt_arg
+        assert "assembly line" in prompt_arg
+
+    def test_the_reuse_list_is_capped(self, tmp_path: Path):
+        """Uncapped, the list grows with the wiki until it crowds chunks out of the
+        prompt: the budget is charged for it, so it cannot grow without bound."""
+        concepts_dir = tmp_path / WikiSubdir.CONCEPTS
+        concepts_dir.mkdir(parents=True)
+        for index in range(_MAX_REUSE_CONCEPT_LABELS + 10):
+            (concepts_dir / f"concept-{index:03d}.md").write_text("---\n---\n")
+        labels = _existing_concept_labels(tmp_path)
+        assert len(labels) == _MAX_REUSE_CONCEPT_LABELS
+        assert labels == sorted(labels)
+
+    def test_the_rendered_concept_instruction_is_charged_against_the_chunk_budget(
+        self, stub_embedder
+    ):
+        """The instruction and its reuse list are per-call substitutions the raw
+        template does not carry, so an unbudgeted one would overflow num_ctx."""
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 512
+        concepts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.CONCEPTS
+        concepts_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(_MAX_REUSE_CONCEPT_LABELS):
+            (concepts_dir / f"a-long-established-concept-name-{index:03d}.md").write_text("x")
+        chunks = [_chunk("s.txt", i, "x" * 400) for i in range(40)]
+        provider = _mock_batch_provider(_section("Henry Ford"))
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        prompt_arg = provider.chat.call_args[0][0][0]["content"]
+        assert len(prompt_arg) // 4 + cfg.wiki_summary_max_tokens <= cfg.num_ctx
+
+    def test_generation_is_seeded_so_rebuilds_converge(self, stub_embedder):
+        """No user seed means the fixed wiki seed, not sampler luck."""
+        provider = _mock_batch_provider(_section("Henry Ford"))
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert provider.chat.call_args.kwargs["options"]["seed"] == WIKI_DEFAULT_SEED
 
     def test_batch_generation_parse_fallback_to_h1(self, stub_embedder, tmp_path: Path):
         """H1 sections still parse and write pages."""
@@ -540,7 +1162,7 @@ class TestBatchGeneration:
 
         def _batch_text(source: str) -> str:
             return (
-                f"## Brake System\n\n> Brake system details. [^src1]\n"
+                _declare("Brake System") + "## Brake System\n\n> Brake system details. [^src1]\n"
                 "\n\n---\n"
                 "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
                 f'[^src1]: {source}, excerpt: "Brake system details."\n'
@@ -572,7 +1194,10 @@ class TestBatchGeneration:
         drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
         collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
         assert len(collision_files) == 1
-        assert PENDING_MARKER_KEYWORD_COLLISION in collision_files[0].read_text()
+        marker = collision_files[0].read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in marker
+        # Origin rides the marker so accepting the loser restores it to concepts/.
+        assert f"origin: {WikiSubdir.CONCEPTS}" in marker
 
     def test_below_threshold_concept_collision_still_diverts(self, stub_embedder, monkeypatch):
         """Two sources proposing the same concept slug that BOTH score below the
@@ -584,7 +1209,7 @@ class TestBatchGeneration:
 
         def _batch_text(source: str) -> str:
             return (
-                "## Brake System\n\n> Brake system details. [^src1]\n"
+                _declare("Brake System") + "## Brake System\n\n> Brake system details. [^src1]\n"
                 "\n\n---\n"
                 "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
                 f'[^src1]: {source}, excerpt: "Brake system details."\n'

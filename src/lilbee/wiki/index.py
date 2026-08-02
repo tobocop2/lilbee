@@ -20,6 +20,7 @@ from lilbee.wiki.shared import (
     SUBDIR_TO_TYPE,
     WIKI_TYPE_HEADINGS,
     WikiSubdir,
+    atomic_write_text,
     parse_frontmatter,
 )
 
@@ -104,7 +105,7 @@ def update_wiki_index(config: Config | None = None) -> Path:
 
     lines.append("")  # trailing newline
     index_path = root / "index.md"
-    index_path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(index_path, "\n".join(lines))
     log.info("Updated wiki index: %d entries", total)
     return index_path
 

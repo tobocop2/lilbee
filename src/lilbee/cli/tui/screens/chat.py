@@ -1639,10 +1639,19 @@ class ChatScreen(Screen[None]):
         self._extract_memories_worker(question, answer)
 
     def _indexing_active(self) -> bool:
-        """True while a sync/add/import task is running (embed worker is busy)."""
+        """True while a sync/add/import/wiki task is running (embed worker is busy).
+
+        Wiki counts: a build embeds citations and a draft accept re-chunks and
+        re-indexes the page it publishes.
+        """
         from lilbee.cli.tui.task_queue import TaskType
 
-        busy = {TaskType.SYNC.value, TaskType.ADD.value, TaskType.IMPORT.value}
+        busy = {
+            TaskType.SYNC.value,
+            TaskType.ADD.value,
+            TaskType.IMPORT.value,
+            TaskType.WIKI.value,
+        }
         return any(task.task_type in busy for task in self._task_bar.queue.active_tasks)
 
     @work(thread=True, name="chat_memory_extract", exit_on_error=False)

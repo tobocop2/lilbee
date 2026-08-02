@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -10,26 +13,37 @@ import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.core.text import make_slug
-from lilbee.data.store import ChunkType, SearchChunk, Store
+from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, Store
+from lilbee.data.store.core import _check_vector_dims
 from lilbee.wiki.batch import (
-    _group_chunks_by_page,
     _unwrap_archived_links,
     archive_legacy_concept_pages,
 )
-from lilbee.wiki.cache import _find_cached_leaf, _leaf_hash
-from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.citations import (
+    ParsedCitation,
     _extract_excerpt,
     _find_excerpt_source,
     _match_citation_source,
-    _resolve_citations,
+    find_unmarked_claims,
     resolve_multi_source_citations,
     verify_citations,
 )
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.generation import generate_synthesis_pages
-from lilbee.wiki.page import chunks_to_text, index_wiki_page, truncate_chunks_to_budget
-from lilbee.wiki.persistence import divert_to_drafts
+from lilbee.wiki.page import (
+    WIKI_DEFAULT_SEED,
+    chunks_to_text,
+    index_wiki_page,
+    prompt_overhead_tokens,
+    truncate_chunks_to_budget,
+    wiki_generation_options,
+    write_page,
+)
+from lilbee.wiki.persistence import (
+    delete_drift_draft_if_present,
+    divert_to_drafts,
+    write_pending_marker,
+)
 from lilbee.wiki.quality import (
     _embedding_faithfulness_score,
     _mean_vector,
@@ -38,10 +52,14 @@ from lilbee.wiki.quality import (
     diff_summary,
 )
 from lilbee.wiki.shared import (
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     PageTarget,
     WikiSubdir,
 )
+from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
+from tests.conftest import make_citation
 
 
 @pytest.fixture(autouse=True)
@@ -87,27 +105,27 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
     return SearchChunk(**defaults)
 
 
-def _mock_provider(
-    wiki_text: str,
-    faith_score: str = "0.85",
-    capabilities: list[str] | None = None,
-) -> MagicMock:
+def _mock_provider(wiki_text: str) -> MagicMock:
+    """Provider whose single chat call returns *wiki_text*."""
     from lilbee.providers.base import ChatResult, FinishReason
 
-    def _result(text: str) -> ChatResult:
-        return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
-
     provider = MagicMock()
-    provider.chat.side_effect = [_result(wiki_text), _result(faith_score)]
-    provider.get_capabilities.return_value = (
-        list(capabilities) if capabilities is not None else ["completion"]
+    provider.chat.return_value = ChatResult(
+        text=wiki_text, tool_calls=(), finish_reason=FinishReason.STOP
     )
+    provider.get_capabilities.return_value = ["completion"]
     return provider
+
+
+def _orthogonal_body_vector() -> list[float]:
+    """A body vector whose cosine against the uniform chunk vectors is <= 0."""
+    half = cfg.embedding_dim // 2
+    return [1.0] * half + [-1.0] * (cfg.embedding_dim - half)
 
 
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
-    store.add_citations.return_value = 0
+    store.replace_chunks.side_effect = lambda records, predicate: len(records)
     return store
 
 
@@ -139,15 +157,17 @@ class TestTruncateChunksToBudget:
 
     def test_truncates_when_exceeding_budget(self):
         """Large chunk sets are truncated to fit the context window."""
-        cfg.num_ctx = 100  # 100 tokens * 0.75 * 4 chars = 300 chars budget
-        big_text = "x" * 200  # 200 chars each, only one fits in 300
+        # The output cap alone exceeds the window, so the budget is the
+        # quarter-window floor: 25 tokens = 100 chars.
+        cfg.num_ctx = 100
+        big_text = "x" * 200  # 200 chars each, only the first is kept
         chunks = [_make_chunk(big_text, chunk_index=i) for i in range(5)]
         result = truncate_chunks_to_budget(chunks, cfg)
         assert len(result) == 1
 
     def test_always_keeps_at_least_one_chunk(self):
         """Even if the first chunk exceeds the budget, it is kept."""
-        cfg.num_ctx = 10  # tiny budget: 10 * 0.75 * 4 = 30 chars
+        cfg.num_ctx = 10  # floor of a tiny window: 2 tokens = 8 chars
         huge_chunk = _make_chunk("x" * 10000)
         result = truncate_chunks_to_budget([huge_chunk], cfg)
         assert len(result) == 1
@@ -155,7 +175,7 @@ class TestTruncateChunksToBudget:
     def test_uses_default_context_when_num_ctx_none(self):
         """Falls back to default context window when num_ctx is not set."""
         cfg.num_ctx = None
-        # Default 8192 * 0.75 * 4 = 24576 chars budget
+        # Default 8192 less the output cap and the prompt overhead, times 4 chars.
         small_chunks = [_make_chunk("hello", chunk_index=i) for i in range(10)]
         result = truncate_chunks_to_budget(small_chunks, cfg)
         assert len(result) == 10  # all fit easily
@@ -167,6 +187,102 @@ class TestTruncateChunksToBudget:
         with caplog.at_level("WARNING", logger="lilbee.wiki.page"):
             truncate_chunks_to_budget(chunks, cfg)
         assert "Truncated chunks from 5 to 1" in caplog.text
+
+    def test_kept_chunks_leave_room_for_the_prompt_and_the_generation(self):
+        """The whole call has to fit: chunks + template + output cap <= num_ctx."""
+        cfg.num_ctx = 8192
+        cfg.wiki_summary_max_tokens = 2048
+        chunks = [_make_chunk("x" * 4000, chunk_index=i) for i in range(20)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        prompt_tokens = len(chunks_to_text(kept)) // 4
+        total = prompt_tokens + cfg.wiki_summary_max_tokens + prompt_overhead_tokens(cfg)
+        assert 0 < len(kept) < len(chunks)
+        assert total <= cfg.num_ctx
+
+    def test_a_bigger_output_cap_leaves_room_for_fewer_chunks(self):
+        cfg.num_ctx = 8192
+        chunks = [_make_chunk("x" * 500, chunk_index=i) for i in range(40)]
+        cfg.wiki_summary_max_tokens = 256
+        small_cap = truncate_chunks_to_budget(chunks, cfg)
+        cfg.wiki_summary_max_tokens = 4096
+        large_cap = truncate_chunks_to_budget(chunks, cfg)
+        assert len(large_cap) < len(small_cap)
+
+    def test_per_chunk_formatting_counts_against_the_budget(self):
+        """Chunk numbering and separators are prompt tokens too."""
+        cfg.num_ctx = 1200
+        cfg.wiki_summary_max_tokens = 256
+        chunks = [_make_chunk("x" * 100, chunk_index=i, page_start=i + 1) for i in range(40)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        budget_chars = (cfg.num_ctx - cfg.wiki_summary_max_tokens - prompt_overhead_tokens(cfg)) * 4
+        assert len(chunks_to_text(kept)) <= budget_chars
+
+    def test_budget_floors_at_a_quarter_of_the_window(self):
+        """An output cap larger than the whole window still leaves chunks room.
+
+        Nineteen is what a quarter of a 4096-token window holds, and the count
+        moves with the fraction: a deleted floor keeps 1, an eighth keeps 9, a
+        half keeps 38. Enough chunks are offered that the budget is what binds,
+        so the number pins the quarter itself rather than the weaker claim that
+        some floor exists. An inflated floor is the failure that matters, since
+        this branch runs only when the window has no room left, and a floor of
+        the whole window would overflow it by the entire output cap.
+        """
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 8192
+        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(60)]
+        assert len(truncate_chunks_to_budget(chunks, cfg)) == 19
+
+    def test_the_floor_never_raises_a_positive_budget(self):
+        """A budget between zero and a quarter of the window is honest and small.
+        Lifting it to the floor would overflow a window the real budget fits."""
+        cfg.num_ctx = 4096
+        cfg.wiki_summary_max_tokens = 3000
+        available = cfg.num_ctx - cfg.wiki_summary_max_tokens - prompt_overhead_tokens(cfg)
+        assert 0 < available < cfg.num_ctx * 0.25
+        chunks = [_make_chunk("x" * 400, chunk_index=i) for i in range(20)]
+        kept = truncate_chunks_to_budget(chunks, cfg)
+        total = (
+            len(chunks_to_text(kept)) // 4
+            + cfg.wiki_summary_max_tokens
+            + prompt_overhead_tokens(cfg)
+        )
+        assert 0 < len(kept) < len(chunks)
+        assert total <= cfg.num_ctx
+
+    def test_a_rendered_prompt_is_charged_instead_of_the_raw_template(self):
+        """Per-call substitutions (concept instruction, entity list, source list)
+        are not in the template, so a caller that rendered them passes their size."""
+        cfg.num_ctx = 8192
+        cfg.wiki_summary_max_tokens = 2048
+        chunks = [_make_chunk("x" * 500, chunk_index=i) for i in range(40)]
+        from_template = truncate_chunks_to_budget(chunks, cfg)
+        rendered_chars = len(cfg.wiki_entity_batch_prompt) + 8000
+        from_rendered = truncate_chunks_to_budget(chunks, cfg, rendered_chars)
+        assert prompt_overhead_tokens(cfg, rendered_chars) > prompt_overhead_tokens(cfg)
+        assert len(from_rendered) < len(from_template)
+
+
+class TestWikiGenerationOptions:
+    """Wiki calls sample deterministically so an unchanged corpus converges."""
+
+    def test_uses_the_fixed_seed_when_the_user_set_none(self):
+        cfg.seed = None
+        assert wiki_generation_options(cfg)["seed"] == WIKI_DEFAULT_SEED
+
+    def test_a_user_seed_wins_over_the_default(self):
+        cfg.seed = 99
+        assert wiki_generation_options(cfg)["seed"] == 99
+
+    def test_applies_the_wiki_temperature_and_output_cap(self):
+        """Set the two temperatures apart first: they share the 0.1 default, so
+        asserting against cfg.wiki_temperature alone passes even if generation
+        reads the general chat temperature instead."""
+        cfg.wiki_temperature = 0.42
+        cfg.temperature = 0.9
+        options = wiki_generation_options(cfg)
+        assert options["temperature"] == 0.42
+        assert options["max_tokens"] == cfg.wiki_summary_max_tokens
 
 
 class TestEmbeddingFaithfulness:
@@ -239,6 +355,18 @@ class TestExtractExcerpt:
         assert result == "hex \\x41"
 
 
+def _resolve_citations(
+    parsed: list[ParsedCitation],
+    source_name: str,
+    source_hash: str,
+    chunks: list[SearchChunk],
+) -> list[CitationRecord]:
+    """Single-source resolver, the shape generate_page's callers pass in."""
+    return resolve_multi_source_citations(
+        parsed, [source_name], {source_name: source_hash}, {source_name: chunks}
+    )
+
+
 class TestResolveCitations:
     def test_resolves_excerpt_to_chunk_location(self):
         chunks = [_make_chunk("Python supports typing.", page_start=3, page_end=3)]
@@ -248,14 +376,22 @@ class TestResolveCitations:
         assert records[0]["page_start"] == 3
         assert records[0]["claim_type"] == "fact"
 
-    def test_inference_when_no_excerpt(self):
+    def test_missing_excerpt_is_still_a_fact_claim(self):
+        """A footnote the model left unquoted is a parse failure, not an inference."""
         chunks = [_make_chunk("Some text")]
         parsed = [ParsedCitation("src1", "doc.md, no excerpt here", 1)]
         records = _resolve_citations(parsed, "doc.md", "hash", chunks)
-        assert records[0]["claim_type"] == "inference"
+        assert records[0]["claim_type"] == "fact"
+        assert records[0]["excerpt"] == ""
 
     def test_excerpt_not_found_gets_zero_locations(self):
-        chunks = [_make_chunk("Different text entirely")]
+        """The chunk carries a page of its own, so the zeros can only be the
+        not-found fallback. Against a chunk whose page is also 0, a lookup that
+        wrongly treated the excerpt as found would return the same zeros and
+        this would pass; a citation stamped with a real page for a quote that
+        is not in the source reads as located and verified when it is neither.
+        """
+        chunks = [_make_chunk("Different text entirely", page_start=5, page_end=5)]
         parsed = [ParsedCitation("src1", 'doc.md, excerpt: "Not in any chunk"', 1)]
         records = _resolve_citations(parsed, "doc.md", "hash", chunks)
         assert records[0]["page_start"] == 0
@@ -264,8 +400,6 @@ class TestResolveCitations:
 
 class TestVerifyCitations:
     def test_keeps_matching_excerpts(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("Python supports typing.")]
         recs: list[CitationRecord] = [
             {
@@ -288,8 +422,6 @@ class TestVerifyCitations:
 
     def test_keeps_excerpts_that_differ_only_in_whitespace(self):
         """Source with a mid-sentence newline still matches an LLM quote that collapsed it."""
-        from lilbee.data.store import CitationRecord
-
         chunks = [
             _make_chunk(
                 "Congratulations on acquiring your new Ford Motor Company product.\n"
@@ -319,8 +451,6 @@ class TestVerifyCitations:
         assert len(verified) == 1
 
     def test_drops_unmatched_excerpts(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("Different text")]
         recs: list[CitationRecord] = [
             {
@@ -341,32 +471,31 @@ class TestVerifyCitations:
         verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
-    def test_keeps_inference_citations(self):
-        from lilbee.data.store import CitationRecord
-
+    @pytest.mark.parametrize("claim_type", ["fact", "inference"])
+    def test_drops_citations_without_an_excerpt(self, claim_type: str):
+        """The gate has to be able to fail: an unquoted footnote verifies nothing."""
         chunks = [_make_chunk("text")]
-        recs: list[CitationRecord] = [
-            {
-                "wiki_source": "",
-                "wiki_chunk_index": 0,
-                "citation_key": "src1",
-                "claim_type": "inference",
-                "source_filename": "doc.md",
-                "source_hash": "h",
-                "page_start": 0,
-                "page_end": 0,
-                "line_start": 0,
-                "line_end": 0,
-                "excerpt": "",
-                "created_at": "now",
-            }
+        recs = [make_citation(excerpt="", claim_type=claim_type)]
+        assert verify_citations(recs, chunks, "test", cfg) == []
+
+    def test_drops_excerpt_stitched_across_two_chunks(self):
+        """Joining the chunk pool into one string would match a quote no source carries."""
+        chunks = [_make_chunk("chunk one end"), _make_chunk("start chunk two", chunk_index=1)]
+        recs = [make_citation(excerpt="chunk one end start chunk two")]
+        assert verify_citations(recs, chunks, "test", cfg) == []
+
+    @pytest.mark.parametrize(("source_filename", "kept"), [("a.md", 1), ("b.md", 0)])
+    def test_verifies_against_the_source_the_record_names(self, source_filename: str, kept: int):
+        """Lint and accept check the named source's chunks; build has to agree, or a
+        footnote crediting b.md for a quote only a.md carries publishes as valid."""
+        chunks = [
+            _make_chunk("Ford built the Model T.", source="a.md"),
+            _make_chunk("Chevrolet built the Bel Air.", source="b.md"),
         ]
-        verified = verify_citations(recs, chunks, "test", cfg)
-        assert len(verified) == 1
+        recs = [make_citation(source_filename=source_filename, excerpt="Ford built the Model T.")]
+        assert len(verify_citations(recs, chunks, "test", cfg)) == kept
 
     def test_skips_wiki_sourced_citations(self):
-        from lilbee.data.store import CitationRecord
-
         chunks = [_make_chunk("text")]
         recs: list[CitationRecord] = [
             {
@@ -386,6 +515,85 @@ class TestVerifyCitations:
         ]
         verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
+
+
+class TestDroppedCitationMarkers:
+    """A dropped citation must leave no bare ``[^srcN]`` in the published body."""
+
+    @staticmethod
+    def _provider(response: str) -> MagicMock:
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = []
+        provider.chat.return_value = ChatResult(
+            text=response, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        return provider
+
+    _RESPONSE = (
+        "# Brakes\n\n"
+        "> Disc brakes use friction pads.[^src1]\n\n"
+        "> Brakes were invented in 1902.[^src2]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: a.txt, excerpt: "Disc brakes use friction pads."\n'
+        '[^src2]: a.txt, excerpt: "Brakes were invented in 1902."\n'
+    )
+
+    def _generate(self, resolver, stats: BuildStats) -> Path | None:
+        from lilbee.wiki.page import generate_page
+
+        return generate_page(
+            label="Brakes",
+            prompt="p",
+            chunks=[_make_chunk("Disc brakes use friction pads.", "a.txt")],
+            citation_resolver=resolver,
+            page_type=WikiSubdir.CONCEPTS,
+            slug="brakes",
+            source_names=["a.txt"],
+            provider=self._provider(self._RESPONSE),
+            store=MagicMock(spec=Store),
+            config=cfg,
+            stats=stats,
+        )
+
+    def test_the_unverified_marker_is_scrubbed_and_counted_as_dropped(self):
+        chunks = [_make_chunk("Disc brakes use friction pads.", "a.txt")]
+        stats = BuildStats()
+        page = self._generate(
+            lambda parsed: _resolve_citations(parsed, "a.txt", "hash", chunks), stats
+        )
+        assert page is not None
+        body = page.read_text(encoding="utf-8")
+        assert "[^src1]" in body
+        assert "[^src2]" not in body
+        assert (stats.citations_rendered, stats.citations_dropped_unverified) == (1, 1)
+
+    def test_a_scrubbed_claim_is_visible_to_the_unmarked_gate(self):
+        chunks = [_make_chunk("Disc brakes use friction pads.", "a.txt")]
+        page = self._generate(
+            lambda parsed: _resolve_citations(parsed, "a.txt", "hash", chunks), BuildStats()
+        )
+        assert page is not None
+        unmarked = find_unmarked_claims(page.read_text(encoding="utf-8"))
+        assert any("invented in 1902" in claim for claim in unmarked)
+
+    def test_a_wiki_sourced_citation_is_skipped_not_dropped(self):
+        """Skipping a citation that names a wiki page must not skew the verify rate."""
+        resolved = [
+            make_citation(
+                source_filename="a.txt", excerpt="Disc brakes use friction pads.", source_hash="h"
+            ),
+            make_citation(
+                citation_key="src2",
+                source_filename=f"{cfg.wiki_dir}/{WikiSubdir.SUMMARIES}/other.md",
+                excerpt="Brakes were invented in 1902.",
+            ),
+        ]
+        stats = BuildStats()
+        assert self._generate(lambda _parsed: resolved, stats) is not None
+        assert (stats.citations_rendered, stats.citations_dropped_unverified) == (1, 0)
 
 
 class TestBuildWikiMessages:
@@ -595,109 +803,6 @@ class TestTitleContentCoherence:
         assert any("coherence failed" in r.message for r in caplog.records)
 
 
-class TestGroupChunksByPage:
-    def test_empty_returns_empty(self):
-        assert _group_chunks_by_page([]) == []
-
-    def test_single_page_preserves_chunk_order(self):
-        chunks = [
-            _make_chunk("a", page_start=1, chunk_index=0),
-            _make_chunk("b", page_start=1, chunk_index=1),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert len(result) == 1
-        page_num, group = result[0]
-        assert page_num == 1
-        assert [c.chunk for c in group] == ["a", "b"]
-
-    def test_sorts_by_page_number(self):
-        chunks = [
-            _make_chunk("z", page_start=5, chunk_index=0),
-            _make_chunk("a", page_start=1, chunk_index=1),
-            _make_chunk("m", page_start=3, chunk_index=2),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert [page for page, _ in result] == [1, 3, 5]
-
-    def test_non_contiguous_pages_kept_separately(self):
-        chunks = [
-            _make_chunk("a", page_start=1, chunk_index=0),
-            _make_chunk("b", page_start=7, chunk_index=1),
-        ]
-        result = _group_chunks_by_page(chunks)
-        assert [page for page, _ in result] == [1, 7]
-
-    def test_non_paginated_source_single_bucket(self):
-        """Chunks with page_start=0 (markdown, code, HTML) collapse to one entry."""
-        chunks = [_make_chunk(f"c{i}", chunk_index=i) for i in range(4)]
-        result = _group_chunks_by_page(chunks)
-        assert len(result) == 1
-        assert result[0][0] == 0
-        assert len(result[0][1]) == 4
-
-
-class TestLeafHash:
-    def test_empty_returns_hash_of_empty(self):
-        """Deterministic hash even for no chunks."""
-        h = _leaf_hash([])
-        assert isinstance(h, str)
-        assert len(h) == 64  # sha256 hex digest
-
-    def test_same_chunks_same_hash(self):
-        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        b = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        assert _leaf_hash(a) == _leaf_hash(b)
-
-    def test_order_sensitive(self):
-        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
-        b = [_make_chunk("two", chunk_index=1), _make_chunk("one")]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-    def test_content_change_changes_hash(self):
-        a = [_make_chunk("one")]
-        b = [_make_chunk("two")]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-    def test_null_separator_prevents_concat_collision(self):
-        """Chunk boundaries must affect the hash, not just the concatenated bytes."""
-        a = [_make_chunk("ab"), _make_chunk("c", chunk_index=1)]
-        b = [_make_chunk("a"), _make_chunk("bc", chunk_index=1)]
-        assert _leaf_hash(a) != _leaf_hash(b)
-
-
-class TestFindCachedLeaf:
-    def _write(self, tmp_path: Path, subdir: str, slug: str, leaf_hash: str) -> Path:
-        path = tmp_path / subdir / f"{slug}.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fm = f"---\nleaf_hash: {leaf_hash}\n---\nBody.\n" if leaf_hash else "Body.\n"
-        path.write_text(fm, encoding="utf-8")
-        return path
-
-    def test_no_file_returns_none(self, tmp_path: Path):
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "h") is None
-
-    def test_returns_summaries_path_on_match(self, tmp_path: Path):
-        p = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
-
-    def test_returns_drafts_path_on_match(self, tmp_path: Path):
-        p = self._write(tmp_path, "drafts", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
-
-    def test_summaries_wins_when_both_match(self, tmp_path: Path):
-        s = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        self._write(tmp_path, "drafts", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == s
-
-    def test_mismatch_returns_none(self, tmp_path: Path):
-        self._write(tmp_path, "summaries", "src/page-0001", "abcd")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "different") is None
-
-    def test_missing_hash_in_frontmatter_is_not_a_match(self, tmp_path: Path):
-        self._write(tmp_path, "summaries", "src/page-0001", "")
-        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") is None
-
-
 class TestMakeSlug:
     def test_spaces_to_dashes(self):
         assert make_slug("gradual typing") == "gradual-typing"
@@ -739,6 +844,11 @@ class TestFindExcerptSource:
         chunks = {"a.md": [_make_chunk("Unrelated")]}
         assert _find_excerpt_source("Missing text", chunks) == ""
 
+    def test_matches_across_whitespace_differences(self):
+        """Attribution uses the verification rule, so a re-wrapped quote still resolves."""
+        chunks = {"a.md": [_make_chunk("Beta\n   content here", source="a.md")]}
+        assert _find_excerpt_source("Beta content here", chunks) == "a.md"
+
 
 class TestResolveMultiSourceCitations:
     def test_resolves_to_correct_source(self):
@@ -770,7 +880,9 @@ class TestResolveMultiSourceCitations:
         )
         assert records[0]["source_filename"] == "a.md"
 
-    def test_falls_back_to_first_source(self):
+    def test_drops_unattributable_citation(self, caplog: pytest.LogCaptureFixture):
+        """Defaulting to the first source would invent the provenance."""
+        caplog.set_level("WARNING", logger="lilbee.wiki.citations")
         parsed = [ParsedCitation("src1", 'excerpt: "Not found anywhere"', 1)]
         records = resolve_multi_source_citations(
             parsed,
@@ -778,7 +890,8 @@ class TestResolveMultiSourceCitations:
             {},
             {},
         )
-        assert records[0]["source_filename"] == "fallback.md"
+        assert records == []
+        assert any("Dropping citation src1" in r.message for r in caplog.records)
 
 
 def _synthesis_wiki_text(sources: list[str], topic: str | None = None) -> str:
@@ -823,8 +936,9 @@ class TestGenerateSynthesisPage:
         )
         assert result is not None
         assert result.exists()
-        assert "synthesis" in str(result)
+        assert WikiSubdir.SYNTHESIS in result.parts
         assert result.name == "gradual-typing.md"
+        provider.chat.assert_called_once()
         content = result.read_text()
         assert f"generated_by: {cfg.chat_model}" in content
         assert 'sources: ["a.md", "b.md", "c.md"]' in content
@@ -832,18 +946,23 @@ class TestGenerateSynthesisPage:
         # embedding and the mean of the source chunk vectors. Matching
         # stub vectors produce a score of 1.00 (identical).
         assert "faithfulness_score: 1.00" in content
-        store.add_citations.assert_called_once()
+        store.replace_citations_for_wiki.assert_called_once()
 
-    def test_low_score_goes_to_drafts(self, tmp_path: Path):
+    def test_low_score_goes_to_drafts(self, tmp_path: Path, monkeypatch):
+        """A body that does not resemble its sources routes to drafts, not synthesis."""
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
             (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
+
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [_orthogonal_body_vector()]
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
 
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
         wiki_text = _synthesis_wiki_text(sources)
-        provider = _mock_provider(wiki_text, faith_score="0.3")
+        provider = _mock_provider(wiki_text)
         store = _mock_store()
 
         result = generate_synthesis_page(
@@ -855,7 +974,8 @@ class TestGenerateSynthesisPage:
             cfg,
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
+        assert WikiSubdir.SYNTHESIS not in result.parts
 
     def test_no_chunks_returns_none(self):
         provider = MagicMock()
@@ -902,6 +1022,59 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
+    # Only a.md carries this sentence, and it names no source file, so the ref's
+    # attribution is decided by the filename the footnote spells out.
+    _A_QUOTE = "Ford built the Model T."
+
+    @staticmethod
+    def _cross_source_text(cited_source: str) -> str:
+        """A synthesis body quoting a.md in a footnote attributed to *cited_source*."""
+        return (
+            "# gradual typing\n\nThis page is about gradual typing.\n\n"
+            f"> {TestGenerateSynthesisPage._A_QUOTE}[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            f'[^src1]: {cited_source}, excerpt: "{TestGenerateSynthesisPage._A_QUOTE}"'
+        )
+
+    @classmethod
+    def _two_source_chunks(cls, tmp_path: Path) -> dict[str, list[SearchChunk]]:
+        bodies = {"a.md": cls._A_QUOTE, "b.md": "Chevrolet built the Bel Air."}
+        for name, body in bodies.items():
+            (tmp_path / "documents" / name).write_text(body)
+        return {name: [_make_chunk(body, source=name)] for name, body in bodies.items()}
+
+    def test_a_footnote_naming_the_wrong_cluster_source_does_not_publish(self, tmp_path: Path):
+        """The name in the ref decides attribution, so a b.md footnote quoting a.md
+        verifies nothing: publishing it would give the page b.md's hash, a zeroed
+        location, and an EXCERPT_MISSING the moment lint runs."""
+        chunks_by_source = self._two_source_chunks(tmp_path)
+        provider = _mock_provider(self._cross_source_text("b.md"))
+        store = _mock_store()
+
+        result = generate_synthesis_page(
+            "gradual typing", ["a.md", "b.md"], chunks_by_source, provider, store, cfg
+        )
+        assert result is None
+        store.replace_citations_for_wiki.assert_not_called()
+
+    def test_a_published_citation_still_verifies_at_accept(self, tmp_path: Path):
+        """Same body, correctly attributed: it publishes, and the record it wrote
+        survives the re-verification accept runs, so the two gates agree."""
+        from lilbee.wiki.drafts import _keeps_provenance
+
+        chunks_by_source = self._two_source_chunks(tmp_path)
+        provider = _mock_provider(self._cross_source_text("a.md"))
+        store = _mock_store()
+
+        result = generate_synthesis_page(
+            "gradual typing", ["a.md", "b.md"], chunks_by_source, provider, store, cfg
+        )
+        assert result is not None
+        records = store.replace_citations_for_wiki.call_args.args[1]
+        assert [r["source_filename"] for r in records] == ["a.md"]
+        assert all(_keeps_provenance(rec, chunks_by_source, "gradual-typing") for rec in records)
+
     def test_faithfulness_failure_uses_zero(self, tmp_path: Path, _stub_wiki_index_services):
         """Body-embedding failure routes to drafts (score 0.0)."""
         sources = ["a.md"]
@@ -923,7 +1096,7 @@ class TestGenerateSynthesisPage:
             cfg,
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
 
     def test_llm_returns_empty_string(self, tmp_path: Path):
         chunks_by_source = {"a.md": [_make_chunk("text", source="a.md")]}
@@ -940,7 +1113,8 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
-    def test_inference_citations_pass_verification(self, tmp_path: Path):
+    def test_excerpt_free_footnotes_do_not_publish(self, tmp_path: Path):
+        """A page whose only footnote quotes nothing has nothing verified to publish on."""
         sources = ["a.md"]
         (tmp_path / "documents" / "a.md").write_text("Fact from a.md.")
         chunks_by_source = {"a.md": [_make_chunk("Fact from a.md.", source="a.md")]}
@@ -962,8 +1136,8 @@ class TestGenerateSynthesisPage:
             store,
             cfg,
         )
-        assert result is not None
-        store.add_citations.assert_called_once()
+        assert result is None
+        store.replace_citations_for_wiki.assert_not_called()
 
 
 class _FakeClusterer:
@@ -1020,7 +1194,7 @@ class TestGenerateSynthesisPages:
             _make_chunk(f"Fact from {name}.", source=name)
         ]
 
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         clusterer = _FakeClusterer(
             [
@@ -1035,7 +1209,7 @@ class TestGenerateSynthesisPages:
         result = generate_synthesis_pages(provider, store, clusterer)
         assert len(result) == 1
         assert result[0].exists()
-        assert "synthesis" in str(result[0]) or "drafts" in str(result[0])
+        assert WikiSubdir.SYNTHESIS in result[0].parts
 
     def test_failed_page_generation_omitted(self, tmp_path: Path):
         from lilbee.retrieval.clustering import SourceCluster
@@ -1092,10 +1266,16 @@ class TestDiffSummary:
 
 
 class TestDivertToDrafts:
+    @staticmethod
+    def _divert(drafts_dir: Path, content: str, sources: list[str]) -> Path:
+        return divert_to_drafts(
+            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources
+        )
+
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text", "concepts")
+        result = self._divert(drafts_dir, content, ["a.md"])
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
@@ -1105,6 +1285,267 @@ class TestDivertToDrafts:
         # The origin subdir rides the marker so accept restores the page to concepts/.
         assert "origin: concepts" in text
         assert content in text
+
+    def test_same_source_rewrites_its_own_draft(self, tmp_path: Path):
+        drafts_dir = tmp_path / "drafts"
+        first = self._divert(drafts_dir, "# First\n", ["a.md"])
+        second = self._divert(drafts_dir, "# Second\n", ["a.md"])
+        assert second == first
+        assert "# Second" in first.read_text()
+
+    def test_other_source_lands_on_a_collision_draft(self, tmp_path: Path):
+        """A second source's diverted page must not overwrite one awaiting review."""
+        drafts_dir = tmp_path / "drafts"
+        first = self._divert(drafts_dir, "# From a\n", ["a.md"])
+        second = self._divert(drafts_dir, "# From b\n", ["b.md"])
+        assert second != first
+        assert second.name.startswith("my-page-collision-")
+        assert "# From a" in first.read_text()
+        assert "# From b" in second.read_text()
+        # The collision marker is what the drafts surface classifies on.
+        assert PENDING_MARKER_KEYWORD_COLLISION in second.read_text()
+
+    def test_replaces_a_pending_marker_at_the_same_slug(self, tmp_path: Path):
+        """A marker is a placeholder, not review content, so drift may claim the slug."""
+        drafts_dir = tmp_path / "drafts"
+        marker_path = write_pending_marker(
+            drafts_dir, "my-page", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        )
+        result = self._divert(drafts_dir, "# Regenerated\n", ["b.md"])
+        assert result == marker_path
+        assert "# Regenerated" in result.read_text()
+
+    @pytest.mark.parametrize("existing", ["", "   \n\n"])
+    def test_an_empty_draft_file_is_written_over(self, tmp_path: Path, existing: str):
+        """A file truncated by a crash mid-write holds nothing to review."""
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        empty = drafts_dir / "my-page.md"
+        empty.write_text(existing)
+        result = self._divert(drafts_dir, "# Regenerated\n", ["a.md"])
+        assert result == empty
+        assert "# Regenerated" in empty.read_text()
+
+    def test_a_same_source_quality_draft_is_superseded_in_place(self, tmp_path: Path):
+        """A quality-gate draft records its sources in frontmatter, not a drift
+        marker, so a later drift of those sources supersedes it rather than
+        filing a collision against itself."""
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        quality = drafts_dir / "my-page.md"
+        quality.write_text('---\nsources: ["a.md"]\nfaithfulness_score: 0.1\n---\n\n# Low score\n')
+        result = self._divert(drafts_dir, "# Regenerated\n", ["a.md"])
+        assert result == quality
+        assert "# Regenerated" in quality.read_text()
+        assert not list(drafts_dir.glob("my-page-collision-*.md"))
+
+    def test_a_different_source_quality_draft_still_collides(self, tmp_path: Path):
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        quality = drafts_dir / "my-page.md"
+        quality.write_text('---\nsources: ["b.md"]\nfaithfulness_score: 0.1\n---\n\n# From b\n')
+        result = self._divert(drafts_dir, "# From a\n", ["a.md"])
+        assert result != quality
+        assert result.name.startswith("my-page-collision-")
+        assert "# From b" in quality.read_text()
+
+
+class TestWritePageDrift:
+    """Rebuilds converge: only body prose counts as drift, and a published
+    regen retires the proposal an earlier drift parked in drafts/."""
+
+    @staticmethod
+    def _page(body: str, timestamp: str) -> str:
+        return (
+            f"---\ngenerated_by: m\ngenerated_at: {timestamp}\n"
+            f'sources: ["a.md"]\nfaithfulness_score: 0.90\n---\n\n{body}\n'
+        )
+
+    def test_frontmatter_churn_alone_does_not_divert(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        body = "# Brakes\n\n" + "\n".join(f"line {i}" for i in range(20))
+        page = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        page.parent.mkdir(parents=True)
+        page.write_text(self._page(body, "2020-01-01T00:00:00+00:00"))
+        # A zero threshold diverts on any body change at all, so publishing
+        # here proves the timestamp and score churn was excluded.
+        result = write_page(
+            wiki_root,
+            WikiSubdir.CONCEPTS,
+            "brakes",
+            self._page(body, "2026-07-28T12:00:00+00:00"),
+            0.0,
+            ["a.md"],
+            WikiSubdir.CONCEPTS,
+        )
+        assert result == page
+
+    def test_publishing_removes_a_superseded_drift_draft(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        stale = divert_to_drafts(
+            "# Old proposal\n",
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        assert stale.is_file()
+        write_page(
+            wiki_root,
+            WikiSubdir.CONCEPTS,
+            "brakes",
+            self._page("# Brakes\n\nfresh body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["a.md"],
+            WikiSubdir.CONCEPTS,
+        )
+        assert not stale.exists()
+
+    def test_publishing_keeps_another_source_drift_draft_on_the_same_slug(self, tmp_path: Path):
+        """The drafts namespace is flat, so a concept and an entity can share a
+        slug; publishing one must not unlink the other's pending proposal."""
+        wiki_root = tmp_path / "wiki"
+        other = divert_to_drafts(
+            "# Ford the concept\n",
+            wiki_root / WikiSubdir.DRAFTS,
+            "ford",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        write_page(
+            wiki_root,
+            WikiSubdir.ENTITIES,
+            "ford",
+            self._page("# Ford\n\nentity body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["b.md"],
+            WikiSubdir.ENTITIES,
+        )
+        assert other.is_file()
+        assert "Ford the concept" in other.read_text()
+
+    def test_a_page_routed_to_drafts_survives_its_own_write(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        result = write_page(
+            wiki_root,
+            WikiSubdir.DRAFTS,
+            "brakes",
+            self._page("# Brakes\n\nlow score body", "2026-07-28T12:00:00+00:00"),
+            0.3,
+            ["a.md"],
+            WikiSubdir.CONCEPTS,
+        )
+        assert result.is_file()
+
+
+class TestWritePageToDrafts:
+    """A drafts target is a proposal, not a published body: no drift ratio is
+    computed, and the source set decides who may claim ``drafts/<slug>.md``."""
+
+    @staticmethod
+    def _page(body: str, sources: list[str]) -> str:
+        return (
+            "---\ngenerated_by: m\ngenerated_at: 2026-07-28T12:00:00+00:00\n"
+            f"sources: {json.dumps(sorted(sources))}\nfaithfulness_score: 0.10\n---\n\n{body}\n"
+        )
+
+    def _write(self, wiki_root: Path, body: str, sources: list[str]) -> Path:
+        return write_page(
+            wiki_root,
+            WikiSubdir.DRAFTS,
+            "brakes",
+            self._page(body, sources),
+            0.3,
+            sources,
+            WikiSubdir.CONCEPTS,
+        )
+
+    def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        first = self._write(wiki_root, "# Brakes\n\nfirst proposal", ["a.md"])
+        second = self._write(wiki_root, "# Brakes\n\nsecond proposal", ["a.md"])
+        assert second == first
+        text = first.read_text()
+        assert "second proposal" in text
+        assert "DRIFT" not in text
+        assert f"origin: {WikiSubdir.DRAFTS}" not in text
+
+    def test_a_different_source_set_lands_on_a_collision_draft(self, tmp_path: Path):
+        """Overwriting here is the loss the collision path exists to prevent."""
+        wiki_root = tmp_path / "wiki"
+        first = self._write(wiki_root, "# Brakes\n\nfrom a", ["a.md"])
+        second = self._write(wiki_root, "# Brakes\n\nfrom b", ["b.md"])
+        assert second != first
+        assert second.name.startswith("brakes-collision-")
+        assert "from a" in first.read_text()
+        marker = second.read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in marker
+        # The page type it would have published to, for an unpaired accept.
+        assert f"origin: {WikiSubdir.CONCEPTS}" in marker
+
+    def test_a_pending_marker_at_the_slug_is_claimed(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        marker = write_pending_marker(
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->",
+        )
+        result = self._write(wiki_root, "# Brakes\n\nreal content", ["b.md"])
+        assert result == marker
+        assert "real content" in result.read_text()
+
+    def test_a_drift_draft_from_the_same_sources_is_superseded(self, tmp_path: Path):
+        """A drift draft records its sources in the frontmatter it carries, so a
+        later proposal from those sources replaces it in place."""
+        wiki_root = tmp_path / "wiki"
+        drift = divert_to_drafts(
+            self._page("# Brakes\n\nearlier proposal", ["a.md"]),
+            wiki_root / WikiSubdir.DRAFTS,
+            "brakes",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+        )
+        result = self._write(wiki_root, "# Brakes\n\nlater proposal", ["a.md"])
+        assert result == drift
+        text = drift.read_text()
+        assert "later proposal" in text
+        assert "DRIFT" not in text
+
+
+class TestDeleteDriftDraftIfPresent:
+    def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
+        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"]) is False
+
+    def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
+        """The draft names the same sources the publish does, so the
+        other-source guard cannot be what saves it: only the drift-marker check
+        stands between a human's pending low-score proposal and an unlink.
+        Omitting sources would leave ownership unmatched and the file would
+        survive on that alone, whatever the marker check did."""
+        draft = tmp_path / "x.md"
+        draft.write_text('---\nfaithfulness_score: 0.2\nsources: ["a.md"]\n---\n\nbody\n')
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is False
+        assert draft.is_file()
+
+    def test_removes_a_drift_draft(self, tmp_path: Path):
+        draft = divert_to_drafts(
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+        )
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is True
+        assert not draft.exists()
+
+    def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
+        draft = divert_to_drafts(
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+        )
+        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"]) is False
+        assert draft.is_file()
 
 
 class TestSynthesisDriftDetection:
@@ -1133,9 +1574,27 @@ class TestSynthesisDriftDetection:
             "gradual typing", sources, chunks_by_source, provider, store, cfg
         )
         assert result is not None
-        assert "drafts" in str(result)
+        assert WikiSubdir.DRAFTS in result.parts
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
+
+
+def _assert_no_store_writes(store: MagicMock) -> None:
+    """Assert no citation or chunk rows were written for this page."""
+    store.replace_citations_for_wiki.assert_not_called()
+    store.add_citations.assert_not_called()
+    store.delete_citations_for_wiki.assert_not_called()
+    store.replace_chunks.assert_not_called()
+    store.clear_table.assert_not_called()
+
+
+def _assert_cleared(store: MagicMock, wiki_source: str) -> None:
+    """Assert the page's rows were cleared once, with no replacement written."""
+    store.clear_table.assert_called_once()
+    table, predicate = store.clear_table.call_args.args
+    assert table == CHUNKS_TABLE
+    assert wiki_source in predicate
+    assert ChunkType.WIKI in predicate
 
 
 class TestWikiIndexing:
@@ -1182,17 +1641,13 @@ class TestWikiIndexing:
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
-            index_wiki_page(content, target.wiki_source, store)
+            index_wiki_page(content, target.wiki_source, store, cfg)
 
-        store.clear_table.assert_called_once()
-        call_args = store.clear_table.call_args
-        assert call_args.args[0] == CHUNKS_TABLE
-        predicate = call_args.args[1]
+        store.clear_table.assert_not_called()
+        store.replace_chunks.assert_called_once()
+        records, predicate = store.replace_chunks.call_args.args
         assert target.wiki_source in predicate
         assert ChunkType.WIKI in predicate
-
-        store.add_chunks.assert_called_once()
-        records = store.add_chunks.call_args.args[0]
         assert len(records) == 1
         rec = records[0]
         assert rec["chunk_type"] == ChunkType.WIKI
@@ -1215,10 +1670,26 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
         ):
-            index_wiki_page(self._content("body"), target.wiki_source, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store, cfg)
 
         store.clear_table.assert_not_called()
-        store.add_chunks.assert_not_called()
+        store.replace_chunks.assert_not_called()
+
+    def test_nested_wiki_dir_still_resolves_the_subdir(self):
+        """A wiki_dir carrying a separator keeps its pages in retrieval."""
+        store = MagicMock(spec=Store)
+        config = cfg.model_copy(update={"wiki_dir": "notes/wiki"})
+        wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/brakes.md"
+
+        with (
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
+        ):
+            index_wiki_page(self._content("body"), wiki_source, store, config)
+
+        store.replace_chunks.assert_called_once()
+        _records, predicate = store.replace_chunks.call_args.args
+        assert wiki_source in predicate
 
     def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
         """A ``wiki_source`` without a subdir component is logged and
@@ -1226,7 +1697,7 @@ class TestWikiIndexing:
         """
         store = MagicMock(spec=Store)
         caplog.set_level("WARNING", logger="lilbee.wiki.page")
-        result = index_wiki_page(self._content("body"), "malformed", store)
+        result = index_wiki_page(self._content("body"), "malformed", store, cfg)
         assert result == 0
         store.clear_table.assert_not_called()
         assert any("malformed wiki_source" in r.message for r in caplog.records)
@@ -1249,11 +1720,11 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text") as chunker,
         ):
-            index_wiki_page(content, target.wiki_source, store)
+            index_wiki_page(content, target.wiki_source, store, cfg)
 
-        store.clear_table.assert_called_once()
+        _assert_cleared(store, target.wiki_source)
         chunker.assert_not_called()
-        store.add_chunks.assert_not_called()
+        store.replace_chunks.assert_not_called()
 
     def test_chunker_returns_empty_skips_add(self):
         """If chunk_text returns no chunks, invalidate stale rows and return."""
@@ -1264,28 +1735,49 @@ class TestWikiIndexing:
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.page.chunk_text", return_value=[]),
         ):
-            index_wiki_page(self._content("some body"), target.wiki_source, store)
+            index_wiki_page(self._content("some body"), target.wiki_source, store, cfg)
 
-        store.clear_table.assert_called_once()
-        store.add_chunks.assert_not_called()
+        _assert_cleared(store, target.wiki_source)
+        store.replace_chunks.assert_not_called()
 
-    def test_regen_invalidates_before_writing(self):
-        """Second call still clears first, then adds. No accumulation."""
+    def test_wrong_dimension_vectors_hit_the_store_dimension_gate(self):
+        """Wiki rows embedded at the wrong width fail loudly instead of being written."""
         store = MagicMock(spec=Store)
+        store.replace_chunks.side_effect = lambda records, predicate: _check_vector_dims(
+            records, cfg.embedding_dim
+        )
         target = self._target()
-
-        call_order: list[str] = []
-        store.clear_table.side_effect = lambda *a, **kw: call_order.append("clear")
-        store.add_chunks.side_effect = lambda records: call_order.append("add") or len(records)
+        services = self._services_mock(vector_dim=cfg.embedding_dim + 1)
 
         with (
-            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
-            patch("lilbee.wiki.page.chunk_text", return_value=["one chunk"]),
+            patch("lilbee.wiki.page.get_services", return_value=services),
+            patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
+            pytest.raises(ValueError, match="Vector dimension mismatch"),
         ):
-            index_wiki_page(self._content("first body"), target.wiki_source, store)
-            index_wiki_page(self._content("second body"), target.wiki_source, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store, cfg)
 
-        assert call_order == ["clear", "add", "clear", "add"]
+    def test_embedding_runs_before_any_store_write(self):
+        """No crash window empties the page: chunking and embedding finish before the
+        store is touched, and the swap itself is the store's single locked replace."""
+        store = MagicMock(spec=Store)
+        target = self._target()
+        store.replace_chunks.side_effect = RuntimeError("embedder is called first")
+
+        embedded: list[list[str]] = []
+        services = self._services_mock()
+        services.embedder.embed_batch.side_effect = lambda texts, **kw: (
+            embedded.append(texts) or [[0.1] * cfg.embedding_dim for _ in texts]
+        )
+
+        with (
+            patch("lilbee.wiki.page.get_services", return_value=services),
+            patch("lilbee.wiki.page.chunk_text", return_value=["one chunk"]),
+            pytest.raises(RuntimeError),
+        ):
+            index_wiki_page(self._content("first body"), target.wiki_source, store, cfg)
+
+        assert embedded == [["one chunk"]]
+        store.clear_table.assert_not_called()
 
 
 class TestBuildFrontmatter:
@@ -1434,28 +1926,144 @@ class TestGroupEntitiesByPrimarySource:
 
 
 class TestLegacyConceptsMigration:
-    def test_archives_concept_pages(self, tmp_path: Path):
+    def test_archives_concept_pages_and_deletes_their_rows(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        store = MagicMock(spec=Store)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         assert not (wiki_root / "concepts" / "foo.md").exists()
         assert (wiki_root / "archive" / "concepts" / "foo.md").read_text() == "original"
         assert (data_dir / ".phase-d-migrated").exists()
+        # An archived page must stop serving its content from the index.
+        wiki_source = f"{cfg.wiki_dir}/concepts/foo.md"
+        store.delete_by_source.assert_called_once_with(wiki_source)
+        store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
+
+    def test_a_failed_citation_delete_leaves_the_page_and_retries(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "foo.md").write_text("original")
+        data_dir = tmp_path / "data"
+        store = MagicMock(spec=Store)
+        store.delete_citations_for_wiki.return_value = False
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
+        assert (wiki_root / "concepts" / "foo.md").exists()
+        assert not (data_dir / ".phase-d-migrated").exists()
+
+    def test_a_partial_archive_still_unwraps_links_to_what_it_moved(self, tmp_path: Path):
+        """The retry only sees what is left in concepts/, so pages archived
+        before the failure are never revisited: their inbound links would point
+        at a 404 forever."""
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "aaa.md").write_text("original")
+        (wiki_root / "concepts" / "zzz.md").write_text("original")
+        (wiki_root / "entities").mkdir(parents=True)
+        (wiki_root / "entities" / "ref.md").write_text("See [[aaa]] and [[zzz]].")
+        store = MagicMock(spec=Store)
+        # Succeed for the first page (sorted order), fail on the second.
+        store.delete_citations_for_wiki.side_effect = [True, False]
+
+        archive_legacy_concept_pages(wiki_root, tmp_path / "data", store, cfg)
+
+        body = (wiki_root / "entities" / "ref.md").read_text()
+        assert "[[aaa]]" not in body
+        assert "[[zzz]]" in body
 
     def test_idempotent(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        store = MagicMock(spec=Store)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         # Second run: nothing to archive; should not touch disk state.
         (wiki_root / "concepts").mkdir(parents=True, exist_ok=True)
         (wiki_root / "concepts" / "new.md").write_text("fresh")
-        archive_legacy_concept_pages(wiki_root, data_dir)
+        archive_legacy_concept_pages(wiki_root, data_dir, store, cfg)
         # Freshly written page stayed put.
         assert (wiki_root / "concepts" / "new.md").exists()
+        store.delete_by_source.assert_called_once()
+
+
+class TestBuildCancellation:
+    """A cancelled run stops at the next boundary and releases the wiki mutex.
+
+    Without this a client that disconnects mid-stream leaves the worker
+    building the whole corpus while every other surface waits on the lock.
+    """
+
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["runs", "cancelled"])
+    def test_synthesis_stops_at_the_next_cluster(self, tmp_path: Path, cancelled: bool):
+        import threading
+
+        cfg.data_root = tmp_path
+        cancel = threading.Event()
+        if cancelled:
+            cancel.set()
+        clusterer = MagicMock()
+        clusterer.get_clusters.return_value = [
+            SimpleNamespace(label="typing", sources=["a.md", "b.md", "c.md"]),
+        ]
+
+        with patch("lilbee.wiki.generation._generate_for_cluster", return_value=None) as gen:
+            generate_synthesis_pages(
+                MagicMock(), MagicMock(spec=Store), clusterer, cfg, cancel=cancel
+            )
+
+        assert gen.called is not cancelled
+
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["runs", "cancelled"])
+    def test_build_stops_at_the_next_source(self, tmp_path: Path, cancelled: bool):
+        import threading
+
+        from lilbee.wiki.generation import build_wiki
+
+        cfg.data_root = tmp_path
+        cancel = threading.Event()
+        if cancelled:
+            cancel.set()
+        store = MagicMock(spec=Store)
+        # Enough chunks to clear wiki_batch_min_chunks, so the only thing that
+        # can stop the batch call is the cancel itself.
+        store.get_chunks_by_source.return_value = [MagicMock()] * (cfg.wiki_batch_min_chunks + 1)
+        store.get_sources.return_value = [
+            {"filename": "a.md", "chunk_count": cfg.wiki_batch_min_chunks},
+            {"filename": "b.md", "chunk_count": cfg.wiki_batch_min_chunks},
+        ]
+
+        with patch("lilbee.wiki.generation.generate_source_batch", return_value=[]) as batch:
+            build_wiki([], MagicMock(), store, cfg, cancel=cancel)
+
+        assert batch.called is not cancelled
+
+
+class TestSupersedesSources:
+    """wiki_prune_raw deletes the documents a page replaces. A page written from
+    documents that merely mention its subject replaces none of them."""
+
+    @pytest.mark.parametrize("supersedes", [True, False], ids=["build", "subject-page"])
+    def test_only_a_superseding_page_prunes_its_sources(self, tmp_path: Path, supersedes: bool):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        cfg.wiki_prune_raw = True
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target(subdir=WikiSubdir.CONCEPTS)
+        target = replace(target, supersedes_sources=supersedes)
+
+        with patch("lilbee.wiki.page.index_wiki_page", return_value=1):
+            persist_and_finalize(
+                "# Brakes\n\nBody.\n",
+                target,
+                [make_citation()],
+                ["a.md", "b.md"],
+                store,
+                cfg,
+            )
+
+        assert store.delete_by_source.called is supersedes
 
 
 class TestUnwrapArchivedLinks:
@@ -1497,7 +2105,9 @@ class TestRunFullBuild:
             ext.extract.return_value = []
             return ext
 
-        def fake_build_wiki(entities, provider, store, config, *, extract_concepts):
+        def fake_build_wiki(
+            entities, provider, store, config, *, extract_concepts, on_progress, stats, cancel
+        ):
             captured["config"] = config
             return []
 
@@ -1505,11 +2115,47 @@ class TestRunFullBuild:
         monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
         monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
         monkeypatch.setattr("lilbee.wiki.generation.append_wiki_log", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
 
         result = run_full_build()
         assert captured["config"] is cfg
-        assert result == {"paths": [], "entities": 0, "count": 0}
+        assert result["paths"] == []
+        assert result["entities"] == 0
+        assert result["count"] == 0
+        assert result["stats"] == BuildStats().as_dict()
+
+
+class TestRunFullBuildConfigThreading:
+    """Pages, index and log must land in the same tree as the config names."""
+
+    def test_index_and_log_are_written_against_the_given_config(self, monkeypatch, tmp_path: Path):
+        from lilbee.wiki.generation import run_full_build
+
+        config = cfg.model_copy(update={"data_root": tmp_path, "wiki_dir": "notes/wiki"})
+        seen: dict[str, object] = {}
+
+        def fake_extractor(*a, **kw):
+            ext = MagicMock()
+            ext.extract.return_value = []
+            return ext
+
+        services = MagicMock()
+        services.store.get_sources.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.update_wiki_index",
+            lambda passed: seen.__setitem__("index", passed),
+        )
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.append_wiki_log",
+            lambda action, details, passed: seen.__setitem__("log", passed),
+        )
+
+        run_full_build(config)
+        assert seen["index"] is config
+        assert seen["log"] is config
 
 
 class TestRunFullSynthesize:
@@ -1522,7 +2168,7 @@ class TestRunFullSynthesize:
         def fake_get_services():
             return MagicMock()
 
-        def fake_generate(provider, store, clusterer, config):
+        def fake_generate(provider, store, clusterer, config, on_progress, stats, cancel):
             captured["config"] = config
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
 
@@ -1535,9 +2181,67 @@ class TestRunFullSynthesize:
         assert result["paths"][0].endswith("typing.md")
 
 
+class TestRunSummaryStats:
+    """Both run entry points report what their gates did, in the summary and log.md."""
+
+    def test_build_summary_and_log_carry_the_gate_stats(self, monkeypatch):
+        from lilbee.wiki.generation import run_full_build
+
+        def fake_build_wiki(
+            entities, provider, store, config, *, extract_concepts, on_progress, stats, cancel
+        ):
+            stats.record_published("wiki/concepts/brakes.md", 2)
+            stats.record_drafted()
+            stats.record_pending_marker()
+            stats.record_citations(rendered=2, dropped=1)
+            return [Path("wiki/concepts/brakes.md")]
+
+        def fake_extractor(*a, **kw):
+            ext = MagicMock()
+            ext.extract.return_value = []
+            return ext
+
+        services = MagicMock()
+        services.store.get_sources.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
+        monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", fake_extractor)
+
+        result = run_full_build(cfg)
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["pages_drafted"] == 1
+        assert result["stats"]["pending_markers"] == 1
+        assert result["stats"]["citation_verify_rate"] == 2 / 3
+        assert result["stats"]["verified_by_page"] == {"wiki/concepts/brakes.md": 2}
+
+        log_text = (cfg.data_root / cfg.wiki_dir / "log.md").read_text()
+        assert "1 published, 1 drafted, 1 markers, 2/3 citations verified" in log_text
+
+    def test_synthesize_summary_and_log_carry_the_gate_stats(self, monkeypatch, tmp_path):
+        from lilbee.wiki.generation import run_full_synthesize
+
+        def fake_generate(provider, store, clusterer, config, on_progress, stats, cancel):
+            stats.record_published("wiki/synthesis/typing.md", 3)
+            stats.record_citations(rendered=3, dropped=0)
+            return [tmp_path / "wiki" / "synthesis" / "typing.md"]
+
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", MagicMock())
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", fake_generate)
+
+        result = run_full_synthesize(cfg)
+        assert result["stats"]["pages_published"] == 1
+        assert result["stats"]["publish_rate"] == 1.0
+        assert result["stats"]["verified_by_page"] == {"wiki/synthesis/typing.md": 3}
+
+        log_text = (cfg.data_root / cfg.wiki_dir / "log.md").read_text()
+        assert "synthesize | 1 synthesis pages" in log_text
+        assert "1 published, 0 drafted, 0 markers, 3/3 citations verified" in log_text
+
+
 class TestPersistAndFinalizeDrift:
     """A drift-diverted regen must not leak its unreviewed body into the index or
-    citations under the published page's identity (bb-ziks.35)."""
+    citations under the published page's identity."""
 
     def test_diversion_skips_publish_indexing(self):
         from lilbee.wiki.persistence import persist_and_finalize
@@ -1548,6 +2252,7 @@ class TestPersistAndFinalizeDrift:
         published.parent.mkdir(parents=True, exist_ok=True)
         published.write_text("Old published body, unrelated to the regen.", encoding="utf-8")
 
+        stats = BuildStats()
         old = cfg.wiki_drift_threshold
         cfg.wiki_drift_threshold = 0.1
         try:
@@ -1558,12 +2263,100 @@ class TestPersistAndFinalizeDrift:
                 [],
                 store,
                 cfg,
+                stats=stats,
             )
         finally:
             cfg.wiki_drift_threshold = old
 
         assert WikiSubdir.DRAFTS in page_path.parts
         assert "Old published body" in published.read_text()
-        store.add_citations.assert_not_called()
-        store.delete_citations_for_wiki.assert_not_called()
-        store.clear_table.assert_not_called()
+        _assert_no_store_writes(store)
+        assert (stats.pages_drafted, stats.pages_published) == (1, 0)
+
+
+class TestPersistAndFinalizeDrafts:
+    """A page routed to drafts carries no store state until it is accepted."""
+
+    def test_draft_target_writes_the_file_and_nothing_else(self):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target(subdir=WikiSubdir.DRAFTS)
+        cfg.wiki_prune_raw = True
+
+        page_path = persist_and_finalize(
+            "# Brakes\n\nBody that failed the faithfulness gate.\n",
+            target,
+            [make_citation()],
+            ["doc.md"],
+            store,
+            cfg,
+        )
+
+        assert page_path == target.wiki_root / WikiSubdir.DRAFTS / f"{target.slug}.md"
+        # The leading origin marker records the page type accept should restore to.
+        assert "# Brakes" in page_path.read_text()
+        _assert_no_store_writes(store)
+        # A draft supersedes nothing, so its sources stay searchable.
+        store.delete_by_source.assert_not_called()
+        assert "pending review" in (target.wiki_root / "log.md").read_text()
+
+    def test_a_collision_off_a_drafts_target_counts_a_marker_not_a_draft(self):
+        """The artifact is a PENDING-COLLISION marker, so it counts the way the
+        batch collision branch counts the identical file."""
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        target = TestWikiIndexing._target(subdir=WikiSubdir.DRAFTS)
+        held = target.wiki_root / WikiSubdir.DRAFTS / f"{target.slug}.md"
+        held.parent.mkdir(parents=True, exist_ok=True)
+        held.write_text("---\nsources:\n- other.md\n---\n\nAnother source's proposal.\n")
+
+        stats = BuildStats()
+        page_path = persist_and_finalize(
+            "# Brakes\n\nThis source's proposal.\n",
+            target,
+            [],
+            ["doc.md"],
+            MagicMock(spec=Store),
+            cfg,
+            stats=stats,
+        )
+
+        assert "-collision-" in page_path.name
+        assert (stats.pending_markers, stats.pages_drafted) == (1, 0)
+
+
+class TestWritePendingMarker:
+    def test_writes_the_marker_when_no_draft_exists(self, tmp_path: Path):
+        marker = f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        path = write_pending_marker(tmp_path / "drafts", "brakes", marker, "---\nx: 1\n---\n")
+        assert path.read_text() == f"{marker}\n\n---\nx: 1\n---\n"
+
+    def test_refreshes_an_existing_marker(self, tmp_path: Path):
+        drafts = tmp_path / "drafts"
+        first = write_pending_marker(
+            drafts, "brakes", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+        )
+        second_marker = f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source b.md -->"
+        assert write_pending_marker(drafts, "brakes", second_marker) == first
+        assert "source b.md" in first.read_text()
+
+    def test_keeps_a_draft_holding_real_content(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A parse failure must not replace a page a human is reviewing with a marker.
+
+        The withheld write reports None so the caller does not count a marker that
+        never landed."""
+        drafts = tmp_path / "drafts"
+        review_path = divert_to_drafts(
+            "# Brakes\n\nReviewed body.\n", drafts, "brakes", 0.4, "diff", "concepts", ["a.md"]
+        )
+        with caplog.at_level("WARNING", logger="lilbee.wiki.persistence"):
+            result = write_pending_marker(
+                drafts, "brakes", f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source a.md -->"
+            )
+        assert result is None
+        assert "Reviewed body." in review_path.read_text()
+        assert PENDING_MARKER_KEYWORD_PARSE not in review_path.read_text()
+        assert "pending review" in caplog.text

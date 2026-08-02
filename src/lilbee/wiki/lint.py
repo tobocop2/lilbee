@@ -16,7 +16,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.security import PathTraversalError, validate_path_within
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, Store
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     find_unmarked_claims,
     verify_citation,
@@ -24,6 +24,7 @@ from lilbee.wiki.citation import (
 from lilbee.wiki.grammar import WIKI_LINK_RE
 from lilbee.wiki.index import append_wiki_log
 from lilbee.wiki.shared import (
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
@@ -95,8 +96,9 @@ class LintReport:
 
 def _lint_citation(
     rec: CitationRecord,
+    store: Store,
 ) -> LintIssue | None:
-    """Check a single citation record against the filesystem.
+    """Check a single citation record against the filesystem and the chunk store.
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
     from lilbee.data.ingest.discovery import resolve_source_path_checked
@@ -131,11 +133,30 @@ def _lint_citation(
             issue_type=IssueType.STALE_HASH,
         )
 
-    source_text = source_path.read_text(encoding="utf-8", errors="replace")
-    status = verify_citation(rec, source_text)
-    if status == CitationStatus.EXCERPT_MISSING:
+    return _lint_excerpt(rec, store)
+
+
+def _lint_excerpt(rec: CitationRecord, store: Store) -> LintIssue | None:
+    """Verify a citation's excerpt against the source's extracted chunks.
+
+    Excerpts are quoted from extracted text, not from the raw file: a PDF's
+    bytes contain none of it. The caller has already established that the file
+    is present and its hash current, so a source left with no chunks is one
+    ``wiki_prune_raw`` cleared at publish time: the citation was verified at
+    build and is not re-flagged.
+    """
+    chunk_texts = [c.chunk for c in store.get_chunks_by_source(rec["source_filename"])]
+    status = verify_citation(rec, chunk_texts)
+    if status is CitationStatus.UNVERIFIABLE:
+        log.debug(
+            "No extracted text for %s; %s stands as verified at build time",
+            rec["source_filename"],
+            rec["citation_key"],
+        )
+        return None
+    if status is CitationStatus.EXCERPT_MISSING:
         return LintIssue(
-            wiki_source=wiki_source,
+            wiki_source=rec["wiki_source"],
             severity=IssueSeverity.WARNING,
             message=f"Excerpt not found in source for {rec['citation_key']}",
             issue_type=IssueType.EXCERPT_MISSING,
@@ -187,7 +208,7 @@ def lint_wiki_page(
 
     citations = store.get_citations_for_wiki(wiki_source)
     for rec in citations:
-        issue = _lint_citation(rec)
+        issue = _lint_citation(rec, store)
         if issue is not None:
             issues.append(issue)
 
@@ -276,11 +297,13 @@ def lint_all(
 
     report.issues.extend(_lint_orphans(wiki_root, config))
     if record_log:
-        append_wiki_log(
-            WikiLogAction.LINT,
-            f"{report.error_count} error(s), {report.warning_count} warning(s)",
-            config,
-        )
+        # log.md is shared with the builders; the append takes the same mutex.
+        with WIKI_BUILD_LOCK:
+            append_wiki_log(
+                WikiLogAction.LINT,
+                f"{report.error_count} error(s), {report.warning_count} warning(s)",
+                config,
+            )
     return report
 
 

@@ -22,6 +22,7 @@ from conftest import (
     HTTP_SLOW_TIMEOUT,
     Lane,
     PulledModels,
+    auth_headers,
     lilbee_env,
     run_lilbee_with_env,
     serve_lilbee_with,
@@ -31,7 +32,11 @@ from conftest import (
 def _serve_once_and_query_installed(lane: Lane, env: dict[str, str]) -> list[dict[str, object]]:
     """Boot lilbee serve on a free port, hit /api/models/installed, tear down."""
     with serve_lilbee_with(lane, env) as base_url:
-        response = httpx.get(f"{base_url}/api/models/installed", timeout=HTTP_SLOW_TIMEOUT)
+        response = httpx.get(
+            f"{base_url}/api/models/installed",
+            timeout=HTTP_SLOW_TIMEOUT,
+            headers=auth_headers(env),
+        )
         assert response.status_code == httpx.codes.OK, response.text
         payload = response.json()
     # Endpoint shape varies across releases: bare list OR {"models": [...]}.

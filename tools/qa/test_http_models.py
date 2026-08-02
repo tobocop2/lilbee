@@ -9,8 +9,10 @@ from conftest import HTTP_FAST_TIMEOUT, HTTP_SLOW_TIMEOUT
 
 
 @pytest.mark.http
-def test_models_installed_returns_200(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/models/installed", timeout=HTTP_SLOW_TIMEOUT)
+def test_models_installed_returns_200(server_url: str, server_headers: dict[str, str]) -> None:
+    response = httpx.get(
+        f"{server_url}/api/models/installed", timeout=HTTP_SLOW_TIMEOUT, headers=server_headers
+    )
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     # Response shape varies (sometimes a list, sometimes {"models": [...]}).
@@ -18,16 +20,20 @@ def test_models_installed_returns_200(server_url: str) -> None:
 
 
 @pytest.mark.http
-def test_models_catalog_returns_200(server_url: str) -> None:
+def test_models_catalog_returns_200(server_url: str, server_headers: dict[str, str]) -> None:
     """Featured catalog should always be available; doesn't depend on installed models."""
-    response = httpx.get(f"{server_url}/api/models/catalog", timeout=HTTP_SLOW_TIMEOUT)
+    response = httpx.get(
+        f"{server_url}/api/models/catalog", timeout=HTTP_SLOW_TIMEOUT, headers=server_headers
+    )
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     assert isinstance(payload, dict | list)
 
 
 @pytest.mark.http
-def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
+def test_catalog_includes_fit_and_size_variants(
+    server_url: str, server_headers: dict[str, str]
+) -> None:
     """`/api/models/catalog` rows carry server-computed `fit` and
     `size_variants` fields that the TUI fit-chip and size-strip widgets
     bind to. A regression that drops these would silently break TUI
@@ -42,6 +48,7 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
         f"{server_url}/api/models/catalog",
         params={"task": "chat", "limit": 5},
         timeout=HTTP_SLOW_TIMEOUT,
+        headers=server_headers,
     )
     assert response.status_code == httpx.codes.OK, response.text
     payload = response.json()
@@ -71,7 +78,9 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
 
 
 @pytest.mark.http
-def test_unknown_role_assignment_does_not_5xx(server_url: str) -> None:
+def test_unknown_role_assignment_does_not_5xx(
+    server_url: str, server_headers: dict[str, str]
+) -> None:
     """`PUT /api/models/<role>` with an unknown role must never 5xx. The
     surface rejects via 4xx (auth, validation, method-not-allowed,
     not-found) depending on routing. Asserts the server didn't crash; does
@@ -80,5 +89,6 @@ def test_unknown_role_assignment_does_not_5xx(server_url: str) -> None:
         f"{server_url}/api/models/not-a-real-role",
         json={"model": "anything"},
         timeout=HTTP_FAST_TIMEOUT,
+        headers=server_headers,
     )
     assert httpx.codes.BAD_REQUEST <= response.status_code < httpx.codes.INTERNAL_SERVER_ERROR
