@@ -45,14 +45,18 @@ def test_litellm_extra_admits_locked_stable() -> None:
     assert req.specifier.contains("1.91.0")
 
 
-def test_mcp_rejects_breaking_major_beta() -> None:
-    # mcp 2.x is a breaking rewrite; every 2.x release so far is a pre-release,
-    # so an uncapped range hands beta-channel installs an untested major.
+def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:
+    # The tool server subclasses mcp.server.mcpserver.MCPServer and configures
+    # streamable-http on the app factory. 1.x has neither (it shipped
+    # mcp.server.fastmcp.FastMCP and a settings object), so it cannot run this.
     req = _base_requirement("mcp")
-    assert not req.specifier.contains("2.0.0b1", prereleases=True)
+    for version in ("1.26.0", "1.28.1"):
+        assert not req.specifier.contains(version), version
 
 
-def test_mcp_admits_current_stable_line() -> None:
+def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
+    # <3 also keeps the next major's prereleases off the beta channel, which
+    # resolves with --prerelease=allow.
     req = _base_requirement("mcp")
-    assert req.specifier.contains("1.26.0")
-    assert req.specifier.contains("1.28.1")
+    assert req.specifier.contains("2.0.0")
+    assert not req.specifier.contains("3.0.0b1", prereleases=True)

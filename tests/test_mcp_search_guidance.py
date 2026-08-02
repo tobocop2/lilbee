@@ -19,7 +19,7 @@ def _search_description(server) -> str:
 
 def test_server_instructions_direct_models_to_lilbee_search() -> None:
     # Built-in web/file tools out-compete lilbee_search unless the always-loaded
-    # context tells the model to prefer retrieval; the FastMCP instructions are
+    # context tells the model to prefer retrieval; the server instructions are
     # that context.
     instructions = build_mcp_server().instructions or ""
     assert "lilbee_search" in instructions

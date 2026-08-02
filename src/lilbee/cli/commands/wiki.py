@@ -17,7 +17,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
@@ -355,7 +355,8 @@ def wiki_status(
     from lilbee.wiki.lint import lint_all as _lint_all
 
     # Read-only status: lint for counts without appending to the audit log.
-    report = _lint_all(get_services().store, record_log=False)
+    with sigint_cancel() as cancel:
+        report = _lint_all(get_services().store, record_log=False, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
@@ -393,8 +394,8 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _wiki_progress() as on_progress:
-        result = run_full_synthesize(cfg, on_progress)
+    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
+        result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": "wiki_synthesize", **result})
@@ -423,7 +424,8 @@ def wiki_prune(
         _fail_wiki_disabled()
     from lilbee.wiki.prune import prune_wiki
 
-    report = prune_wiki(get_services().store)
+    with sigint_cancel() as cancel:
+        report = prune_wiki(get_services().store, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
@@ -581,8 +583,8 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _wiki_progress() as on_progress:
-        result = run_full_build(cfg, on_progress)
+    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
+        result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": command_name, **result})

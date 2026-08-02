@@ -43,9 +43,8 @@ dependencies = [
     "typer>=0.12",
     "tiktoken",
     "textual>=0.75",
-    # mcp <2: the 2.x line is a breaking rewrite still in beta; the beta
-    # channel's --prerelease=allow would resolve to 2.0.0b1 otherwise.
-    "mcp>=1.26.0,<2",
+    # Floor is 2.0: the tool server needs mcp.server.mcpserver, which 1.x lacks.
+    "mcp>=2.0.0,<3",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",

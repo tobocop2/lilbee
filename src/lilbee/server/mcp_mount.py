@@ -1,4 +1,4 @@
-"""Mount the FastMCP tool server over streamable-http on the Litestar daemon."""
+"""Mount the MCP tool server over streamable-http on the Litestar daemon."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def _transport_security() -> TransportSecuritySettings:
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     """Return the MCP route handler and the session-manager lifespan.
 
-    Each mount builds its own MCP server: FastMCP caches a single session
+    Each mount builds its own MCP server: the SDK caches a single session
     manager per server and ``run()`` is single-use, so a shared server's
     second lifespan would raise.
     """
@@ -80,9 +80,13 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
     server = build_mcp_server()
-    server.settings.streamable_http_path = "/"
-    server.settings.transport_security = _transport_security()
-    asgi_app = cast("ASGIApp", server.streamable_http_app())
+    asgi_app = cast(
+        "ASGIApp",
+        server.streamable_http_app(
+            streamable_http_path="/",
+            transport_security=_transport_security(),
+        ),
+    )
     manager = server.session_manager
 
     async def _forward(scope: Scope, receive: Receive, send: Send) -> None:

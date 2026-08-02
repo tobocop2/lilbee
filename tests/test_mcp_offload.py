@@ -51,7 +51,7 @@ def test_registered_tool_keeps_sync_callable_for_in_process_use() -> None:
 async def test_registered_tool_schema_preserves_parameters() -> None:
     tools = {tool.name: tool for tool in await m.build_mcp_server().list_tools()}
 
-    properties = tools["search"].inputSchema["properties"]
+    properties = tools["search"].input_schema["properties"]
 
     assert {"query", "top_k", "scope"} <= set(properties)
 
