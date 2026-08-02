@@ -65,6 +65,23 @@ class TestExportCommand:
         assert "Wrote 2 pages" in result.output
         assert out.exists()
 
+    def test_a_cancelled_export_reports_it_and_leaves_no_file(self, store, tmp_path, monkeypatch):
+        """Ctrl-C stops between row groups; half a dataset must not be left behind."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        _seed(store)
+        out = tmp_path / "pages.parquet"
+
+        def cancelled_export(*_args, **_kwargs):
+            raise TaskCancelledError
+
+        monkeypatch.setattr("lilbee.app.dataset.export_to_path", cancelled_export)
+        result = runner.invoke(app, ["export", str(out)])
+
+        assert result.exit_code == 1
+        assert "cancelled" in result.output.lower()
+        assert not out.exists()
+
     def test_export_empty_store_fails(self, store, tmp_path):
         result = runner.invoke(app, ["--json", "export", str(tmp_path / "pages.parquet")])
         assert result.exit_code == 1

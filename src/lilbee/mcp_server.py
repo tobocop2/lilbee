@@ -12,7 +12,9 @@ import os
 import re
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -20,7 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 import anyio
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
 from lilbee.app.memory import (
@@ -64,6 +66,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -120,6 +123,16 @@ def set_http_mounted(value: bool) -> None:
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
+# Set by the offload for the duration of one sync handler and read by the long
+# ones. A parameter would reach the generated tool schema and invite an agent to
+# pass it; the handlers keep the plain signature that in-process callers use.
+_CANCEL: ContextVar[threading.Event | None] = ContextVar("lilbee_mcp_cancel", default=None)
+
+
+def _caller_cancelled() -> threading.Event | None:
+    """The stop token for the handler running on this thread, if the offload set one."""
+    return _CANCEL.get()
+
 
 def _offload_sync(fn: _F) -> _F:
     """Run a sync tool handler off the event loop; async handlers pass through.
@@ -128,13 +141,24 @@ def _offload_sync(fn: _F) -> _F:
     under the shared streamable-http daemon one slow handler would stall every
     connected agent. ``functools.wraps`` preserves the wrapped signature so the
     generated tool schema is unchanged.
+
+    ``abandon_on_cancel`` releases the caller the moment it cancels. A worker
+    thread cannot be interrupted, so the handler still runs to completion; the
+    default would additionally hold the cancelling task until it did, which on
+    the shared mount keeps a connection open for a request nobody is waiting
+    for. Work that must actually stop takes a cancel token instead, as the
+    ingest tools do.
     """
     if inspect.iscoroutinefunction(fn):
         return fn
 
     @functools.wraps(fn)
     async def _runner(*args: Any, **kwargs: Any) -> Any:
-        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        with _cancel_token() as token:
+            _CANCEL.set(token)
+            return await anyio.to_thread.run_sync(
+                functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
+            )
 
     return cast("_F", _runner)
 
@@ -295,6 +319,28 @@ def _entity_status_dict() -> dict[str, Any] | None:
     return section.model_dump() if section is not None else None
 
 
+@contextmanager
+def _cancel_token() -> Iterator[threading.Event]:
+    """A stop token for a long operation, set on any abnormal exit.
+
+    An agent cancelling a tool call gets what the HTTP surface gets on a client
+    disconnect: the work stops at its next boundary and keeps what it finished,
+    rather than running the rest of a corpus, download or wiki build for a
+    request that has gone away. The work runs on a thread asyncio cannot
+    interrupt, which is why cancellation alone does not reach it and the token
+    has to be polled.
+
+    Set on every exception, not only cancellation: a pass that raised is over
+    either way, and a caller vanishing does not always surface as a cancel.
+    """
+    token = threading.Event()
+    try:
+        yield token
+    except BaseException:
+        token.set()
+        raise
+
+
 @_tool
 async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
@@ -304,9 +350,15 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
     """
     from lilbee.data.ingest import sync as run_sync
 
-    return (
-        await run_sync(quiet=True, force_rebuild=force_rebuild, retry_skipped=retry_skipped)
-    ).model_dump()
+    with _cancel_token() as cancel:
+        return (
+            await run_sync(
+                quiet=True,
+                force_rebuild=force_rebuild,
+                retry_skipped=retry_skipped,
+                cancel=cancel,
+            )
+        ).model_dump()
 
 
 @_tool
@@ -363,8 +415,8 @@ async def add(
 
     from lilbee.app.ingest import temporary_ocr_config
 
-    with temporary_ocr_config(enable_ocr, ocr_timeout):
-        sync_result = (await run_sync(quiet=True)).model_dump()
+    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
+        sync_result = (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
     result: dict[str, Any] = {
         "command": "add",
@@ -433,6 +485,16 @@ def crawl_status(task_id: str) -> dict[str, Any]:
         "started_at": task.started_at,
         "finished_at": task.finished_at,
     }
+
+
+@_tool
+def crawl_cancel(task_id: str) -> dict[str, Any]:
+    """Stop a running crawl started by ``crawl``. Pages already saved are kept."""
+    from lilbee.crawler.task import cancel_crawl
+
+    if get_task(task_id) is None:
+        return _error(f"No task found with id: {task_id}")
+    return {"command": "crawl_cancel", "task_id": task_id, "cancelling": cancel_crawl(task_id)}
 
 
 @_tool
@@ -632,7 +694,7 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
     from lilbee.app.dataset import DatasetError, export_to_path
 
     try:
-        summary = export_to_path(Path(output), fmt, source or None)
+        summary = export_to_path(Path(output), fmt, source or None, cancel=_caller_cancelled())
     except DatasetError as exc:
         return _error(str(exc))
     return summary.model_dump()
@@ -649,22 +711,30 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
     loop = asyncio.get_running_loop()
 
-    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        # EMBED events carry chunk/total_chunks; other event types don't map to a percent.
-        if ctx is None or not isinstance(data, EmbedEvent):
-            return
-        future = asyncio.run_coroutine_threadsafe(
-            ctx.report_progress(
-                progress=float(data.chunk), total=float(data.total_chunks), message=data.file
-            ),
-            loop,
-        )
-        future.add_done_callback(_log_progress_failure)
+    with _cancel_token() as cancel:
 
-    try:
-        summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-    except DatasetError as exc:
-        return _error(str(exc))
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            # Raise rather than return: the embed work runs off the loop, so a
+            # quiet return would re-embed the whole dataset for a caller that
+            # has gone. Checked before the isinstance filter so the stop lands
+            # on every event, not only the ones that map to a percent.
+            if cancel.is_set():
+                raise TaskCancelledError
+            # EMBED events carry chunk/total_chunks; other event types don't map to a percent.
+            if ctx is None or not isinstance(data, EmbedEvent):
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                ctx.report_progress(
+                    progress=float(data.chunk), total=float(data.total_chunks), message=data.file
+                ),
+                loop,
+            )
+            future.add_done_callback(_log_progress_failure)
+
+        try:
+            summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
+        except DatasetError as exc:
+            return _error(str(exc))
     return summary.model_dump()
 
 
@@ -693,7 +763,9 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
 
     store = get_services().store
     report = (
-        LintReport(issues=lint_wiki_page(wiki_source, store)) if wiki_source else lint_all(store)
+        LintReport(issues=lint_wiki_page(wiki_source, store))
+        if wiki_source
+        else lint_all(store, cancel=_caller_cancelled())
     )
     return {
         "command": "wiki_lint",
@@ -758,7 +830,7 @@ def wiki_status() -> dict[str, Any]:
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
     # Read-only status: lint for counts without appending to the audit log.
-    report = lint_all(get_services().store, record_log=False)
+    report = lint_all(get_services().store, record_log=False, cancel=_caller_cancelled())
     return {
         "wiki_enabled": cfg.wiki,
         WikiSubdir.SUMMARIES: len(summaries),
@@ -818,7 +890,7 @@ def wiki_build(dry_run: bool = False) -> dict[str, Any]:
             "count": len(rows),
             "note": DRY_RUN_CONCEPT_NOTE,
         }
-    return {"command": "wiki_build", **run_full_build(cfg)}
+    return {"command": "wiki_build", **run_full_build(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool
@@ -826,7 +898,7 @@ def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. A full rebuild; blocks until done."""
     from lilbee.wiki import run_full_build
 
-    return {"command": "wiki_update", **run_full_build(cfg)}
+    return {"command": "wiki_update", **run_full_build(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool
@@ -834,7 +906,7 @@ def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
     from lilbee.wiki import run_full_synthesize
 
-    return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
+    return {"command": "wiki_synthesize", **run_full_synthesize(cfg, cancel=_caller_cancelled())}
 
 
 @_wiki_tool
@@ -842,7 +914,7 @@ def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
 
-    report = prune_wiki(get_services().store)
+    report = prune_wiki(get_services().store, cancel=_caller_cancelled())
     return {
         "command": "wiki_prune",
         "records": [r.to_dict() for r in report.records],
@@ -1105,33 +1177,44 @@ async def model_pull(
 
     loop = asyncio.get_running_loop()
 
-    def on_update(p: DownloadProgress) -> None:
-        if ctx is None:
-            return
-        future = asyncio.run_coroutine_threadsafe(
-            ctx.report_progress(progress=float(p.percent), total=100.0, message=p.detail),
-            loop,
-        )
-        future.add_done_callback(_log_progress_failure)
+    with _cancel_token() as cancel:
 
-    try:
-        result = await asyncio.to_thread(
-            pull_model_data, model, src, on_update=on_update, allow_unsupported=allow_unsupported
-        )
-    except UnsupportedArchError as exc:
-        return {
-            "ok": False,
-            "command": "model_pull",
-            "error": {
-                "code": "unsupported_arch",
-                "arch": exc.architecture,
-                "ref": exc.ref,
-                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                "total_supported": len(SUPPORTED_ARCHS),
-            },
-        }
-    except (RuntimeError, PermissionError) as exc:
-        return _error(str(exc))
+        def on_update(p: DownloadProgress) -> None:
+            # Raise rather than return: the download runs on a thread asyncio
+            # cannot interrupt, so returning would leave a multi-GB pull going
+            # for a caller that has gone. Same idiom the HTTP pull uses.
+            if cancel.is_set():
+                raise TaskCancelledError
+            if ctx is None:
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                ctx.report_progress(progress=float(p.percent), total=100.0, message=p.detail),
+                loop,
+            )
+            future.add_done_callback(_log_progress_failure)
+
+        try:
+            result = await asyncio.to_thread(
+                pull_model_data,
+                model,
+                src,
+                on_update=on_update,
+                allow_unsupported=allow_unsupported,
+            )
+        except UnsupportedArchError as exc:
+            return {
+                "ok": False,
+                "command": "model_pull",
+                "error": {
+                    "code": "unsupported_arch",
+                    "arch": exc.architecture,
+                    "ref": exc.ref,
+                    "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                    "total_supported": len(SUPPORTED_ARCHS),
+                },
+            }
+        except (RuntimeError, PermissionError) as exc:
+            return _error(str(exc))
     return result.model_dump()
 
 
@@ -1221,7 +1304,7 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim auto-generated noise from a tool's input schema, on a copy.
 
     Drops:
-    - FastMCP/Pydantic ``title`` keys (per-schema + per-property). Tools the
+    - SDK/Pydantic ``title`` keys (per-schema + per-property). Tools the
       model picks by name don't need a separate display title.
     - ``default`` values on properties: clients send what they want and
       omitted fields fall back server-side.
@@ -1247,8 +1330,8 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 
-class LilbeeMCP(FastMCP):
-    """FastMCP that trims its tools wire and keeps it current with config."""
+class LilbeeMCP(MCPServer):
+    """MCP server that trims its tools wire and keeps it current with config."""
 
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.
@@ -1261,7 +1344,7 @@ class LilbeeMCP(FastMCP):
         """
         tools = await super().list_tools()
         for tool in tools:
-            tool.inputSchema = _strip_schema(tool.inputSchema)
+            tool.input_schema = _strip_schema(tool.input_schema)
             if isinstance(tool.description, str):
                 description = _flatten_tool_description(tool.description)
                 if tool.name == "search" and not cfg.wiki:
@@ -1472,7 +1555,7 @@ def clear_placement_tool() -> dict[str, Any]:
 def build_mcp_server() -> LilbeeMCP:
     """Build an MCP server carrying every tool registered in this module.
 
-    Each transport builds its own instance: FastMCP caches one
+    Each transport builds its own instance: the SDK caches one
     ``StreamableHTTPSessionManager`` per server and its ``run()`` is single-use,
     so a shared server cannot back two apps in one process. Gates registered
     via ``_tool_if`` are evaluated here, against current config.

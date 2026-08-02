@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.90b420.dev729"
+version = "0.6.90b420.dev730"
 description = "The whole local AI stack in one executable: run and manage local AI models across every GPU you have, and search your files, code, and the web pages you crawl, with answers that cite the source. Per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server, no containers. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
 license = "MIT"
@@ -34,7 +34,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "lancedb[pylance]",
+    # pylance has no macOS x86_64 wheel; requiring the extra there backtracks
+    # lancedb to 0.25.3, which predates list_tables(). Intel Macs run plain
+    # lancedb (the +compat wheel); import lance is confined to the multi-GPU
+    # shard-adoption path, which that hardware cannot reach.
+    "lancedb[pylance] ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "lancedb ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "xberg>=1.0.4",
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
@@ -43,9 +48,8 @@ dependencies = [
     "typer>=0.12",
     "tiktoken",
     "textual>=0.75",
-    # mcp <2: the 2.x line is a breaking rewrite still in beta; the beta
-    # channel's --prerelease=allow would resolve to 2.0.0b1 otherwise.
-    "mcp>=1.26.0,<2",
+    # Floor is 2.0: the tool server needs mcp.server.mcpserver, which 1.x lacks.
+    "mcp>=2.0.0,<3",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",

@@ -538,3 +538,59 @@ class TestImportDataset:
         assert all(r["title"] == "Annual Report" for r in exported)
         assert all(r["authors"] == "Ada, Grace" for r in exported)
         assert all(r["created_at"] == "2021-05-01" for r in exported)
+
+
+class TestWriteCancellation:
+    """A cancelled export must not leave a file that reads as a complete one."""
+
+    @staticmethod
+    def _big_table(rows: int = 60_000) -> pa.Table:
+        """Wider than one row group, so there is a boundary to stop on."""
+        return pa.Table.from_pylist([_page("a.pdf", i, f"text {i}") for i in range(rows)])
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_a_cancelled_write_removes_the_partial_file(self, tmp_path, fmt):
+        import threading
+
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        path = tmp_path / f"pages.{fmt}"
+        cancel = threading.Event()
+        cancel.set()  # already cancelled: stop on the first boundary
+
+        with pytest.raises(TaskCancelledError):
+            write_dataset(self._big_table(), path, fmt, cancel)
+
+        assert not path.exists(), "a cancelled export left a partial file behind"
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_an_unset_token_writes_the_whole_dataset(self, tmp_path, fmt):
+        import threading
+
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(self._big_table(), path, fmt, threading.Event())
+        assert path.exists()
+        assert len(load_page_dataset(path, fmt)) == 60_000
+
+    def test_an_empty_table_still_writes_a_readable_file(self, tmp_path):
+        """The row-group loop does not run with no rows, so the footer differs
+        from write_table. The export path cannot reach this (the build refuses
+        an empty dataset first), but the file must still be valid."""
+        empty = pa.Table.from_pylist([], schema=self._big_table(1).schema)
+        path = tmp_path / "empty.parquet"
+        write_dataset(empty, path, DatasetFormat.PARQUET, None)
+        assert path.exists()
+        assert len(load_page_dataset(path, DatasetFormat.PARQUET)) == 0
+
+    def test_the_parquet_writer_output_is_unchanged_by_the_batching(self, tmp_path):
+        """The stop boundary comes from driving ParquetWriter per row group
+        rather than calling write_table; the bytes must not move."""
+        import pyarrow.parquet as pq
+
+        table = self._big_table(30_000)
+        ours = tmp_path / "ours.parquet"
+        write_dataset(table, ours, DatasetFormat.PARQUET, None)
+
+        reference = io.BytesIO()
+        pq.write_table(table, reference, row_group_size=export_mod._WRITE_BATCH_ROWS)
+        assert ours.read_bytes() == reference.getvalue()

@@ -10,8 +10,9 @@ import typer
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.core.config import cfg
+from lilbee.runtime.cancellation import TaskCancelledError
 
 _export_output_argument = typer.Argument(
     Path("pages.parquet"),
@@ -54,7 +55,10 @@ def export_cmd(
     from lilbee.app.dataset import DatasetError, export_to_path
 
     try:
-        summary = export_to_path(output, fmt, source)
+        with sigint_cancel() as cancel:
+            summary = export_to_path(output, fmt, source, cancel=cancel)
+    except TaskCancelledError:
+        _fail("Export cancelled; the partial file was removed.")
     except DatasetError as exc:
         _fail(str(exc))
 
