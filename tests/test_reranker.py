@@ -257,6 +257,57 @@ class TestRerank:
         assert captured["cands"] == ["alpha", "beta"]
 
 
+class TestSearchAppliesReranker:
+    """search() reranks whenever a reranker is loaded, so every surface (HTTP,
+    MCP, CLI, ask) gets reranked order, and retrieves the reranker's candidate
+    depth. Without a reranker configured, search() neither bumps depth nor reranks.
+    """
+
+    def _searcher(self, reranker):
+        store = mock.MagicMock()
+        store.search.return_value = [_chunk("a.md", "A"), _chunk("b.md", "B")]
+        embedder = mock.MagicMock()
+        embedder.embed_query.return_value = [0.1]
+        searcher = Searcher(cfg, mock.MagicMock(), store, embedder, reranker, mock.MagicMock())
+        return searcher, store
+
+    def _isolate(self, monkeypatch, searcher):
+        monkeypatch.setattr(cfg, "intent_routing", False)
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        monkeypatch.setattr(searcher, "_apply_temporal_filter", lambda r, q: r)
+        monkeypatch.setattr(searcher, "_apply_concept_boost", lambda r, q: r)
+
+    def test_search_reranks_and_bumps_depth_when_loaded(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_candidates = 100
+        reranker = mock.MagicMock()
+        reranker.rerank.side_effect = lambda q, r: r
+        searcher, store = self._searcher(reranker)
+        self._isolate(monkeypatch, searcher)
+        searcher.search("plain multi word query", top_k=5)
+        reranker.rerank.assert_called_once()
+        assert store.search.call_args.kwargs["top_k"] == 100  # bumped from top_k=5
+
+    def test_search_skips_rerank_without_model(self, monkeypatch):
+        cfg.reranker_model = ""
+        reranker = mock.MagicMock()
+        searcher, store = self._searcher(reranker)
+        self._isolate(monkeypatch, searcher)
+        searcher.search("plain multi word query", top_k=5)
+        reranker.rerank.assert_not_called()
+        assert store.search.call_args.kwargs["top_k"] == 5  # not bumped
+
+    def test_mode_prefix_stays_unreranked(self, monkeypatch):
+        """A mode: escape (vec:/term:/...) forces a raw strategy and skips rerank."""
+        cfg.reranker_model = _RERANKER_MODEL
+        reranker = mock.MagicMock()
+        searcher, _ = self._searcher(reranker)
+        monkeypatch.setattr(searcher, "_search_structured", lambda *a, **k: [_chunk("a.md", "A")])
+        monkeypatch.setattr(searcher, "_apply_temporal_filter", lambda r, q: r)
+        searcher.search("vec:plain query", top_k=5)
+        reranker.rerank.assert_not_called()
+
+
 class TestBlendSchedule:
     def test_schedule_weights_sum_to_one(self):
         for key, (fw, rw) in _BLEND_SCHEDULE.items():

@@ -1999,13 +1999,38 @@ class TestPageTexts:
         assert store.get_page_texts() == []
         assert store.get_page_texts("x.pdf") == []
 
-    def test_page_text_sources(self, store):
-        store.add_page_texts(_page_rows("a.pdf", (1,)))
-        store.add_page_texts(_page_rows("b.pdf", (1,)))
-        assert store.page_text_sources() == {"a.pdf", "b.pdf"}
+    def test_sources_arrow_keys_metadata_by_source(self, store):
+        from lilbee.data.store import SourceMeta
 
-    def test_page_text_sources_missing_table(self, store):
-        assert store.page_text_sources() == set()
+        store.upsert_source("a.pdf", "h", 1, meta=SourceMeta("Alpha", "Ada", "2020-01-01"))
+        store.upsert_source("b.pdf", "h", 1)
+        arrow = store.sources_arrow()
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+        by_source = {r["source"]: r for r in arrow.to_pylist()}
+        assert by_source["a.pdf"]["title"] == "Alpha"
+        assert by_source["a.pdf"]["authors"] == "Ada"
+        assert set(by_source) == {"a.pdf", "b.pdf"}
+
+    def test_sources_arrow_missing_table(self, store):
+        arrow = store.sources_arrow()
+        assert arrow.num_rows == 0
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+
+    def test_sources_arrow_fills_columns_an_older_index_lacks(self, store):
+        # A sources table written before the metadata columns existed must still
+        # join, with nulls, rather than losing the column and breaking the export.
+        import pyarrow as pa
+
+        db = store.get_db()
+        db.create_table(
+            "_sources",
+            pa.table({"filename": pa.array(["old.pdf"]), "file_hash": pa.array(["h"])}),
+        )
+        arrow = store.sources_arrow()
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+        assert arrow.to_pylist() == [
+            {"source": "old.pdf", "title": None, "authors": None, "created_at": None}
+        ]
 
     def test_delete_by_source_removes_page_texts(self, store):
         store.add_chunks(_make_records(n=1))
@@ -2241,12 +2266,12 @@ class TestAdaptiveFilterFinalPass:
 
 class TestTableNamesAttributeError:
     def test_fallback_to_list_when_no_tables_attr(self, store):
-        """_table_names falls back to list() when result has no .tables attribute."""
-        from lilbee.data.store.lance_helpers import _table_names
+        """table_names falls back to list() when result has no .tables attribute."""
+        from lilbee.data.store.lance_helpers import table_names
 
         mock_db = mock.MagicMock()
         mock_db.list_tables.return_value = ["chunks", "sources"]
-        result = _table_names(mock_db)
+        result = table_names(mock_db)
         assert result == ["chunks", "sources"]
 
 
@@ -2909,14 +2934,15 @@ class TestAnnNprobesScaling:
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
         assert _ann_nprobes(0) == _ANN_NPROBES_FLOOR
-        assert _ann_nprobes(50_000) == _ANN_NPROBES_FLOOR
+        # isqrt(10_000) = 100 partitions, ceil(100 * 0.15) = 15 < floor.
+        assert _ann_nprobes(10_000) == _ANN_NPROBES_FLOOR
 
     def test_large_corpus_scales_past_floor(self):
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
-        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.05) = 354 probes.
+        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.15) = 1061 probes.
         fifty_million = 50_000_000
-        assert _ann_nprobes(fifty_million) == 354
+        assert _ann_nprobes(fifty_million) == 1061
         assert _ann_nprobes(fifty_million) > _ANN_NPROBES_FLOOR
 
     def test_negative_row_count_clamps_to_floor(self):

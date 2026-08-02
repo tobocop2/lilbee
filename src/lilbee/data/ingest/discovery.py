@@ -6,13 +6,14 @@ import hashlib
 import logging
 import os
 import time
+from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
 
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.extract.code_chunker import is_code_file
-from lilbee.data.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE
+from lilbee.data.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
 
 log = logging.getLogger(__name__)
 
@@ -155,13 +156,12 @@ def resolve_source_path_checked(filename: str) -> Path | None:
 
 
 def _walk_root(
-    files: dict[str, Path],
     base: Path,
     label: str | None,
     ignore_dirs: frozenset[str],
     progress: _ScanProgress,
-) -> None:
-    """Record supported files under *base*, keyed relative to it (prefixed by *label*).
+) -> Iterator[tuple[str, Path]]:
+    """Yield supported files under *base*, keyed relative to it (prefixed by *label*).
 
     Symlinks are not followed (``followlinks=False``): each root is walked as the
     real tree it names, so there is no traversal loop and no path can escape the
@@ -180,10 +180,24 @@ def _walk_root(
             if content_type is None:
                 continue
             rel = path.relative_to(base).as_posix()
-            files[f"{label}/{rel}" if label else rel] = path
+            yield f"{label}/{rel}" if label else rel, path
 
 
-def discover_files() -> dict[str, Path]:
+def _walk_corpus() -> Iterator[tuple[str, Path]]:
+    """Yield every supported file in the owned tree and in each registered root."""
+    config = active_config()
+    progress = _ScanProgress()
+    if config.documents_dir.exists():
+        yield from _walk_root(config.documents_dir, None, config.ignore_dirs, progress)
+    for label, root in config.linked_roots.items():
+        root_path = Path(root)
+        if root_path.is_dir():
+            yield from _walk_root(root_path, label, config.ignore_dirs, progress)
+        elif root_path.is_file() and classify_file(root_path) is not None:
+            yield label, root_path
+
+
+def discover_files(shard: ShardId | None = None) -> dict[str, Path]:
     """Scan the owned documents dir and every registered root, return {key: path}.
 
     Files lilbee owns under ``documents_dir`` (crawl and upload output) are keyed
@@ -192,16 +206,18 @@ def discover_files() -> dict[str, Path]:
     single-file root contributes one entry keyed by the label alone. A root whose
     path has since vanished contributes nothing this pass, and its already-indexed
     sources are left in place (a dead path-link, not a removal).
+
+    A *shard* keeps only the keys that slice owns, so one worker of a multi-GPU
+    ingest holds the paths of its own slice and not the whole corpus.
     """
-    config = active_config()
-    files: dict[str, Path] = {}
-    progress = _ScanProgress()
-    if config.documents_dir.exists():
-        _walk_root(files, config.documents_dir, None, config.ignore_dirs, progress)
-    for label, root in config.linked_roots.items():
-        root_path = Path(root)
-        if root_path.is_dir():
-            _walk_root(files, root_path, label, config.ignore_dirs, progress)
-        elif root_path.is_file() and classify_file(root_path) is not None:
-            files[label] = root_path
-    return files
+    return {key: path for key, path in _walk_corpus() if shard is None or shard.owns(key)}
+
+
+def corpus_has_at_least(count: int) -> bool:
+    """Whether the corpus holds at least *count* supported files.
+
+    Stops at the threshold. The answer gates the multi-GPU ingest fan-out, and
+    walking a million-file tree to learn "yes, more than a few thousand" would
+    cost minutes before any work starts.
+    """
+    return any(seen >= count for seen, _ in enumerate(_walk_corpus(), start=1))

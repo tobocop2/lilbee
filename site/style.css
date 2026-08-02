@@ -51,6 +51,9 @@ body {
   padding: 2.5rem var(--gutter) 4rem;
   position: relative;
   overflow-x: hidden;
+  /* clip, not hidden: hidden makes body a scroll container on mobile browsers,
+     which breaks the sticky nav. clip never creates one. */
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -89,6 +92,7 @@ pre { font: inherit; white-space: pre; }
   from { opacity: 0; }
 }
 @media (prefers-reduced-motion: no-preference) {
+  .nav { animation: lb-fade 400ms ease both; }
   .topstrip,
   .main > section { animation: lb-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both; }
   .topstrip                       { animation-delay: 0ms; }
@@ -121,6 +125,124 @@ h2.label { font-size: inherit; font-weight: inherit; }
 }
 
 .main { min-width: 0; }
+
+/* mega-nav -------------------------------------------------------------
+   Sticky site header. Full-bleed bar: the negative margins cancel the body
+   padding so the border runs edge to edge, while .nav-inner keeps the
+   content on the same 1240px column as .layout. */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  margin: -2.5rem calc(-1 * var(--gutter)) 1.7rem;
+  padding: 0 var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--rule);
+}
+.nav-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  padding: 0.4rem 0;
+}
+.nav-brand {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border-bottom: none;
+}
+.nav-brand:hover { color: var(--accent-hot); }
+.nav-menus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+  flex: 1;
+}
+.menu { position: relative; }
+.menu.open { z-index: 70; }
+.menu-btn {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--ink-2);
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+  transition: color 130ms, border-color 130ms, background-color 130ms;
+}
+.menu-btn::after {
+  content: "▾";
+  margin-left: 0.45em;
+  font-size: 9px;
+  color: var(--ink-3);
+}
+.menu-btn:hover { color: var(--ink); border-color: var(--rule-2); }
+.menu.open .menu-btn { color: var(--accent); border-color: var(--rule-2); background: var(--bg-elev); }
+.menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.menu-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 11.5rem;
+  max-height: min(70vh, 32rem);
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 0.5rem;
+  box-shadow: 0 22px 60px -26px rgba(0, 0, 0, 0.78);
+}
+.menu.open .menu-panel { display: block; }
+.menu.open .menu-panel.menu-cols { display: flex; gap: 1.2rem; }
+.menu-col { min-width: 10.5rem; }
+.menu.align-right .menu-panel { left: auto; right: 0; }
+.menu-group {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0.45rem 0 0.2rem;
+  padding: 0 0.55rem;
+}
+.menu-panel > .menu-group:first-child,
+.menu-col > .menu-group:first-child { margin-top: 0; }
+.menu-panel a {
+  display: block;
+  padding: 0.26rem 0.55rem;
+  border-bottom: none;
+  border-radius: 3px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.menu-panel a:hover { color: var(--accent-hot); background: rgba(235, 188, 186, 0.07); }
+.menu-panel a:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.menu-panel a.menu-hl { color: var(--accent); }
+.menu-panel a[aria-current="page"] { color: var(--accent); }
+.menu-panel a[aria-current="page"]::after { content: " ·"; color: var(--ink-3); }
+.nav-star {
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 0.26rem 0.6rem;
+  margin-left: auto;
+}
+.nav-star:hover { color: var(--accent-hot); border-color: var(--accent); background: rgba(235, 188, 186, 0.07); }
+
+/* keep anchored sections clear of the sticky nav when jumping to them */
+section[id] { scroll-margin-top: 4.2rem; }
 
 /* top strip ---------------------------------------------------------- */
 .topstrip {
@@ -630,6 +752,7 @@ h2.label { font-size: inherit; font-weight: inherit; }
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
+  min-width: 0;
   padding: 6px 0;
   border-bottom: none;
   color: var(--ink);
@@ -638,6 +761,7 @@ h2.label { font-size: inherit; font-weight: inherit; }
 .links a .dots {
   color: var(--rule-2);
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   letter-spacing: 0.12em;
@@ -901,6 +1025,10 @@ footer .meta { text-align: right; font-size: 12px; }
   .bee-art { display: none; }
 }
 @media (max-width: 720px) {
+  :root { --gutter: 1.1rem; }
+  .nav-menus { order: 3; flex-basis: 100%; }
+  .menu-panel { max-width: calc(100vw - 2 * var(--gutter)); }
+  .menu.open .menu-panel.menu-cols { flex-wrap: wrap; }
   body { padding: 1.4rem 1.1rem 3rem; font-size: 14.5px; }
   .wordmark { font-size: 9.5px; }
   .caps, .links, .shape, .routes, .deps { grid-template-columns: 1fr; }
@@ -909,11 +1037,7 @@ footer .meta { text-align: right; font-size: 12px; }
   .extra { flex-direction: column; gap: 0.2rem; }
 }
 
-/* satellite landing pages: breadcrumb + FAQ disclosure --------------- */
-.crumb { font-size: 12px; color: var(--ink-3); margin: 0 0 1.6rem; letter-spacing: 0.02em; }
-.crumb a { color: var(--ink-2); text-decoration: none; }
-.crumb a:hover { color: var(--accent); }
-
+/* satellite landing pages: FAQ disclosure ------------------------------ */
 .faq { display: flex; flex-direction: column; gap: 0.5rem; }
 .faq details {
   border: 1px solid var(--rule-2);

@@ -150,9 +150,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Worker processes for extracting and embedding a large corpus. 1 (default)"
-            " = off; 0 = auto-size; N = explicit. Only helps a small/fast embedder that"
-            " one process cannot use to fill a multi-GPU fleet"
+            "Ingest worker processes, one GPU each (0 = auto, one per card). Used"
+            " once the corpus is big enough to pay for them; 1 keeps ingest in this"
+            " process"
         ),
     ),
     "mcp_tool_threads": SettingDef(

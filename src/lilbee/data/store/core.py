@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
@@ -17,6 +19,7 @@ from lilbee.core.config import (
     CITATIONS_TABLE,
     ENTITIES_TABLE,
     ENTITY_SCHEMA_TABLE,
+    INGEST_SOURCE_COLUMNS,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -37,10 +40,10 @@ from .lance_helpers import (
     _has_vector_index,
     _safe_delete_unlocked,
     _sources_search_filter,
-    _table_names,
     ensure_table,
     escape_sql_string,
     refs_compatible,
+    table_names,
 )
 from .ranking import mmr_rerank
 from .schema import (
@@ -76,6 +79,7 @@ from .types import (
 )
 
 if TYPE_CHECKING:
+    import lance
     import lancedb
     import lancedb.table
     from lancedb.index import FTS
@@ -153,7 +157,13 @@ def _lexical_rows(
 # The index type is carried by the lancedb IvfPq config at build time.
 _VECTOR_METRIC = "cosine"
 _ANN_NPROBES_FLOOR = 20
-_ANN_NPROBES_PARTITION_FRACTION = 0.05
+# Fraction of IVF partitions probed per query. 0.05 was the "fast" end of the
+# recall/latency curve and measurably cost recall at scale: on the 8.8M-passage
+# MS MARCO index it gave recall@100 of 67%, where probing more partitions
+# reached 87% (docs/benchmarks/retrieval-msmarco.md). 0.15 is the "balanced /
+# high-recall" range for IVF and recovers most of that gap; refine_factor below
+# still re-ranks the survivors against full vectors.
+_ANN_NPROBES_PARTITION_FRACTION = 0.15
 _ANN_REFINE_FACTOR = 10
 
 # Stat columns of ``_sources``; mirrors the field names in ``schema._sources_schema``
@@ -172,14 +182,14 @@ _TITLE_COLUMN = "title"
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
 # so only the per-chunk concept mapping is source-scoped.
-_PER_SOURCE_TABLES = (
-    (CHUNKS_TABLE, "source"),
-    (PAGE_TEXTS_TABLE, "source"),
-    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
-    (ENTITIES_TABLE, "source"),
+_PER_SOURCE_TABLES = tuple(
+    (name, INGEST_SOURCE_COLUMNS[name])
+    for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
+) + (
     # Per-(subject, source), so removing a source drops its mention evidence
     # here with its chunks; the wiki refresh only ever re-adds a source, never
-    # has to remember to subtract a deleted one.
+    # has to remember to subtract a deleted one. Not in INGEST_SOURCE_COLUMNS
+    # (a wiki table, not an ingest one), so its column is named directly.
     (WIKI_MENTIONS_TABLE, "source"),
 )
 
@@ -188,7 +198,7 @@ _PER_SOURCE_TABLES = (
 # source_filename so citations keep pointing at the source after a move.
 _RELOCATABLE_TABLES = (
     *_PER_SOURCE_TABLES,
-    (CITATIONS_TABLE, "source_filename"),
+    (CITATIONS_TABLE, INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]),
 )
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
@@ -547,7 +557,7 @@ class Store:
     def open_table(self, name: str) -> lancedb.table.Table | None:
         """Open a table if it exists, otherwise return None."""
         db = self.get_db()
-        if name not in _table_names(db):
+        if name not in table_names(db):
             return None
         return db.open_table(name)
 
@@ -829,6 +839,123 @@ class Store:
             table = self._chunks_table()
             table.delete(predicate)
             return self._add_chunks_unlocked(records)
+
+    def _stamp_meta_unlocked(self, embedding_model: str, embedding_dim: int) -> None:
+        """Write the embedder identity on the first write to a fresh store."""
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+
+    def absorb_rows(self, name: str, rows: pa.Table) -> int:
+        """Append an ingest shard's *rows* to table *name*, creating it if absent.
+
+        The rows already carry their embeddings, so this is the merge path for a
+        multi-GPU sync: the per-worker stores are folded in whole and the indexes
+        are rebuilt corpus-wide afterwards.
+        """
+        with self._write_lock():
+            self._ensure_embedding_compat()
+            self._fts_ready = False
+            self._scalar_ready = False
+            ensure_table(self.get_db(), name, rows.schema).add(rows)
+            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
+            return int(rows.num_rows)
+
+    def _assert_schemas_match(
+        self,
+        name: str,
+        target: Path,
+        shard_tables: list[Path],
+        sources: Sequence[lance.LanceDataset],
+    ) -> None:
+        """Refuse shards whose schema differs from the table's.
+
+        A mismatched vector width is the realistic case: two workers built with
+        different embedding models. Adoption commits fragment metadata and never
+        passes the rows through a writer, so nothing else would notice.
+        """
+        import lance
+
+        expected = lance.dataset(str(target)).schema
+        for shard_table, source in zip(shard_tables, sources, strict=True):
+            if not source.schema.equals(expected):
+                raise ValueError(
+                    f"Cannot adopt {shard_table} into {name}: its schema does not match "
+                    f"the index. A shard built with a different embedding model cannot be "
+                    f"folded in; re-ingest it with the model this index was built on."
+                )
+
+    def adopt_fragments(self, name: str, shard_tables: list[Path]) -> int:
+        """Take over *shard_tables*' data files for table *name* without copying rows.
+
+        Every fragment's data file is hard-linked into this table's directory and
+        the whole set committed as one metadata-only append, so the rows are never
+        read or rewritten and the bytes exist once on disk with two names. That is
+        the difference between a merge that costs the corpus and one that costs its
+        fragment count: the copy path rewrites every vector, and because the shard
+        stores are kept as resume state the corpus would then be on disk twice.
+
+        Whole-fragment only, so this serves the first full merge. A re-sync merges
+        named sources, where a fragment holds both touched and untouched rows and
+        the scoped row copy is both correct and already cheap.
+
+        Returns the rows adopted. Raises ValueError when a shard's schema differs
+        from the table's, and OSError when a shard is on another filesystem (hard
+        links cannot cross one) or a data file name collides. The parent is left
+        as it was in every failure: schemas are checked before anything is linked,
+        links made before a failure are removed, and the commit happens once at
+        the end.
+        """
+        import lance
+
+        with self._write_lock():
+            self._ensure_embedding_compat()
+            target = self._config.lancedb_dir / f"{name}.lance"
+            sources = [lance.dataset(str(shard_table)) for shard_table in shard_tables]
+            if not sources:
+                return 0
+            if name not in table_names(self.get_db()):
+                ensure_table(self.get_db(), name, sources[0].schema)
+            # Before anything is linked. Committing a fragment whose schema does
+            # not match writes an index that reads back as a panic inside Arrow
+            # rather than an error: the row copy is rejected by the writer, and
+            # adoption has no writer to reject it.
+            self._assert_schemas_match(name, target, shard_tables, sources)
+            # A table created empty has no data directory yet: nothing has been
+            # written into it, and the links below need somewhere to go.
+            (target / "data").mkdir(parents=True, exist_ok=True)
+            adopted: list[lance.FragmentMetadata] = []
+            linked: list[Path] = []
+            rows = 0
+            try:
+                for shard_table, source in zip(shard_tables, sources, strict=True):
+                    for fragment in source.get_fragments():
+                        meta = fragment.metadata
+                        for data_file in meta.files:
+                            filename = Path(data_file.path).name
+                            link = target / "data" / filename
+                            os.link(shard_table / "data" / filename, link)
+                            linked.append(link)
+                        adopted.append(meta)
+                    rows += source.count_rows()
+            except OSError:
+                # A link made before the failure is a file the manifest never
+                # names, so nothing would ever remove it. The caller falls back
+                # to copying rows.
+                for link in linked:
+                    link.unlink(missing_ok=True)
+                raise
+            if not adopted:
+                return 0
+            self._fts_ready = False
+            self._scalar_ready = False
+            existing = lance.dataset(str(target))
+            lance.LanceDataset.commit(
+                str(target),
+                lance.LanceOperation.Append(adopted),
+                read_version=existing.version,
+            )
+            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
+            return rows
 
     def bm25_probe(
         self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
@@ -1352,12 +1479,42 @@ class Store:
             query = query.where(f"source = '{escape_sql_string(source)}'")
         return query.limit(None).to_arrow()
 
-    def page_text_sources(self) -> set[str]:
-        """Return the distinct sources present in the page-text table."""
-        table = self.open_table(PAGE_TEXTS_TABLE)
+    def sources_arrow(self) -> pa.Table:
+        """Return each tracked source's extraction metadata as an Arrow table.
+
+        The columnar sibling of :meth:`get_sources`, keyed by ``source`` so it
+        joins straight onto the page-text table. ``get_sources`` builds a dict per
+        source, which on a corpus of millions of single-page documents costs more
+        than the text being exported. An index written before the metadata columns
+        existed gets them as nulls rather than missing, so the join has one shape.
+        """
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        table = self.open_table(SOURCES_TABLE)
+        columns = ["source", *SourceMeta._fields]
         if table is None:
-            return set()
-        return {row["source"] for row in table.search().select(["source"]).limit(None).to_list()}
+            return pa.schema([pa.field(name, pa.utf8()) for name in columns]).empty_table()
+        present = [name for name in SourceMeta._fields if name in table.schema.names]
+        arrow = table.search().select(["filename", *present]).limit(None).to_arrow()
+        arrow = arrow.rename_columns(["source", *present])
+        for name in SourceMeta._fields:
+            if name not in present:
+                arrow = arrow.append_column(name, pa.nulls(arrow.num_rows, pa.utf8()))
+        arrow = arrow.select(columns)
+        if pc.count_distinct(arrow.column("source")).as_py() == arrow.num_rows:
+            return arrow
+        # One row per source, so a caller joining on it cannot fan out. A doubled
+        # row (a source re-merged from a shard) would otherwise multiply every page
+        # it owns. Last wins, matching the dict this replaced; single-threaded
+        # because that is the only execution mode with an ordered aggregate.
+        grouped = arrow.group_by("source", use_threads=False).aggregate(
+            [(name, "last") for name in SourceMeta._fields]
+        )
+        renamed = grouped.rename_columns(
+            [name.removesuffix("_last") for name in grouped.schema.names]
+        )
+        return renamed.select(columns)
 
     def wiki_chunk_sources(self) -> set[str]:
         """Return the distinct sources of the chunk rows written by the wiki layer."""
@@ -2040,7 +2197,7 @@ class Store:
             self._title_fts_ready = False
             self._scalar_ready = False
             db = self.get_db()
-            for name in _table_names(db):
+            for name in table_names(db):
                 if name == MEMORIES_TABLE:
                     continue
                 db.drop_table(name)

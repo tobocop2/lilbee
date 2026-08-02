@@ -106,9 +106,9 @@ def _install_real_store():
 def _feed(coros):
     """A _ResultFeed over one already-planned shard of file coroutines."""
     from lilbee.data.ingest.pipeline import _ResultFeed
-    from tests.conftest import one_shard
+    from tests.conftest import one_plan_batch
 
-    return _ResultFeed(one_shard(coros))
+    return _ResultFeed(one_plan_batch(coros))
 
 
 def _lazy_feed(coros):
@@ -244,34 +244,6 @@ class TestSync:
         assert "test.txt" in result.added
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
-
-    async def test_pool_is_sized_on_unindexed_files_not_the_whole_corpus(
-        self, mock_extract_file, isolated_env, monkeypatch
-    ):
-        """An incremental sync over an indexed corpus must not reach for a pool.
-
-        The streamed plan has no total up front, so the pool decision is sized on
-        a pre-diff proxy. Sizing it on every file on disk would spawn workers for
-        a two-file sync of a large indexed corpus.
-        """
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.ingest import sync
-
-        for i in range(3):
-            (isolated_env / f"c{i}.txt").write_text(f"body {i}")
-        await sync()  # index them, so the next pass sees them as unchanged
-
-        sized_on: list[int] = []
-        monkeypatch.setattr(
-            pipeline_mod,
-            "resolve_process_count",
-            lambda count: sized_on.append(count) or 1,
-        )
-        (isolated_env / "new.txt").write_text("only this one is new")
-        await sync()
-
-        # One new file, three already indexed: the corpus is 4.
-        assert sized_on == [1]
 
     async def test_sync_uses_batch_extraction_when_enabled(
         self, mock_extract_file, isolated_env, monkeypatch
@@ -592,6 +564,24 @@ class TestSync:
         assert "file_done" in event_types
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.status == "ok"
+
+    async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
+        self, mock_extract_file, isolated_env
+    ):
+        # Two files indexed, one then edited. The re-sync replans only the edited
+        # file, so a total taken from the plan reads 1/1 and says nothing about
+        # the corpus. The total is the files on disk, and the untouched file
+        # counts as done because it is.
+        (isolated_env / "a.txt").write_text("first")
+        (isolated_env / "b.txt").write_text("second")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        (isolated_env / "b.txt").write_text("second, edited")
+        events: list[tuple] = []
+        await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
+        batch = [d for t, d in events if t == "batch_progress"]
+        assert [(d.current, d.total) for d in batch] == [(2, 2)]
 
     async def test_ingest_markdown_file(self, mock_extract_file, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
@@ -1092,78 +1082,13 @@ class TestSyncCancellation:
         assert result.added == []
         assert result.unchanged == 0
 
-    async def test_worker_mode_releases_the_pool_and_routes_every_file(
-        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
-    ):
-        """ingest_stream in worker mode must shut the pool down, happy path included.
-
-        Drives the whole worker dispatch (shard -> batch -> collect -> flush) with the
-        pool faked out, which is the only place the shard slotting, _collect_from_worker
-        and the pool teardown run together.
-        """
-        from concurrent.futures import ThreadPoolExecutor
-
-        from lilbee.data.ingest import ingest_stream, workers
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.types import FileToProcess
-        from tests.conftest import one_shard
-
-        shutdowns: list[dict] = []
-        order: list[str] = []
-
-        class RecordingPool(ThreadPoolExecutor):
-            def shutdown(self, wait=True, **kwargs):
-                shutdowns.append(kwargs)
-                super().shutdown(wait=wait)
-
-        monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
-        monkeypatch.setattr(pipeline_mod, "warm_parent_engine", lambda: order.append("warm"))
-        built: dict = {}
-
-        def fake_build_pool(n, cfg, inflight):
-            order.append("pool")
-            built["processes"], built["inflight"] = n, inflight
-            return RecordingPool(max_workers=2)
-
-        monkeypatch.setattr(pipeline_mod, "build_pool", fake_build_pool)
-        monkeypatch.setattr(
-            workers,
-            "run_batch",
-            lambda batch: [
-                workers.WorkerOutcome(name=f.name, records=[], page_texts=[]) for f in batch
-            ],
-        )
-
-        (isolated_env / "w1.txt").write_text("one")
-        (isolated_env / "w2.txt").write_text("two")
-        files = [
-            FileToProcess("w1.txt", isolated_env / "w1.txt", "text", "h1", False),
-            FileToProcess("w2.txt", isolated_env / "w2.txt", "text", "h2", False),
-        ]
-        added = {"w1.txt": None, "w2.txt": None}
-        skipped: dict[str, None] = {}
-
-        await ingest_stream(
-            one_shard(files), added, {}, {}, skipped, quiet=True, unindexed_files=len(files)
-        )
-
-        # Ordering is the fix for the A/B that embedded 0 of 50k: a pool built
-        # first spawns attach-only workers against an engine nothing has started.
-        assert order == ["warm", "pool"]
-        assert built["processes"] == 2
-        assert built["inflight"] > 0  # admission is passed through, not defaulted
-        assert shutdowns == [{"cancel_futures": True}]
-        # Zero chunks is a skip, not an add: the worker produced no searchable text.
-        assert set(skipped) == {"w1.txt", "w2.txt"}
-        assert added == {}
-
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio
         import threading
 
         from lilbee.data.ingest import ingest_stream
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         (isolated_env / "a.txt").write_text("file a")
         (isolated_env / "b.txt").write_text("file b")
@@ -1179,9 +1104,7 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_stream(
-                one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel, unindexed_files=0
-            )
+            await ingest_stream(one_plan_batch(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1398,16 +1321,14 @@ class TestCancellation:
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_cancel):
             from lilbee.data.ingest import ingest_stream
             from lilbee.data.types import FileToProcess
-            from tests.conftest import one_shard
+            from tests.conftest import one_plan_batch
 
             added = {"cancel.txt": None}
             entry = FileToProcess(
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_stream(
-                    one_shard([entry]), added, {}, {}, {}, quiet=True, unindexed_files=0
-                )
+                await ingest_stream(one_plan_batch([entry]), added, {}, {}, {}, quiet=True)
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
@@ -1431,7 +1352,7 @@ class TestCancellation:
 
         from lilbee.data.ingest import ingest_stream
         from lilbee.runtime.cancellation import TaskCancelledError
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         # The callback flips on the second invocation so the first file makes
         # progress (which exercises the FILE_DONE re-entry path inside the error
@@ -1461,14 +1382,13 @@ class TestCancellation:
         # surrounding try/except in _do_sync catches it cleanly.
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(
-                one_shard(files),
+                one_plan_batch(files),
                 added,
                 {},
                 failed,
                 skipped,
                 quiet=True,
                 on_progress=on_progress,
-                unindexed_files=0,
             )
 
 
@@ -2465,12 +2385,12 @@ class TestStreamedPlan:
         from lilbee.data.ingest.pipeline import (
             _PLAN_SHARD_MAX_FILES,
             _PLAN_SHARD_MIN_FILES,
-            _shard_bounds,
+            _plan_batch_bounds,
         )
 
-        assert list(_shard_bounds(0)) == []
+        assert list(_plan_batch_bounds(0)) == []
         total = _PLAN_SHARD_MAX_FILES * 4
-        bounds = list(_shard_bounds(total))
+        bounds = list(_plan_batch_bounds(total))
         # Small first shard, doubling, capped -- and contiguous over the corpus.
         assert bounds[0] == (0, _PLAN_SHARD_MIN_FILES)
         assert bounds[1][1] - bounds[1][0] == 2 * _PLAN_SHARD_MIN_FILES
@@ -2625,12 +2545,12 @@ class TestStreamedPlan:
     ):
         # The shard loop's break fires when a cancel is observed between shards.
         # Driving it through sync relies on a cancel-during-extract race that is
-        # not portable across platforms; drive _plan_shards directly with a cancel
+        # not portable across platforms; drive _plan_batches directly with a cancel
         # already set, over >1 shard, so the break is hit without any timing.
         import threading
 
         from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.pipeline import _plan_shards, _StreamedPlan
+        from lilbee.data.ingest.pipeline import _plan_batches, _StreamedPlan
 
         disk = {f"doc{i}.txt": isolated_env / f"doc{i}.txt" for i in range(4)}
         for path in disk.values():
@@ -2641,7 +2561,7 @@ class TestStreamedPlan:
         cancel = threading.Event()
         cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
         state = _StreamedPlan()
-        shards = _plan_shards(disk, {}, {}, [], state, cancel)
+        shards = _plan_batches(disk, {}, {}, [], state, cancel)
         yielded = [shard async for shard in shards]
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0

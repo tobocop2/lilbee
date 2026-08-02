@@ -6,6 +6,11 @@ exclusion patterns (grouped per category), the default RAG and general system
 prompts, and the CORS allow-origin regex.
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
+from types import MappingProxyType
+
 DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",
@@ -52,6 +57,18 @@ ENTITY_SCHEMA_TABLE = "_entity_schema"
 # corpus-wide aggregate over this table, so a subject named below the floor in
 # each separately-synced source still crosses it once its rows are all present.
 WIKI_MENTIONS_TABLE = "_wiki_mentions"
+
+# Tables an ingest writes per source, and the column holding the source key.
+INGEST_SOURCE_COLUMNS: Mapping[str, str] = MappingProxyType(
+    {
+        CHUNKS_TABLE: "source",
+        PAGE_TEXTS_TABLE: "source",
+        CHUNK_CONCEPTS_TABLE: "chunk_source",
+        ENTITIES_TABLE: "source",
+        CITATIONS_TABLE: "source_filename",
+        SOURCES_TABLE: "filename",
+    }
+)
 
 # Default URL-exclusion regexes for recursive crawls. Grouped by source
 # CMS / category. User overrides come from LILBEE_CRAWL_EXCLUDE_PATTERNS

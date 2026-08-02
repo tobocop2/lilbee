@@ -264,7 +264,7 @@ jobs:
           echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Set up Go (engine helpers)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.ENGINE_GO_VERSION }}
           # Key the module cache on the pins: this repo has no go.sum, and the
