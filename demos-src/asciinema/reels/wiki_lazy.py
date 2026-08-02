@@ -36,10 +36,13 @@ for _k in ("LILBEE_CHAT_MODEL", "LILBEE_EMBEDDING_MODEL", "LILBEE_CHAT_N_CTX_TAR
     if os.environ.get(_k):
         ENV[_k] = os.environ[_k]
 
-# Absolute row of each page to browse in the unfiltered tree (Index, Log,
-# Concepts+4, Entities, then entities alphabetically). Real, already-written
-# planet articles. Verified against the live tree.
-BROWSE_ROWS = (15, 29, 34)  # Earth, Mars, Neptune
+# Absolute row of the first planet in the unfiltered tree (Index, Log, Concepts+4,
+# Entities, then entities alphabetically) -- Earth. The rest are reached by filter.
+EARTH_ROW = 15
+# Planets to reach with the search filter after the first is paged to by hand.
+# Both match exactly one written page (no adjective stub like "Saturnian"
+# /"Venusian" to make the filter ambiguous), so jump-to-bottom lands on the page.
+FILTER_PLANETS = ("neptune", "mercury")
 
 
 def _to_wiki(s) -> None:
@@ -57,6 +60,32 @@ def _open_row(s, row: int) -> None:
     s.key("g", after=0.4)
     s.key(*(["j"] * row), after=0.038)
     s.key("enter", after=0.9)
+
+
+def _open_page_by_filter(s, needle: str) -> None:
+    """Filter to one written page and open it.
+
+    A filter that matches a single real page leaves the Entities group expanded
+    with that page as the last visible node, so jump-to-bottom lands on it.
+    """
+    s.key("/", after=0.4)
+    s.key("C-u", after=0.2)
+    s.key(*needle, after=0.11)
+    time.sleep(1.0)
+    s.key("Tab", after=0.4)
+    s.key("G", after=0.5)
+    s.key("enter", after=0.9)
+
+
+def _scroll_article(s, lines: int = 34) -> None:
+    """Page down through the open article so its generated text is actually read.
+
+    Tab moves focus to the content pane; the long settle lets focus land before
+    the burst (during model warm-up the focus otherwise races and the tree
+    scrolls instead). The burst scrolls past the provenance header into the
+    generated prose."""
+    s.key("Tab", after=1.5)
+    s.key(*(["Down"] * lines), after=0.045)
 
 
 def _open_stub_by_search(s, needle: str) -> None:
@@ -91,12 +120,18 @@ def record(cast: pathlib.Path) -> dict:
 
         _to_wiki(s)
 
-        # Page through several already-written, cited articles.
+        # Page to the first planet by hand, then reach the rest with the search
+        # filter -- both ways of finding a page. Each opens on its cited article
+        # (the generated prose sits just below the provenance header) and is held
+        # long enough to read.
         s.mark("browse_start")
-        for row in BROWSE_ROWS:
-            _open_row(s, row)
+        _open_row(s, EARTH_ROW)
+        s.wait_for(r"faithfulness|\[\^src", timeout=20)
+        time.sleep(4.2)
+        for needle in FILTER_PLANETS:
+            _open_page_by_filter(s, needle)
             s.wait_for(r"faithfulness|\[\^src", timeout=20)
-            time.sleep(2.0)
+            time.sleep(4.2)
         s.mark("browse_end")
 
         # Now a page that has not been written. Search finds it as a dim stub.
