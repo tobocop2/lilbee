@@ -302,9 +302,7 @@ class TestSearchAppliesReranker:
         cfg.reranker_model = _RERANKER_MODEL
         reranker = mock.MagicMock()
         searcher, _ = self._searcher(reranker)
-        monkeypatch.setattr(
-            searcher, "_search_structured", lambda *a, **k: [_chunk("a.md", "A")]
-        )
+        monkeypatch.setattr(searcher, "_search_structured", lambda *a, **k: [_chunk("a.md", "A")])
         monkeypatch.setattr(searcher, "_apply_temporal_filter", lambda r, q: r)
         searcher.search("vec:plain query", top_k=5)
         reranker.rerank.assert_not_called()
