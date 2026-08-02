@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ class TaskStatus(StrEnum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -51,6 +53,10 @@ class CrawlTask:
     error: str | None = None
     started_at: str = ""
     finished_at: str = ""
+    # Polled by crawl_and_save between pages and by the follow-on sync between
+    # files, so a stop lands on a boundary with the pages already fetched saved.
+    # Cancelling _async_task instead would abort mid-page and lose them.
+    cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     _async_task: asyncio.Task[None] | None = field(default=None, repr=False, init=False)
 
 
@@ -101,9 +107,16 @@ async def run_crawl(task: CrawlTask) -> None:
             depth=task.depth,
             max_pages=task.max_pages,
             on_progress=progress,
+            cancel=task.cancel,
             include_subdomains=task.include_subdomains,
             render_mode=task.render_mode,
         )
+        if task.cancel.is_set():
+            task.status = TaskStatus.CANCELLED
+            task.pages_crawled = task.pages_crawled or len(paths)
+            task.finished_at = now_iso()
+            log.info("Crawl cancelled: %s after %d files", task.url, len(paths))
+            return
         task.status = TaskStatus.DONE
         task.pages_crawled = task.pages_crawled or len(paths)
         task.finished_at = now_iso()
@@ -111,7 +124,7 @@ async def run_crawl(task: CrawlTask) -> None:
         try:
             from lilbee.data.ingest import sync
 
-            await sync(quiet=True)
+            await sync(quiet=True, cancel=task.cancel)
         except Exception:
             log.warning("Post-crawl sync failed for %s", task.url, exc_info=True)
     except Exception as exc:
@@ -130,7 +143,7 @@ def _evict_completed() -> None:
     while a long one is still running, so sort on ``finished_at``
     rather than dict insertion order.
     """
-    done_statuses = (TaskStatus.DONE, TaskStatus.FAILED)
+    done_statuses = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
     tasks = _registry.tasks
     completed = [(tid, t) for tid, t in tasks.items() if t.status in done_statuses]
     excess = len(completed) - _MAX_COMPLETED_TASKS
@@ -174,6 +187,20 @@ def start_crawl(
 def get_task(task_id: str) -> CrawlTask | None:
     """Look up a crawl task by ID."""
     return _registry.tasks.get(task_id)
+
+
+def cancel_crawl(task_id: str) -> bool:
+    """Ask a running crawl to stop, returning whether it was still running.
+
+    Cooperative: the crawl stops at the next page boundary and keeps what it
+    already saved, so the pages fetched so far still reach the corpus. A task
+    that already finished is left alone.
+    """
+    task = _registry.tasks.get(task_id)
+    if task is None or task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        return False
+    task.cancel.set()
+    return True
 
 
 def list_tasks() -> list[CrawlTask]:

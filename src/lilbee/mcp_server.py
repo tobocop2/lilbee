@@ -455,6 +455,16 @@ def crawl_status(task_id: str) -> dict[str, Any]:
 
 
 @_tool
+def crawl_cancel(task_id: str) -> dict[str, Any]:
+    """Stop a running crawl started by ``crawl``. Pages already saved are kept."""
+    from lilbee.crawler.task import cancel_crawl
+
+    if get_task(task_id) is None:
+        return _error(f"No task found with id: {task_id}")
+    return {"command": "crawl_cancel", "task_id": task_id, "cancelling": cancel_crawl(task_id)}
+
+
+@_tool
 def init(path: str = "") -> dict[str, Any]:
     """Initialize a local ``.lilbee/`` knowledge base; empty path = cwd.
 

@@ -173,7 +173,7 @@ class TestRunCrawl:
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
         await run_crawl(task)
         assert task.status == TaskStatus.DONE
-        mock_sync.assert_awaited_once_with(quiet=True)
+        mock_sync.assert_awaited_once_with(quiet=True, cancel=task.cancel)
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
@@ -194,7 +194,7 @@ class TestRunCrawl:
 
         captured_finished_at: list[str] = []
 
-        async def spy_sync(*, quiet: bool = False) -> MagicMock:
+        async def spy_sync(*, quiet: bool = False, cancel=None) -> MagicMock:
             captured_finished_at.append(task.finished_at)
             return MagicMock()
 
@@ -272,3 +272,78 @@ class TestEviction:
         start_crawl("https://example.com/new")
         completed = [t for t in _registry.tasks.values() if t.status == TaskStatus.DONE]
         assert len(completed) <= _MAX_COMPLETED_TASKS
+
+
+class TestCancellation:
+    """A crawl started in the background is stoppable, keeping what it saved."""
+
+    @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_the_crawl_is_handed_the_tasks_stop_token(self, mock_crawl, _mock_sync):
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("a.md")]
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+
+        await run_crawl(task)
+        assert mock_crawl.await_args.kwargs["cancel"] is task.cancel
+
+    @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_the_follow_on_sync_inherits_the_same_token(self, mock_crawl, mock_sync):
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("a.md")]
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+
+        await run_crawl(task)
+        assert mock_sync.await_args.kwargs["cancel"] is task.cancel
+
+    @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_cancelled_crawl_reports_cancelled_and_skips_the_sync(
+        self, mock_crawl, mock_sync
+    ):
+        """The stop is a finished state of its own, not a failure, and the
+        whole-vault sync a completed crawl triggers must not run after it."""
+        from pathlib import Path
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+
+        async def _stop_partway(*_args, **kwargs):
+            kwargs["cancel"].set()  # the crawler noticed and returned early
+            return [Path("a.md")]
+
+        mock_crawl.side_effect = _stop_partway
+        await run_crawl(task)
+        assert task.status == TaskStatus.CANCELLED
+        assert task.pages_crawled == 1  # what it saved is kept
+        assert task.finished_at != ""
+        assert task.error is None
+        mock_sync.assert_not_awaited()
+
+    async def test_cancelling_a_running_task_sets_its_token(self):
+        from lilbee.crawler.task import cancel_crawl
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        task.status = TaskStatus.RUNNING
+        _registry.tasks["t1"] = task
+
+        assert cancel_crawl("t1") is True
+        assert task.cancel.is_set()
+
+    @pytest.mark.parametrize("status", [TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED])
+    async def test_cancelling_a_finished_task_is_a_noop(self, status):
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        task.status = status
+        _registry.tasks["t1"] = task
+
+        from lilbee.crawler.task import cancel_crawl
+
+        assert cancel_crawl("t1") is False
+        assert not task.cancel.is_set()
+
+    async def test_cancelling_an_unknown_task_is_a_noop(self):
+        from lilbee.crawler.task import cancel_crawl
+
+        assert cancel_crawl("nope") is False

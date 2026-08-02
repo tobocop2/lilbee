@@ -160,3 +160,24 @@ async def test_a_cancelled_ingest_tool_signals_the_pipeline(monkeypatch) -> None
     with anyio.move_on_after(0.2):
         await mcp_sync()
     assert seen["token"].is_set(), "the pipeline was never told to stop"
+
+
+async def test_a_running_crawl_can_be_cancelled_through_a_real_client(monkeypatch) -> None:
+    """crawl runs detached, so an explicit tool is the only way to stop it.
+
+    Cancelling the crawl tool call cannot work: it returns a task id
+    immediately and the work outlives the request.
+    """
+    from lilbee.crawler import task as task_mod
+
+    task = task_mod.CrawlTask(task_id="probe", url="https://example.com", depth=1, max_pages=5)
+    task.status = task_mod.TaskStatus.RUNNING
+    monkeypatch.setitem(task_mod._registry.tasks, "probe", task)
+
+    async with _client() as (session, _init):
+        result = await session.call_tool("crawl_cancel", {"task_id": "probe"})
+        missing = await session.call_tool("crawl_cancel", {"task_id": "no-such-task"})
+
+    assert not result.is_error
+    assert task.cancel.is_set(), "the running crawl was never told to stop"
+    assert "No task found" in str(missing.content)
