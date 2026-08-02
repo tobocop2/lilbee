@@ -205,6 +205,24 @@ def _error(msg: str) -> dict[str, Any]:
     return {"error": msg}
 
 
+def _wiki_tool(fn: _F) -> _F:
+    """Register a wiki MCP tool: gated at build time, re-checked per call.
+
+    A live server keeps the tool surface it was built with, so every handler
+    re-reads ``cfg.wiki`` and refuses once the setting is turned off at runtime.
+    """
+
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        if not cfg.wiki:
+            return _error(WIKI_DISABLED_ERROR)
+        return fn(*args, **kwargs)
+
+    checked = cast("_F", guarded)
+    _tool_if(_wiki_enabled)(checked)
+    return checked
+
+
 @_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
@@ -725,28 +743,42 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     return result
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages; empty ``wiki_source`` lints all."""
-    from lilbee.wiki.lint import lint_all, lint_wiki_page
+    from lilbee.wiki.lint import LintReport, lint_all, lint_wiki_page
 
     store = get_services().store
-    if wiki_source:
-        issues = lint_wiki_page(wiki_source, store)
-    else:
-        report = lint_all(store)
-        issues = report.issues
+    report = (
+        LintReport(issues=lint_wiki_page(wiki_source, store)) if wiki_source else lint_all(store)
+    )
     return {
         "command": "wiki_lint",
-        "issues": [i.to_dict() for i in issues],
-        "total": len(issues),
+        "issues": [i.to_dict() for i in report.issues],
+        "total": len(report.issues),
+        "errors": report.error_count,
+        "warnings": report.warning_count,
     }
 
 
-@_tool_if(_wiki_enabled)
-def wiki_citations(wiki_source: str) -> dict[str, Any]:
-    """List citations for a wiki page."""
-    records = get_services().store.get_citations_for_wiki(wiki_source)
+@_wiki_tool
+def wiki_citations(wiki_source: str = "", source: str = "") -> dict[str, Any]:
+    """List a wiki page's citations, or with ``source``, the pages citing that document.
+
+    Pass exactly one of ``wiki_source`` (forward) or ``source`` (reverse).
+    """
+    if bool(wiki_source) == bool(source):
+        return _error("pass either wiki_source or source, not both")
+    store = get_services().store
+    if source:
+        records = store.get_citations_for_source(source)
+        return {
+            "command": "wiki_citations",
+            "source": source,
+            "citations": [dict(r) for r in records],
+            "total": len(records),
+        }
+    records = store.get_citations_for_wiki(wiki_source)
     return {
         "command": "wiki_citations",
         "wiki_source": wiki_source,
@@ -755,14 +787,27 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
     }
 
 
-@_tool_if(_wiki_enabled)
+@_tool
 def wiki_status() -> dict[str, Any]:
-    """Show wiki layer status: page counts, recent lint issues."""
+    """Show wiki layer status: page counts, recent lint issues.
+
+    Registered even when the wiki is disabled, like the HTTP status route, so a
+    caller can read the disabled state instead of finding no tool at all.
+    """
     from lilbee.wiki.lint import lint_all
 
     wiki_root = cfg.data_root / cfg.wiki_dir
-    if not wiki_root.exists():
-        return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
+    if not cfg.wiki or not wiki_root.exists():
+        # Same keys as the enabled arm so a client can key on lint_errors in
+        # either state; a disabled wiki reports zeros rather than being linted.
+        return {
+            "wiki_enabled": cfg.wiki,
+            WikiSubdir.SUMMARIES: 0,
+            WikiSubdir.DRAFTS: 0,
+            "pages": 0,
+            "lint_errors": 0,
+            "lint_warnings": 0,
+        }
 
     summaries_dir = wiki_root / WikiSubdir.SUMMARIES
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
@@ -781,11 +826,9 @@ def wiki_status() -> dict[str, Any]:
     }
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_list() -> dict[str, Any]:
     """List wiki pages with metadata."""
-    if not cfg.wiki:
-        return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
 
     from lilbee.wiki.browse import list_pages
@@ -799,11 +842,9 @@ def wiki_list() -> dict[str, Any]:
     }
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_read(slug: str) -> dict[str, Any]:
     """Read a wiki page's content + frontmatter by slug."""
-    if not cfg.wiki:
-        return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
 
     from lilbee.wiki.browse import read_page
@@ -815,37 +856,45 @@ def wiki_read(slug: str) -> dict[str, Any]:
     return {"command": "wiki_read", **asdict(result)}
 
 
-@_tool_if(_wiki_enabled)
-def wiki_build() -> dict[str, Any]:
-    """Build the concept and entity wiki across all ingested sources."""
-    if not cfg.wiki:
-        return _error(WIKI_DISABLED_ERROR)
-    from lilbee.wiki import run_full_build
+@_wiki_tool
+def wiki_build(dry_run: bool = False) -> dict[str, Any]:
+    """Build the concept and entity wiki across all ingested sources. Blocks until done.
 
+    ``dry_run=True`` returns the NER entity candidates a build would cover and
+    makes no LLM call.
+    """
+    from lilbee.wiki import run_full_build
+    from lilbee.wiki.generation import DRY_RUN_CONCEPT_NOTE, preview_build_entities
+
+    if dry_run:
+        rows = preview_build_entities(cfg)
+        return {
+            "command": "wiki_build",
+            "dry_run": True,
+            "entities": rows,
+            "count": len(rows),
+            "note": DRY_RUN_CONCEPT_NOTE,
+        }
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_update() -> dict[str, Any]:
-    """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
-    if not cfg.wiki:
-        return _error(WIKI_DISABLED_ERROR)
+    """Refresh the concept and entity wiki after an ingest. A full rebuild; blocks until done."""
     from lilbee.wiki import run_full_build
 
     return {"command": "wiki_update", **run_full_build(cfg)}
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
-    if not cfg.wiki:
-        return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_synthesize
 
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
@@ -856,6 +905,51 @@ def wiki_prune() -> dict[str, Any]:
         "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
+        "reconciled": report.reconciled_count,
+    }
+
+
+@_wiki_tool
+def wiki_index() -> dict[str, Any]:
+    """Rebuild the browse index of pages the corpus could have. No LLM call."""
+    from lilbee.wiki.stubs import refresh_stub_index
+
+    stubs = refresh_stub_index(get_services().store)
+    return {"command": "wiki_index", "entries": len(stubs)}
+
+
+@_wiki_tool
+def wiki_generate(slug: str) -> dict[str, Any]:
+    """Generate one indexed wiki page. Costs a single LLM call and is GPU-heavy."""
+    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+
+    try:
+        path = generate_stub_page(slug, get_services().store)
+    except UnknownStubError as exc:
+        return _error(str(exc))
+    if path is None:
+        return _error(f"index entry for {slug} is stale; its sources are gone")
+    return {"command": "wiki_generate", "slug": slug, "path": path.as_posix()}
+
+
+@_tool
+def wiki_wipe(confirm: bool = False) -> dict[str, Any]:
+    """Delete every generated wiki page and its indexed rows. Pass ``confirm=true``.
+
+    Registered even with the wiki disabled, because turning the setting off
+    leaves the pages generated earlier in place.
+    """
+    if not confirm:
+        return _error("pass confirm=true to delete the wiki; this cannot be undone")
+    from lilbee.wiki.wipe import wipe_wiki
+
+    report = wipe_wiki(get_services().store)
+    if not report.rows_deleted:
+        return _error(report.summary())
+    return {
+        "command": "wiki_wipe",
+        "pages_removed": report.pages_removed,
+        "sources_cleared": report.sources_cleared,
     }
 
 
@@ -1121,9 +1215,10 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         return _error(str(exc))
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_drafts_list() -> dict[str, Any]:
-    """List pending wiki drafts (read-only; accept/reject are CLI-only)."""
+    """List pending wiki drafts. Read-only: promotion is reserved for the human
+    surfaces (CLI, TUI, and the authenticated HTTP API)."""
     from lilbee.wiki.drafts import list_drafts
 
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -1135,7 +1230,7 @@ def wiki_drafts_list() -> dict[str, Any]:
     }
 
 
-@_tool_if(_wiki_enabled)
+@_wiki_tool
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Unified diff of a draft against its published counterpart."""
     from lilbee.core.security import PathTraversalError

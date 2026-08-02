@@ -419,6 +419,26 @@ class LilbeeApp(App[None]):
             self.theme = normalized
             self._sync_theme_index_to_current()
         self.settings_changed_signal.publish((key, normalized))
+        if key == "wiki" and normalized is False:
+            self._offer_wiki_wipe()
+
+    def _offer_wiki_wipe(self) -> None:
+        """Ask whether to delete what the wiki generated, now that it is off.
+
+        Lives on the setter rather than on the settings screen so every route
+        that turns the wiki off (the settings editor, ``/set``) makes the same
+        offer. Disabling stops new pages being written but removes nothing, so
+        without this the pages stay on disk and their rows stay in the store.
+        """
+        from lilbee.cli.tui.messages import WIKI_WIPE_DISABLED_MESSAGE, WIKI_WIPE_DISABLED_TITLE
+        from lilbee.cli.tui.screens.wiki import confirm_wiki_wipe
+
+        confirm_wiki_wipe(
+            self,
+            title=WIKI_WIPE_DISABLED_TITLE,
+            message=WIKI_WIPE_DISABLED_MESSAGE,
+            notify_when_empty=False,
+        )
 
     def _sync_theme_index_to_current(self) -> None:
         """Align cycle index with the active theme."""

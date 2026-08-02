@@ -5,14 +5,24 @@ from __future__ import annotations
 import re
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
-_SLUG_WHITESPACE_RE = re.compile(r"\s+")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def collapse_whitespace(text: str) -> str:
+    """Fold every whitespace run to one space and strip the ends.
+
+    The one place this is defined. A label reaches a heading, a slug and a
+    single-line marker comment, so producers collapse the surface they got
+    before anything downstream sees it.
+    """
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
 
 # Characters that signal markdown-structural noise in a concept label.
 # Single source of truth for both ``is_valid_label`` (membership check)
 # and ``clean_label_for_display`` (regex strip).
 _STRUCTURAL_CHARS = frozenset("|#>")
 _DISPLAY_STRUCTURAL_RE = re.compile(f"[{re.escape(''.join(_STRUCTURAL_CHARS))}]+")
-_DISPLAY_WHITESPACE_RE = re.compile(r"\s+")
 
 LABEL_SANITY_MIN_LEN = 3
 LABEL_SANITY_MIN_ALNUM_RATIO = 0.5
@@ -33,7 +43,7 @@ def make_slug(label: str) -> str:
     """
     # ``--`` is the reserved encoding for ``/``, so collapse whitespace first:
     # a double space would produce it and collide two entities onto one page.
-    slug = _SLUG_WHITESPACE_RE.sub(" ", label.lower()).strip()
+    slug = collapse_whitespace(label.lower())
     slug = slug.replace("/", "--").replace(" ", "-")
     slug = _SLUG_CLEAN_RE.sub("", slug)
     return slug.strip("-")
@@ -50,7 +60,17 @@ def is_valid_label(label: str) -> bool:
     - paren-prefixed numerics (``(7.0 l)``: would otherwise slug to
       ``70-l`` after punctuation cleanup),
     - hyphen-prefixed fragments (``-answers``: trailing text from
-      markdown bracket-link extraction).
+      markdown bracket-link extraction),
+    - labels carrying a line break.
+
+    The line-break rule is defensive only: no current caller can trip it.
+    Both extractors run :func:`collapse_whitespace` first, which folds every
+    separator to a space rather than rejecting the label, because a spaCy span
+    crossing a wrapped line is the same entity as its unwrapped form and
+    dropping it would lose the mention. The third caller, the heading check in
+    :mod:`lilbee.wiki.quality`, takes its heading out of ``splitlines`` and so
+    cannot produce one either. The rule stays because this is a shared
+    validator and a future caller may hand over raw text.
 
     Requires the first non-whitespace character to be a Unicode letter
     so any non-alpha prefix (digit, bracket, hyphen, punctuation) is
@@ -63,6 +83,13 @@ def is_valid_label(label: str) -> bool:
     if len(stripped) < LABEL_SANITY_MIN_LEN:
         return False
     if not stripped[0].isalpha():
+        return False
+    # A label is one line: it becomes a heading, a slug, and part of the
+    # single-line marker comments the drafts surface classifies by. Tested with
+    # splitlines because that is what those readers use, so the gate and they
+    # agree on what counts as a second line. A non-breaking or thin space does
+    # not, and PDF text is full of both.
+    if len(stripped.splitlines()) > 1:
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False
@@ -87,4 +114,4 @@ def clean_label_for_display(label: str) -> str:
     title-cases lowercase common nouns on its own.
     """
     clean = _DISPLAY_STRUCTURAL_RE.sub("", label)
-    return _DISPLAY_WHITESPACE_RE.sub(" ", clean).strip()
+    return collapse_whitespace(clean)

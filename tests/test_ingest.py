@@ -106,9 +106,9 @@ def _install_real_store():
 def _feed(coros):
     """A _ResultFeed over one already-planned shard of file coroutines."""
     from lilbee.data.ingest.pipeline import _ResultFeed
-    from tests.conftest import one_shard
+    from tests.conftest import one_plan_batch
 
-    return _ResultFeed(one_shard(coros))
+    return _ResultFeed(one_plan_batch(coros))
 
 
 def _lazy_feed(coros):
@@ -245,34 +245,6 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
-    async def test_pool_is_sized_on_unindexed_files_not_the_whole_corpus(
-        self, mock_extract_file, isolated_env, monkeypatch
-    ):
-        """An incremental sync over an indexed corpus must not reach for a pool.
-
-        The streamed plan has no total up front, so the pool decision is sized on
-        a pre-diff proxy. Sizing it on every file on disk would spawn workers for
-        a two-file sync of a large indexed corpus.
-        """
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.ingest import sync
-
-        for i in range(3):
-            (isolated_env / f"c{i}.txt").write_text(f"body {i}")
-        await sync()  # index them, so the next pass sees them as unchanged
-
-        sized_on: list[int] = []
-        monkeypatch.setattr(
-            pipeline_mod,
-            "resolve_process_count",
-            lambda count: sized_on.append(count) or 1,
-        )
-        (isolated_env / "new.txt").write_text("only this one is new")
-        await sync()
-
-        # One new file, three already indexed: the corpus is 4.
-        assert sized_on == [1]
-
     async def test_sync_uses_batch_extraction_when_enabled(
         self, mock_extract_file, isolated_env, monkeypatch
     ):
@@ -295,6 +267,36 @@ class TestSync:
         assert "d.txt" in result.added
         mock_batch.assert_called()
         mock_extract_file.assert_not_called()
+
+    async def test_a_move_subtracts_the_old_name_from_the_wiki_index(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The index is keyed by source name. Without the old key the move
+        leaves it there forever: its mentions double-count and its dead chunk
+        refs occupy the per-subject cap ahead of live evidence."""
+        import shutil
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "a.txt").write_text("Hello world. This document will move.")
+        await sync()
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        seen: list[set] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            seen.append(sources or set())
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        (isolated_env / "sub").mkdir()
+        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+
+        await sync()
+
+        assert seen, "the post-sync refresh did not run"
+        assert {"a.txt", "sub/a.txt"} <= seen[-1]
 
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
@@ -375,6 +377,153 @@ class TestSync:
             for r in caplog.records
         )
 
+    @pytest.mark.parametrize("auto_update", [True, False])
+    async def test_wiki_hook_runs_only_when_auto_update_is_on(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """Enabling the wiki never generates by itself; auto-update is the opt-in."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+
+        await sync(quiet=True)
+
+        assert hook.called is auto_update
+
+    @pytest.mark.parametrize("auto_update", [False, True], ids=["off", "on"])
+    async def test_index_refresh_runs_regardless_of_auto_update(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """The index spends no LLM call and is what lets a page appear in the
+        browse tree as soon as its document lands, so it is not gated on the
+        setting that governs generation."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "indexed.txt").write_text("Content the index would name entities in.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", mock.AsyncMock())
+        # A real signature, not a MagicMock: the hook calls this through
+        # to_ingest_thread, which forwards its arguments, and a permissive mock
+        # accepts an arity the real function rejects.
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+
+        await sync(quiet=True)
+
+        assert len(calls) == 1
+        assert calls[0][2] is not None
+
+    async def test_index_refresh_is_skipped_when_the_wiki_is_off(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "unindexed.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", False)
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+
+        await sync(quiet=True)
+
+        assert calls == []
+
+    async def test_a_failing_index_refresh_does_not_stop_the_sync(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The ingest already succeeded; a wiki failure must not swallow it."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "resilient.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", False)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.refresh_stub_index",
+            mock.MagicMock(side_effect=RuntimeError("spacy exploded")),
+        )
+
+        result = await sync(quiet=True)
+
+        assert "resilient.txt" in result.added
+
+    async def test_wiki_hook_receives_the_config_the_gate_read(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The auto-update gate and the regeneration must consult one config.
+
+        Run under a bound scope, so the scoped config and the process-global
+        are different objects. Without a scope active_config() returns the
+        global itself, and a hook handed the global instead of the config the
+        gate read would satisfy the assertion. The library API binds a scope
+        around the whole pipeline, so this is the shape a Lilbee(config=...)
+        caller actually runs in."""
+        from lilbee.core.config import cfg, config_scope
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", False)
+        scoped = cfg.model_copy()
+        scoped.wiki = True
+        scoped.wiki_auto_update = True
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+        refresh = mock.MagicMock(return_value={})
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+
+        with config_scope(scoped):
+            await sync(quiet=True)
+
+        # Both calls, not just the regeneration. The index refresh is the one
+        # that always runs when the wiki is on, since regeneration sits behind
+        # wiki_auto_update, and it falls back to the process-global when handed
+        # None.
+        assert refresh.call_args.args[1] is scoped
+        assert hook.call_args.args[1] is scoped
+
+    async def test_wiki_failure_does_not_skip_post_ingest_verification(
+        self, mock_extract_file, isolated_env, monkeypatch, caplog
+    ):
+        """A wiki exception must not abort the entity pass or the silent-drop guard."""
+        import logging
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook chokes on.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.ingest.incremental_update",
+            mock.AsyncMock(side_effect=RuntimeError("embedder down")),
+        )
+        entities = mock.MagicMock()
+        monkeypatch.setattr("lilbee.retrieval.entities.lifecycle.ensure_entities", entities)
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            result = await sync(quiet=True)
+
+        assert "wikified.txt" in result.added
+        assert any("Wiki auto-update failed" in r.getMessage() for r in caplog.records)
+        entities.assert_called_once()
+
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.data.ingest import sync
@@ -415,6 +564,24 @@ class TestSync:
         assert "file_done" in event_types
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.status == "ok"
+
+    async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
+        self, mock_extract_file, isolated_env
+    ):
+        # Two files indexed, one then edited. The re-sync replans only the edited
+        # file, so a total taken from the plan reads 1/1 and says nothing about
+        # the corpus. The total is the files on disk, and the untouched file
+        # counts as done because it is.
+        (isolated_env / "a.txt").write_text("first")
+        (isolated_env / "b.txt").write_text("second")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        (isolated_env / "b.txt").write_text("second, edited")
+        events: list[tuple] = []
+        await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
+        batch = [d for t, d in events if t == "batch_progress"]
+        assert [(d.current, d.total) for d in batch] == [(2, 2)]
 
     async def test_ingest_markdown_file(self, mock_extract_file, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
@@ -915,78 +1082,13 @@ class TestSyncCancellation:
         assert result.added == []
         assert result.unchanged == 0
 
-    async def test_worker_mode_releases_the_pool_and_routes_every_file(
-        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
-    ):
-        """ingest_stream in worker mode must shut the pool down, happy path included.
-
-        Drives the whole worker dispatch (shard -> batch -> collect -> flush) with the
-        pool faked out, which is the only place the shard slotting, _collect_from_worker
-        and the pool teardown run together.
-        """
-        from concurrent.futures import ThreadPoolExecutor
-
-        from lilbee.data.ingest import ingest_stream, workers
-        from lilbee.data.ingest import pipeline as pipeline_mod
-        from lilbee.data.types import FileToProcess
-        from tests.conftest import one_shard
-
-        shutdowns: list[dict] = []
-        order: list[str] = []
-
-        class RecordingPool(ThreadPoolExecutor):
-            def shutdown(self, wait=True, **kwargs):
-                shutdowns.append(kwargs)
-                super().shutdown(wait=wait)
-
-        monkeypatch.setattr(pipeline_mod, "resolve_process_count", lambda count: 2)
-        monkeypatch.setattr(pipeline_mod, "warm_parent_engine", lambda: order.append("warm"))
-        built: dict = {}
-
-        def fake_build_pool(n, cfg, inflight):
-            order.append("pool")
-            built["processes"], built["inflight"] = n, inflight
-            return RecordingPool(max_workers=2)
-
-        monkeypatch.setattr(pipeline_mod, "build_pool", fake_build_pool)
-        monkeypatch.setattr(
-            workers,
-            "run_batch",
-            lambda batch: [
-                workers.WorkerOutcome(name=f.name, records=[], page_texts=[]) for f in batch
-            ],
-        )
-
-        (isolated_env / "w1.txt").write_text("one")
-        (isolated_env / "w2.txt").write_text("two")
-        files = [
-            FileToProcess("w1.txt", isolated_env / "w1.txt", "text", "h1", False),
-            FileToProcess("w2.txt", isolated_env / "w2.txt", "text", "h2", False),
-        ]
-        added = {"w1.txt": None, "w2.txt": None}
-        skipped: dict[str, None] = {}
-
-        await ingest_stream(
-            one_shard(files), added, {}, {}, skipped, quiet=True, unindexed_files=len(files)
-        )
-
-        # Ordering is the fix for the A/B that embedded 0 of 50k: a pool built
-        # first spawns attach-only workers against an engine nothing has started.
-        assert order == ["warm", "pool"]
-        assert built["processes"] == 2
-        assert built["inflight"] > 0  # admission is passed through, not defaulted
-        assert shutdowns == [{"cancel_futures": True}]
-        # Zero chunks is a skip, not an add: the worker produced no searchable text.
-        assert set(skipped) == {"w1.txt", "w2.txt"}
-        assert added == {}
-
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio
         import threading
 
         from lilbee.data.ingest import ingest_stream
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         (isolated_env / "a.txt").write_text("file a")
         (isolated_env / "b.txt").write_text("file b")
@@ -1002,9 +1104,7 @@ class TestSyncCancellation:
             FileToProcess("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
         ]
         with pytest.raises(asyncio.CancelledError):
-            await ingest_stream(
-                one_shard(files), added, {}, {}, {}, quiet=True, cancel=cancel, unindexed_files=0
-            )
+            await ingest_stream(one_plan_batch(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
@@ -1221,16 +1321,14 @@ class TestCancellation:
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=_cancel):
             from lilbee.data.ingest import ingest_stream
             from lilbee.data.types import FileToProcess
-            from tests.conftest import one_shard
+            from tests.conftest import one_plan_batch
 
             added = {"cancel.txt": None}
             entry = FileToProcess(
                 "cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False
             )
             with pytest.raises(asyncio.CancelledError):
-                await ingest_stream(
-                    one_shard([entry]), added, {}, {}, {}, quiet=True, unindexed_files=0
-                )
+                await ingest_stream(one_plan_batch([entry]), added, {}, {}, {}, quiet=True)
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
@@ -1254,7 +1352,7 @@ class TestCancellation:
 
         from lilbee.data.ingest import ingest_stream
         from lilbee.runtime.cancellation import TaskCancelledError
-        from tests.conftest import one_shard
+        from tests.conftest import one_plan_batch
 
         # The callback flips on the second invocation so the first file makes
         # progress (which exercises the FILE_DONE re-entry path inside the error
@@ -1284,14 +1382,13 @@ class TestCancellation:
         # surrounding try/except in _do_sync catches it cleanly.
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(
-                one_shard(files),
+                one_plan_batch(files),
                 added,
                 {},
                 failed,
                 skipped,
                 quiet=True,
                 on_progress=on_progress,
-                unindexed_files=0,
             )
 
 
@@ -2288,12 +2385,12 @@ class TestStreamedPlan:
         from lilbee.data.ingest.pipeline import (
             _PLAN_SHARD_MAX_FILES,
             _PLAN_SHARD_MIN_FILES,
-            _shard_bounds,
+            _plan_batch_bounds,
         )
 
-        assert list(_shard_bounds(0)) == []
+        assert list(_plan_batch_bounds(0)) == []
         total = _PLAN_SHARD_MAX_FILES * 4
-        bounds = list(_shard_bounds(total))
+        bounds = list(_plan_batch_bounds(total))
         # Small first shard, doubling, capped -- and contiguous over the corpus.
         assert bounds[0] == (0, _PLAN_SHARD_MIN_FILES)
         assert bounds[1][1] - bounds[1][0] == 2 * _PLAN_SHARD_MIN_FILES
@@ -2448,12 +2545,12 @@ class TestStreamedPlan:
     ):
         # The shard loop's break fires when a cancel is observed between shards.
         # Driving it through sync relies on a cancel-during-extract race that is
-        # not portable across platforms; drive _plan_shards directly with a cancel
+        # not portable across platforms; drive _plan_batches directly with a cancel
         # already set, over >1 shard, so the break is hit without any timing.
         import threading
 
         from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.pipeline import _plan_shards, _StreamedPlan
+        from lilbee.data.ingest.pipeline import _plan_batches, _StreamedPlan
 
         disk = {f"doc{i}.txt": isolated_env / f"doc{i}.txt" for i in range(4)}
         for path in disk.values():
@@ -2464,7 +2561,7 @@ class TestStreamedPlan:
         cancel = threading.Event()
         cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
         state = _StreamedPlan()
-        shards = _plan_shards(disk, {}, {}, [], state, cancel)
+        shards = _plan_batches(disk, {}, {}, [], state, cancel)
         yielded = [shard async for shard in shards]
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0
@@ -3697,6 +3794,83 @@ class TestUnsupportedFileInSync:
 
             with pytest.raises(ValueError, match="Unsupported file slipped through"):
                 await sync(quiet=True)
+
+
+class TestRemoveDropsFromWikiIndex:
+    """A removed document's skip marker keeps it out of later syncs, so no
+    refresh would ever revisit its entries: removal has to drop them itself."""
+
+    def test_removed_documents_leave_the_index(self, isolated_env, monkeypatch):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core.config import cfg
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub, load_stub_index, save_stub_index
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_entity_min_mentions", 1)
+        (isolated_env / "gone.txt").write_text("content")
+        save_stub_index(
+            {
+                "ford": WikiStub(
+                    slug="ford",
+                    label="Ford",
+                    kind=EntityKind.ENTITY,
+                    type_hint="PERSON",
+                    source_mentions=(("gone.txt", 2),),
+                    chunk_refs=(("gone.txt", 0),),
+                )
+            }
+        )
+        monkeypatch.setattr(
+            "lilbee.app.ingest.get_services",
+            lambda: mock.MagicMock(
+                store=mock.MagicMock(
+                    remove_documents=mock.MagicMock(
+                        return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])
+                    )
+                )
+            ),
+        )
+
+        remove_documents_durably(["gone.txt"])
+
+        assert load_stub_index() == {}
+
+    def test_the_hook_is_skipped_when_the_wiki_is_off(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+        assert called == []
+
+    def test_an_index_failure_does_not_fail_the_removal(self, isolated_env, monkeypatch):
+        """The removal already succeeded; a wiki failure must not surface as one."""
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index",
+            mock.MagicMock(side_effect=RuntimeError("index unwritable")),
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+
+    def test_removing_nothing_touches_no_index(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index([])
+        assert called == []
 
 
 class TestRemoveDocumentsDurably:

@@ -110,6 +110,24 @@ class TestWriteLockDir:
             assert (test_config.lancedb_dir / ".lock").exists()
 
 
+class _TableProxy:
+    """Table proxy running *on_delete* in place of ``delete``; other calls pass through."""
+
+    def __init__(self, table, on_delete):
+        self._table = table
+        self._on_delete = on_delete
+
+    def delete(self, predicate):
+        self._on_delete(predicate)
+
+    def __getattr__(self, name):
+        return getattr(self._table, name)
+
+
+def _raising_delete(predicate):
+    raise RuntimeError("delete failed")
+
+
 class TestClearAndAdd:
     def test_replaces_rows_atomically(self, store):
         import pyarrow as pa
@@ -131,28 +149,247 @@ class TestClearAndAdd:
         locked_during: list[bool] = []
         import lilbee.data.store.core as core_mod
 
-        real = core_mod._safe_delete_unlocked
+        real = core_mod.ensure_table
 
-        def spy_delete(table, predicate):
-            locked_during.append(_write_mutex.locked())
-            return real(table, predicate)
+        def spying_table(db, name, table_schema):
+            table = real(db, name, table_schema)
 
-        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", spy_delete)
+            def on_delete(predicate):
+                locked_during.append(_write_mutex.locked())
+                table.delete(predicate)
+
+            return _TableProxy(table, on_delete)
+
+        monkeypatch.setattr(core_mod, "ensure_table", spying_table)
         store.clear_and_add("t_lock", schema, [{"concept": "next"}], "concept IS NOT NULL")
         assert locked_during == [True]  # delete ran under the write lock
 
-    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+    def test_delete_failure_propagates_without_adding(self, store, monkeypatch):
+        """Swallowing it would add rows over stale ones and report success."""
         import pyarrow as pa
 
         import lilbee.data.store.core as core_mod
 
         schema = pa.schema([pa.field("concept", pa.utf8())])
         store.clear_and_add("t_fail", schema, [{"concept": "old"}], "concept IS NOT NULL")
-        # A failed delete must not add the new rows (would duplicate the stale ones).
-        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
-        store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
+        real = core_mod.ensure_table
+        monkeypatch.setattr(
+            core_mod,
+            "ensure_table",
+            lambda db, name, s: _TableProxy(real(db, name, s), _raising_delete),
+        )
+        with pytest.raises(RuntimeError, match="delete failed"):
+            store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
         rows = store.open_table("t_fail").search().to_list()
         assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
+
+
+class TestReplaceChunks:
+    def test_replaces_matching_rows_in_place(self, store):
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(1, chunk_type="raw"))
+        replacement = _make_records(1, chunk_type=ChunkType.WIKI)
+        replacement[0]["chunk"] = "the only wiki row left"
+
+        added = store.replace_chunks(replacement, f"chunk_type = '{ChunkType.WIKI}'")
+
+        assert added == 1
+        rows = store.open_table(CHUNKS_TABLE).search().to_list()
+        wiki_chunks = [r["chunk"] for r in rows if r["chunk_type"] == ChunkType.WIKI]
+        assert wiki_chunks == ["the only wiki row left"]
+        assert sum(1 for r in rows if r["chunk_type"] == "raw") == 1
+
+    def test_empty_replacement_just_clears(self, store):
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        assert store.replace_chunks([], f"chunk_type = '{ChunkType.WIKI}'") == 0
+        assert store.open_table(CHUNKS_TABLE).search().to_list() == []
+
+    def test_bad_dimension_is_rejected_before_the_delete(self, store):
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        bad = _make_records(1, dim=cfg.embedding_dim - 1, chunk_type=ChunkType.WIKI)
+
+        with pytest.raises(ValueError, match="Vector dimension mismatch"):
+            store.replace_chunks(bad, f"chunk_type = '{ChunkType.WIKI}'")
+
+        assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
+
+    def test_delete_failure_propagates_without_adding(self, store, monkeypatch):
+        """The caller has to see it: a wiki page whose rows were not swapped is stale."""
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        real = store._chunks_table
+        monkeypatch.setattr(store, "_chunks_table", lambda: _TableProxy(real(), _raising_delete))
+
+        with pytest.raises(RuntimeError, match="delete failed"):
+            store.replace_chunks(_make_records(1, chunk_type=ChunkType.WIKI), "1 = 1")
+        assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
+
+
+class TestDeleteAllWikiRows:
+    def test_removes_wiki_chunks_and_citations_but_not_documents(self, store):
+        from tests.conftest import make_citation
+
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(1, chunk_type="raw"))
+        store.add_citations([make_citation(wiki_source="wiki/concepts/a.md")])
+        store.replace_wiki_mentions_for_source("doc0.md", [_mention("boeing", "doc0.md", 2, [0])])
+
+        assert store.delete_all_wiki_rows() is True
+
+        rows = store.open_table(CHUNKS_TABLE).search().to_list()
+        assert [r["chunk_type"] for r in rows] == ["raw"]
+        assert store.wiki_citation_sources() == set()
+        assert store.wiki_mention_rows() == []
+
+    def test_empty_store_succeeds(self, store):
+        assert store.delete_all_wiki_rows() is True
+
+    def test_reports_a_failed_delete(self, store, monkeypatch):
+        """A caller must not report a wipe over a swallowed failure."""
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        monkeypatch.setattr(store, "clear_table", lambda name, predicate: False)
+        assert store.delete_all_wiki_rows() is False
+
+    def test_every_delete_runs_even_when_the_first_fails(self, store, monkeypatch):
+        """A short-circuit would leave citations or mentions behind whenever an
+        earlier delete failed, so every delete runs and none is skipped."""
+        cleared: list[str] = []
+
+        def _clear(name: str, predicate: str) -> bool:
+            cleared.append(name)
+            return False
+
+        monkeypatch.setattr(store, "clear_table", _clear)
+        store.delete_all_wiki_rows()
+        assert len(cleared) == 3
+
+
+class TestWikiChunkSources:
+    def test_returns_only_wiki_row_sources(self, store):
+        """The raw row carries a source of its own. Reusing a wiki row's source
+        would leave the filter nothing to remove, and an implementation
+        returning every source in the table would answer identically. Prune
+        feeds this set to delete_by_source for anything with no page on disk,
+        so an unfiltered answer deletes the raw corpus."""
+        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_make_records(3, chunk_type="raw")[2:])
+        assert store.wiki_chunk_sources() == {"doc0.md", "doc1.md"}
+
+    def test_empty_store_returns_empty_set(self, store):
+        assert store.wiki_chunk_sources() == set()
+
+
+def _mention(slug, source, count, indices, kind="entity", type_hint="ORG"):
+    return {
+        "slug": slug,
+        "label": slug.replace("-", " ").title(),
+        "kind": kind,
+        "type_hint": type_hint,
+        "source": source,
+        "mention_count": count,
+        "chunk_indices": indices,
+    }
+
+
+class TestWikiMentions:
+    def test_round_trips_rows(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        rows = store.wiki_mention_rows()
+        assert len(rows) == 1
+        assert rows[0]["slug"] == "boeing"
+        assert rows[0]["mention_count"] == 2
+        assert list(rows[0]["chunk_indices"]) == [0, 1]
+
+    def test_replace_only_touches_the_named_source(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        store.replace_wiki_mentions_for_source("b.md", [_mention("boeing", "b.md", 2, [0, 1])])
+        # Re-syncing a.md must not disturb b.md's evidence.
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 3, [0, 1, 2])])
+        by_source = {
+            (r["slug"], r["source"]): r["mention_count"] for r in store.wiki_mention_rows()
+        }
+        assert by_source == {("boeing", "a.md"): 3, ("boeing", "b.md"): 2}
+
+    def test_aggregate_across_separately_synced_sources(self, store):
+        """The corpus-wide total is the sum over per-source rows -- the property
+        the stub floor is judged on."""
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        store.replace_wiki_mentions_for_source("b.md", [_mention("boeing", "b.md", 2, [0, 1])])
+        total = sum(r["mention_count"] for r in store.wiki_mention_rows(slugs=["boeing"]))
+        assert total == 4
+
+    def test_rows_filter_by_slug(self, store):
+        store.replace_wiki_mentions_for_source(
+            "a.md",
+            [_mention("boeing", "a.md", 2, [0]), _mention("airbus", "a.md", 1, [1])],
+        )
+        assert {r["slug"] for r in store.wiki_mention_rows(slugs=["boeing"])} == {"boeing"}
+        assert store.wiki_mention_rows(slugs=[]) == []
+
+    def test_clear_drops_every_row(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0])])
+        assert store.clear_wiki_mentions() is True
+        assert store.wiki_mention_rows() == []
+
+    def test_rows_on_a_store_that_never_wrote_mentions(self, store):
+        assert store.wiki_mention_rows() == []
+        assert store.wiki_mention_rows(slugs=["boeing"]) == []
+
+    def test_has_wiki_mentions_reflects_presence(self, store):
+        assert store.has_wiki_mentions() is False
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0])])
+        assert store.has_wiki_mentions() is True
+        store.clear_wiki_mentions()
+        assert store.has_wiki_mentions() is False
+
+    def test_removing_a_source_drops_its_mentions(self, store):
+        """Mentions are per-source, so a source deletion takes its evidence with
+        its chunks -- the refresh never has to subtract a removed source."""
+        store.add_chunks(_records_for("doc.md", 1))
+        store.replace_wiki_mentions_for_source("doc.md", [_mention("boeing", "doc.md", 2, [0])])
+        store.replace_wiki_mentions_for_source("keep.md", [_mention("airbus", "keep.md", 2, [0])])
+        store.delete_by_source("doc.md")
+        assert {r["source"] for r in store.wiki_mention_rows()} == {"keep.md"}
+
+
+class TestWikiCitationSources:
+    def test_returns_distinct_wiki_sources(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="src1"),
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="src2"),
+                make_citation(wiki_source="wiki/entities/b.md", citation_key="src1"),
+            ]
+        )
+        assert store.wiki_citation_sources() == {"wiki/concepts/a.md", "wiki/entities/b.md"}
+
+    def test_empty_store_returns_empty_set(self, store):
+        assert store.wiki_citation_sources() == set()
+
+
+class TestReplaceCitationsForWiki:
+    def test_swaps_one_page_and_leaves_the_others(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="old"),
+                make_citation(wiki_source="wiki/concepts/b.md", citation_key="other"),
+            ]
+        )
+
+        store.replace_citations_for_wiki(
+            "wiki/concepts/a.md",
+            [make_citation(wiki_source="wiki/concepts/a.md", citation_key="new")],
+        )
+
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/a.md")] == [
+            "new"
+        ]
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/b.md")] == [
+            "other"
+        ]
 
 
 class TestEnsureFtsIndex:
@@ -1570,13 +1807,19 @@ class TestClearTable:
     def testclear_table_deletes_matching_rows(self, store):
         records = _make_records(n=1)
         store.add_chunks(records)
-        store.clear_table("chunks", "source = 'doc0.md'")
+        assert store.clear_table("chunks", "source = 'doc0.md'") is True
         table = store.open_table("chunks")
         remaining = table.to_arrow()
         assert len(remaining) == 0
 
     def testclear_table_nonexistent_table_is_noop(self, store):
-        store.clear_table("nonexistent", "source = 'doc0.md'")
+        assert store.clear_table("nonexistent", "source = 'doc0.md'") is True
+
+    def testclear_table_reports_a_swallowed_delete_failure(self, store):
+        store.add_chunks(_make_records(n=1))
+        # An unparseable predicate makes the underlying delete raise; the
+        # safe-delete wrapper swallows it and clear_table reports False.
+        assert store.clear_table("chunks", "not a predicate ((") is False
 
 
 class TestEscapeSqlString:
@@ -1756,13 +1999,38 @@ class TestPageTexts:
         assert store.get_page_texts() == []
         assert store.get_page_texts("x.pdf") == []
 
-    def test_page_text_sources(self, store):
-        store.add_page_texts(_page_rows("a.pdf", (1,)))
-        store.add_page_texts(_page_rows("b.pdf", (1,)))
-        assert store.page_text_sources() == {"a.pdf", "b.pdf"}
+    def test_sources_arrow_keys_metadata_by_source(self, store):
+        from lilbee.data.store import SourceMeta
 
-    def test_page_text_sources_missing_table(self, store):
-        assert store.page_text_sources() == set()
+        store.upsert_source("a.pdf", "h", 1, meta=SourceMeta("Alpha", "Ada", "2020-01-01"))
+        store.upsert_source("b.pdf", "h", 1)
+        arrow = store.sources_arrow()
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+        by_source = {r["source"]: r for r in arrow.to_pylist()}
+        assert by_source["a.pdf"]["title"] == "Alpha"
+        assert by_source["a.pdf"]["authors"] == "Ada"
+        assert set(by_source) == {"a.pdf", "b.pdf"}
+
+    def test_sources_arrow_missing_table(self, store):
+        arrow = store.sources_arrow()
+        assert arrow.num_rows == 0
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+
+    def test_sources_arrow_fills_columns_an_older_index_lacks(self, store):
+        # A sources table written before the metadata columns existed must still
+        # join, with nulls, rather than losing the column and breaking the export.
+        import pyarrow as pa
+
+        db = store.get_db()
+        db.create_table(
+            "_sources",
+            pa.table({"filename": pa.array(["old.pdf"]), "file_hash": pa.array(["h"])}),
+        )
+        arrow = store.sources_arrow()
+        assert arrow.schema.names == ["source", "title", "authors", "created_at"]
+        assert arrow.to_pylist() == [
+            {"source": "old.pdf", "title": None, "authors": None, "created_at": None}
+        ]
 
     def test_delete_by_source_removes_page_texts(self, store):
         store.add_chunks(_make_records(n=1))
@@ -1998,12 +2266,12 @@ class TestAdaptiveFilterFinalPass:
 
 class TestTableNamesAttributeError:
     def test_fallback_to_list_when_no_tables_attr(self, store):
-        """_table_names falls back to list() when result has no .tables attribute."""
-        from lilbee.data.store.lance_helpers import _table_names
+        """table_names falls back to list() when result has no .tables attribute."""
+        from lilbee.data.store.lance_helpers import table_names
 
         mock_db = mock.MagicMock()
         mock_db.list_tables.return_value = ["chunks", "sources"]
-        result = _table_names(mock_db)
+        result = table_names(mock_db)
         assert result == ["chunks", "sources"]
 
 
@@ -2151,6 +2419,23 @@ class TestChunkTypePredicate:
         pred = _chunk_type_predicate("wiki")
         assert "IS NULL" not in pred
         assert pred == "chunk_type = 'wiki'"
+
+    def test_raw_matches_extracted_tables(self):
+        """``raw`` means document content. Scoping a search to the user's own
+        documents must not drop the tables extracted from them."""
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
+
+        assert f"'{ChunkType.TABLE}'" in _chunk_type_predicate("raw")
+
+    def test_raw_scoped_search_returns_table_rows(self, store):
+        """The predicate is only half of it: prove a scoped query really serves
+        table rows, since a wiki-disabled search narrows to raw by default."""
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.TABLE))
+        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+
+        rows = store.bm25_probe("text", chunk_type=ChunkType.RAW)
+
+        assert [r.chunk_type for r in rows] == [ChunkType.TABLE]
 
 
 class TestEmbeddingModelGate:
@@ -3046,7 +3331,12 @@ class TestRelocateSources:
     def test_relocate_rekeys_every_source_table(self, store):
         # Guards _RELOCATABLE_TABLES: page_texts.source and citations.source_filename
         # must move too, so dropping a table from the list fails here.
-        from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, PAGE_TEXTS_TABLE
+        from lilbee.core.config import (
+            CHUNKS_TABLE,
+            CITATIONS_TABLE,
+            PAGE_TEXTS_TABLE,
+            WIKI_MENTIONS_TABLE,
+        )
         from lilbee.data.store import SourceType
         from lilbee.data.store.types import SourceStat
 
@@ -3056,6 +3346,7 @@ class TestRelocateSources:
         store.add_page_texts(
             [{"source": "old/a.md", "page": 1, "text": "t", "content_type": "text"}]
         )
+        store.replace_wiki_mentions_for_source("old/a.md", [_mention("boeing", "old/a.md", 2, [0])])
         store.add_citations(
             [
                 {
@@ -3081,12 +3372,15 @@ class TestRelocateSources:
         chunks = store.open_table(CHUNKS_TABLE)
         pages = store.open_table(PAGE_TEXTS_TABLE)
         cites = store.open_table(CITATIONS_TABLE)
+        mentions = store.open_table(WIKI_MENTIONS_TABLE)
         assert chunks.count_rows("source = 'new/a.md'") == 1
         assert chunks.count_rows("source = 'old/a.md'") == 0
         assert pages.count_rows("source = 'new/a.md'") == 1
         assert pages.count_rows("source = 'old/a.md'") == 0
         assert cites.count_rows("source_filename = 'new/a.md'") == 1
         assert cites.count_rows("source_filename = 'old/a.md'") == 0
+        assert mentions.count_rows("source = 'new/a.md'") == 1
+        assert mentions.count_rows("source = 'old/a.md'") == 0
 
     def test_relocate_empty_is_noop(self, store):
         store.relocate_sources([])  # must not raise or acquire the lock

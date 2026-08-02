@@ -110,7 +110,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Embedding.** Provider-agnostic: native GGUF on the local `llama-server` engine by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
 - **Asymmetric query/document embedding.** Instruction-tuned embedders (Qwen3-Embedding, e5/gte `*-instruct`) only reach their retrieval scores when the query carries a task instruction (`Instruct: ...\nQuery: <q>`) embedded differently from documents; base e5 uses `query:`/`passage:` prefixes. lilbee detects the family from the configured embedder ref and applies the right prefixes automatically (`retrieval/embedding_profiles.py`): the query path uses `embed_query`/`embed_query_batch`, the document path keeps `embed`/`embed_batch`. Symmetric models (bge-m3, nomic) and unrecognized models get no prefix, so behavior is unchanged for them. There is no instruction config: a wrong template silently underperforms, so support for a new family is a curated map entry, not a user knob.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
-- **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
+- **Wiki generation.** Wikification is explicit: `lilbee wiki build` (or the TUI Wikify action, or the HTTP/MCP build endpoints) issues one LLM call per source; `lilbee sync` only runs the capped `lilbee.wiki.ingest.incremental_update` hook when `wiki_auto_update` is enabled. Each call jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
 
 ### Planning: which files to ingest
@@ -349,19 +349,64 @@ and convert once at the provider boundary. They are network-bound, so the conver
 does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
 to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
 
-#### Multiprocess extract/embed (`ingest_processes`), and why it is off by default
+#### One worker process per GPU (`ingest_processes`)
 
-Base64 raised the one-core decode ceiling; worker **processes** are the other lever for
-it, spreading decode across cores the GIL otherwise serializes. It is **off by default**
-(`ingest_processes = 1`) because it only pays when one process cannot saturate the fleet.
-A small, fast embedder on several GPUs leaves headroom a second process fills — 0.6B on
-4xA40 goes 174 → 220 docs/sec from 1 → 2 processes. A large or GPU-bound embedder does
-not: the single parent that collects worker records over IPC and writes the one index is
-itself serial, so throughput ties single-process no matter the process count — 8B on
-4xH100 measures ~168 docs/sec at both 1 and 4 processes, GPUs only ~67% (idle capacity
-the extra processes cannot reach). That parent drain, not the process count, is the
-binding ceiling for large models. Set `ingest_processes = 0` to auto-size, or an explicit
-N to opt in.
+**The problem.** One process cannot feed several cards. The work is serialized through
+one plan stream, one collect and one writer, and that serial stage is the bottleneck:
+on 8xH100 a plain `lilbee sync` measured 152 docs/sec across eight cards against 162
+across four, so the eighth card made the run slower.
+
+**The shape.** A sync large enough to pay for them fans out into one worker process per
+visible card. Each worker is an ordinary `lilbee sync` over a deterministic slice of the
+corpus, with its own store; the parent supervises and folds the shards into one index.
+
+```mermaid
+flowchart LR
+    C[corpus] --> S{"sync<br/>more than one card?<br/>corpus big enough?"}
+    S -->|no| P[one process, in-line]
+    S -->|yes| W0["worker 0<br/>slice 0 · GPU 0"]
+    S --> W1["worker 1<br/>slice 1 · GPU 1"]
+    S --> W2["worker N<br/>slice N · GPU N"]
+    W0 --> M[merge]
+    W1 --> M
+    W2 --> M
+    M --> I[("one index<br/>indexes built once, corpus-wide")]
+```
+
+**What each worker owns.**
+
+| What it owns | Why |
+|---|---|
+| One card, masked at the process | Sizing and placement read the mask, so a worker plans against its own card, not the box. |
+| An engine slot, keyed by card | Without one, every worker scans the machine-wide slot, finds worker 0's fleet and adopts it: one card at 95% and seven at 0%, run completes, index correct, no error. Workers sharing a card share its slot deliberately. |
+| A data root and store | No shared write drain, which is what capped the previous mechanism. |
+| Its share of the CPU pools | Eight workers each sizing to a 160-core box put 4208 threads on it, load average 254, GPUs idle. |
+| A slice of the corpus | Hashed with blake2b, not `hash()`, so a resume deals the corpus the same way and re-embeds nothing. |
+| Its own log | The parent shows one progress bar instead of N log files. |
+
+**The setting.** `ingest_processes` counts worker processes. `0` (the default) is one per
+card, `1` keeps ingest in this process, and `N` pins the count with worker *i* on card
+*i % card_count*, so more workers than cards is expressible without a second fleet on a
+card.
+
+**Why this replaced the old mechanism.** It used to be a pool inside one process: workers
+produced records, a single parent collected them over IPC and wrote the one store. That
+parent drain was the binding ceiling for a large embedder, which is why the setting was
+off by default and measured 1.00x. Per-card workers remove the drain instead of widening
+it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
+fraction of 0.93.
+
+**Where the work is skipped.** Workers build no indexes and run no corpus-wide passes:
+the merge rebuilds ANN and BM25 over the whole corpus anyway, and per-shard builds
+measured a third of an 800k run's wall clock before being thrown away.
+
+**Two costs.** The merge copies rows rather than committing metadata, so a first full
+ingest writes the corpus twice; and the shard stores are kept as the resume state, so
+vectors live on disk twice until the merge becomes a metadata-only Lance commit.
+
+**When something breaks.** A worker that fails leaves its shard in place, stops the merge
+and names itself and its log, rather than producing an index that is silently short of
+rows.
 
 ---
 
@@ -1104,7 +1149,7 @@ A store records the embedding model that built it (`_meta` row). Retrieval embed
 
 ## Wiki Layer
 
-> **Experimental.** Generation quality depends on your library and the chat model. Expect some pages to land in `drafts/` for human review rather than publish direct.
+> Generation quality depends on your library and the chat model. Expect some pages to land in `drafts/` for human review rather than publish direct.
 
 The wiki layer is lilbee's second-order index: a set of linked markdown pages auto-generated from your indexed documents so that concepts and entities which show up across many sources get their own page with citations from every source that mentions them.
 
@@ -1117,32 +1162,50 @@ Under `$LILBEE_DATA/$wiki_dir/` (default `wiki/`):
 | `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
 | `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
 | `drafts/` | Low-faithfulness output and PENDING markers for parse failures or slug collisions. Reviewed via `lilbee wiki drafts accept / reject`. |
+| `summaries/` | Landing spot for accepted drafts with no published counterpart and no recorded origin type |
 | `archive/` | Pages retired by `lilbee wiki prune` |
 | `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
 | `index.md` | Auto-generated table of contents, grouped by page type |
-| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+| `log.md` | Append-only audit trail of every build, synthesize, ingest, lint, and prune, with a per-run line reporting what the quality gates did |
 
-Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` target. `make_slug` lives at `src/lilbee/wiki/shared.py`.
+Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` target. `make_slug` lives at `src/lilbee/core/text.py` (re-exported from `lilbee.wiki`).
 
 ### Build
 
-`lilbee wiki build` runs a one-time Phase D migration (archives pre-Phase-D noun-chunk concept pages, unwraps stale `[[concept-slug]]` links), then extracts NER entities from the chunk store via `cfg.wiki_entity_mode` (default `ner_entities`, spaCy NER only). Per source, a single batched LLM call identifies 3-5 concepts worth their own page and drafts a section for each concept plus each extracted entity. Sections are split, citation-verified against the source chunk pool, embedding-faithfulness-scored (`wiki/gen.py::_check_faithfulness`, cosine of body vs mean source-chunk vector), and written to `concepts/` or `entities/`. Sections that fail to parse become PENDING markers in `drafts/`.
+`lilbee wiki build` runs a one-time Phase D migration (archives pre-Phase-D noun-chunk concept pages, unwraps stale `[[concept-slug]]` links), then extracts NER entities from the chunk store via `cfg.wiki_entity_mode` (default `ner_entities`, spaCy NER only). Per source, a single batched LLM call identifies 3-5 concepts worth their own page and drafts a section for each concept plus each extracted entity. Sections are split, citation-verified against the source chunk pool, embedding-faithfulness-scored (`wiki/quality.py::check_faithfulness`, cosine of body vs mean source-chunk vector), and written to `concepts/` or `entities/`. Sections that fail to parse become PENDING markers in `drafts/`.
 
-### Incremental update
+### Wikification and incremental update
 
-`lilbee sync` runs `_incremental_wiki_update` after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 changed sources per sync). Full rebuild is always available via `lilbee wiki build`.
+Enabling the wiki never starts generation on its own. A sync regenerates touched pages only when `LILBEE_WIKI_AUTO_UPDATE` is on, in which case `lilbee.wiki.ingest.incremental_update` runs after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 touched wiki pages per sync); past it the sync logs a warning and leaves the rebuild to you. Otherwise wikification is explicit: `lilbee wiki build` / `wiki update`, the `b` (Wikify) binding on the TUI wiki screen, or the HTTP and MCP build endpoints.
 
-### Retrieval inside wiki generation
+A build spends one LLM call per source document, each carrying that document's chunks up to the context budget, so cost scales with library size rather than with how many pages you read. On a laptop a few dozen documents is minutes; a few thousand is hours of sustained GPU. Run large builds on a machine you are not also using.
 
-Each page is built from the top `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` chunks returned by the same hybrid search the main pipeline uses, optionally reordered by the reranker when `LILBEE_RERANKER_MODEL` is set. Every path respects `LILBEE_DIVERSITY_MAX_PER_SOURCE` so one loud document can't monopolize a topic page.
+
+### Chunk selection inside wiki generation
+
+Wiki generation does not search. NER assigns each extracted entity to the source that mentions it most (its `chunk_refs`), and the batched call for that source is handed that source's own chunks straight from `store.get_chunks_by_source`. Synthesis pages take the chunks of every source in the cluster. In both paths `wiki/page.py::truncate_chunks_to_budget` drops trailing chunks until the prompt plus the output cap (`LILBEE_WIKI_SUMMARY_MAX_TOKENS`) fits the context window, with a quarter-window fallback when the output cap and prompt overhead alone would exceed it. Hybrid search, the reranker, and the per-source diversity cap play no part in what a page is built from.
 
 ### `[[wiki links]]`
 
 After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug surface forms to `[[slug]]` form in page bodies, skipping YAML frontmatter, code fences, and the auto-generated citation block. `lilbee wiki lint` flags concept or entity pages with zero inbound links.
 
+### Lazy generation
+
+A build spends one LLM call per source document, so its cost tracks library size rather than what anyone reads. `wiki/stubs.py` splits that in half: NER already names every entity in the corpus with its chunk refs and spends no call, so the index of pages-that-could-exist is free and refreshes on every sync while the wiki is enabled (not gated on `wiki_auto_update`, which governs generation). `wiki/lazy.py::generate_stub_page` then writes one page for one call.
+
+Only entities are enumerable this way; LLM-curated concepts come from the per-source batched call and still arrive published from an explicit build.
+
+Per-page generation also widens the evidence. `group_entities_by_primary_source` assigns an entity to the source mentioning it most and generates from that source alone, dropping what every other document says. Reading the index gathers the subject's chunks across all of them and resolves each citation against whichever source holds the excerpt. Chunk refs are capped per entity (`wiki_stub_max_chunk_refs`, default 50, already more than one page's context budget admits) so the index stays small.
+
+### Removing a wiki
+
+Disabling `wiki` stops new pages being written; it deletes nothing. `wiki/wipe.py::wipe_wiki` removes the whole wiki directory and then every `chunk_type=wiki` row and every citation row, in that order: rows outliving their page are what the next prune reconciles away, while a page outliving its rows reads as "nothing to do" and is never retried. It is reachable with the wiki disabled from all four surfaces: `lilbee wiki wipe`, `DELETE /api/wiki`, the `wiki_wipe` MCP tool (which needs `confirm=true`), and in the TUI the **Delete wiki** command-palette entry. The wiki screen's `W` binding is the quick route while the wiki is on, but the whole wiki view drops out of the nav once the setting is off, so the palette entry is what carries that state. The TUI also offers the wipe whenever the setting is switched off. A wipe reports whether the row delete actually landed, so a failure is never presented as a completed wipe.
+
 ### Search scope
 
 `search()` accepts a `scope` argument (`raw`, `wiki`, `both`) that filters the hybrid search pool to source chunks, wiki chunks, or the union. Used by the TUI scope toggle and the MCP tool.
+
+While `wiki` is off, generated pages are excluded from retrieval regardless of scope: an unscoped search narrows to `raw` (which covers table chunks), and a `wiki`-scoped search returns nothing rather than widening to the whole pool. Disabling the setting deletes no rows, so without this a library wikified once keeps surfacing generated pages in ordinary search.
 
 ---
 
@@ -1154,7 +1217,7 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee search "query"`: vector search, no LLM generation
 - `lilbee sync` / `lilbee add` / `lilbee remove`: document management
 - `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
-- `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
+- `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
 - `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
@@ -1170,6 +1233,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
 - Crawl: `POST /api/crawl` (SSE progress)
+- Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize` (these three are SSE streams), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `POST /api/wiki/index`, `POST /api/wiki/generate/{slug}`, `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
 - Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`
@@ -1191,7 +1255,7 @@ The tradeoff is that the token is all-or-nothing: a client trusted with retrieva
 ### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
-- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`
+- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_build`, `wiki_update`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`, `wiki_index`, `wiki_generate`, `wiki_wipe` (needs `confirm=true`, and stays registered while the wiki is disabled). Accepting or rejecting a draft is deliberately absent from MCP: that call is a human review decision, so it stays on the CLI, the TUI, and the authenticated HTTP API.
 
 #### Transports
 

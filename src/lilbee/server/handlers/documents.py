@@ -68,7 +68,10 @@ async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
     """Remove documents by source name, folder, or glob (source files are kept)."""
     from lilbee.app.ingest import remove_documents_durably
 
-    result = remove_documents_durably(names)
+    # Deletes store rows and takes the wiki build mutex to drop the removed
+    # documents from the browse index, so it cannot run on the event loop: a
+    # build in flight holds that mutex for the length of the whole run.
+    result = await asyncio.to_thread(remove_documents_durably, names)
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
 

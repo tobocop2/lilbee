@@ -20,6 +20,8 @@ class EventType(StrEnum):
     SETUP_START = "setup_start"
     SETUP_PROGRESS = "setup_progress"
     SETUP_DONE = "setup_done"
+    WIKI_PHASE = "wiki_phase"
+    WIKI_PAGE = "wiki_page"
 
 
 class SseEvent(StrEnum):
@@ -166,3 +168,31 @@ class SetupDoneEvent(BaseModel):
     component: str
     success: bool
     error: str | None = None
+
+
+class WikiPhase(StrEnum):
+    """Stage of a wiki build or synthesis run."""
+
+    EXTRACT = "extract"
+    GENERATE = "generate"
+    INDEX = "index"
+
+
+class WikiPhaseEvent(BaseModel):
+    """Emitted when a wiki run enters a new phase.
+
+    ``total`` is the number of units the phase will process (sources for a
+    build, clusters for synthesis), 0 where the phase has no unit count.
+    """
+
+    phase: WikiPhase
+    total: int = 0
+
+
+class WikiPageEvent(BaseModel):
+    """Emitted after each source (build) or cluster (synthesis) is written."""
+
+    label: str
+    pages: int
+    current: int
+    total: int
