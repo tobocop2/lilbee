@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -291,13 +292,22 @@ def _finalize_prune(report: PruneReport, wiki_root: Path, config: Config) -> Non
         )
 
 
-def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
+def prune_wiki(
+    store: Store,
+    config: Config | None = None,
+    *,
+    cancel: threading.Event | None = None,
+) -> PruneReport:
     """Scan all wiki pages and prune stale/orphaned ones.
 
     The page scan covers pages still on disk; reconciliation then covers rows
     whose page is not, including the case of a wiki directory removed wholesale.
     Archiving and the index rewrite make this a writer, so it holds the wiki
     build mutex for the whole pass.
+
+    Each page costs a store lookup, so a large wiki takes long enough to want
+    stopping. Setting *cancel* ends the scan at the next page and still
+    reconciles and finalizes what it collected, leaving the wiki consistent.
     """
     if config is None:
         config = cfg
@@ -309,6 +319,9 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
             if not subdir_path.is_dir():
                 continue
             for md_path in sorted(subdir_path.rglob("*.md")):
+                if cancel is not None and cancel.is_set():
+                    log.info("Wiki prune cancelled after %d pages", len(report.records))
+                    break
                 relative = md_path.relative_to(wiki_root)
                 wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
                 record = _evaluate_page(wiki_source, wiki_root, store, config)

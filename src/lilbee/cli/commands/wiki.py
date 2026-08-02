@@ -387,7 +387,8 @@ def wiki_status(
     from lilbee.wiki.lint import lint_all as _lint_all
 
     # Read-only status: lint for counts without appending to the audit log.
-    report = _lint_all(get_services().store, record_log=False)
+    with _sigint_cancel() as cancel:
+        report = _lint_all(get_services().store, record_log=False, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
@@ -455,7 +456,8 @@ def wiki_prune(
         _fail_wiki_disabled()
     from lilbee.wiki.prune import prune_wiki
 
-    report = prune_wiki(get_services().store)
+    with _sigint_cancel() as cancel:
+        report = prune_wiki(get_services().store, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
