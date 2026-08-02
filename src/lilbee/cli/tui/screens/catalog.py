@@ -35,7 +35,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
-    _for_you_by_role,
+    for_you_by_role,
     group_frontier_rows,
     group_rows_for_grid,
     group_task_rows_with_picks,
@@ -1880,7 +1880,7 @@ class CatalogScreen(Screen[None]):
         family_rows = self._all_family_rows()
         hf_rows = self._all_hf_rows() if self._hf_fetched_any() else []
         remote_rows = self._all_remote_rows()
-        for_you = _for_you_by_role(family_rows + hf_rows)
+        for_you = for_you_by_role(family_rows + hf_rows)
         collection = [r for r in family_rows + remote_rows if r.installed][:6]
         fresh = sorted(
             (r for r in hf_rows if not r.featured),

@@ -161,6 +161,22 @@ class TestRoleVerification:
         assert "Anbeeld/Qwen3-35B-A3B-GGUF" not in repos
         assert len(repos) == 3
 
+    def test_an_unsupported_architecture_is_never_picked(self, monkeypatch) -> None:
+        """A pick is a recommendation: offering one the engine cannot load
+        turns a single click into a failed download."""
+        from dataclasses import replace
+
+        from lilbee.catalog.picks import picks_for
+
+        runnable = _model("ok/bge-reranker-GGUF", "rerank", 2_000_000_000)
+        broken = replace(
+            _model("no/bge-reranker-exotic-GGUF", "rerank", 2_000_000_000),
+            compat=ModelCompat.UNSUPPORTED,
+        )
+        _stub_fetch(monkeypatch, {"rerank": [broken, runnable]})
+
+        assert [m.hf_repo for m in picks_for(ModelTask.RERANK)] == ["ok/bge-reranker-GGUF"]
+
     def test_vision_is_settled_by_the_projector_probe(self, monkeypatch) -> None:
         """An mmproj sibling is definitive, and catches VL repos no name matches.
 

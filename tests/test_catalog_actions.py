@@ -1233,3 +1233,90 @@ class TestEstimateMinRamGb:
         assert estimate_min_ram_gb(0.1) == 2.0  # floor
         assert estimate_min_ram_gb(4.0) == 6.0  # 4 * 1.5
         assert estimate_min_ram_gb(3.0) == 4.5  # rounded to 1 dp
+
+
+class TestForYouByRole:
+    """Discover's For You rail: one runnable pick per role, in role order."""
+
+    @staticmethod
+    def _row(name, task, *, compat, fit_level, featured=True):
+        from lilbee.catalog.types import ModelCompat  # noqa: F401
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.runtime.hardware import FitChip
+
+        row = LocalCatalogRow(
+            name=name,
+            task=task,
+            params="8B",
+            size="4.6 GB",
+            quant="Q4_K_M",
+            downloads="1M",
+            featured=featured,
+            installed=False,
+            sort_downloads=1_000_000,
+            sort_size=4.6,
+            ref=f"a/{name}-GGUF",
+            compat=compat,
+        )
+        row.fit = None if fit_level is None else FitChip(level=fit_level, headroom_gb=1.0)
+        return row
+
+    def _rows(self):
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.runtime.hardware import FitLevel
+
+        return [
+            self._row("Rerank", "rerank", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+            self._row("ChatBad", "chat", compat=ModelCompat.UNSUPPORTED, fit_level=FitLevel.FITS),
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row("ChatGood", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+            self._row("Embed", "embedding", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.TIGHT),
+            self._row("Vision", "vision", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+        ]
+
+    def test_one_pick_per_role_in_role_order(self) -> None:
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+
+        assert [r.task for r in for_you_by_role(self._rows())] == [
+            "chat",
+            "embedding",
+            "vision",
+            "rerank",
+        ]
+
+    def test_an_unsupported_architecture_is_never_offered(self) -> None:
+        """The rail is a one-click install surface, not a listing."""
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+
+        assert "ChatBad" not in [r.name for r in for_you_by_role(self._rows())]
+
+    def test_a_model_the_machine_cannot_hold_is_never_offered(self) -> None:
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+
+        assert "ChatHuge" not in [r.name for r in for_you_by_role(self._rows())]
+
+    def test_a_row_with_no_fit_chip_is_skipped(self) -> None:
+        """An unknown size cannot be promised to fit."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+
+        rows = [self._row("NoSize", "chat", compat=ModelCompat.SUPPORTED, fit_level=None)]
+        assert for_you_by_role(rows) == []
+
+    def test_non_pick_rows_are_skipped(self) -> None:
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.runtime.hardware import FitLevel
+
+        rows = [
+            self._row(
+                "Browse",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+            )
+        ]
+        assert for_you_by_role(rows) == []

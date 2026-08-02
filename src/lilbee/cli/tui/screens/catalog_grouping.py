@@ -40,7 +40,7 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
     return (row.name, row.installed)
 
 
-def _for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
+def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
     """Runnable picks grouped by role: chat, embedding, vision, rerank.
 
     A row qualifies only when the engine supports its architecture and the
