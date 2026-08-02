@@ -15,6 +15,7 @@ from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
 from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.runtime.cpu import engine_thread_count
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 LLM_RERANK_CONCURRENCY = 8
 
 _FLAG_MAIN_GPU = "--main-gpu"
+_FLAG_THREADS = "--threads"
 
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
@@ -221,6 +223,17 @@ def _main_gpu_args(devices: tuple[int, ...]) -> list[str]:
     return [_FLAG_MAIN_GPU, str(main_gpu)]
 
 
+def _thread_args() -> list[str]:
+    """``--threads`` when a CPU cap applies to this process, else empty.
+
+    llama.cpp counts host cores and sees neither a cgroup quota nor an affinity
+    mask, so a container-bound engine oversubscribes its quota badly. Only the
+    generation flag is emitted: ``--threads-batch`` defaults to ``--threads``.
+    """
+    threads = engine_thread_count()
+    return [] if threads is None else [_FLAG_THREADS, str(threads)]
+
+
 def build_server_argv(
     *,
     binary: Path,
@@ -263,6 +276,7 @@ def build_server_argv(
         str(ctx_per_slot * slots),
     ]
     argv += _main_gpu_args(devices)
+    argv += _thread_args()
     argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
