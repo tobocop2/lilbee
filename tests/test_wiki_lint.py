@@ -476,3 +476,33 @@ class TestLintModelChanged:
         result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None
         assert result.severity == IssueSeverity.WARNING  # warning, not error
+
+
+class TestLintCancellation:
+    """Each page costs a citation lookup, so a large wiki has to be stoppable."""
+
+    def test_a_set_token_stops_the_scan_and_reports_what_it_found(self, tmp_path: Path):
+        import threading
+
+        write_wiki_page(tmp_path, "entities", "a", "Unmarked claim one.\n")
+        write_wiki_page(tmp_path, "entities", "b", "Unmarked claim two.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+
+        cancel = threading.Event()
+        cancel.set()  # already cancelled on entry
+        report = lint_all(store, cancel=cancel)
+
+        assert store.get_citations_for_wiki.call_count == 0, "the scan kept looking up pages"
+        assert report.issues == [] or all(i is not None for i in report.issues)
+
+    def test_an_unset_token_scans_every_page(self, tmp_path: Path):
+        import threading
+
+        write_wiki_page(tmp_path, "entities", "a", "Unmarked claim one.\n")
+        write_wiki_page(tmp_path, "entities", "b", "Unmarked claim two.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+
+        lint_all(store, cancel=threading.Event())
+        assert store.get_citations_for_wiki.call_count == 2

@@ -694,7 +694,7 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
     from lilbee.app.dataset import DatasetError, export_to_path
 
     try:
-        summary = export_to_path(Path(output), fmt, source or None)
+        summary = export_to_path(Path(output), fmt, source or None, cancel=_caller_cancelled())
     except DatasetError as exc:
         return _error(str(exc))
     return summary.model_dump()
@@ -763,7 +763,9 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
 
     store = get_services().store
     report = (
-        LintReport(issues=lint_wiki_page(wiki_source, store)) if wiki_source else lint_all(store)
+        LintReport(issues=lint_wiki_page(wiki_source, store))
+        if wiki_source
+        else lint_all(store, cancel=_caller_cancelled())
     )
     return {
         "command": "wiki_lint",
@@ -828,7 +830,7 @@ def wiki_status() -> dict[str, Any]:
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
     # Read-only status: lint for counts without appending to the audit log.
-    report = lint_all(get_services().store, record_log=False)
+    report = lint_all(get_services().store, record_log=False, cancel=_caller_cancelled())
     return {
         "wiki_enabled": cfg.wiki,
         WikiSubdir.SUMMARIES: len(summaries),
@@ -912,7 +914,7 @@ def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
 
-    report = prune_wiki(get_services().store)
+    report = prune_wiki(get_services().store, cancel=_caller_cancelled())
     return {
         "command": "wiki_prune",
         "records": [r.to_dict() for r in report.records],

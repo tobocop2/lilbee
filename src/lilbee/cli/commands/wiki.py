@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import signal
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -19,7 +17,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
@@ -78,36 +76,6 @@ def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | Non
     if event_type is EventType.WIKI_PAGE and isinstance(data, WikiPageEvent):
         return msg.WIKI_BUILD_PAGE.format(label=data.label, current=data.current, total=data.total)
     return None
-
-
-@contextmanager
-def _sigint_cancel() -> Iterator[threading.Event]:
-    """Turn Ctrl-C into a token the wiki pass polls, not a mid-page abort.
-
-    A build runs for hours and writes pages as it goes, so the default
-    KeyboardInterrupt drops it wherever the interpreter happened to be. Setting
-    a token instead lets it stop at a source boundary with what it wrote intact.
-    The previous handler is restored as soon as it fires, so a second Ctrl-C
-    still hard-exits a pass that is not checking the token.
-
-    signal.signal only works on the main thread; off it (pytest-xdist workers)
-    the token is simply never set and Ctrl-C keeps its default behaviour.
-    """
-    token = threading.Event()
-    if threading.current_thread() is not threading.main_thread():
-        yield token
-        return
-    previous = signal.getsignal(signal.SIGINT)
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        signal.signal(signal.SIGINT, previous)
-        token.set()
-
-    signal.signal(signal.SIGINT, _on_sigint)
-    try:
-        yield token
-    finally:
-        signal.signal(signal.SIGINT, previous)
 
 
 @contextmanager
@@ -387,7 +355,8 @@ def wiki_status(
     from lilbee.wiki.lint import lint_all as _lint_all
 
     # Read-only status: lint for counts without appending to the audit log.
-    report = _lint_all(get_services().store, record_log=False)
+    with sigint_cancel() as cancel:
+        report = _lint_all(get_services().store, record_log=False, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
@@ -425,7 +394,7 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _wiki_progress() as on_progress, _sigint_cancel() as cancel:
+    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
         result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
@@ -455,7 +424,8 @@ def wiki_prune(
         _fail_wiki_disabled()
     from lilbee.wiki.prune import prune_wiki
 
-    report = prune_wiki(get_services().store)
+    with sigint_cancel() as cancel:
+        report = prune_wiki(get_services().store, cancel=cancel)
 
     if cfg.json_mode:
         json_output(
@@ -613,7 +583,7 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _wiki_progress() as on_progress, _sigint_cancel() as cancel:
+    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
         result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:
