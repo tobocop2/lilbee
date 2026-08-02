@@ -1093,8 +1093,58 @@ def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
     assert any("scan.pdf" in str(call) for call in notify_calls)
 
 
-def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
-    """When sync returns skipped files, _do_add raises so the worker surfaces the error."""
+def test_do_add_skipped_alongside_indexed_is_partial_success(tmp_path: Path) -> None:
+    """Skipped files beside indexed ones finish the add: warn, keep roots, no raise."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import SyncResult
+
+    src = tmp_path / "corpus"
+    src.mkdir()
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    from lilbee.app.ingest import RegisterResult
+
+    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    captured: list[Exception] = []
+    notify_calls: list[tuple[object, ...]] = []
+    unregister = MagicMock()
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with (
+                patch("lilbee.app.ingest.register_sources", return_value=reg_result),
+                patch(
+                    "lilbee.runtime.asyncio_loop.run",
+                    new=MagicMock(
+                        return_value=SyncResult(
+                            added=["corpus/store.py"], skipped=["corpus/__init__.py"]
+                        )
+                    ),
+                ),
+                patch("lilbee.cli.tui.screens.chat.unregister_added_roots", new=unregister),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: notify_calls.append(a),
+                ),
+            ):
+                screen._do_add([src], reporter)
+        except Exception as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not captured, f"partial success must not raise: {captured}"
+    unregister.assert_not_called()
+    assert any("__init__.py" in str(call) for call in notify_calls)
+
+
+def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
+    """Every file skipped and nothing indexed: the add failed and its roots are dropped."""
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -1109,6 +1159,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name], skipped=[])
     captured: list[Exception] = []
+    unregister = MagicMock()
 
     def _worker() -> None:
         try:
@@ -1119,7 +1170,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
                     "lilbee.runtime.asyncio_loop.run",
                     new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
                 ),
-                patch("lilbee.cli.tui.screens.chat.unregister_added_roots"),
+                patch("lilbee.cli.tui.screens.chat.unregister_added_roots", new=unregister),
             ):
                 screen._do_add([src], reporter)
         except Exception as e:
@@ -1129,6 +1180,51 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     t.start()
     t.join(timeout=5)
     assert captured and "scan.pdf" in str(captured[0])
+    unregister.assert_called_once()
+
+
+def test_do_add_other_sources_do_not_mask_a_dead_add(tmp_path: Path) -> None:
+    """Sync is global: activity on other sources must not turn an all-skipped add into a success."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import SyncResult
+
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    from lilbee.app.ingest import RegisterResult
+
+    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    captured: list[Exception] = []
+    unregister = MagicMock()
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with (
+                patch("lilbee.app.ingest.register_sources", return_value=reg_result),
+                patch(
+                    "lilbee.runtime.asyncio_loop.run",
+                    new=MagicMock(
+                        return_value=SyncResult(
+                            added=["other-doc.md"], unchanged=5, skipped=["scan.pdf"]
+                        )
+                    ),
+                ),
+                patch("lilbee.cli.tui.screens.chat.unregister_added_roots", new=unregister),
+            ):
+                screen._do_add([src], reporter)
+        except Exception as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert captured and "scan.pdf" in str(captured[0])
+    unregister.assert_called_once()
 
 
 @pytest.mark.asyncio
