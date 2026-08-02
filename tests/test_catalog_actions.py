@@ -1240,7 +1240,6 @@ class TestForYouByRole:
 
     @staticmethod
     def _row(name, task, *, compat, fit_level, featured=True):
-        from lilbee.catalog.types import ModelCompat  # noqa: F401
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
         from lilbee.runtime.hardware import FitChip
 
