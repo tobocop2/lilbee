@@ -933,12 +933,12 @@ class TestSetRerankerModelRoute:
         carries the canonical full ref of the installed quant, not the
         bare repo the user posted.
         """
-        full_ref = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
+        full_ref = "rerank/bge-reranker-test-GGUF/bge-reranker-Q4_K_M.gguf"
         mock_available.return_value = full_ref
         mock_set.return_value = {"model": full_ref}
         resp = client.put(
             "/api/models/reranker",
-            json={"model": "gpustack/bge-reranker-v2-m3-GGUF"},
+            json={"model": "rerank/bge-reranker-test-GGUF"},
         )
         assert resp.status_code == 200
         assert resp.json()["model"] == full_ref
@@ -963,7 +963,7 @@ class TestModelsCatalogRoute:
 
     def test_invalid_size_returns_422(self, client):
         """An unknown size bucket must surface as 422, not 500."""
-        resp = client.get("/api/models/catalog?size=huge&featured=true")
+        resp = client.get("/api/models/catalog?size=gigantic&featured=true")
         assert resp.status_code == 422
 
     def test_invalid_task_returns_422(self, client):

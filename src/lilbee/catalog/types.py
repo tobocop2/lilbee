@@ -53,11 +53,16 @@ class KeyStatus(StrEnum):
 
 
 class CatalogSize(StrEnum):
-    """Size bucket for catalog filtering."""
+    """Size bucket for catalog filtering, keyed on parameter count.
+
+    Not named ``FRONTIER`` at the top end: ``CatalogRowKind.FRONTIER`` already
+    means cloud API-key models, the opposite side of the local/remote split.
+    """
 
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"
+    HUGE = "huge"
 
 
 class CatalogSort(StrEnum):

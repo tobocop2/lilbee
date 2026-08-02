@@ -4,30 +4,30 @@ from unittest import mock
 
 import pytest
 
+from conftest import PICKS_CHAT
 from lilbee.modelhub import models
-from lilbee.modelhub.models import MODEL_CATALOG, ModelInfo
+from lilbee.modelhub.models import ModelInfo
 from tests._mock_effects import repeat_last
 
 
 class TestModelCatalog:
     def test_not_empty(self):
-        assert len(MODEL_CATALOG) > 0
+        assert len(models.MODEL_CATALOG) > 0
 
     def test_all_model_info(self):
-        for m in MODEL_CATALOG:
+        for m in models.MODEL_CATALOG:
             assert isinstance(m, ModelInfo)
 
     def test_derived_from_catalog(self):
-        """MODEL_CATALOG entries match catalog.py's FEATURED_CHAT."""
-        from lilbee.catalog import FEATURED_CHAT
+        """models.MODEL_CATALOG entries match catalog.py's PICKS_CHAT."""
 
-        assert len(MODEL_CATALOG) == len(FEATURED_CHAT)
-        for mc, fc in zip(MODEL_CATALOG, FEATURED_CHAT, strict=True):
+        assert len(models.MODEL_CATALOG) == len(PICKS_CHAT)
+        for mc, fc in zip(models.MODEL_CATALOG, PICKS_CHAT, strict=True):
             assert mc.ref == fc.ref
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
-            MODEL_CATALOG[0].ref = "nope"  # type: ignore[misc]
+            models.MODEL_CATALOG[0].ref = "nope"  # type: ignore[misc]
 
 
 class TestGetSystemRamGb:
@@ -115,15 +115,30 @@ class TestPickDefaultModel:
         result = models.pick_default_model(32.0)
         assert result.min_ram_gb <= 32.0
 
+    def test_unattended_pick_is_capped_below_the_largest_fitting(self):
+        """A piped run must not be handed a 68 GB download on a big host."""
+        uncapped = models.pick_default_model(128.0)
+        capped = models.pick_default_model(128.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
+        assert uncapped.size_gb > models._UNATTENDED_MAX_SIZE_GB
+        assert capped.size_gb <= models._UNATTENDED_MAX_SIZE_GB
+
+    def test_raises_when_the_catalog_is_empty(self, monkeypatch):
+        """HuggingFace unreachable must surface as a message, not an IndexError."""
+        monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
+        with pytest.raises(RuntimeError, match="Could not reach HuggingFace"):
+            models.pick_default_model(16.0)
+
     def test_tiny_ram_picks_smallest(self):
+        """No repo id is stable any more, so assert the fit rule, not a name."""
         result = models.pick_default_model(2.0)
         assert result.min_ram_gb <= 2.0
-        assert "SmolLM2" in result.ref or "Qwen3-0.6B" in result.ref
+        fitting = [m for m in models.MODEL_CATALOG if m.min_ram_gb <= 2.0]
+        assert result.size_gb == max(m.size_gb for m in fitting)
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
-        first = MODEL_CATALOG[0]
+        first = models.MODEL_CATALOG[0]
         assert models._model_download_size_gb(first.ref) == first.size_gb
 
     def test_unknown_model_returns_fallback(self):
@@ -137,7 +152,7 @@ class TestDisplayModelPicker:
         recommended = models.display_model_picker(16.0, 50.0)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert MODEL_CATALOG[0].display_name in captured.err
+        assert models.MODEL_CATALOG[0].display_name in captured.err
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
@@ -179,13 +194,13 @@ class TestPromptModelChoice:
     def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
             result = models.prompt_model_choice(8.0)
-        assert result == MODEL_CATALOG[0]
+        assert result == models.MODEL_CATALOG[0]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=repeat_last("abc", "99", "2")):
             result = models.prompt_model_choice(8.0)
-        assert result == MODEL_CATALOG[1]
+        assert result == models.MODEL_CATALOG[1]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_eof_returns_recommended(self, mock_disk_estimate):
@@ -277,9 +292,10 @@ class TestEnsureChatModel:
     ):
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             pulled = models.ensure_chat_model()
-        expected = models.pick_default_model(32.0)
+        expected = models.pick_default_model(32.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
         mock_pull.assert_called_once_with(expected.ref, console=None)
         assert pulled == expected.ref
+        assert expected.size_gb <= models._UNATTENDED_MAX_SIZE_GB
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -305,7 +321,7 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with(MODEL_CATALOG[0].ref, console=None)
+        mock_pull.assert_called_once_with(models.MODEL_CATALOG[0].ref, console=None)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
@@ -347,3 +363,12 @@ class TestEnsureChatModel:
 # ensure_tag was removed alongside the alias system. Tag normalisation has
 # no meaning under the new HF-keyed identity, so callers either pass a
 # canonical ref through directly or fail loudly via parse_model_ref.
+
+
+class TestPickDefaultModelFallback:
+    def test_nothing_fits_falls_back_to_the_smallest(self, monkeypatch):
+        """A host too small for every pick still gets an honest offer."""
+        catalog = tuple(models._get_model_catalog())
+        monkeypatch.setattr(models, "_get_model_catalog", lambda: catalog)
+        result = models.pick_default_model(0.5)
+        assert result.size_gb == min(m.size_gb for m in catalog)

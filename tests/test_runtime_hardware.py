@@ -91,7 +91,6 @@ def _variant(repo: str, params: str, quant: str, size_mb: int) -> ModelVariant:
         param_count=params,
         quant=quant,
         size_mb=size_mb,
-        recommended=False,
     )
 
 

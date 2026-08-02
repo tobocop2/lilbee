@@ -1,15 +1,10 @@
-"""Group featured models into display families."""
+"""Group model picks into display families."""
 
 import re
 
-from lilbee.catalog.featured import (
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
-    FEATURED_RERANK,
-    FEATURED_VISION,
-)
 from lilbee.catalog.formatting import clean_display_name, extract_quant
 from lilbee.catalog.models import CatalogModel, ModelFamily, ModelVariant
+from lilbee.catalog.picks import picks_for
 from lilbee.catalog.types import ModelTask
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
@@ -38,7 +33,7 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         param_count=derive_param_count(model),
         quant=extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
-        recommended=model.recommended,
+        compat=model.compat,
     )
 
 
@@ -60,7 +55,7 @@ def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[M
     families: list[ModelFamily] = []
     for family_name in order:
         members = groups[family_name]
-        representative = next((m for m in members if m.recommended), members[0])
+        representative = members[0]
         variants = [_catalog_to_variant(m) for m in members]
         families.append(
             ModelFamily(
@@ -75,15 +70,14 @@ def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[M
 
 
 def get_families() -> list[ModelFamily]:
-    """Get all featured models grouped into families.
+    """Get the current picks grouped into families.
     Returns families ordered: chat, then embedding, then vision, then reranker.
-    Within each family, variants preserve the order they appear in the featured
-    lists. The recommended flag on each variant comes from the catalog entry's
-    own ``recommended`` value, not from size.
+    Within each family, variants preserve the order the picks arrive in, which
+    is most-popular-first within each parameter tier.
     """
     return (
-        _build_families(FEATURED_CHAT, ModelTask.CHAT)
-        + _build_families(FEATURED_EMBEDDING, ModelTask.EMBEDDING)
-        + _build_families(FEATURED_VISION, ModelTask.VISION)
-        + _build_families(FEATURED_RERANK, ModelTask.RERANK)
+        _build_families(picks_for(ModelTask.CHAT), ModelTask.CHAT)
+        + _build_families(picks_for(ModelTask.EMBEDDING), ModelTask.EMBEDDING)
+        + _build_families(picks_for(ModelTask.VISION), ModelTask.VISION)
+        + _build_families(picks_for(ModelTask.RERANK), ModelTask.RERANK)
     )

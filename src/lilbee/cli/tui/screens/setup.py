@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
@@ -30,11 +31,10 @@ from textual.widgets import Label, Static
 
 from lilbee.app.services import reset_services
 from lilbee.catalog import (
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
     CatalogModel,
     display_label_for_ref,
     extract_quant,
+    picks_for,
 )
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -53,6 +53,7 @@ from lilbee.modelhub.models import get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
+_WORKER_SETUP_PICKS = "setup-picks"
 SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
@@ -105,11 +106,31 @@ def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
     )
 
 
-def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
-    """Pick chat + embedding models appropriate for system RAM."""
-    eligible = [m for m in FEATURED_CHAT if m.min_ram_gb <= ram_gb]
-    chat = max(eligible, key=lambda m: m.size_gb) if eligible else FEATURED_CHAT[0]
-    embed = FEATURED_EMBEDDING[0]
+def _runnable(picks: Sequence[CatalogModel]) -> tuple[CatalogModel, ...]:
+    """Picks the bundled engine can actually load.
+
+    First-run has no confirm gate, so an unsupported architecture here becomes a
+    failed download the user did not choose.
+    """
+    return tuple(m for m in picks if m.compat == ModelCompat.SUPPORTED)
+
+
+def _pick_recommended(
+    ram_gb: float,
+    chat_picks: Sequence[CatalogModel],
+    embed_picks: Sequence[CatalogModel],
+) -> tuple[CatalogModel | None, CatalogModel | None]:
+    """Pick chat + embedding models appropriate for system RAM.
+
+    Chat is the largest pick that both fits RAM and runs on the bundled engine;
+    an unsupported architecture is never recommended even when it fits. Either
+    may be None when HuggingFace is unreachable and there are no picks.
+    """
+    eligible = [
+        m for m in chat_picks if m.min_ram_gb <= ram_gb and m.compat == ModelCompat.SUPPORTED
+    ]
+    chat = max(eligible, key=lambda m: m.size_gb) if eligible else None
+    embed = embed_picks[0] if embed_picks else None
     return chat, embed
 
 
@@ -184,7 +205,9 @@ class SetupWizard(Screen[str | None]):
             yield ViewTabs()
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
-        yield VerticalScroll(id="setup-grid-container")
+        yield VerticalScroll(
+            Static(msg.SETUP_LOADING, id="setup-loading"), id="setup-grid-container"
+        )
         with BottomBars():
             yield Label(self._initial_hint_text(), id="setup-enter-hint")
             yield TaskBar()
@@ -197,15 +220,25 @@ class SetupWizard(Screen[str | None]):
         return msg.SETUP_ENTER_HINT
 
     def on_mount(self) -> None:
-        self._build_grid()
-        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
-        with contextlib.suppress(Exception):
-            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
+        self._load_picks_and_build()
+
+    @work(thread=True, name=_WORKER_SETUP_PICKS)
+    def _load_picks_and_build(self) -> None:
+        """Resolve the picks off the UI thread, then build the grid on it.
+
+        Picks come from HuggingFace on the first call of a session. Resolving
+        them inline in ``on_mount`` froze the wizard for as long as the request
+        took, which on a slow network is the per-request timeout, not the ~1.5s
+        a warm connection costs. The catalog screen fetches HF the same way.
+        """
+        chat_picks = picks_for(ModelTask.CHAT)
+        embed_picks = picks_for(ModelTask.EMBEDDING)
+        call_from_thread(self, self._build_grid, chat_picks, embed_picks)
 
     def _build_section(
         self,
         heading: str,
-        models: tuple[CatalogModel, ...],
+        models: Sequence[CatalogModel],
         installed_refs: set[str],
         widgets_out: list[Static | GridSelect],
         grid_id: str | None = None,
@@ -216,14 +249,26 @@ class SetupWizard(Screen[str | None]):
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50, id=grid_id))
         return cards
 
-    def _build_grid(self) -> None:
+    def _build_grid(
+        self,
+        chat_picks: Sequence[CatalogModel],
+        embed_picks: Sequence[CatalogModel],
+    ) -> None:
         """Build all model sections and pre-select recommended combo."""
         ram_gb = get_system_ram_gb()
-        rec_chat, rec_embed = _pick_recommended(ram_gb)
+        rec_chat, rec_embed = _pick_recommended(ram_gb, chat_picks, embed_picks)
         self._recommended_chat = rec_chat
         self._recommended_embed = rec_embed
 
         container = self.query_one("#setup-grid-container", VerticalScroll)
+        container.remove_children()
+        if (
+            not chat_picks
+            and not embed_picks
+            and not (self._chat_installed or self._embed_installed)
+        ):
+            container.mount(Static(msg.SETUP_PICKS_UNAVAILABLE, id="setup-picks-unavailable"))
+            return
         widgets_to_mount: list[Static | GridSelect] = []
         installed_refs = set(self._chat_installed) | set(self._embed_installed)
 
@@ -241,17 +286,20 @@ class SetupWizard(Screen[str | None]):
 
         chat_cards = self._build_section(
             msg.SETUP_HEADING_CHAT,
-            FEATURED_CHAT,
+            _runnable(chat_picks),
             installed_refs,
             widgets_to_mount,
             grid_id=SETUP_CHAT_GRID_ID,
         )
         embed_cards = self._build_section(
-            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, installed_refs, widgets_to_mount
+            msg.SETUP_HEADING_EMBED, _runnable(embed_picks), installed_refs, widgets_to_mount
         )
 
         container.mount_all(widgets_to_mount)
         self._preselect_recommended(chat_cards, embed_cards)
+        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
+        with contextlib.suppress(Exception):
+            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
 
     def _preselect_recommended(
         self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
