@@ -13,7 +13,7 @@ import re
 import threading
 from typing import TYPE_CHECKING, Any
 
-from lilbee.core.text import is_valid_label, make_slug
+from lilbee.core.text import collapse_whitespace, is_valid_label, make_slug
 from lilbee.wiki.entity_extractor.base import (
     ChunkRef,
     EntityKind,
@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_WHITESPACE_RE = re.compile(r"\s+")
 
 # Pre-spaCy markdown-noise strippers. Compiled once at module scope so
 # the extractor's hot path does not recompile them per chunk. Match on
@@ -39,11 +38,6 @@ _NAV_CHROME_RE = re.compile(
     r"^\s*(?:Home|Menu|Navigation|Edit this page|Jump to navigation|Jump to search)\s*$",
     re.MULTILINE,
 )
-
-
-def _normalize(text: str) -> str:
-    """Lowercase, strip, and collapse internal whitespace for dedup keys."""
-    return _WHITESPACE_RE.sub(" ", text.strip().lower())
 
 
 def pre_clean_for_ner(text: str) -> str:
@@ -75,6 +69,10 @@ class NerConceptsExtractor:
     def __init__(self, provider: LLMProvider, config: Config) -> None:
         self._provider = provider
         self._config = config
+
+    def available(self) -> bool:
+        """True when the spaCy pipeline is loadable. Cached, so this is cheap."""
+        return _load_spacy() is not None
 
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         if not chunks:
@@ -137,13 +135,21 @@ def _accumulate_doc_entities(
         if ent.label_ not in allowed_ent_types:
             funnel["type_filter_dropped"] += 1
             continue
-        surface = ent.text.strip()
+        # Collapse first: spaCy spans cross wrapped lines constantly in PDF
+        # text, and the label is interpolated raw into a single-line marker.
+        # Rejecting the wrapped form instead would lose the mention entirely.
+        surface = collapse_whitespace(ent.text)
         if not is_valid_label(surface):
             funnel["label_sanity_dropped_entities"] += 1
             if debug_enabled:
                 log.debug("label-sanity: rejected entity %r", surface)
             continue
-        key = _normalize(surface)
+        # Key by slug, not the normalized surface: the index keys stubs on
+        # make_slug, so two surfaces that slug alike ("Ford Motor Co." and
+        # "Ford Motor Co") are one subject. Keyed by surface they stay two
+        # aggregates that an incremental refresh sums, double-counting mentions
+        # and duplicating refs past the floor.
+        key = make_slug(surface)
         rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
         rec.refs.add(ref)
         funnel["kept_entity_surfaces"] += 1

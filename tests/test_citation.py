@@ -2,15 +2,20 @@
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data.store import CitationRecord
-from lilbee.wiki.citation import (
+from lilbee.wiki.citations import (
     CitationStatus,
     ParsedCitation,
+    _extract_excerpt,
     find_unmarked_claims,
+    footnote_marker_keys,
     parse_wiki_citations,
     render_citation_block,
+    scrub_unverified_markers,
     strip_citation_block,
     verify_citation,
+    wiki_sourced_count,
 )
 from tests.conftest import make_citation as _citation_record
 
@@ -51,6 +56,48 @@ class TestParseWikiCitations:
             source_ref="pep-695.txt, lines 1-30",
             line_number=19,
         )
+
+    def test_a_key_defined_twice_parses_once(self):
+        """A mid-body definition repeated in the trailing block is one citation,
+        so accept cannot store duplicate rows for the same key."""
+        md = (
+            '[^src1]: doc.md, excerpt: "first"\n\nBody text.\n\n[^src1]: doc.md, excerpt: "first"\n'
+        )
+        result = parse_wiki_citations(md)
+        assert [c.citation_key for c in result] == ["src1"]
+
+    def test_a_mid_body_definition_parses_alongside_the_block(self):
+        """The scan used to start at the block comment, so a definition the model
+        left above it was never resolved and its claim lost its citation."""
+        md = (
+            'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\n'
+            "More prose.[^src2]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src2]: doc.md, excerpt: "quote two"\n'
+        )
+        result = parse_wiki_citations(md)
+        assert [c.citation_key for c in result] == ["src1", "src2"]
+        assert result[0].line_number == 3
+
+    def test_a_definition_repeated_in_the_block_keeps_its_body_position(self):
+        md = (
+            'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\n'
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "quote one"\n'
+        )
+        [citation] = parse_wiki_citations(md)
+        assert citation.line_number == 3
+
+    def test_a_definition_inside_a_code_fence_is_an_example_not_a_citation(self):
+        md = (
+            "```markdown\n"
+            '[^src1]: example.md, excerpt: "sample"\n'
+            "```\n\n"
+            '[^src2]: doc.md, excerpt: "quote"\n'
+        )
+        assert [c.citation_key for c in parse_wiki_citations(md)] == ["src2"]
 
     def test_returns_empty_for_no_citation_block(self):
         assert parse_wiki_citations("# Just a heading\n\nSome text.") == []
@@ -183,30 +230,78 @@ class TestRenderCitationBlock:
         assert "lines" not in result
 
 
+class TestExcerptRenderParseRoundTrip:
+    """A rendered block must re-parse to the excerpt it was rendered from.
+
+    Accepting a draft re-parses its rendered citation block, so anything render
+    loses is lost from the stored citation with no signal.
+    """
+
+    @pytest.mark.parametrize(
+        "excerpt",
+        [
+            "line one\nline two",
+            "col one\tcol two",
+            'he said "hello" once',
+            "a path C:\\docs",
+            "plain unremarkable text",
+        ],
+    )
+    def test_excerpt_survives_render_then_parse(self, excerpt: str):
+        block = render_citation_block([_citation_record(source_filename="doc.md", excerpt=excerpt)])
+        parsed = parse_wiki_citations(block)
+        assert len(parsed) == 1
+        assert _extract_excerpt(parsed[0].source_ref) == excerpt
+
+    def test_a_multiline_excerpt_stays_on_one_footnote_line(self):
+        """A raw newline would split the definition and break the footnote grammar."""
+        block = render_citation_block(
+            [_citation_record(source_filename="doc.md", excerpt="line one\nline two")]
+        )
+        definitions = [line for line in block.splitlines() if line.startswith("[^src1]:")]
+        assert len(definitions) == 1
+        assert block.splitlines()[-1] == definitions[0]
+
+
 class TestVerifyCitation:
     def test_valid_when_excerpt_found(self):
         rec = _citation_record(excerpt="gradual typing")
-        assert verify_citation(rec, "Python supports gradual typing.") == CitationStatus.VALID
+        assert verify_citation(rec, ["Python supports gradual typing."]) == CitationStatus.VALID
+
+    def test_valid_when_excerpt_found_in_a_later_chunk(self):
+        rec = _citation_record(excerpt="gradual typing")
+        chunks = ["Unrelated opening.", "Python supports gradual typing."]
+        assert verify_citation(rec, chunks) == CitationStatus.VALID
 
     def test_excerpt_missing_when_not_found(self):
         rec = _citation_record(excerpt="something completely different")
-        status = verify_citation(rec, "Python supports gradual typing.")
+        status = verify_citation(rec, ["Python supports gradual typing."])
         assert status == CitationStatus.EXCERPT_MISSING
 
     def test_excerpt_missing_when_empty_excerpt(self):
         rec = _citation_record(excerpt="")
-        assert verify_citation(rec, "any text") == CitationStatus.EXCERPT_MISSING
+        assert verify_citation(rec, ["any text"]) == CitationStatus.EXCERPT_MISSING
+
+    def test_excerpt_spanning_two_chunks_is_missing(self):
+        """A quote stitched across a chunk boundary exists in no single chunk."""
+        rec = _citation_record(excerpt="chunk one end start chunk two")
+        chunks = ["chunk one end", "start chunk two"]
+        assert verify_citation(rec, chunks) == CitationStatus.EXCERPT_MISSING
+
+    def test_unverifiable_when_source_has_no_chunks(self):
+        rec = _citation_record(excerpt="gradual typing")
+        assert verify_citation(rec, []) == CitationStatus.UNVERIFIABLE
 
     def test_whitespace_normalized_for_matching(self):
         rec = _citation_record(excerpt="gradual\n  typing")
-        assert verify_citation(rec, "supports gradual typing here") == CitationStatus.VALID
+        assert verify_citation(rec, ["supports gradual typing here"]) == CitationStatus.VALID
 
     def test_case_sensitive_matching(self):
         # Verification is case-sensitive (xberg.verify_excerpt, adopted via bb-548):
         # a case mismatch fails, an exact-case (whitespace-normalized) match passes.
         rec = _citation_record(excerpt="Gradual Typing")
-        assert verify_citation(rec, "gradual typing module") == CitationStatus.EXCERPT_MISSING
-        assert verify_citation(rec, "uses Gradual Typing here") == CitationStatus.VALID
+        assert verify_citation(rec, ["gradual typing module"]) == CitationStatus.EXCERPT_MISSING
+        assert verify_citation(rec, ["uses Gradual Typing here"]) == CitationStatus.VALID
 
 
 class TestFindUnmarkedClaims:
@@ -322,6 +417,29 @@ class TestStripCitationBlock:
         assert "# Heading" in result
         assert "<!-- citations" not in result
 
+    def test_strips_footnotes_when_model_omits_the_comment(self):
+        """parse_wiki_citations reads these definitions, so stripping must remove them."""
+        md = (
+            "# Heading\n\n"
+            "> Cited fact.[^src1]\n\n"
+            "---\n"
+            "[^src1]: doc.md, lines 1-5\n"
+            "[^src2]: doc.md, lines 6-9\n"
+        )
+        result = strip_citation_block(md)
+        assert "> Cited fact.[^src1]" in result
+        assert "[^src1]: doc.md" not in result
+        assert "[^src2]: doc.md" not in result
+        assert not result.rstrip().endswith("---")
+
+    def test_keeps_trailing_blank_lines_when_there_are_no_footnotes(self):
+        assert strip_citation_block("Some text.\n\n\n") == "Some text.\n\n\n"
+
+    def test_body_footnote_definitions_are_kept(self):
+        """Only the trailing run is a citation block; a definition mid-body stays."""
+        md = "[^src1]: doc.md, lines 1-5\n\n# Heading\n\nBody text.\n"
+        assert strip_citation_block(md) == md
+
     def test_strips_from_full_wiki_page(self):
         result = strip_citation_block(SAMPLE_WIKI_PAGE)
         assert "<!-- citations" not in result
@@ -333,9 +451,8 @@ class TestStripCitationBlock:
 class TestCitationStatusEnum:
     def test_values(self):
         assert CitationStatus.VALID.value == "valid"
-        assert CitationStatus.STALE_HASH.value == "stale_hash"
-        assert CitationStatus.SOURCE_DELETED.value == "source_deleted"
         assert CitationStatus.EXCERPT_MISSING.value == "excerpt_missing"
+        assert CitationStatus.UNVERIFIABLE.value == "unverifiable"
 
 
 class TestParsedCitationDataclass:
@@ -377,3 +494,73 @@ class TestMatchCitationSource:
         from lilbee.wiki.citations import _match_citation_source
 
         assert _match_citation_source("see other.md", ["doc.md"]) == ""
+
+
+class TestScrubUnverifiedMarkers:
+    """A marker whose definition was dropped must not survive into the body."""
+
+    def test_drops_markers_with_no_verified_definition(self):
+        body = "Cited claim.[^src1]\n\nDropped claim.[^src2]\n"
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert result == "Cited claim.[^src1]\n\nDropped claim.\n"
+
+    def test_a_scrubbed_claim_becomes_visible_to_the_unmarked_gate(self):
+        body = "Dropped claim.[^src2]\n"
+        assert find_unmarked_claims(body) == []
+        assert find_unmarked_claims(scrub_unverified_markers(body, [])) == ["Dropped claim."]
+
+    def test_an_in_body_definition_for_a_verified_key_is_removed(self):
+        """The block is re-rendered from the verified records, so a definition left
+        in the body would publish a second, possibly divergent, reference."""
+        body = 'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\nMore prose.\n'
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert "Claim one.[^src1]" in result
+        assert "More prose.\n" in result
+        assert "quote one" not in result
+
+    def test_an_in_body_definition_for_a_dropped_key_leaves_no_remainder(self):
+        """Scrubbing the marker alone used to leave the excerpt text as prose."""
+        body = 'Claim one.[^src1]\n\n[^src1]: doc.md, excerpt: "quote one"\n\nMore prose.\n'
+        result = scrub_unverified_markers(body, [])
+        assert result.startswith("Claim one.\n")
+        assert "doc.md" not in result
+        assert "quote one" not in result
+
+    def test_fenced_footnote_syntax_survives_untouched(self):
+        """A page documenting footnote syntax quotes it in a fence; the scrub must
+        leave the example verbatim, like the link and title scanners do."""
+        body = (
+            "Cited claim.[^src1]\n\n"
+            "```markdown\n"
+            '[^src2]: example.md, excerpt: "sample"\n'
+            "Use [^src2] markers\n"
+            "```\n\n"
+            "Dropped claim.[^src3]\n"
+        )
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert '[^src2]: example.md, excerpt: "sample"' in result
+        assert "Use [^src2] markers" in result
+        assert "Dropped claim.\n" in result
+
+
+class TestFootnoteMarkerKeys:
+    def test_reads_in_body_marker_keys(self):
+        assert footnote_marker_keys("a[^src1] b[^src2] b[^src1]") == {"src1", "src2"}
+
+    def test_empty_when_body_has_no_markers(self):
+        assert footnote_marker_keys("plain text") == set()
+
+    def test_a_fenced_marker_is_example_syntax(self):
+        """Third reader of the same fence contract: counting a fenced marker lets a
+        section pass the citation gate with no citation in its prose."""
+        body = "Prose.[^src1]\n\n```markdown\nUse [^src2] markers\n```\n"
+        assert footnote_marker_keys(body) == {"src1"}
+
+
+class TestWikiSourcedCount:
+    def test_counts_only_citations_naming_a_wiki_page(self):
+        records = [
+            _citation_record(source_filename=f"{cfg.wiki_dir}/summaries/page.md"),
+            _citation_record(source_filename="doc.md"),
+        ]
+        assert wiki_sourced_count(records, cfg) == 1

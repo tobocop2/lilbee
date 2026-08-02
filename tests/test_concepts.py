@@ -1287,6 +1287,21 @@ class TestFilterNounChunks:
         result = _filter_noun_chunks(doc, max_concepts=10)
         assert result == ["hello world", "good stuff"]
 
+    def test_a_wrapped_chunk_folds_into_its_unwrapped_form(self):
+        """spaCy noun chunks cross wrapped lines in PDF text. The label gate
+        rejects a line break, so without collapsing first the wrapped mention
+        is dropped and the concept splits or disappears."""
+        from lilbee.retrieval.concepts.nlp import _filter_noun_chunks
+
+        # The wrapped form alone: pairing it with an unwrapped one would pass
+        # either way, since dropping the wrapped chunk still leaves the other.
+        assert _filter_noun_chunks(_make_mock_doc(["the brake\nsystem"]), max_concepts=10) == [
+            "the brake system"
+        ]
+        # And the two forms are one concept, not two.
+        doc = _make_mock_doc(["the brake\nsystem", "the brake system"])
+        assert _filter_noun_chunks(doc, max_concepts=10) == ["the brake system"]
+
     def test_filter_noun_chunks_max(self):
         from lilbee.retrieval.concepts.nlp import _filter_noun_chunks
 

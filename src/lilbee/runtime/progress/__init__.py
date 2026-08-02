@@ -23,6 +23,9 @@ from lilbee.runtime.progress.types import (
     SseErrorCode,
     SseEvent,
     SyncDoneEvent,
+    WikiPageEvent,
+    WikiPhase,
+    WikiPhaseEvent,
 )
 
 __all__ = [
@@ -45,5 +48,8 @@ __all__ = [
     "SseErrorCode",
     "SseEvent",
     "SyncDoneEvent",
+    "WikiPageEvent",
+    "WikiPhase",
+    "WikiPhaseEvent",
     "noop_callback",
 ]

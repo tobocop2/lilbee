@@ -69,8 +69,13 @@ async def await_chat(app, pilot) -> object:
 
 @contextmanager
 def ready_services():
-    """Bind a mock container whose chat role is ready, so the startup gate releases at once."""
-    from unittest.mock import MagicMock
+    """Bind a mock container whose chat role is ready, so the startup gate releases at once.
+
+    Also pins ``needs_setup`` False: the chat screen's setup-check worker runs
+    on a real thread, so an unpinned True pushes the SetupWizard over whatever
+    screen the test just pushed, on a slow runner's schedule.
+    """
+    from unittest.mock import MagicMock, patch
 
     from lilbee.app.services import set_services
 
@@ -78,6 +83,7 @@ def ready_services():
     services.provider.role_ready.return_value = True
     set_services(services)
     try:
-        yield services
+        with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
+            yield services
     finally:
         set_services(None)

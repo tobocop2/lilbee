@@ -691,6 +691,10 @@ class Config(BaseSettings):
     # Off by default; flip to True (or set LILBEE_WIKI=1) to enable. When off,
     # the Wiki view tab and the chat ModelBar's scope picker are both hidden.
     wiki: bool = ConfigField(default=False, writable=True)
+    # Whether a sync regenerates touched wiki pages on its own. Off by
+    # default: enabling the wiki never starts generating by itself, the
+    # user wikifies explicitly via `lilbee wiki build` / `wiki update`.
+    wiki_auto_update: bool = ConfigField(default=False, writable=True)
     # Read-only: changing the directory at runtime strands prior wiki pages
     # under the old path. Users who want a different location set it via
     # LILBEE_WIKI_DIR / config.toml before the first wiki_build.
@@ -728,33 +732,12 @@ class Config(BaseSettings):
     # Fraction of content changed that triggers human-review drift guard.
     wiki_drift_threshold: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
 
-    # LLM prompt templates for wiki page generation. Writable so advanced
-    # users can override them from /settings, config.toml, or
-    # ``LILBEE_WIKI_*_PROMPT`` env vars. Templates must keep the expected
-    # ``{placeholders}``. If you remove one the generator will crash on
-    # first use. The defaults below are the only reason the pipeline
-    # works out of the box.
-    wiki_summary_prompt: str = ConfigField(
-        writable=True,
-        default=(
-            "You are a knowledge compiler. Given the source chunks below from a single "
-            "document, write a concise wiki summary page in markdown.\n\n"
-            "Rules:\n"
-            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
-            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
-            "3. For interpretations or connections not directly stated in the source, "
-            "mark with [*inference*].\n"
-            "4. Use blockquotes (>) for directly cited facts.\n"
-            "5. End with a citation block in this format:\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
-            '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
-            "Source document: {source_name}\n\n"
-            "Chunks:\n{chunks_text}\n\n"
-            "Write the wiki summary page now. Start with a heading."
-        ),
-    )
+    # LLM prompt templates for wiki page generation: wiki_synthesis_prompt
+    # for cross-source synthesis pages, wiki_entity_batch_prompt (below)
+    # for the per-source batched call. Writable so advanced users can
+    # override them from /settings, config.toml, or ``LILBEE_WIKI_*_PROMPT``
+    # env vars. Templates must keep the expected ``{placeholders}``. If you
+    # remove one the generator will crash on first use.
     wiki_synthesis_prompt: str = ConfigField(
         writable=True,
         default=(
@@ -818,15 +801,7 @@ class Config(BaseSettings):
     # Minimum distinct chunk mentions before an entity or concept earns
     # its own wiki page. Filters one-off noise.
     wiki_entity_min_mentions: int = ConfigField(default=3, ge=1, writable=True)
-
-    # Maximum chunks passed into each concept or entity page generation
-    # call. Caps context size so one page does not blow the context
-    # window on a prolific topic.
-    wiki_concept_max_chunks_per_page: int = ConfigField(default=25, ge=1, writable=True)
-
-    # Maximum number of related concepts the model is asked to list in
-    # the `## Related` section of each page.
-    wiki_related_max: int = ConfigField(default=8, ge=0, writable=True)
+    wiki_stub_max_chunk_refs: int = ConfigField(default=50, ge=1, writable=True)
 
     # Auto-update cap: if a single sync touches more than this many
     # concept or entity pages, skip the per-slug regeneration and tell
@@ -852,6 +827,32 @@ class Config(BaseSettings):
     # {source}, {entity_list}, {chunks_text}, {concept_instruction}.
     # {concept_instruction} is filled with a concept-curation paragraph
     # when concepts are requested, or the empty string otherwise.
+    # Single-entity page written on demand from that entity's chunks across
+    # every source naming it. The batched prompt above cannot serve this: it
+    # writes every section for one source in one call.
+    wiki_entity_page_prompt: str = ConfigField(
+        writable=True,
+        default=(
+            "You are a knowledge compiler. Given source chunks that mention "
+            "ONE subject, write a wiki page about that subject in markdown.\n\n"
+            "Rules:\n"
+            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+            "3. Write only what the chunks support. Mark anything you infer with "
+            "[*inference*].\n"
+            "4. Use blockquotes (>) for directly cited facts.\n"
+            "5. When sources disagree, say so and cite both.\n"
+            "6. End with a citation block in this format:\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+            '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+            "Subject: {topic}\n\n"
+            "Sources:\n{source_list}\n\n"
+            "Chunks:\n{chunks_text}\n\n"
+            "Write the page now. Start with a heading naming the subject."
+        ),
+    )
     wiki_entity_batch_prompt: str = ConfigField(
         writable=True,
         default=(

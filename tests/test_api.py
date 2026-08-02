@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.data.store import ChunkType, SearchScope
 
 
 def _fake_embed(text):
@@ -176,6 +177,32 @@ class TestSearch:
         bee = Lilbee(tmp_path / "proj")
         results = bee.search("anything")
         assert results == []
+
+    @pytest.mark.parametrize(
+        ("scope", "expected"),
+        [
+            (SearchScope.BOTH, None),
+            (SearchScope.RAW, ChunkType.RAW),
+            (SearchScope.WIKI, ChunkType.WIKI),
+        ],
+    )
+    def test_search_scope_selects_the_chunk_type(self, tmp_path, scope, expected):
+        """Without a scope the library was the one surface that could not keep
+        generated wiki chunks out of (or restrict results to) its results."""
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        with mock.patch.object(bee.searcher, "search", return_value=[]) as search:
+            bee.search("authentication", scope=scope)
+        assert search.call_args.kwargs["chunk_type"] == expected
+
+    def test_search_defaults_to_both_scopes(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        with mock.patch.object(bee.searcher, "search", return_value=[]) as search:
+            bee.search("authentication")
+        assert search.call_args.kwargs["chunk_type"] is None
 
     def test_search_respects_top_k(self, tmp_path):
         from lilbee import Lilbee

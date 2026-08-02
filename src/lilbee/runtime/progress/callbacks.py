@@ -16,6 +16,8 @@ from lilbee.runtime.progress.types import (
     SetupProgressEvent,
     SetupStartEvent,
     SyncDoneEvent,
+    WikiPageEvent,
+    WikiPhaseEvent,
 )
 
 ProgressEvent = (
@@ -31,6 +33,8 @@ ProgressEvent = (
     | SetupStartEvent
     | SetupProgressEvent
     | SetupDoneEvent
+    | WikiPhaseEvent
+    | WikiPageEvent
 )
 
 DetailedProgressCallback = Callable[[EventType, ProgressEvent], None]

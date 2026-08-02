@@ -268,6 +268,36 @@ class TestSync:
         mock_batch.assert_called()
         mock_extract_file.assert_not_called()
 
+    async def test_a_move_subtracts_the_old_name_from_the_wiki_index(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The index is keyed by source name. Without the old key the move
+        leaves it there forever: its mentions double-count and its dead chunk
+        refs occupy the per-subject cap ahead of live evidence."""
+        import shutil
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "a.txt").write_text("Hello world. This document will move.")
+        await sync()
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        seen: list[set] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            seen.append(sources or set())
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        (isolated_env / "sub").mkdir()
+        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+
+        await sync()
+
+        assert seen, "the post-sync refresh did not run"
+        assert {"a.txt", "sub/a.txt"} <= seen[-1]
+
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
 
@@ -346,6 +376,153 @@ class TestSync:
             "reconciliation" in r.getMessage().lower() and "ghost.txt" in r.getMessage()
             for r in caplog.records
         )
+
+    @pytest.mark.parametrize("auto_update", [True, False])
+    async def test_wiki_hook_runs_only_when_auto_update_is_on(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """Enabling the wiki never generates by itself; auto-update is the opt-in."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+
+        await sync(quiet=True)
+
+        assert hook.called is auto_update
+
+    @pytest.mark.parametrize("auto_update", [False, True], ids=["off", "on"])
+    async def test_index_refresh_runs_regardless_of_auto_update(
+        self, mock_extract_file, isolated_env, monkeypatch, auto_update
+    ):
+        """The index spends no LLM call and is what lets a page appear in the
+        browse tree as soon as its document lands, so it is not gated on the
+        setting that governs generation."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "indexed.txt").write_text("Content the index would name entities in.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", auto_update)
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", mock.AsyncMock())
+        # A real signature, not a MagicMock: the hook calls this through
+        # to_ingest_thread, which forwards its arguments, and a permissive mock
+        # accepts an arity the real function rejects.
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+
+        await sync(quiet=True)
+
+        assert len(calls) == 1
+        assert calls[0][2] is not None
+
+    async def test_index_refresh_is_skipped_when_the_wiki_is_off(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "unindexed.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", False)
+        calls: list[tuple] = []
+
+        def fake_refresh(store, config=None, *, sources=None):
+            calls.append((store, config, sources))
+            return {}
+
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+
+        await sync(quiet=True)
+
+        assert calls == []
+
+    async def test_a_failing_index_refresh_does_not_stop_the_sync(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The ingest already succeeded; a wiki failure must not swallow it."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "resilient.txt").write_text("Content.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", False)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.refresh_stub_index",
+            mock.MagicMock(side_effect=RuntimeError("spacy exploded")),
+        )
+
+        result = await sync(quiet=True)
+
+        assert "resilient.txt" in result.added
+
+    async def test_wiki_hook_receives_the_config_the_gate_read(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The auto-update gate and the regeneration must consult one config.
+
+        Run under a bound scope, so the scoped config and the process-global
+        are different objects. Without a scope active_config() returns the
+        global itself, and a hook handed the global instead of the config the
+        gate read would satisfy the assertion. The library API binds a scope
+        around the whole pipeline, so this is the shape a Lilbee(config=...)
+        caller actually runs in."""
+        from lilbee.core.config import cfg, config_scope
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook would summarize.")
+        monkeypatch.setattr(cfg, "wiki", False)
+        scoped = cfg.model_copy()
+        scoped.wiki = True
+        scoped.wiki_auto_update = True
+        hook = mock.AsyncMock()
+        monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
+        refresh = mock.MagicMock(return_value={})
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+
+        with config_scope(scoped):
+            await sync(quiet=True)
+
+        # Both calls, not just the regeneration. The index refresh is the one
+        # that always runs when the wiki is on, since regeneration sits behind
+        # wiki_auto_update, and it falls back to the process-global when handed
+        # None.
+        assert refresh.call_args.args[1] is scoped
+        assert hook.call_args.args[1] is scoped
+
+    async def test_wiki_failure_does_not_skip_post_ingest_verification(
+        self, mock_extract_file, isolated_env, monkeypatch, caplog
+    ):
+        """A wiki exception must not abort the entity pass or the silent-drop guard."""
+        import logging
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "wikified.txt").write_text("Content the wiki hook chokes on.")
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_auto_update", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.ingest.incremental_update",
+            mock.AsyncMock(side_effect=RuntimeError("embedder down")),
+        )
+        entities = mock.MagicMock()
+        monkeypatch.setattr("lilbee.retrieval.entities.lifecycle.ensure_entities", entities)
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            result = await sync(quiet=True)
+
+        assert "wikified.txt" in result.added
+        assert any("Wiki auto-update failed" in r.getMessage() for r in caplog.records)
+        entities.assert_called_once()
 
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
@@ -3617,6 +3794,83 @@ class TestUnsupportedFileInSync:
 
             with pytest.raises(ValueError, match="Unsupported file slipped through"):
                 await sync(quiet=True)
+
+
+class TestRemoveDropsFromWikiIndex:
+    """A removed document's skip marker keeps it out of later syncs, so no
+    refresh would ever revisit its entries: removal has to drop them itself."""
+
+    def test_removed_documents_leave_the_index(self, isolated_env, monkeypatch):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core.config import cfg
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub, load_stub_index, save_stub_index
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(cfg, "wiki_entity_min_mentions", 1)
+        (isolated_env / "gone.txt").write_text("content")
+        save_stub_index(
+            {
+                "ford": WikiStub(
+                    slug="ford",
+                    label="Ford",
+                    kind=EntityKind.ENTITY,
+                    type_hint="PERSON",
+                    source_mentions=(("gone.txt", 2),),
+                    chunk_refs=(("gone.txt", 0),),
+                )
+            }
+        )
+        monkeypatch.setattr(
+            "lilbee.app.ingest.get_services",
+            lambda: mock.MagicMock(
+                store=mock.MagicMock(
+                    remove_documents=mock.MagicMock(
+                        return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])
+                    )
+                )
+            ),
+        )
+
+        remove_documents_durably(["gone.txt"])
+
+        assert load_stub_index() == {}
+
+    def test_the_hook_is_skipped_when_the_wiki_is_off(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+        assert called == []
+
+    def test_an_index_failure_does_not_fail_the_removal(self, isolated_env, monkeypatch):
+        """The removal already succeeded; a wiki failure must not surface as one."""
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index",
+            mock.MagicMock(side_effect=RuntimeError("index unwritable")),
+        )
+        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+
+    def test_removing_nothing_touches_no_index(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        called: list[set] = []
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
+        )
+        ingest_mod._forget_removed_from_wiki_index([])
+        assert called == []
 
 
 class TestRemoveDocumentsDurably:

@@ -15,6 +15,7 @@ from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.sessions import MessageRole
+from lilbee.wiki.entity_extractor import EntityKind
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -434,12 +435,33 @@ class WikiCitationRecord(BaseModel):
     created_at: str = ""
 
 
+class WikiEntityCandidateResponse(BaseModel):
+    """One NER entity candidate returned by a build dry run."""
+
+    slug: str
+    label: str = ""
+    kind: EntityKind = EntityKind.ENTITY
+    type_hint: str = ""
+    mentions: int = 0
+    sources: list[str] = []
+
+
+class WikiBuildDryRunResult(BaseModel):
+    """Entity candidates a build would cover, with no LLM call made."""
+
+    dry_run: bool = True
+    entities: list[WikiEntityCandidateResponse] = []
+    count: int = 0
+    note: str = ""
+
+
 class WikiPageDetail(BaseModel):
-    """Full content of a single wiki page."""
+    """Full content of a single wiki page, with its parsed frontmatter."""
 
     slug: str
     title: str = ""
     content: str = ""
+    frontmatter: dict[str, Any] = {}
 
 
 class WikiCitationsResult(BaseModel):
@@ -459,9 +481,10 @@ class WikiLintIssueItem(BaseModel):
 
 
 class WikiLintResult(BaseModel):
-    """Result of a full wiki lint run."""
+    """Result of a wiki lint run, whole-wiki or single-page."""
 
     issues: list[WikiLintIssueItem] = []
+    total: int = 0
     errors: int = 0
     warnings: int = 0
 
@@ -480,14 +503,32 @@ class WikiPruneResult(BaseModel):
     records: list[WikiPruneRecordResponse] = []
     archived: int = 0
     flagged: int = 0
+    reconciled: int = 0
 
 
-class WikiBuildResult(BaseModel):
-    """Result of a full wiki build/update."""
+class WikiIndexResult(BaseModel):
+    """Result of rebuilding the browse index. Costs no LLM call."""
 
-    paths: list[str] = []
-    entities: int = 0
-    count: int = 0
+    entries: int = 0
+
+
+class WikiGenerateResult(BaseModel):
+    """Result of generating one indexed page."""
+
+    slug: str
+    path: str
+
+
+class WikiWipeResult(BaseModel):
+    """Result of wiping the wiki.
+
+    ``rows_deleted`` is false when the pages went but the store delete failed,
+    so a client is never told the wiki is gone while its rows still answer.
+    """
+
+    pages_removed: int = 0
+    sources_cleared: int = 0
+    rows_deleted: bool = True
 
 
 class WikiStatusResult(BaseModel):
@@ -499,13 +540,6 @@ class WikiStatusResult(BaseModel):
     pages: int = 0
     lint_errors: int = 0
     lint_warnings: int = 0
-
-
-class WikiSynthesizeResult(BaseModel):
-    """Result of generating synthesis pages for cross-source concept clusters."""
-
-    paths: list[str] = []
-    count: int = 0
 
 
 class DraftInfoResponse(BaseModel):
