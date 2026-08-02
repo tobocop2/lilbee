@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import signal
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -76,6 +78,36 @@ def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | Non
     if event_type is EventType.WIKI_PAGE and isinstance(data, WikiPageEvent):
         return msg.WIKI_BUILD_PAGE.format(label=data.label, current=data.current, total=data.total)
     return None
+
+
+@contextmanager
+def _sigint_cancel() -> Iterator[threading.Event]:
+    """Turn Ctrl-C into a token the wiki pass polls, not a mid-page abort.
+
+    A build runs for hours and writes pages as it goes, so the default
+    KeyboardInterrupt drops it wherever the interpreter happened to be. Setting
+    a token instead lets it stop at a source boundary with what it wrote intact.
+    The previous handler is restored as soon as it fires, so a second Ctrl-C
+    still hard-exits a pass that is not checking the token.
+
+    signal.signal only works on the main thread; off it (pytest-xdist workers)
+    the token is simply never set and Ctrl-C keeps its default behaviour.
+    """
+    token = threading.Event()
+    if threading.current_thread() is not threading.main_thread():
+        yield token
+        return
+    previous = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum: int, _frame: object) -> None:
+        signal.signal(signal.SIGINT, previous)
+        token.set()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    try:
+        yield token
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 @contextmanager
@@ -393,8 +425,8 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _wiki_progress() as on_progress:
-        result = run_full_synthesize(cfg, on_progress)
+    with _wiki_progress() as on_progress, _sigint_cancel() as cancel:
+        result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": "wiki_synthesize", **result})
@@ -581,8 +613,8 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _wiki_progress() as on_progress:
-        result = run_full_build(cfg, on_progress)
+    with _wiki_progress() as on_progress, _sigint_cancel() as cancel:
+        result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": command_name, **result})
