@@ -6,7 +6,7 @@ lilbee places models by reading what the engine reports: which devices exist, ho
 
 | Machine | Backend | What ran on it |
 |---------|---------|----------------|
-| 2x NVIDIA A40 (46 GB) | CUDA | Readback on a tensor split, cgroup limits honoured over `/proc/meminfo` |
+| 2x NVIDIA A40 (46 GB) | CUDA | Readback on a tensor split, cgroup memory and CPU limits honoured over the host's totals |
 | NVIDIA A100 80GB PCIe | CUDA | Shared-engine load benchmark, concurrency sweep, 600-round endurance and chaos soaks |
 | 8x NVIDIA A100 | CUDA | Ingest throughput at scale, 161 docs/sec |
 | 3x NVIDIA A100 | CUDA | Auto-placement of a 235B chat model across three cards |
