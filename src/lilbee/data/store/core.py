@@ -182,10 +182,11 @@ _TITLE_COLUMN = "title"
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
 # so only the per-chunk concept mapping is source-scoped.
-_PER_SOURCE_TABLES = tuple(
-    (name, INGEST_SOURCE_COLUMNS[name])
-    for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
-) + (
+_PER_SOURCE_TABLES = (
+    *(
+        (name, INGEST_SOURCE_COLUMNS[name])
+        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
+    ),
     # Per-(subject, source), so removing a source drops its mention evidence
     # here with its chunks; the wiki refresh only ever re-adds a source, never
     # has to remember to subtract a deleted one. Not in INGEST_SOURCE_COLUMNS
