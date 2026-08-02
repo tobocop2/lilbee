@@ -76,7 +76,7 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
-- [Experimental](#experimental)
+- [Wiki](#wiki)
 - [Built on](#built-on)
 
 ---
@@ -327,7 +327,7 @@ You can also place it by hand. The placement editor pins each role to the cards 
 
 ## TUI
 
-`lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the auto-built wiki. Type `/` for the command list; tab completion works everywhere.
+`lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the generated wiki. Type `/` for the command list; tab completion works everywhere.
 
 ![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
 
@@ -566,26 +566,43 @@ Plus notebooks, bibliographies, iWork, and audio/video, among others. See the [u
 
 </details>
 
-## Experimental
+## Wiki
+
+lilbee reads the documents you've indexed and writes a wiki about them: one page per concept or entity, not per document. A subject that recurs earns its own page, written and cited from the source that mentions it most and cross-linked with `[[wiki link]]`, with coverage across sources coming from synthesis pages. Every section is citation-verified against the source text before it publishes; lower-confidence pages wait in a `drafts/` queue for review.
+
+See the [usage guide](docs/usage.md#wiki) for commands and configuration, and [how the wiki is validated](docs/benchmarks/wiki-validation.md) for the evidence behind it.
+
+Other projects generate wiki-style pages too; they differ in what they read, where they run, and what happens between generation and publication.
 
 <details>
-<summary>Two opt-in features that work but are still finding their final shape: <strong>Wiki</strong> and <strong>semantic chunking</strong>. Click to expand.</summary>
+<summary><b>Comparison table: lilbee's wiki vs STORM, GraphRAG, and DeepWiki-Open. Click to expand.</b></summary>
 
-<br>
+| Capability | lilbee wiki | [STORM](https://github.com/stanford-oval/storm) | [GraphRAG](https://github.com/microsoft/graphrag) | [DeepWiki-Open](https://github.com/AsyncFuncAI/deepwiki-open) |
+|---|---|---|---|---|
+| Builds a wiki from your own private documents (PDFs, notes) | ✓ | partial¹ | ✓ | — (code repos)² |
+| Runs fully local, no cloud account required | ✓ | ✓ | ✓³ | ✓ (Ollama) |
+| Every generated claim carries a citation with a quoted excerpt | ✓⁴ | — | — | —⁵ |
+| Citations mechanically verified against the source text before publishing | ✓ | — | — | — |
+| Quality gate (faithfulness score) that quarantines failing pages | ✓ | — | — | — |
+| Human review queue for gated pages: diff, accept, reject | ✓ | — | — | — |
+| Detects stale citations when a source document changes | ✓ | — | —⁶ | — |
+| Archives pages when their sources are deleted | ✓ | — | — | — |
+| Drift protection: a rewrite above threshold never silently replaces a reviewed page | ✓ | — | — | — |
+| Wiki pages feed back into search alongside your documents | ✓ | — | ✓ | — |
+| Never generates without an explicit action (auto-update strictly opt-in) | ✓ | n/a | n/a | n/a |
+| Multi-perspective research and outline planning before writing | — | ✓ | — | partial⁷ |
+| Entity relationship graph with hierarchical topic communities | partial⁸ | — | ✓ | — |
+| Researches topics on the live web while writing | — | ✓ | — | — |
+| Web UI (self-hosted) | — | ✓ (demo) | — | ✓ |
 
-Generation quality and retrieval behavior depend on your library, models, and knobs; expect to iterate. Feedback is welcome.
-
-### Wiki
-
-lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources: concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Sections are citation-verified before publish, and plain-text concept references are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Lower-confidence pages land in a `drafts/` queue for review rather than publishing direct.
-
-See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
-
-### Semantic chunking
-
-A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy collections like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
-
-See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
+¹ STORM's retrievers are web search engines; its `VectorRM` grounds on a custom corpus, but documents must be pre-converted to CSV and indexed into Qdrant. No PDF or note ingestion in the repo.
+² A local folder of `.md`/`.txt` files works via `repo_type=local`, but there is no PDF support and the prompts assume a codebase.
+³ Any OpenAI-compatible local endpoint works; the config validator requires a placeholder `api_key` value.
+⁴ Claims are cited with quoted excerpts or explicitly marked `[*inference*]`; lint flags any unmarked claim.
+⁵ The page prompt instructs per-claim `file:line` citations, but nothing verifies them and no excerpt is quoted.
+⁶ Incremental indexing exists, but old community reports are kept verbatim; nothing flags a stale page.
+⁷ An LLM structure-planning step produces the page outline before writing; no multi-perspective research.
+⁸ lilbee's optional `[graph]` extra builds a concept co-occurrence graph (PMI-weighted) with flat Leiden communities, usable as the wiki synthesis clusterer; no typed entity relations or hierarchical communities.
 
 </details>
 

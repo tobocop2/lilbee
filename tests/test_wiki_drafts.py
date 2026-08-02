@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lilbee.core.config import cfg
+from lilbee.data.store import SearchChunk
 from lilbee.wiki.drafts import (
     AcceptResult,
     DraftInfo,
     PendingKind,
+    StaleDraftError,
+    UnindexedDraftError,
+    UnverifiedDraftError,
     _base_slug_for_collision,
     accept_draft,
     diff_draft,
     list_drafts,
     reject_draft,
 )
+from lilbee.wiki.persistence import divert_concept_collision, divert_to_drafts
+from lilbee.wiki.prune import prune_wiki
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
@@ -27,6 +35,12 @@ from lilbee.wiki.shared import (
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _make_newer(path: Path, reference: Path) -> None:
+    """Set *path*'s mtime a second past *reference*'s, deterministically."""
+    stamp = reference.stat().st_mtime + 1
+    os.utime(path, (stamp, stamp))
 
 
 def _draft_content(
@@ -147,6 +161,46 @@ class TestDiffDraft:
         assert "(new draft)" in diff
 
 
+class TestMarkerReadersAgree:
+    """Every reader of a marker line must reach the same verdict about it."""
+
+    def test_a_first_line_quoting_a_marker_is_content(self):
+        """Under an unanchored search this classifies as PENDING-PARSE, and
+        accepting it deletes the draft without publishing anything."""
+        from lilbee.wiki.drafts import _classify_and_strip_markers
+
+        text = (
+            "Wrote <!-- PENDING: batch parse failed for source s.txt --> then retried.\n"
+            "\nReal reviewed content.\n"
+        )
+        kind, _drift, body = _classify_and_strip_markers(text)
+        assert kind is None
+        assert "Wrote <!--" in body
+
+    def test_a_collision_marker_naming_an_odd_filename_keeps_its_origin(self):
+        """The source name is interpolated raw and > is legal in a filename, so
+        a reader that stops at the first > loses the origin field and the page
+        accepts into summaries/ instead of its own type."""
+        from lilbee.wiki.drafts import _parse_origin_subdir
+
+        marker = (
+            "<!-- PENDING: concept slug collision with source drafts/brakes.md, "
+            "content from q3>q2.pdf held for review; origin: concepts -->"
+        )
+        assert _parse_origin_subdir(marker) == WikiSubdir.CONCEPTS
+
+    def test_a_filename_containing_origin_does_not_hijack_the_field(self):
+        """Source names are interpolated ahead of the real origin field, so the
+        last one on the line has to win."""
+        from lilbee.wiki.drafts import _parse_origin_subdir
+
+        marker = (
+            "<!-- PENDING: concept slug collision with source drafts/brakes.md, "
+            "content from Origin: Species.pdf held for review; origin: concepts -->"
+        )
+        assert _parse_origin_subdir(marker) == WikiSubdir.CONCEPTS
+
+
 class TestAcceptDraft:
     def test_accepts_into_published_subdir_when_match_exists(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
@@ -172,6 +226,73 @@ class TestAcceptDraft:
             result = accept_draft("fresh", wiki_root, store)
         assert WikiSubdir.SUMMARIES in result.moved_to.parts
         assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
+
+    @pytest.mark.parametrize("body", ["", "#", "---"], ids=["empty", "heading", "rule"])
+    def test_unindexable_draft_leaves_the_published_page_intact(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """A body can be non-empty and still chunk to nothing, so the guard
+        tests what the indexer chunks rather than whether text is present. It
+        runs before the write: the old order overwrote the published page and
+        then reported an index failure whose suggested retry repeated the
+        destruction and could never succeed."""
+        from lilbee.wiki.drafts import BodylessDraftError
+
+        wiki_root = tmp_path / "wiki"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(published, _draft_content("the published prose"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content(body))
+        store = MagicMock()
+
+        with pytest.raises(BodylessDraftError, match="nothing to index"):
+            accept_draft("brakes", wiki_root, store)
+
+        assert "the published prose" in published.read_text()
+        store.replace_citations_for_wiki.assert_not_called()
+
+    def test_accept_chunks_the_body_once(self, tmp_path: Path) -> None:
+        """The guard and the indexer share one definition of indexable, but the
+        body must be chunked once: with semantic chunking on, the second pass
+        re-embeds every sentence of the page while holding the build lock."""
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", _draft_content("old prose"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content("new brakes prose"))
+        store = MagicMock()
+        store.replace_chunks.return_value = 1
+
+        with (
+            patch("lilbee.wiki.page.chunk_text", return_value=["new brakes prose"]) as chunker,
+            patch("lilbee.wiki.page.get_services") as services,
+        ):
+            services.return_value.embedder.embed_batch.return_value = [[0.1, 0.2]]
+            accept_draft("brakes", wiki_root, store)
+
+        assert chunker.call_count == 1
+
+    def test_quality_gate_draft_accepts_into_its_own_page_type(self, tmp_path: Path) -> None:
+        """A first-build concept held only by the faithfulness gate has no
+        published counterpart, so without an origin marker of its own it would
+        land in summaries/, invisible to concept reuse and to the next build's
+        drift check, which then publishes a second copy."""
+        from lilbee.wiki.page import _write_draft_page
+
+        wiki_root = tmp_path / "wiki"
+        drafts_dir = wiki_root / WikiSubdir.DRAFTS
+        drafts_dir.mkdir(parents=True)
+        _write_draft_page(
+            draft_path=drafts_dir / "torque.md",
+            drafts_dir=drafts_dir,
+            slug="torque",
+            full_content=_draft_content("torque body"),
+            source_names=["manual.pdf"],
+            page_type=WikiSubdir.CONCEPTS,
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("torque", wiki_root, store)
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
+        published = (wiki_root / WikiSubdir.CONCEPTS / "torque.md").read_text()
+        assert "origin:" not in published
 
     def test_accepts_into_origin_subdir_when_no_published_counterpart(self, tmp_path: Path) -> None:
         # A concept page whose published counterpart was deleted drifts to a draft;
@@ -217,6 +338,15 @@ class TestAcceptDraft:
         with pytest.raises(FileNotFoundError):
             accept_draft("missing", tmp_path / "wiki", MagicMock())
 
+    def test_refreshes_the_wiki_index(self) -> None:
+        """Accept is a tree mutation like build and prune, so index.md must list
+        the page it just published."""
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content("# Brakes\n\nbody"))
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, MagicMock())
+        assert "summaries/brakes.md" in (wiki_root / "index.md").read_text()
+
     def test_collision_accept_returns_rename_result(self, tmp_path: Path) -> None:
         """End-to-end: a PENDING-COLLISION draft under the hashed slug
         lands at the de-hashed base slug, and the AcceptResult surfaces
@@ -242,6 +372,215 @@ class TestAcceptDraft:
         assert PENDING_MARKER_KEYWORD_COLLISION not in landed
         # Draft file gone.
         assert not (wiki_root / WikiSubdir.DRAFTS / f"{collision_slug}.md").exists()
+
+
+_EXCERPT = "Henry Ford founded Ford Motor."
+
+
+def _cited_draft(source: str = "a.md") -> str:
+    return (
+        "---\n"
+        f'sources: ["{source}"]\n'
+        "faithfulness_score: 0.9\n"
+        "---\n\n"
+        "# Brakes\n\n"
+        f"> {_EXCERPT}[^src1]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        f'[^src1]: {source}, excerpt: "{_EXCERPT}"\n'
+    )
+
+
+def _two_cited_draft(source: str = "a.md") -> str:
+    """A draft citing one excerpt the source still holds and one it never did."""
+    return (
+        "---\n"
+        f'sources: ["{source}"]\n'
+        "faithfulness_score: 0.9\n"
+        "---\n\n"
+        "# Brakes\n\n"
+        f"> {_EXCERPT}[^src1]\n\n"
+        "> Ford built a monorail.[^src2]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        f'[^src1]: {source}, excerpt: "{_EXCERPT}"\n'
+        f'[^src2]: {source}, excerpt: "Ford built a monorail."\n'
+    )
+
+
+def _chunk(text: str, source: str = "a.md") -> SearchChunk:
+    return SearchChunk(
+        source=source,
+        content_type="text",
+        chunk_type="raw",
+        page_start=0,
+        page_end=0,
+        line_start=0,
+        line_end=0,
+        chunk=text,
+        chunk_index=0,
+        vector=[0.1] * cfg.embedding_dim,
+    )
+
+
+def _store_with_chunk(source: str = "a.md") -> MagicMock:
+    chunk = _chunk(_EXCERPT, source)
+    store = MagicMock()
+    store.get_chunks_by_source.side_effect = lambda name: [chunk] if name == source else []
+    return store
+
+
+class TestAcceptRegistersCitations:
+    """Drafts carry no store state, so accept is where provenance lands."""
+
+    def test_rows_are_written_under_the_published_wiki_source(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert wiki_source == f"{wiki_root.name}/{WikiSubdir.CONCEPTS}/brakes.md"
+        assert [rec["citation_key"] for rec in records] == ["src1"]
+        assert records[0]["wiki_source"] == wiki_source
+        assert records[0]["source_filename"] == "a.md"
+        assert records[0]["excerpt"] == _EXCERPT
+
+    def test_a_source_without_chunks_keeps_its_records(self, tmp_path: Path) -> None:
+        """Matches lint: no extracted text means verified at build, not unverifiable."""
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = MagicMock()
+        store.get_chunks_by_source.return_value = []
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert [rec["citation_key"] for rec in records] == ["src1"]
+
+    def test_refuses_when_every_excerpt_is_gone_from_present_chunks(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+        store.get_chunks_by_source.side_effect = lambda name: [
+            _chunk("Nothing this page quotes.", name)
+        ]
+        with pytest.raises(UnverifiedDraftError, match="no citation whose excerpt"):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+        assert not (wiki_root / WikiSubdir.SUMMARIES / "brakes.md").exists()
+        store.replace_citations_for_wiki.assert_not_called()
+
+    def test_a_dropped_citation_is_scrubbed_from_the_published_body(self, tmp_path: Path) -> None:
+        """A surviving citation publishes; the dropped one leaves no bare marker."""
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _two_cited_draft())
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("brakes", wiki_root, store, cfg)
+        published = result.moved_to.read_text(encoding="utf-8")
+        assert "[^src2]" not in published
+        assert "[^src1]" in published
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert [rec["citation_key"] for rec in records] == ["src1"]
+
+    @pytest.mark.parametrize(
+        "frontmatter",
+        ["---\nfaithfulness_score: 0.9\n---\n", "---\nsources: a.md\n---\n"],
+        ids=["absent", "not-a-list"],
+    )
+    def test_a_draft_naming_no_sources_stores_no_rows(
+        self, tmp_path: Path, frontmatter: str
+    ) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", f"{frontmatter}\n# Brakes\n\nbody\n")
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, cfg)
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert records == []
+        store.get_chunks_by_source.assert_not_called()
+
+
+class TestAcceptUnderNestedWikiDir:
+    """``wiki_dir`` may be nested (``notes/wiki``); wiki_source must carry it."""
+
+    def test_rows_and_chunks_land_under_the_configured_wiki_dir(self, tmp_path: Path) -> None:
+        config = cfg.model_copy(update={"data_root": tmp_path, "wiki_dir": "notes/wiki"})
+        wiki_root = config.data_root / config.wiki_dir
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = _store_with_chunk()
+        store.replace_chunks.return_value = 2
+
+        with patch("lilbee.wiki.page.get_services") as services:
+            services.return_value.embedder.embed_batch.side_effect = lambda texts: [
+                [0.1] * config.embedding_dim for _ in texts
+            ]
+            result = accept_draft("brakes", wiki_root, store, config)
+
+        expected = f"notes/wiki/{WikiSubdir.CONCEPTS}/brakes.md"
+        wiki_source, _records = store.replace_citations_for_wiki.call_args.args
+        assert wiki_source == expected
+        assert result.reindexed_chunks > 0
+
+    def test_a_following_prune_keeps_the_rows_accept_wrote(self, tmp_path: Path) -> None:
+        config = cfg.model_copy(update={"data_root": tmp_path, "wiki_dir": "notes/wiki"})
+        wiki_root = config.data_root / config.wiki_dir
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _cited_draft())
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("brakes", wiki_root, store, config)
+        wiki_source, _records = store.replace_citations_for_wiki.call_args.args
+
+        store.wiki_chunk_sources.return_value = {wiki_source}
+        store.wiki_citation_sources.return_value = {wiki_source}
+        store.get_citations_for_wiki.return_value = []
+        report = prune_wiki(store, config)
+
+        assert report.reconciled_count == 0
+        store.delete_citations_for_wiki.assert_not_called()
+
+
+class TestAcceptRefusesStaleDrafts:
+    """A draft the wiki has already outrun must not clobber the newer page."""
+
+    def test_a_retry_after_a_failed_index_completes(self, tmp_path: Path) -> None:
+        """The first attempt writes the published file, so its mtime outruns the
+        draft; the documented retry has to get past the staleness gate."""
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(published, "old\n")
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+
+        boom = MagicMock(side_effect=RuntimeError("indexer down"))
+        with patch("lilbee.wiki.drafts.index_wiki_page", boom), pytest.raises(RuntimeError):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+        _make_newer(published, draft)
+
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = accept_draft("brakes", wiki_root, store, cfg)
+        assert result.reindexed_chunks == 2
+        assert not draft.exists()
+
+    def test_refuses_when_the_published_page_is_newer(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        published = wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        _write(draft, _draft_content("old proposal"))
+        _write(published, "regenerated body\n")
+        _make_newer(published, draft)
+        store = MagicMock()
+        with pytest.raises(StaleDraftError, match="older than the published page"):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+        assert published.read_text() == "regenerated body\n"
+        store.replace_citations_for_wiki.assert_not_called()
 
 
 class TestRejectDraft:
@@ -330,6 +669,60 @@ class TestAcceptCrashSafety:
         assert (wiki_root / WikiSubdir.DRAFTS / "x.md").is_file()
 
 
+class TestAcceptAbortsBeforeConsumingTheDraft:
+    """A failed store step must leave the draft on disk, not report success over it."""
+
+    def test_a_failed_citation_replace_keeps_the_draft(self, tmp_path: Path) -> None:
+        """The store propagates a failed delete, so accept never reaches the unlink."""
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+        store.replace_citations_for_wiki.side_effect = RuntimeError("delete failed")
+
+        with pytest.raises(RuntimeError, match="delete failed"):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+
+    def test_a_store_write_that_landed_no_rows_keeps_the_draft(self, tmp_path: Path) -> None:
+        """Guards the store write, not the draft's content: the accept-time guard
+        already refused every body that chunks to nothing, so this mocks the
+        indexer rather than exercising a reachable production path."""
+        wiki_root = tmp_path / "wiki"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes.md"
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(draft, _cited_draft())
+        store = _store_with_chunk()
+
+        with (
+            patch("lilbee.wiki.drafts.index_wiki_page", return_value=0),
+            pytest.raises(UnindexedDraftError, match="no searchable chunks"),
+        ):
+            accept_draft("brakes", wiki_root, store, cfg)
+        assert draft.is_file()
+
+
+class TestUnpairedCollisionAccept:
+    """A collision draft carries its origin, so accepting it restores its page type."""
+
+    def test_accepts_into_the_origin_subdir_from_the_marker(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        path = divert_concept_collision(
+            slug="brakes",
+            source="b.md",
+            first_source="a.md",
+            content=_cited_draft(),
+            drafts_dir=wiki_root / WikiSubdir.DRAFTS,
+            origin_subdir=WikiSubdir.CONCEPTS,
+        )
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft(path.stem, wiki_root, store, cfg)
+        assert result.moved_to == wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        assert not (wiki_root / WikiSubdir.SUMMARIES / "brakes.md").exists()
+
+
 class TestListDraftsWithOnlyDriftMarker:
     """Drift marker parses even when frontmatter is missing."""
 
@@ -359,6 +752,19 @@ class TestPendingKindDetection:
         assert d.pending_kind == PendingKind.PARSE
         assert d.drift_ratio is None
 
+    def test_a_marker_quoted_in_the_body_does_not_classify_the_draft(self, tmp_path: Path) -> None:
+        """Markers are written as the first line. A drift draft that quotes one
+        further down would otherwise accept as a marker and be deleted unpublished."""
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            "<!-- DRIFT: 20% content changed - flagged for human review -->\n\n"
+            f"The build wrote <!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt -->\n",
+        )
+        [d] = list_drafts(wiki_root)
+        assert d.pending_kind is None
+        assert d.drift_ratio == pytest.approx(0.20)
+
     def test_pending_collision_marker_surfaces_kind(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
@@ -369,6 +775,101 @@ class TestPendingKindDetection:
         [d] = list_drafts(wiki_root)
         assert d.pending_kind == PendingKind.COLLISION
         assert d.drift_ratio is None
+
+
+def _stacked_drift_collision_draft(wiki_root: Path) -> str:
+    """Write a drift draft whose target already holds another source's proposal.
+
+    The collision branch stacks the PENDING marker above the drift note, so the
+    draft carries two leading marker lines. Returns the resulting draft slug.
+    """
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
+    _write(drafts_dir / "brakes.md", _cited_draft("other.md"))
+    path = divert_to_drafts(
+        _cited_draft(),
+        drafts_dir,
+        "brakes",
+        0.4,
+        "diff text",
+        WikiSubdir.CONCEPTS,
+        ["a.md"],
+    )
+    return path.stem
+
+
+class TestDriftCollisionDraftsWithStackedMarkers:
+    """A drift that also collides carries a PENDING marker and a DRIFT marker."""
+
+    def test_listing_reports_both_the_kind_and_the_drift_ratio(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        slug = _stacked_drift_collision_draft(wiki_root)
+        [draft] = [d for d in list_drafts(wiki_root) if d.slug == slug]
+        assert draft.pending_kind == PendingKind.COLLISION
+        assert draft.drift_ratio == pytest.approx(0.4)
+        assert draft.faithfulness_score == pytest.approx(0.9)
+
+    def test_accept_publishes_it_with_its_frontmatter_honored(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        slug = _stacked_drift_collision_draft(wiki_root)
+        store = _store_with_chunk()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft(slug, wiki_root, store, cfg)
+        # Origin subdir rides the drift marker, so the accept lands in concepts/.
+        assert result.moved_to == wiki_root / WikiSubdir.CONCEPTS / "brakes.md"
+        published = result.moved_to.read_text(encoding="utf-8")
+        assert published.startswith("---")
+        assert "[^src1]" in published
+        _wiki_source, records = store.replace_citations_for_wiki.call_args.args
+        assert [rec["citation_key"] for rec in records] == ["src1"]
+
+
+_QUOTED_DRIFT_MARKER = (
+    "<!-- DRIFT: 42% content changed; origin: concepts - flagged for human review -->"
+)
+_QUOTED_MARKERS = [
+    _QUOTED_DRIFT_MARKER,
+    f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt -->",
+    f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt -->",
+]
+
+
+def _quoting_body(marker: str) -> str:
+    return f"The page under review quotes {marker} verbatim.\n"
+
+
+class TestMarkersQuotedInADraftBody:
+    """A marker is the leading line only; one quoted in the body is content.
+
+    A wiki page that documents the wiki's own markers is the realistic case.
+    """
+
+    def test_a_quoted_drift_marker_reports_no_ratio_and_no_kind(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            _draft_content(_quoting_body(_QUOTED_DRIFT_MARKER)),
+        )
+        [d] = list_drafts(wiki_root)
+        assert (d.drift_ratio, d.pending_kind) == (None, None)
+
+    @pytest.mark.parametrize("marker", _QUOTED_MARKERS)
+    def test_a_quoted_marker_survives_the_accept(self, tmp_path: Path, marker: str) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content(_quoting_body(marker)))
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("x", wiki_root, MagicMock())
+        assert marker in result.moved_to.read_text(encoding="utf-8")
+
+    def test_a_quoted_origin_does_not_route_the_accept(self, tmp_path: Path) -> None:
+        """Origin is read off the leading marker, so the summaries fallback holds."""
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
+            _draft_content(_quoting_body(_QUOTED_DRIFT_MARKER)),
+        )
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("x", wiki_root, MagicMock())
+        assert WikiSubdir.SUMMARIES in result.moved_to.parts
 
 
 class TestBaseSlugForCollision:

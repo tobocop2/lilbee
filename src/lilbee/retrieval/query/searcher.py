@@ -446,18 +446,27 @@ class Searcher:
             log.debug("HyDE search failed", exc_info=True)
             return []
 
-    def _normalize_chunk_type(self, chunk_type: ChunkType | None) -> ChunkType | None:
-        """Drop ``chunk_type=ChunkType.WIKI`` when wiki generation is disabled.
+    def _refuse_wiki_scope(self, chunk_type: ChunkType | None) -> bool:
+        """Whether a wiki-scoped search must serve nothing because wiki is off.
 
-        With wiki off the chunks table contains only raw rows, so the
-        filter would return empty. Logging once keeps the surprise out
-        of the user's way while surfacing the misuse in logs.
+        Turning the setting off deletes no rows, so the pages a library was
+        wikified with are still there. Serving them would contradict the
+        setting and widening to the whole pool would answer a question the
+        caller did not ask, so the scope resolves to no results.
         """
-        if chunk_type == ChunkType.WIKI and not self._config.wiki:
-            log.warning(
-                "wiki scope requested but wiki is disabled; searching the full pool instead"
-            )
-            return None
+        if chunk_type != ChunkType.WIKI or self._config.wiki:
+            return False
+        log.warning("wiki scope requested but the wiki is disabled; returning no results")
+        return True
+
+    def _retrieval_scope(self, chunk_type: ChunkType | None) -> ChunkType | None:
+        """The chunk filter to apply, keeping wiki rows out while wiki is off.
+
+        An unscoped search narrows to ``RAW``, which covers table chunks, so
+        the only rows it drops are generated wiki pages.
+        """
+        if chunk_type is None and not self._config.wiki:
+            return ChunkType.RAW
         return chunk_type
 
     def _parse_structured_query(self, question: str) -> StructuredQuery:
@@ -475,23 +484,25 @@ class Searcher:
         top_k: int,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
+        # QueryMode.WIKI / QueryMode.RAW are a chunk-type scope shortcut, and an
+        # explicit ``chunk_type`` arg beats the prefix. Resolving the scope up
+        # front routes every mode through the same wiki-disabled guard, so
+        # ``wiki:`` cannot bypass it.
+        requested = chunk_type
+        if requested is None and mode in (QueryMode.WIKI, QueryMode.RAW):
+            requested = ChunkType(mode.value)
+        if self._refuse_wiki_scope(requested):
+            return []
+        scope = self._retrieval_scope(requested)
         if mode is QueryMode.TERM:
-            return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
+            return self._store.bm25_probe(query, top_k=top_k, chunk_type=scope)
         if mode is QueryMode.VEC:
             query_vec = self._embedder.embed_query(query)
-            return self._store.search(
-                query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
-            )
+            return self._store.search(query_vec, top_k=top_k, query_text=None, chunk_type=scope)
         if mode is QueryMode.HYDE:
-            return self._hyde_search(query, top_k, chunk_type=chunk_type)
-        # QueryMode.WIKI / QueryMode.RAW: a chunk-type scope shortcut.
-        # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-        # Route the prefix-derived type through the same wiki-disabled guard the
-        # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
-        requested = chunk_type if chunk_type is not None else ChunkType(mode.value)
-        effective = self._normalize_chunk_type(requested)
+            return self._hyde_search(query, top_k, chunk_type=scope)
         query_vec = self._embedder.embed_query(query)
-        return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=effective)
+        return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=scope)
 
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
@@ -580,10 +591,10 @@ class Searcher:
         over the ``wiki:``/``raw:`` prefix shortcut in *question* so the
         user-facing scope choice has the final say.
 
-        When ``chunk_type="wiki"`` but wiki generation is disabled on the
-        config, the filter is normalized to ``None`` (mixed pool) and a
-        warning is logged: with wiki off the chunks table has no wiki rows,
-        so honouring the filter would silently return zero results.
+        While wiki generation is disabled, pages generated before it was
+        turned off stay out of every result: an unscoped search narrows to
+        document chunks, and a ``"wiki"`` scope returns nothing rather than
+        widening to the pool the caller did not ask for.
 
         A ``mode:`` prefix (``term:``/``vec:``/``hyde:``/``wiki:``/``raw:``)
         forces a single explicit retrieval strategy and so skips expansion and
@@ -593,18 +604,20 @@ class Searcher:
         """
         if top_k == 0:
             top_k = self._config.top_k
-        chunk_type = self._normalize_chunk_type(chunk_type)
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
             structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
             return self._apply_temporal_filter(structured, clean_query)
+        if self._refuse_wiki_scope(chunk_type):
+            return []
+        chunk_type = self._retrieval_scope(chunk_type)
         if self._config.intent_routing:
             # A query naming one document wants that document on every
             # retrieval surface, not just ask: without this, bare search
             # (HTTP /api/search, MCP) returns similarity neighbors of the
             # question's wording. The document's head, in document order,
             # fills the standard return budget.
-            known_item = self._known_item_results(question)
+            known_item = self._known_item_results(question, chunk_type)
             if known_item:
                 return known_item[: top_k * 2]
         query_vec = self._embedder.embed_query(question)
@@ -798,7 +811,9 @@ class Searcher:
             log.warning("History compaction failed for this batch", exc_info=True)
         return ""
 
-    def _known_item_results(self, question: str) -> list[SearchChunk]:
+    def _known_item_results(
+        self, question: str, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
         """Resolve a document named in *question* to its own chunks.
 
         A question that names a document wants that document, not a ranking:
@@ -808,9 +823,16 @@ class Searcher:
         anything ambiguous falls back to topical retrieval. Chunks come back
         in document order with full canonical confidence, since their
         relevance is established by the name match, not by similarity.
+
+        ``chunk_type`` scopes the content probe that resolves a reference
+        living in a document's text, so a scoped search cannot resolve
+        through rows it excludes. A wiki scope never routes here at all:
+        it asks for generated pages, not for a named document's own text.
         """
+        if chunk_type == ChunkType.WIKI:
+            return []
         for ref in document_references(question):
-            filename = self._resolve_reference_filename(ref)
+            filename = self._resolve_reference_filename(ref, chunk_type)
             chunks = self._document_chunks(filename)
             if chunks:
                 log.info("Known-item route: %r resolved to %s", ref, filename)
@@ -855,7 +877,9 @@ class Searcher:
             return str(matches[0]["filename"])
         return None
 
-    def _resolve_reference_filename(self, ref: str) -> str | None:
+    def _resolve_reference_filename(
+        self, ref: str, chunk_type: ChunkType | None = None
+    ) -> str | None:
         """The one source *ref* names, or ``None`` when nothing resolves uniquely.
 
         Filename resolution first: substring search over-matches (a bare
@@ -877,11 +901,13 @@ class Searcher:
             return str(candidates[0]["filename"])
         if matches:
             return None  # several sources genuinely carry the reference
-        return self._resolve_reference_by_content(ref)
+        return self._resolve_reference_by_content(ref, chunk_type)
 
-    def _resolve_reference_by_content(self, ref: str) -> str | None:
+    def _resolve_reference_by_content(
+        self, ref: str, chunk_type: ChunkType | None = None
+    ) -> str | None:
         """Resolve *ref* to the single source whose text owns it, if any."""
-        hits = self._store.bm25_probe(ref, top_k=_KNOWN_ITEM_PROBE_K)
+        hits = self._store.bm25_probe(ref, top_k=_KNOWN_ITEM_PROBE_K, chunk_type=chunk_type)
         if len(hits) < _KNOWN_ITEM_PROBE_K:
             return None
         counts: dict[str, int] = {}
@@ -902,14 +928,25 @@ class Searcher:
     ) -> RagContext | None:
         """Build RAG context from search results.
 
-        ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
-        ``None`` (default) searches the mixed pool.
+        ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
+        chunks too) or ``"wiki"`` rows; ``None`` (default) searches the
+        mixed pool, or document chunks alone while the wiki is disabled.
         """
         retrieval_query = question
         if history and self._config.history_rewrite:
             retrieval_query = self._condense_question(question, history)
+        # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
+        # it names reaches the known-item route and the wiki-disabled guard. Left
+        # in the query, the prefix sits in front of a document name and
+        # document_references resolves that name from the opposite pool; the
+        # search() call below re-parses the prefix for strategy routing.
+        mode, clean_query = self._parse_structured_query(retrieval_query)
+        requested = chunk_type
+        if requested is None and mode in (QueryMode.WIKI, QueryMode.RAW):
+            requested = ChunkType(mode.value)
+        scope = self._retrieval_scope(requested)
         known_item = (
-            self._known_item_results(retrieval_query) if self._config.intent_routing else []
+            self._known_item_results(clean_query, scope) if self._config.intent_routing else []
         )
         if known_item:
             # The named document IS the context; ranking and reranking would

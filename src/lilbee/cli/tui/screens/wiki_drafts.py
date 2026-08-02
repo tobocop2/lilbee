@@ -23,13 +23,22 @@ from textual.widgets import DataTable, Input, Static
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.task_queue import TaskType
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
-from lilbee.wiki.drafts import accept_draft, diff_draft, list_drafts, reject_draft
+from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.wiki.drafts import DraftAcceptError, accept_draft, diff_draft, list_drafts, reject_draft
 from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from textual.notifications import SeverityLevel
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.wiki.drafts import DraftInfo
 
 log = logging.getLogger(__name__)
@@ -55,6 +64,45 @@ def _format_published(exists: bool) -> str:
     return msg.WIKI_DRAFTS_PUBLISHED_YES if exists else msg.WIKI_DRAFTS_PUBLISHED_NO
 
 
+def _draft_failure(exc: Exception, slug: str) -> tuple[str, SeverityLevel]:
+    """Map a failed draft mutation to its user-facing text and toast severity."""
+    if isinstance(exc, DraftAcceptError):
+        return str(exc), "warning"
+    if isinstance(exc, FileNotFoundError):
+        return msg.WIKI_DRAFTS_MISSING.format(slug=slug), "error"
+    if isinstance(exc, PathTraversalError):
+        # Generic text: the exception carries the absolute candidate path.
+        return INVALID_DRAFT_SLUG_ERROR, "error"
+    return str(exc), "error"
+
+
+def _post_success(app: LilbeeApp, message: str) -> None:
+    """Toast a completed draft mutation from the worker thread.
+
+    No reload here: the WIKI task's done hook rescans the wiki screens, and
+    each rescan re-walks every page's frontmatter from disk.
+    """
+    call_from_thread(app, app.notify, message, severity="information")
+
+
+def _post_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Marshal a failed draft mutation back to the event loop from the worker thread.
+
+    Targets the app, not the screen: a WIKI task queues behind a running
+    build, so the screen that started it may be gone by the time it lands.
+    """
+    call_from_thread(app, _apply_failure, app, message, severity)
+
+
+def _apply_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
+    """Toast the failure and re-read the drafts a partial mutation may have changed.
+
+    No done hook fires for a failed task, so this path reloads itself.
+    """
+    app.notify(message, severity=severity)
+    app.task_bar.reload_wiki_screens()
+
+
 def _kind_label(pending_kind: str | None) -> str:
     """Map a pending_kind value to its display label.
 
@@ -66,6 +114,8 @@ def _kind_label(pending_kind: str | None) -> str:
 
 class WikiDraftsScreen(Screen[None]):
     """Review-surface screen for pending wiki drafts."""
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "wiki_drafts.tcss"
     AUTO_FOCUS = "#wiki-drafts-table"
@@ -130,23 +180,34 @@ class WikiDraftsScreen(Screen[None]):
             msg.WIKI_DRAFTS_COLUMN_FAITHFULNESS,
             msg.WIKI_DRAFTS_COLUMN_PUBLISHED,
         )
-        self._load_drafts()
+        self.reload()
 
-    def _load_drafts(self) -> None:
-        """Fetch drafts from disk and populate the table."""
-        table = self.query_one("#wiki-drafts-table", DataTable)
-        table.clear()
+    def reload(self) -> None:
+        """Re-read drafts from disk and repopulate the table.
+
+        Public entry point for the task bar, which refreshes an open drafts
+        screen after work that wrote or removed drafts.
+        """
         try:
             self._drafts = list_drafts(_wiki_root())
         except Exception as exc:
-            log.debug("Failed to list wiki drafts", exc_info=True)
+            log.warning("Failed to list wiki drafts", exc_info=True)
             self._drafts = []
+            self.query_one("#wiki-drafts-table", DataTable).clear()
             self._show_diff(msg.WIKI_DRAFTS_LOAD_FAILED.format(error=exc))
             return
+        self._populate_table()
 
+    def _populate_table(self) -> None:
+        """Render the filtered view of the already-loaded drafts."""
+        table = self.query_one("#wiki-drafts-table", DataTable)
+        table.clear()
         visible = self._visible_drafts()
         if not visible:
-            self._show_diff(msg.WIKI_DRAFTS_EMPTY)
+            if self._drafts:
+                self._show_diff(msg.WIKI_DRAFTS_NO_MATCHES.format(filter=self._filter))
+            else:
+                self._show_diff(msg.WIKI_DRAFTS_EMPTY)
             return
 
         for d in visible:
@@ -212,9 +273,9 @@ class WikiDraftsScreen(Screen[None]):
 
     @on(Input.Changed, "#wiki-drafts-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Filter drafts as the user types."""
+        """Filter the drafts already in memory; typing never re-reads disk."""
         self._filter = event.value.strip()
-        self._load_drafts()
+        self._populate_table()
 
     def action_focus_search(self) -> None:
         """Focus the search input (``/`` keybinding)."""
@@ -252,12 +313,12 @@ class WikiDraftsScreen(Screen[None]):
     def action_jump_top(self) -> None:
         table = self._table_or_none()
         if table is not None:
-            table.scroll_home()
+            table.action_scroll_top()
 
     def action_jump_bottom(self) -> None:
         table = self._table_or_none()
         if table is not None:
-            table.scroll_end()
+            table.action_scroll_bottom()
 
     def action_accept(self) -> None:
         """Prompt for confirmation, then accept the highlighted draft."""
@@ -280,21 +341,14 @@ class WikiDraftsScreen(Screen[None]):
         )
 
     def _do_accept(self, slug: str) -> None:
-        """Execute the accept call and refresh the list."""
-        try:
-            accept_draft(slug, _wiki_root(), get_services().store)
-        except FileNotFoundError:
-            self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=f"missing: {slug}"))
-            return
-        except PathTraversalError:
-            self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
-            return
-        except Exception as exc:
-            log.debug("Accept failed for %s", slug, exc_info=True)
-            self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=exc))
-            return
-        self.notify(msg.WIKI_DRAFTS_ACCEPTED.format(slug=slug))
-        self._load_drafts()
+        """Accept the draft on the task bar and refresh the list when it lands."""
+        self._start_draft_task(
+            slug,
+            msg.WIKI_DRAFTS_ACCEPT_TASK.format(slug=slug),
+            lambda: accept_draft(slug, _wiki_root(), get_services().store),
+            msg.WIKI_DRAFTS_ACCEPTED.format(slug=slug),
+            msg.WIKI_DRAFTS_ACCEPT_FAILED,
+        )
 
     def action_reject(self) -> None:
         """Prompt for confirmation, then reject the highlighted draft."""
@@ -317,18 +371,47 @@ class WikiDraftsScreen(Screen[None]):
         )
 
     def _do_reject(self, slug: str) -> None:
-        """Execute the reject call and refresh the list."""
-        try:
-            reject_draft(slug, _wiki_root())
-        except FileNotFoundError:
-            self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=f"missing: {slug}"))
-            return
-        except PathTraversalError:
-            self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
-            return
-        except Exception as exc:
-            log.debug("Reject failed for %s", slug, exc_info=True)
-            self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=exc))
-            return
-        self.notify(msg.WIKI_DRAFTS_REJECTED.format(slug=slug))
-        self._load_drafts()
+        """Reject the draft on the task bar and refresh the list when it lands."""
+        self._start_draft_task(
+            slug,
+            msg.WIKI_DRAFTS_REJECT_TASK.format(slug=slug),
+            lambda: reject_draft(slug, _wiki_root()),
+            msg.WIKI_DRAFTS_REJECTED.format(slug=slug),
+            msg.WIKI_DRAFTS_REJECT_FAILED,
+        )
+
+    def _start_draft_task(
+        self,
+        slug: str,
+        name: str,
+        work: Callable[[], object],
+        success_message: str,
+        failure_template: str,
+    ) -> None:
+        """Run a draft mutation as a WIKI task, then toast and refresh.
+
+        accept_draft takes the wiki build mutex, so running it inline would
+        freeze the UI for the length of whatever build holds the mutex.
+        Failures re-raise the mapped text so the task row records what the
+        toast said, and the outcome is checked against a cancel that landed
+        while the work was running.
+        """
+        app = self.app
+
+        def _target(reporter: ProgressReporter) -> None:
+            reporter.update(0, slug, indeterminate=True)
+            try:
+                work()
+                reporter.check_cancelled()
+            except TaskCancelledError:
+                # The mutation may have landed before the cancel; the table
+                # must show the disk state either way.
+                call_from_thread(app, app.task_bar.reload_wiki_screens)
+                raise
+            except Exception as exc:
+                error, severity = _draft_failure(exc, slug)
+                _post_failure(app, failure_template.format(error=error), severity)
+                raise RuntimeError(error) from exc
+            _post_success(app, success_message)
+
+        app.task_bar.start_task(name, TaskType.WIKI, _target, indeterminate=True)

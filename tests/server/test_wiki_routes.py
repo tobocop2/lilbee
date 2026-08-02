@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
@@ -16,6 +20,24 @@ from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 def _h() -> dict[str, str]:
     """Auth headers."""
     return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
+
+
+def _fail_on_lint_all(store: Any, config: Any = None) -> None:
+    """Stand-in for ``lint_all`` in tests that must take the single-page arm."""
+    raise AssertionError("a single-page lint must not scan the whole wiki")
+
+
+def _sse_events(body: str) -> list[tuple[str, Any]]:
+    """Parse an SSE body into (event name, decoded data) pairs."""
+    events: list[tuple[str, Any]] = []
+    for frame in body.strip().split("\n\n"):
+        lines = frame.splitlines()
+        if len(lines) != 2:
+            continue
+        events.append(
+            (lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: ")))
+        )
+    return events
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +61,20 @@ def _create_app():
     from lilbee.server.app import create_app
 
     return create_app()
+
+
+def _on_the_event_loop() -> bool:
+    """Whether the caller is running on the event loop, for the off-loop route tests.
+
+    A loop running in the calling thread is the only reliable signal: the test
+    client serves the app from its own thread, so a thread id captured in the test
+    function differs from the loop's even when a route blocks it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _make_wiki_page(wiki_root: Path, subdir: str, name: str, content: str = "") -> Path:
@@ -112,6 +148,19 @@ class TestWikiDisabled:
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 404
+
+    async def test_wipe_still_answers(self, monkeypatch: pytest.MonkeyPatch):
+        """The one write route that works with the wiki off. Disabling the
+        setting deletes nothing, so this is exactly when a client needs it."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr(
+            wipe_mod, "wipe_wiki", lambda store: wipe_mod.WipeReport(2, 2, rows_deleted=True)
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["pages_removed"] == 2
 
     async def test_build_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -217,6 +266,9 @@ class TestWikiEnabled:
         assert body["slug"] == "summaries/my-doc"
         assert body["title"] == "Test Page"
         assert "# Test Page" in body["content"]
+        # Same payload the CLI and MCP reads return.
+        assert body["frontmatter"]["sources"] == ["documents/test.txt"]
+        assert body["frontmatter"]["faithfulness_score"] == 0.9
 
     async def test_read_missing_page_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -259,11 +311,30 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    async def test_citations_reverse_no_source(self):
+    async def test_citations_reverse_no_source_is_a_400(self):
+        """An empty result would read as 'nothing cites this document'; the CLI and
+        MCP both treat a missing direction as an error."""
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/citations", headers=_h())
+        assert resp.status_code == 400
+        assert "source" in resp.json()["detail"]
+
+    async def test_drafts_listing_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """list_drafts reads every draft's full text and stats its published
+        counterpart, so it runs in a worker thread like the page listing."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        on_loop: list[bool] = []
+
+        def fake_list_drafts(root: Path) -> list[object]:
+            on_loop.append(_on_the_event_loop())
+            return []
+
+        monkeypatch.setattr(server_wiki_mod, "list_drafts", fake_list_drafts)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts", headers=_h())
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert on_loop == [False]
 
     async def test_drafts_empty(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -303,30 +374,65 @@ class TestWikiEnabled:
         assert body["errors"] == 0
         assert body["warnings"] == 0
         assert body["issues"] == []
+        assert body["total"] == 0
+
+    async def test_lint_accepts_a_single_page(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``wiki_source`` lints one page, as ``lilbee wiki lint <page>`` and the
+        ``wiki_lint`` MCP tool do, and reports the same counts."""
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        linted: list[str] = []
+
+        def fake_lint_page(wiki_source, store, config=None):
+            linted.append(wiki_source)
+            return [
+                lint_mod.LintIssue(
+                    wiki_source=wiki_source,
+                    severity=lint_mod.IssueSeverity.ERROR,
+                    message="stale citation",
+                )
+            ]
+
+        monkeypatch.setattr(lint_mod, "lint_wiki_page", fake_lint_page)
+        monkeypatch.setattr(lint_mod, "lint_all", _fail_on_lint_all)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post(
+                "/api/wiki/lint",
+                params={"wiki_source": "wiki/summaries/doc.md"},
+                headers=_h(),
+            )
+        assert resp.status_code == 201
+        assert linted == ["wiki/summaries/doc.md"]
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["errors"] == 1
+        assert body["warnings"] == 0
+        assert body["issues"][0]["message"] == "stale citation"
 
     async def test_lint_runs_off_the_event_loop(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """lint_all scans every page and embeds, so it runs in a worker thread, not
-        on the event loop that serves every other REST/MCP request (bb-ziks.44)."""
-        import threading
-
+        on the event loop that serves every other REST/MCP request."""
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_lint(store, config=None):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return lint_mod.LintReport()
 
         monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/lint", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_lint_status_route_removed(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -341,152 +447,325 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+        assert body["reconciled"] == 0
+
+    async def test_prune_reports_reconciled_rows(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+        report = PruneReport(
+            records=[
+                PruneRecord(
+                    wiki_source="wiki/concepts/gone.md",
+                    action=PruneAction.RECONCILED,
+                    reason="indexed rows without a page on disk",
+                )
+            ]
+        )
+        monkeypatch.setattr("lilbee.server.wiki.prune_mod.prune_wiki", lambda store: report)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/prune", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["reconciled"] == 1
+        assert body["archived"] == 0
+        assert body["records"][0]["action"] == "reconciled"
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("POST", "/api/wiki/build"),
+            ("PATCH", "/api/wiki/update"),
+            ("POST", "/api/wiki/synthesize"),
+        ],
+    )
+    async def test_streaming_routes_declare_the_sse_media_type(self, method: str, path: str):
+        """A union return annotation resolves to JSON and every SSE client
+        rejects the stream, so the media type is asserted per route."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request(method, path, headers=_h())
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+    async def test_build_dry_run_stays_json(self):
+        """The dry run shares the streaming route, so it carries its own media
+        type rather than inheriting the stream's."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", params={"dry_run": True}, headers=_h())
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "entities" in resp.json()
+
+    async def test_index_rebuilds_and_reports_its_size(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import stubs as stubs_mod
+
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2})
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/index", headers=_h())
+        assert resp.status_code == 201
+        assert resp.json()["entries"] == 2
+
+    async def test_index_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """Extraction walks every chunk in the corpus."""
+        from lilbee.wiki import stubs as stubs_mod
+
+        on_loop: list[bool] = []
+
+        def fake_refresh(store):
+            on_loop.append(_on_the_event_loop())
+            return {}
+
+        monkeypatch.setattr(stubs_mod, "refresh_stub_index", fake_refresh)
+        async with AsyncTestClient(_create_app()) as client:
+            await client.post("/api/wiki/index", headers=_h())
+        assert on_loop == [False]
+
+    async def test_generate_writes_one_page(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("wiki/e/ford.md"))
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/ford", headers=_h())
+        assert resp.status_code == 201
+        assert resp.json()["path"] == "wiki/e/ford.md"
+
+    async def test_generate_404s_an_unknown_slug(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        def boom(slug, store):
+            raise lazy_mod.UnknownStubError("no indexed page named 'nope'")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", boom)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/nope", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_generate_409s_a_stale_index_entry(self, monkeypatch: pytest.MonkeyPatch):
+        """A client has to tell "never heard of it" from "nothing to write it from"."""
+        from lilbee.wiki import lazy as lazy_mod
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: None)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/ford", headers=_h())
+        assert resp.status_code == 409
+
+    async def test_generate_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.wiki import lazy as lazy_mod
+
+        on_loop: list[bool] = []
+
+        def fake_generate(slug, store):
+            on_loop.append(_on_the_event_loop())
+            return Path("wiki/e/ford.md")
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", fake_generate)
+        async with AsyncTestClient(_create_app()) as client:
+            await client.post("/api/wiki/generate/ford", headers=_h())
+        assert on_loop == [False]
+
+    async def test_wipe_reports_a_failed_row_delete(self, monkeypatch: pytest.MonkeyPatch):
+        """The client must be able to tell a completed wipe from one that left
+        the rows behind, since those rows keep answering searches."""
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr(
+            wipe_mod, "wipe_wiki", lambda store: wipe_mod.WipeReport(2, 2, rows_deleted=False)
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["rows_deleted"] is False
+
+    async def test_wipe_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """The wipe walks the tree and the store and takes the wiki mutex; it
+        runs in a worker thread, not on the event loop."""
+        from conftest import make_mock_services
+        from lilbee.wiki import wipe as wipe_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        on_loop: list[bool] = []
+
+        def fake_wipe(store):
+            on_loop.append(_on_the_event_loop())
+            return wipe_mod.WipeReport(0, 0, rows_deleted=True)
+
+        monkeypatch.setattr(wipe_mod, "wipe_wiki", fake_wipe)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.request("DELETE", "/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
 
     async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
         """prune_wiki walks the whole tree + store; it runs in a worker thread, not
-        on the event loop (bb-ziks.44)."""
-        import threading
-
+        on the event loop."""
         from conftest import make_mock_services
         from lilbee.wiki import prune as prune_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_prune(store):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return prune_mod.PruneReport()
 
         monkeypatch.setattr(prune_mod, "prune_wiki", fake_prune)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
     async def test_status_runs_lint_off_the_event_loop(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The status route's lint pass embeds; it runs off the event loop (bb-ziks.44)."""
-        import threading
-
+        """The status route's lint pass embeds; it runs off the event loop."""
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
         monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
         _make_wiki_page(isolated_env / "wiki", "summaries", "s1")  # so status reaches lint
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def fake_lint(store, config=None, record_log=True):
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return lint_mod.LintReport()
 
         monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
         assert resp.status_code == 200
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
 
-    async def test_build_returns_summary(self, monkeypatch):
+    async def test_build_streams_progress_then_a_done_summary(self, monkeypatch):
+        def fake_build(config, on_progress, cancel):
+            on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="doc.txt", pages=1, current=1, total=1),
+            )
+            return {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
+
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        events = _sse_events(resp.text)
+        assert [name for name, _payload in events] == ["wiki_phase", "wiki_page", "done"]
+        assert events[0][1]["phase"] == "extract"
+        assert events[1][1]["label"] == "doc.txt"
+        assert events[2][1] == {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1}
+
+    async def test_done_frame_carries_the_gate_stats(self, monkeypatch):
+        """The terminal SSE frame is the summary dict, so stats reach the client."""
+        from lilbee.wiki.stats import BuildStats
+
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/x.md", 2)
+        stats.record_drafted()
+        stats.record_citations(rendered=2, dropped=1)
         monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            lambda *a, **kw: {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1},
+            "lilbee.server.handlers.wiki.run_full_build",
+            lambda config, on_progress, cancel: {
+                "paths": ["wiki/concepts/x.md"],
+                "entities": 3,
+                "count": 1,
+                "stats": stats.as_dict(),
+            },
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/build", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["count"] == 1
-        assert body["entities"] == 3
-        assert body["paths"] == ["wiki/concepts/x.md"]
+        name, payload = _sse_events(resp.text)[-1]
+        assert name == "done"
+        assert payload["stats"]["pages_published"] == 1
+        assert payload["stats"]["pages_drafted"] == 1
+        assert payload["stats"]["citation_verify_rate"] == 2 / 3
 
-    async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent builds serialize on the lock, off the event loop.
+    async def test_build_dry_run_returns_candidates_as_json(self, monkeypatch):
+        """dry_run answers with the entity candidates, not an SSE stream."""
 
-        Drives the handlers directly: AsyncTestClient serializes gathered
-        requests itself, so through it the spans never overlap whether or not
-        the lock exists, and this test stayed green without it.
-        """
-        import asyncio
-        import threading
-        import time
+        def build_boom(*a, **kw):
+            raise AssertionError("dry_run must not build")
 
-        from lilbee.server import wiki as _wiki_mod
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", build_boom)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.preview_build_entities",
+            lambda config: [
+                {
+                    "slug": "ford",
+                    "label": "Ford",
+                    "kind": "entity",
+                    "type_hint": "ORG",
+                    "mentions": 2,
+                    "sources": ["a.md"],
+                }
+            ],
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build?dry_run=true", headers=_h())
+        assert resp.status_code == 201
+        payload = resp.json()
+        assert payload["dry_run"] is True
+        assert payload["count"] == 1
+        assert payload["entities"][0]["slug"] == "ford"
+        assert payload["note"]
 
-        # Reset both before the test (so a leftover lock from a previous run
-        # doesn't share state) and after via finalizer (so this test's lock
-        # doesn't leak into the next).
-        _wiki_mod._reset_wiki_build_lock()
-        monkeypatch.setattr("lilbee.server.wiki._WIKI_BUILD_LOCK", None, raising=False)
+    async def test_build_runs_off_the_event_loop(self, monkeypatch):
+        """The build is CPU- and IO-bound, so it runs in a worker thread."""
+        on_loop: list[bool] = []
 
-        loop_thread_id = threading.get_ident()
-        invocations: list[tuple[int, float, float]] = []
-        # Hold the worker for ~0.1s and tolerate ~0.01s skew so heavily-loaded
-        # CI doesn't false-trigger the serialization check.
-        sleep_s = 0.1
-        skew_s = 0.01
-
-        def fake_build(*args, **kwargs):
-            # One append after the sleep, with start held locally: the earlier
-            # version appended a placeholder first and then rewrote
-            # invocations[-1], so with two threads actually overlapping the
-            # second one rewrote the first one's entry and the spans came out
-            # looking serialized either way.
-            start = time.monotonic()
-            time.sleep(sleep_s)
-            invocations.append((threading.get_ident(), start, time.monotonic()))
+        def fake_build(config, on_progress, cancel):
+            on_loop.append(_on_the_event_loop())
             return {"paths": [], "entities": 0, "count": 0}
 
-        monkeypatch.setattr("lilbee.server.wiki.run_full_build", fake_build)
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        assert on_loop == [False]
 
-        try:
-            await asyncio.gather(
-                _wiki_mod.wiki_build_route.fn(),
-                _wiki_mod.wiki_build_route.fn(),
-            )
-            assert len(invocations) == 2
-            # Worker thread is not the event-loop thread.
-            for tid, _start, _end in invocations:
-                assert tid != loop_thread_id
-            # Lock serialized: second invocation starts at or after first ends.
-            first, second = sorted(invocations, key=lambda i: i[1])
-            assert second[1] >= first[2] - skew_s, f"builds overlapped: {invocations}"
-        finally:
-            _wiki_mod._reset_wiki_build_lock()
+    async def test_build_stream_reports_a_failed_run_as_an_error_event(self, monkeypatch):
+        def fake_build(config, on_progress, cancel):
+            raise RuntimeError("provider unreachable")
 
-    async def test_update_returns_summary(self, monkeypatch):
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_build", fake_build)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        events = _sse_events(resp.text)
+        assert events == [("error", {"message": "provider unreachable"})]
+
+    async def test_update_streams_the_same_build(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+            "lilbee.server.handlers.wiki.run_full_build",
+            lambda config, on_progress, cancel: {"paths": [], "entities": 0, "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.patch("/api/wiki/update", headers=_h())
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["count"] == 0
+        assert _sse_events(resp.text) == [("done", {"paths": [], "entities": 0, "count": 0})]
 
-    async def test_synthesize_returns_summary(self, monkeypatch):
+    async def test_synthesize_streams_progress_then_a_done_summary(self, monkeypatch):
+        def fake_synthesize(config, on_progress, cancel):
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label="typing", pages=1, current=1, total=1),
+            )
+            return {"paths": ["wiki/synthesis/typing.md"], "count": 1}
+
+        monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_synthesize", fake_synthesize)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/synthesize", headers=_h())
+        assert resp.status_code == 201
+        events = _sse_events(resp.text)
+        assert [name for name, _payload in events] == ["wiki_page", "done"]
+        assert events[1][1] == {"paths": ["wiki/synthesis/typing.md"], "count": 1}
+
+    async def test_synthesize_no_clusters_still_ends_with_done(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_synthesize",
-            lambda *a, **kw: {"paths": ["wiki/synthesis/typing.md"], "count": 1},
+            "lilbee.server.handlers.wiki.run_full_synthesize",
+            lambda config, on_progress, cancel: {"paths": [], "count": 0},
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/synthesize", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["count"] == 1
-        assert body["paths"] == ["wiki/synthesis/typing.md"]
-
-    async def test_synthesize_no_clusters_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_synthesize",
-            lambda *a, **kw: {"paths": [], "count": 0},
-        )
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/synthesize", headers=_h())
-        assert resp.status_code == 201
-        assert resp.json()["count"] == 0
+        assert _sse_events(resp.text) == [("done", {"paths": [], "count": 0})]
 
     async def test_status_empty_wiki(self, monkeypatch, tmp_path):
         from lilbee.wiki import lint as lint_mod
@@ -593,6 +872,27 @@ class TestWikiDraftsEndpoints:
         assert body["slug"] == "cv-manual"
         assert "Draft body text" in body["diff"]
 
+    async def test_diff_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """diff_draft reads both files and diffs them, so it runs in a worker
+        thread like every other route that scales with page size."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=30)
+        on_loop: list[bool] = []
+
+        def fake_diff(slug: str, root: Path) -> str:
+            on_loop.append(_on_the_event_loop())
+            return ""
+
+        monkeypatch.setattr(server_wiki_mod, "diff_draft", fake_diff)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/cv-manual", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
+
     async def test_diff_missing_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/drafts/diff/nope", headers=_h())
@@ -685,19 +985,16 @@ class TestWikiDraftsEndpoints:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """accept_draft re-chunks + embeds; it runs in a worker thread, not on the
-        event loop that serves every other request (bb-ziks.44)."""
-        import threading
-
+        event loop that serves every other request."""
         from lilbee.server import wiki as server_wiki_mod
         from lilbee.wiki.drafts import AcceptResult
 
         wiki_root = isolated_env / "wiki"
         _make_draft(wiki_root, "cv-manual", drift_pct=20)
-        loop_tid = threading.get_ident()
-        seen: list[int] = []
+        on_loop: list[bool] = []
 
         def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
-            seen.append(threading.get_ident())
+            on_loop.append(_on_the_event_loop())
             return AcceptResult(
                 slug=slug,
                 requested_slug=slug,
@@ -709,7 +1006,20 @@ class TestWikiDraftsEndpoints:
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
         assert resp.status_code == 201
-        assert seen and seen[0] != loop_tid
+        assert on_loop == [False]
+
+    async def test_accept_stale_draft_returns_409(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import StaleDraftError
+
+        def _fake_accept(slug: str, root: Path, store: object) -> None:
+            raise StaleDraftError(f"published page for {slug} is newer than the draft")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 409
+        assert "newer than the draft" in resp.json()["detail"]
 
     async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
@@ -733,6 +1043,25 @@ class TestWikiDraftsEndpoints:
         body = resp.json()
         assert body["slug"] == "doomed"
         assert not draft_path.exists()
+
+    async def test_reject_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reject_draft takes the wiki build mutex, which a build holds for minutes;
+        waiting for it on the event loop stalls every other route and SSE stream."""
+        from lilbee.server import wiki as server_wiki_mod
+
+        _make_draft(isolated_env / "wiki", "doomed", drift_pct=25)
+        on_loop: list[bool] = []
+
+        def _fake_reject(slug: str, root: Path) -> None:
+            on_loop.append(_on_the_event_loop())
+
+        monkeypatch.setattr(server_wiki_mod, "reject_draft", _fake_reject)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/doomed", headers=_h())
+        assert resp.status_code == 200
+        assert on_loop == [False]
 
     async def test_reject_missing_404(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -924,60 +1253,3 @@ class TestWikiDisabledStatusIsCheap:
         assert resp.status_code == 200
         assert resp.json()["wiki_enabled"] is False
         lint_all.assert_not_called()
-
-
-class TestEveryWikiWriterSharesTheBuildMutex:
-    """The mutex exists because concurrent writers corrupt the tree and index.
-
-    Build, update and synthesize took it; prune and draft-accept did not, even
-    though prune archives pages and both refresh index.md, which is the file the
-    lock's own comment names.
-
-    Drives the handlers directly rather than through AsyncTestClient, which
-    serializes requests and so cannot tell a held lock from an absent one.
-    """
-
-    @pytest.fixture(autouse=True)
-    def enable_wiki(self):
-        cfg.wiki = True
-
-    async def test_prune_serializes_against_a_build(self, monkeypatch, isolated_env: Path):
-        import asyncio
-        import time
-        from unittest import mock
-
-        from lilbee.server import wiki as _wiki_mod
-
-        _wiki_mod._reset_wiki_build_lock()
-        spans: list[tuple[str, float, float]] = []
-        hold_s = 0.1
-        skew_s = 0.01
-
-        def _record(label, result):
-            def _run(*_args, **_kwargs):
-                start = time.monotonic()
-                time.sleep(hold_s)
-                spans.append((label, start, time.monotonic()))
-                return result
-
-            return _run
-
-        monkeypatch.setattr(
-            "lilbee.server.wiki.run_full_build",
-            _record("build", {"paths": [], "entities": 0, "count": 0}),
-        )
-        monkeypatch.setattr(
-            "lilbee.server.wiki.prune_mod.prune_wiki",
-            _record("prune", mock.MagicMock(records=[], archived_count=0, flagged_count=0)),
-        )
-
-        try:
-            await asyncio.gather(
-                _wiki_mod.wiki_build_route.fn(),
-                _wiki_mod.wiki_prune_route.fn(),
-            )
-            assert len(spans) == 2
-            first, second = sorted(spans, key=lambda s: s[1])
-            assert second[1] >= first[2] - skew_s, f"prune and build overlapped: {spans}"
-        finally:
-            _wiki_mod._reset_wiki_build_lock()
