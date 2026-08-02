@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -81,14 +82,25 @@ def _build_validated(source: str | None) -> pa.Table:
     return table
 
 
-def export_to_path(output: Path, fmt_value: str, source: str | None) -> ExportSummary:
-    """Write the per-page dataset to *output*; format from *fmt_value* or suffix."""
+def export_to_path(
+    output: Path,
+    fmt_value: str,
+    source: str | None,
+    *,
+    cancel: threading.Event | None = None,
+) -> ExportSummary:
+    """Write the per-page dataset to *output*; format from *fmt_value* or suffix.
+
+    Setting *cancel* stops between row groups and removes the partial file. The
+    table build ahead of it is a single columnar scan with no boundary to poll,
+    so the stop lands on the write rather than the read.
+    """
     try:
         fmt = resolve_format(fmt_value, output)
     except ValueError as exc:
         raise DatasetError(str(exc)) from None
     table = _build_validated(source)
-    write_dataset(table, output, fmt)
+    write_dataset(table, output, fmt, cancel)
     return ExportSummary(
         format=str(fmt),
         output=str(output),
