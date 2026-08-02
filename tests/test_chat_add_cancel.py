@@ -169,3 +169,26 @@ class TestDoAddCancelCleanup:
 
         assert "corpus" not in cfg.linked_roots
         assert (source / "a.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("registered", "result", "expected"),
+    [
+        pytest.param(["corpus"], {"added": ["corpus/a.py"]}, True, id="file_under_root"),
+        pytest.param(["scan.pdf"], {"added": ["scan.pdf"]}, True, id="single_file_root"),
+        pytest.param(["corpus"], {"updated": ["corpus/a.py"]}, True, id="updated_counts"),
+        pytest.param(["corpus"], {"relocated": ["corpus/a.py"]}, True, id="relocated_counts"),
+        pytest.param(
+            ["scan.pdf"], {"added": ["other.md"], "unchanged": 5}, False, id="other_sources_only"
+        ),
+        pytest.param(
+            ["corpus"], {"added": ["corpus2/a.py"]}, False, id="prefix_not_a_path_boundary"
+        ),
+        pytest.param(["corpus"], {}, False, id="nothing_indexed"),
+    ],
+)
+def test_add_indexed_anything(registered, result, expected):
+    from lilbee.cli.tui.screens.chat_helpers import add_indexed_anything
+    from lilbee.data.types import SyncResult
+
+    assert add_indexed_anything(registered, SyncResult(**result)) is expected
