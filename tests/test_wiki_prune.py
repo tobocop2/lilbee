@@ -585,3 +585,37 @@ class TestReconcileOrphanRows:
         report = prune_wiki(store)
 
         assert report.records == []
+
+
+class TestPruneCancellation:
+    """Each page costs a store lookup, so a large wiki has to be stoppable."""
+
+    def test_a_set_token_stops_the_scan_before_touching_pages(self, tmp_path: Path):
+        import threading
+
+        write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="deleted.md"),
+        ]
+
+        cancel = threading.Event()
+        cancel.set()
+        report = prune_wiki(store, cancel=cancel)
+
+        assert report.archived_count == 0, "a cancelled prune still archived a page"
+        assert (tmp_path / "wiki" / "summaries" / "doc.md").exists()
+
+    def test_an_unset_token_prunes_as_usual(self, tmp_path: Path):
+        import threading
+
+        write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="deleted.md"),
+        ]
+
+        report = prune_wiki(store, cancel=threading.Event())
+
+        assert report.archived_count == 1
+        assert not (tmp_path / "wiki" / "summaries" / "doc.md").exists()

@@ -8,6 +8,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -272,11 +273,16 @@ def lint_all(
     config: Config | None = None,
     *,
     record_log: bool = True,
+    cancel: threading.Event | None = None,
 ) -> LintReport:
     """Full lint: check every wiki page in the store.
 
     ``record_log=False`` skips the audit-log append so a read-only status check
     can reuse this without mutating ``log.md``.
+
+    Each page costs a citation lookup, so a large wiki takes long enough to
+    want stopping. Setting *cancel* ends the scan at the next page and reports
+    what it found so far.
     """
     if config is None:
         config = cfg
@@ -291,6 +297,9 @@ def lint_all(
         if not subdir_path.is_dir():
             continue
         for md_path in sorted(subdir_path.rglob("*.md")):
+            if cancel is not None and cancel.is_set():
+                log.info("Wiki lint cancelled after %d issues", len(report.issues))
+                break
             relative = md_path.relative_to(wiki_root)
             wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
             report.issues.extend(lint_wiki_page(wiki_source, store, config))
