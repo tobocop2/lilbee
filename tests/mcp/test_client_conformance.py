@@ -14,7 +14,9 @@ unit suite would leak llama-server processes onto the developer's machine.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -181,3 +183,31 @@ async def test_a_running_crawl_can_be_cancelled_through_a_real_client(monkeypatc
     assert not result.is_error
     assert task.cancel.is_set(), "the running crawl was never told to stop"
     assert "No task found" in str(missing.content)
+
+
+async def test_a_cancelled_model_pull_aborts_the_download(monkeypatch) -> None:
+    """The download runs on a thread, so the stop has to reach it through the
+    progress callback: returning would leave a multi-GB pull running."""
+    import lilbee.app.models as models_mod
+    from lilbee.mcp_server import model_pull
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    state = {"ticks": 0, "aborted": False}
+
+    def fake_pull(_ref, _src, *, on_update, allow_unsupported=False):
+        for _ in range(200):
+            time.sleep(0.01)
+            state["ticks"] += 1
+            try:
+                on_update(SimpleNamespace(percent=1.0, detail="x"))
+            except TaskCancelledError:
+                state["aborted"] = True
+                raise
+
+    monkeypatch.setattr(models_mod, "pull_model_data", fake_pull)
+    with anyio.move_on_after(0.3):
+        await model_pull("some/model")
+    at_cancel = state["ticks"]
+    await anyio.sleep(0.5)
+    assert state["aborted"], "the download never saw the cancellation"
+    assert state["ticks"] < at_cancel + 40, "the download kept going well past the cancel"

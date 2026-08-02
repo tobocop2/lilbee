@@ -65,6 +65,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -288,14 +289,15 @@ def _entity_status_dict() -> dict[str, Any] | None:
 
 
 @contextmanager
-def _ingest_cancel_token() -> Iterator[threading.Event]:
-    """A cancel token for the ingest pipeline, set on any abnormal exit.
+def _cancel_token() -> Iterator[threading.Event]:
+    """A stop token for a long operation, set on any abnormal exit.
 
     An agent cancelling a tool call gets what the HTTP surface gets on a client
-    disconnect: the pipeline stops between files, flushes the work it finished
-    and raises, rather than indexing the rest of the corpus for a request that
-    has gone away. The pipeline polls the token from its worker threads, which
-    is why cancellation alone does not reach them.
+    disconnect: the work stops at its next boundary and keeps what it finished,
+    rather than running the rest of a corpus, download or wiki build for a
+    request that has gone away. The work runs on a thread asyncio cannot
+    interrupt, which is why cancellation alone does not reach it and the token
+    has to be polled.
 
     Set on every exception, not only cancellation: a pass that raised is over
     either way, and a caller vanishing does not always surface as a cancel.
@@ -317,7 +319,7 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
     """
     from lilbee.data.ingest import sync as run_sync
 
-    with _ingest_cancel_token() as cancel:
+    with _cancel_token() as cancel:
         return (
             await run_sync(
                 quiet=True,
@@ -382,7 +384,7 @@ async def add(
 
     from lilbee.app.ingest import temporary_ocr_config
 
-    with temporary_ocr_config(enable_ocr, ocr_timeout), _ingest_cancel_token() as cancel:
+    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
         sync_result = (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
     result: dict[str, Any] = {
@@ -1057,33 +1059,44 @@ async def model_pull(
 
     loop = asyncio.get_running_loop()
 
-    def on_update(p: DownloadProgress) -> None:
-        if ctx is None:
-            return
-        future = asyncio.run_coroutine_threadsafe(
-            ctx.report_progress(progress=float(p.percent), total=100.0, message=p.detail),
-            loop,
-        )
-        future.add_done_callback(_log_progress_failure)
+    with _cancel_token() as cancel:
 
-    try:
-        result = await asyncio.to_thread(
-            pull_model_data, model, src, on_update=on_update, allow_unsupported=allow_unsupported
-        )
-    except UnsupportedArchError as exc:
-        return {
-            "ok": False,
-            "command": "model_pull",
-            "error": {
-                "code": "unsupported_arch",
-                "arch": exc.architecture,
-                "ref": exc.ref,
-                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                "total_supported": len(SUPPORTED_ARCHS),
-            },
-        }
-    except (RuntimeError, PermissionError) as exc:
-        return _error(str(exc))
+        def on_update(p: DownloadProgress) -> None:
+            # Raise rather than return: the download runs on a thread asyncio
+            # cannot interrupt, so returning would leave a multi-GB pull going
+            # for a caller that has gone. Same idiom the HTTP pull uses.
+            if cancel.is_set():
+                raise TaskCancelledError
+            if ctx is None:
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                ctx.report_progress(progress=float(p.percent), total=100.0, message=p.detail),
+                loop,
+            )
+            future.add_done_callback(_log_progress_failure)
+
+        try:
+            result = await asyncio.to_thread(
+                pull_model_data,
+                model,
+                src,
+                on_update=on_update,
+                allow_unsupported=allow_unsupported,
+            )
+        except UnsupportedArchError as exc:
+            return {
+                "ok": False,
+                "command": "model_pull",
+                "error": {
+                    "code": "unsupported_arch",
+                    "arch": exc.architecture,
+                    "ref": exc.ref,
+                    "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                    "total_supported": len(SUPPORTED_ARCHS),
+                },
+            }
+        except (RuntimeError, PermissionError) as exc:
+            return _error(str(exc))
     return result.model_dump()
 
 
