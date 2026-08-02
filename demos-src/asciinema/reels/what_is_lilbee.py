@@ -21,6 +21,12 @@ import drive  # noqa: E402
 NAME = "what_is_lilbee"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Background Tasks", "what does lilbee do", "README.md")
+BEATS = (
+    ("readme added", r"/add "),
+    ("ingest reported", r"Background Tasks"),
+    ("cited answer", r"README\.md"),
+)
+
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 

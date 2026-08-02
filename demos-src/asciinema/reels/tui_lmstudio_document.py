@@ -22,10 +22,19 @@ import drive  # noqa: E402
 NAME = "tui-lmstudio-document"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("lm_studio", "Background Tasks", "Sources:")
+BEATS = (
+    ("catalog open", r"Discover"),
+    ("provider pill on the served model", r"lm_studio|LM Studio"),
+    ("ingest finished", r"add\s+(done|complete)|all caught up"),
+    ("cited answer", r"Sources:"),
+)
+
 TAIL_FORBID = ("Cancel stream",)
 # The PDF ingest runs for minutes on this machine and is a progress bar throughout,
 # so it is compressed like the generation window and labelled the same way.
 SPEED_WINDOWS = ("ingest", "gen")
+# The pill that proves the model is served rather than run by lilbee.
+PROVIDER_PILL = r"lm_studio|LM Studio"
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/lmstudio"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
@@ -65,15 +74,27 @@ def record(cast: pathlib.Path) -> dict:
         s.mark("boot_end")
 
         # 1. Where the model comes from. /models lists what lilbee can reach, and the
-        # only chat entry is the one LM Studio is serving.
+        # only chat entry is the one LM Studio is serving. Held long enough to read, in
+        # both densities, because "the model is not lilbee's own" is the entire point of
+        # the reel and a glance at a card does not carry it.
         s.key("i", after=0.5)
         s.key("C-u", after=0.3)
         s.type_text("/models", rate=0.05)
         time.sleep(0.6)
         s.key("Enter", after=1.0)
-        time.sleep(2.8)
-        s.esc()
-        time.sleep(0.6)
+        s.wait_for(r"Discover", timeout=40)
+        time.sleep(1.6)
+        s.key(*(["j"] * 16), after=0.045)
+        s.wait_for(PROVIDER_PILL, timeout=25)
+        time.sleep(4.0)
+        s.key("v", after=0.8)
+        time.sleep(3.5)
+        s.key(*(["j"] * 10), after=0.045)
+        time.sleep(3.0)
+        s.key("v", after=0.8)
+        time.sleep(1.6)
+        s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
+        time.sleep(0.8)
 
         # 2. The manual, added on camera.
         s.key("i", after=0.5)

@@ -63,6 +63,8 @@ NEAR_WHITE_TOLERANCE = 45
 # Longest bright run still considered a glyph stroke rather than chrome.
 MAX_STROKE_RUN = 6
 MAX_SEAM_ALIGNMENT = 0.20
+# No single unchanging screen may own more than this share of a reel.
+MAX_DWELL_SHARE = 0.35
 
 
 @dataclasses.dataclass
@@ -124,10 +126,95 @@ def screen_text(events: list[tuple[float, str]], cols: int = 128, rows: int = 41
     return "\n".join(seen)
 
 
+def beat_gate(events: list[tuple[float, str]], beats: tuple[tuple[str, str], ...]) -> Row:
+    """Did the reel's story actually happen, in order?
+
+    The other rows measure properties: colour, frame rate, seams, file size. A reel can
+    pass every one of them and still show the wrong thing. Shipped examples: a sessions
+    reel whose drawer listed one conversation instead of three, a palette reel whose /add
+    silently did nothing because the file was already indexed, and a placement reel that
+    toggled nothing. All green, all wrong.
+
+    Each beat is a label and a pattern that must appear on screen, and they must appear in
+    the order given. Order matters: "the download finished" before "the card reads
+    installed" is a different reel from the reverse.
+    """
+    if not beats:
+        return Row("beats", "UNTESTED", "reel declares no beats")
+    frames = _screen_frames(events)
+    pos, missing = 0, None
+    for label, pattern in beats:
+        rx = re.compile(pattern)
+        for i in range(pos, len(frames)):
+            if rx.search(frames[i]):
+                pos = i + 1
+                break
+        else:
+            missing = label
+            break
+    if missing:
+        return Row("beats", "FAIL", f"never reached {missing!r} (of {len(beats)} beats)")
+    return Row("beats", "PASS", f"all {len(beats)} beats in order")
+
+
+def dwell_gate(gif: pathlib.Path) -> Row:
+    """How much of the shipped reel is one unchanging picture.
+
+    Catches the failure where a reel is technically correct and mostly a progress bar: a
+    catalog reel spent most of its length on a download with nothing to look at, and every
+    property row was green.
+
+    Measured on the gif rather than the cast. The cast still contains the real duration of
+    anything the pipeline deliberately compressed, so scoring it counts a six-times-sped
+    window at full length and fails a reel for a wait the viewer never sits through. What
+    matters is what ships.
+    """
+    im = Image.open(gif)
+    frames, durs = [], []
+    for f in ImageSequence.Iterator(im):
+        frames.append(np.asarray(f.convert("RGB"), dtype=np.int16))
+        durs.append(f.info.get("duration", 40))
+    total = sum(durs)
+    if total <= 0 or len(frames) < 3:
+        return Row("dwell", "UNTESTED", "too few frames to judge")
+    longest = run = 0
+    for a, b, d in zip(frames, frames[1:], durs[1:]):
+        if np.abs(a - b).mean() < 0.5:      # visually the same picture
+            run += d
+            longest = max(longest, run)
+        else:
+            run = d
+    longest = max(longest, max(durs))
+    share = longest / total
+    return Row("dwell", "PASS" if share <= MAX_DWELL_SHARE else "FAIL",
+               f"longest unchanging stretch {longest / 1000:.0f}s of {total / 1000:.0f}s "
+               f"= {share:.0%} (limit {MAX_DWELL_SHARE:.0%})")
+
+
+def _screen_frames(events, with_time: bool = False):
+    """Distinct rendered screens, in order, optionally with their timestamps."""
+    import pyte
+
+    screen = pyte.Screen(128, 41)
+    stream = pyte.Stream(screen)
+    out, last = [], None
+    for t, data in events:
+        try:
+            stream.feed(data)
+        except Exception:
+            continue
+        text = "\n".join(screen.display)
+        if text != last:
+            out.append((t, text) if with_time else text)
+            last = text
+    return out
+
+
 def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
               forbid: tuple[str, ...] = ("Traceback", "not ready yet", "Error 1213"),
               window: tuple[float, float | None] | None = None,
-              tail_forbid: tuple[str, ...] = ()) -> list[Row]:
+              tail_forbid: tuple[str, ...] = (),
+              beats: tuple[tuple[str, str], ...] = ()) -> list[Row]:
     """Everything checkable from the byte stream, before a frame is ever rendered.
 
     ``window`` restricts every check to the span that actually ships. Without it the boot
@@ -167,6 +254,8 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
     # so "longest gap" would be satisfied by the clamp and stop meaning anything, while a
     # reel that spends a third of its time waiting for screens to mount is still a bad
     # reel however it is clamped. This asks what fraction of the take was stall.
+    rows.append(beat_gate(events, beats))
+
     content = [t for t, d in events if not _NOISE.match(d.encode("utf-8", "replace"))]
     if len(content) < 2:
         rows.append(Row("no_dead_air", "UNTESTED", "fewer than two content events"))
@@ -240,7 +329,8 @@ def seam_gate(gif: pathlib.Path) -> Row:
 
 
 def render_gate(gif: pathlib.Path,
-                motion_idx: set[int] | None = None) -> list[Row]:
+                motion_idx: set[int] | None = None,
+                static_by_design: bool = False) -> list[Row]:
     """Everything measurable from the shipping gif. Never compare a gif to an mp4 frame."""
     im = Image.open(gif)
     frames = [f.convert("RGB") for f in ImageSequence.Iterator(im)]
@@ -355,7 +445,17 @@ def render_gate(gif: pathlib.Path,
         rows.append(Row("duration", "PASS", f"{sum(durs)/1000:.1f}s, {len(frames)} frames, "
                                             f"{frames[0].size[0]}x{frames[0].size[1]}"))
         return rows
-    if len(moving) < MIN_MOTION_FRAMES:
+    if len(moving) < MIN_MOTION_FRAMES and static_by_design:
+        # Declared, not inferred. Some screens genuinely do not animate: the placement
+        # drawer coalesces repaints, so nine rounds of toggling produce six measurable
+        # frames. A screen with no animation cannot be choppy, which is the only thing
+        # this row exists to catch, so blocking such a reel forever measures nothing. The
+        # reel has to say so in its own source with a reason, and it still reports the
+        # sample size rather than claiming a frame rate it did not measure.
+        rows.append(Row("motion_fps", "PASS",
+                        f"only {len(moving)} animating frames; reel declares this screen "
+                        "does not animate (see its source for why)"))
+    elif len(moving) < MIN_MOTION_FRAMES:
         rows.append(Row("motion_fps", "UNTESTED",
                         f"only {len(moving)} frames in {scope} (need {MIN_MOTION_FRAMES}); "
                         "nothing the driver does in this reel is long enough to measure"))

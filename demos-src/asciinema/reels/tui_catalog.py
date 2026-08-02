@@ -26,6 +26,17 @@ import drive  # noqa: E402
 NAME = "tui-catalog"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("SmolLM2 135M", "Search HuggingFace", "Installed")
+# Both densities and a download that visibly progressed, since most of an earlier take
+# was a static progress bar and every property row was green.
+BEATS = (
+    ("list view", r"Grid\s*.\s*List"),
+    ("hub search", r"Search HuggingFace"),
+    ("download running", r"\d+/\d+ MB|\d+\.\d+%"),
+    ("download finished", r"download\s+(done|complete)"),
+)
+
+# The pull is a progress bar for most of its length; compress it like a generation.
+SPEED_WINDOWS = ("pull",)
 
 STAGE = pathlib.Path.home() / ".cache/lilbee-reel/lilbee"
 
@@ -49,9 +60,31 @@ def _await_download(s: drive.Session, timeout: float = 420.0) -> float:
     raise drive.Timeout(f"download never finished\n{s.screen()}")
 
 
+def _reset_pull_target() -> None:
+    """Remove the model this reel pulls, so the pull is real every time.
+
+    The precondition is part of the take. After one recording the model is installed, and
+    the next take shows an instant no-op that still passes every property gate -- the reel
+    looks fine and demonstrates nothing. Resetting by hand worked until it was forgotten,
+    twice, so the reel does it itself.
+    """
+    import shutil
+
+    models = pathlib.Path.home() / "Library/Application Support/lilbee/models"
+    repo = models / "models--bartowski--SmolLM2-135M-Instruct-GGUF"
+    for snap in repo.glob("snapshots/*/*Q4_K_M*"):
+        snap.unlink(missing_ok=True)
+    for blob in repo.glob("blobs/*"):
+        if blob.is_file() and blob.stat().st_size > 90_000_000:
+            blob.unlink()
+    shutil.rmtree(models / "manifests/bartowski--SmolLM2-135M-Instruct-GGUF",
+                  ignore_errors=True)
+
+
 def record(cast: pathlib.Path) -> dict:
     if not (STAGE / "data").exists():
         raise SystemExit("staged root missing; build it first")
+    _reset_pull_target()
 
     s = drive.Session("reel-catalog", COLS, ROWS, cast)
     timings: dict[str, float] = {}
@@ -79,15 +112,18 @@ def record(cast: pathlib.Path) -> dict:
 
         # 2. Grid and list are the same rows at two densities. List first, since the
         # Library tab is where the local set is small enough for both to fit.
+        # Both densities get the same treatment: the same dwell and the same scroll, so
+        # the reel does not read as a grid demo with a list view mentioned in passing.
         s.key("v", after=0.6)
-        time.sleep(1.4)
-        # A long burst, not a nudge: this scroll is the only sustained motion the
-        # driver produces in the reel, and a short one leaves too few frames to
-        # measure a frame rate from at all.
-        s.key(*(["j"] * 34), after=0.045)
-        time.sleep(0.8)
-        s.key("v", after=0.6)
+        time.sleep(2.0)
+        s.key(*(["j"] * 24), after=0.045)
+        time.sleep(1.6)
+        s.key(*(["k"] * 24), after=0.045)
         time.sleep(1.2)
+        s.key("v", after=0.6)
+        time.sleep(2.0)
+        s.key(*(["j"] * 24), after=0.045)
+        time.sleep(1.6)
 
         # 3. Search on the Chat tab: the local set has SmolLM2 360M, the Hub has the rest.
         s.key("2", after=0.6)
@@ -116,7 +152,9 @@ def record(cast: pathlib.Path) -> dict:
         # one-line status.
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=25)
+        s.mark("pull_start")
         timings["download"] = _await_download(s)
+        s.mark("pull_end")
         time.sleep(1.8)
 
         # 6. Back to the card, which now reads installed. That is the payoff.

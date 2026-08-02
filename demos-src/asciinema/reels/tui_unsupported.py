@@ -22,6 +22,12 @@ import drive  # noqa: E402
 NAME = "tui-unsupported"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("unsupported", "Architecture not supported", "minimax-m3")
+BEATS = (
+    ("hub results", r"unsupported"),
+    ("refusal names the architecture", r"minimax-m3"),
+    ("declined", r"Yes \(y\)|No \(n\)"),
+)
+
 # If the arch ever becomes supported the dialog stops appearing, and a reel about a
 # refusal that silently became a download is worse than a failed take.
 FORBID_STRINGS = ("Queued download: MiniMax",)

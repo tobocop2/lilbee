@@ -34,6 +34,13 @@ import drive  # noqa: E402
 NAME = "tui-setup"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Welcome to lilbee", "one for chat and one for search", "Background Tasks")
+BEATS = (
+    ("first-run wizard", r"Welcome to lilbee"),
+    ("a document added", r"/add "),
+    ("ingest finished", r"add\s+(done|complete)"),
+    ("status counts it", r"Documents"),
+)
+
 
 FRESH = pathlib.Path.home() / ".cache/lilbee-reel/first-run"
 DOC = pathlib.Path.home() / "projects/lilbee/README.md"

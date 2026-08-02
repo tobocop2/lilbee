@@ -21,17 +21,24 @@ import drive  # noqa: E402
 
 NAME = "tui-add"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Background Tasks", "oil capacity", "Sources:")
+MUST_STRINGS = ("Background Tasks", "towing a trailer", "Sources:")
+BEATS = (
+    ("the add typed", r"/add "),
+    ("ingest running", r"add\s+active|Syncing|\d+%"),
+    ("ingest finished", r"add\s+(done|complete)|all caught up"),
+    ("cited answer", r"Sources:"),
+)
+
 TAIL_FORBID = ("Cancel stream",)
 SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/add"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
-QUESTION = "what's my oil capacity?"
+QUESTION = "what does the manual say about towing a trailer?"
 
-# Qwen3 8B: this reel ends on a spec question, and the larger model reads the extracted
-# table more reliably than the 4B did.
-CONFIG = """chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+# Gemma 4 E4B: a different family from the Qwen reels, and fast enough that the answer
+# does not dominate a reel whose subject is the ingest.
+CONFIG = """chat_model = "ggml-org/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_0.gguf"
 embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 theme = "rose-pine"
 top_k = 8

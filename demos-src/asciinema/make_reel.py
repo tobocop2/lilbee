@@ -87,7 +87,8 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
               *getattr(mod, "FORBID_STRINGS", ()))
     rows = gates.cast_gate(cast, must=tuple(getattr(mod, "MUST_STRINGS", ())), forbid=forbid,
                            window=(marks.get("boot_end", 0.0), marks.get("payload_end")),
-                           tail_forbid=getattr(mod, "TAIL_FORBID", ()))
+                           tail_forbid=getattr(mod, "TAIL_FORBID", ()),
+                           beats=getattr(mod, "BEATS", ()))
     # Map driver-motion spans onto frame indices using each frame's ORIGINAL time. Hold
     # clamping shortens frames, so a position in the finished gif no longer says when that
     # frame happened; matching on output timing put every span in the wrong place and
@@ -97,14 +98,37 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     starts = [t - info["kept_starts"][0] for t in info["kept_starts"]]
     motion_idx = {i for i, t in enumerate(starts)
                   if any(lo <= t <= hi for lo, hi in spans)}
-    rows += gates.render_gate(gif, motion_idx=motion_idx or None)
+    rows += gates.render_gate(gif, motion_idx=motion_idx or None,
+                              static_by_design=getattr(mod, "STATIC_BY_DESIGN", False))
     rows.append(gates.artifact_gate(gif, reference))
     rows.append(gates.seam_gate(gif))
+    rows.append(gates.dwell_gate(gif))
     reference.unlink(missing_ok=True)
+    # A strip across the reel, not its last frame. Reviewing the ending is what let a
+    # sessions reel with one conversation, a palette reel whose add did nothing and a
+    # placement reel that toggled nothing all ship: each was correct at the end.
+    sheet = _contact_sheet(gif, OUT / f"{name}-contact.png")
     text, ok = gates.scorecard(name, rows)
+    text += f"\n  review: {sheet}"
     (OUT / f"{name}.score.txt").write_text(text + "\n")
     print(text)
     return text, ok
+
+
+def _contact_sheet(gif: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
+    """Six frames spread across the reel, stacked, for a human to actually look at."""
+    from PIL import Image, ImageSequence
+
+    frames = [f.convert("RGB") for f in ImageSequence.Iterator(Image.open(gif))]
+    picks = [frames[min(len(frames) - 1, int(len(frames) * p))]
+             for p in (0.08, 0.25, 0.42, 0.60, 0.78, 0.96)]
+    w, h = picks[0].size
+    scale = 0.5
+    sheet = Image.new("RGB", (int(w * scale), int(h * scale) * len(picks)))
+    for i, f in enumerate(picks):
+        sheet.paste(f.resize((int(w * scale), int(h * scale))), (0, int(h * scale) * i))
+    sheet.save(out)
+    return out
 
 
 def _provenance() -> dict:

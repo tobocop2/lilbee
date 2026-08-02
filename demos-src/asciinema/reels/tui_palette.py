@@ -32,6 +32,16 @@ import drive  # noqa: E402
 NAME = "tui-palette"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Slash Commands", "Search for commands", "Placement")
+# The add is the beat that silently did nothing when the file was already indexed, and
+# the Sessions surface is the one that used to show an empty state.
+BEATS = (
+    ("palette open", r"Search for commands"),
+    ("placement drawer", r"Placement"),
+    ("sessions has conversations", r"msgs"),
+    ("an add actually ran", r"add\s+(done|complete)"),
+    ("slash catalogue", r"Slash Commands"),
+)
+
 
 STAGE = pathlib.Path.home() / ".cache/lilbee-reel/lilbee"
 
@@ -52,12 +62,26 @@ def _palette(s: drive.Session, term: str, *, take: bool, dwell: float = 0.9) -> 
 def record(cast: pathlib.Path) -> dict:
     if not (STAGE / "data").exists():
         raise SystemExit("staged root missing; build it first (bb-unp94)")
-    # A file the staged corpus does not already hold, so the add does real work on camera.
+    # Seed the Sessions drawer from the sessions reel's root if it has been recorded.
+    # The palette tours every surface, and an empty "No saved conversations yet" is not a
+    # tour of the Sessions surface, it is a tour of its empty state.
+    seeded = pathlib.Path.home() / ".cache/lilbee-reel/sessions"
+    for sub in ("sessions", "data/sessions"):
+        src_dir, dst_dir = seeded / sub, STAGE / sub
+        if src_dir.exists():
+            shutil.rmtree(dst_dir, ignore_errors=True)
+            shutil.copytree(src_dir, dst_dir)
+
+    # A file the corpus does not already hold. Named per take: adding a document that is
+    # already indexed is a no-op, so a reel that reuses the same filename shows an add
+    # that does nothing from the second take onwards.
     incoming = STAGE / "incoming"
-    incoming.mkdir(exist_ok=True)
+    shutil.rmtree(incoming, ignore_errors=True)
+    incoming.mkdir()
     src = pathlib.Path.home() / "projects/lilbee/docs/usage.md"
+    stamp = time.strftime("%H%M%S")
     if src.exists():
-        shutil.copy(src, incoming / "usage.md")
+        shutil.copy(src, incoming / f"usage-{stamp}.md")
 
     s = drive.Session("reel-palette", COLS, ROWS, cast)
     timings: dict[str, float] = {}
@@ -102,7 +126,7 @@ def record(cast: pathlib.Path) -> dict:
         # 7. Sessions.
         s.key("C-o", after=1.0)
         s.wait_for(r"Filter conversations|No saved conversations", timeout=25)
-        time.sleep(1.2)
+        time.sleep(2.6)
         # ^o is a TOGGLE. Escape and q both leave the drawer up (verified); only a second
         # ^o closes it, and the reel otherwise fails several beats later with a missing
         # INSERT because the drawer is still swallowing keys.
@@ -124,7 +148,7 @@ def record(cast: pathlib.Path) -> dict:
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=25)
         # Let the ingest visibly run and finish rather than cutting mid-bar.
-        s.wait_for(r"caught up|done", timeout=180)
+        s.wait_for(r"add\s+(done|complete)", timeout=300)
         time.sleep(1.2)
 
         # 9. The slash-command catalogue.

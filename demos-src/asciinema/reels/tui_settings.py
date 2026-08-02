@@ -32,6 +32,12 @@ COLS, ROWS = 128, 41
 # asserting pane names would pass without the walk ever happening.
 MUST_STRINGS = ("ollama_base_url", "crawl_render_mode", "num_ctx_max",
                 "memory_token_budget")
+BEATS = (
+    ("models pane", r"chat_model"),
+    ("local servers pane", r"ollama_base_url"),
+    ("generation pane", r"num_ctx_max"),
+    ("memory pane", r"memory_token_budget"),
+)
 
 STAGE = pathlib.Path.home() / ".cache/lilbee-reel/lilbee"
 

@@ -24,13 +24,21 @@ import drive  # noqa: E402
 
 NAME = "tui-tour"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("oil capacity", "Discover", "Background Tasks", "Sources:")
+MUST_STRINGS = ("towing a trailer", "Discover", "Background Tasks", "Sources:")
+BEATS = (
+    ("question asked", r"towing a trailer"),
+    ("generating while navigating", r"Cancel stream"),
+    ("catalog used mid-generation", r"Discover"),
+    ("task centre used mid-generation", r"Background Tasks"),
+    ("answer waiting on return", r"Sources:"),
+)
+
 TAIL_FORBID = ("Cancel stream",)
 # No SPEED_WINDOWS: see above.
 SPEED_WINDOWS = ()
 
 STAGE = pathlib.Path.home() / ".cache/lilbee-reel/lilbee"
-QUESTION = "what's my oil capacity?"
+QUESTION = "what does the manual say about towing a trailer?"
 
 
 def record(cast: pathlib.Path) -> dict:

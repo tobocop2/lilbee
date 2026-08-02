@@ -7,6 +7,11 @@ indexing, so nobody has to take a staged corpus on trust. A slice rather than th
 package because the full tree took over forty minutes to embed, which is not a reel. The placement drawer stays open through the ingest, so both cards are visible
 doing work rather than one card doing work and another sitting idle in a table.
 
+Runs Llama 3.3 70B at Q4_K_M -- about 40 GB of weights, which no single consumer card
+holds. Two RTX 5090s do, and the placement drawer shows the model genuinely split across
+them rather than one card working while the other idles. That split is the subject; an 8B
+that fits on either card alone would not have one.
+
 Recorded on a pod. On one card this reel has no subject.
 """
 from __future__ import annotations
@@ -22,10 +27,19 @@ import drive  # noqa: E402
 NAME = "tui-multi-gpu-self-index"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Placement", "Background Tasks", "Sources:")
+BEATS = (
+    ("first card listed", r"CUDA0"),
+    ("second card listed", r"CUDA1"),
+    ("the model split across them", r"Llama-3\.3-70B"),
+    ("ingest finished", r"add\s+(done|complete)|all caught up"),
+    ("cited answer", r"Sources:"),
+)
+
 TAIL_FORBID = ("Cancel stream",)
 SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = "/workspace/reelroot"
+CHAT_MODEL = "bartowski/Llama-3.3-70B-Instruct-GGUF/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
 CORPUS = "/workspace/corpus-small"
 QUESTION = "how does lilbee decide which GPU a model runs on?"
 
@@ -36,6 +50,14 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": ROOT})
     try:
+        # A fresh data root opens on the first-run wizard, which the chat marker never
+        # matches. Dismiss it if it is there before waiting for chat.
+        try:
+            s.wait_for(r"Welcome to lilbee", timeout=25)
+            s.esc()
+            time.sleep(1.0)
+        except drive.Timeout:
+            pass
         timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=300)
         time.sleep(1.5)
         s.repaint()

@@ -27,6 +27,12 @@ import lite  # noqa: E402
 NAME = "cold-start"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("personal encyclopedia", "what is lilbee in one sentence", "README.md")
+BEATS = (
+    ("chat reached", r"personal encyclopedia"),
+    ("question asked", r"what is lilbee"),
+    ("cited answer", r"README\.md"),
+)
+
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 

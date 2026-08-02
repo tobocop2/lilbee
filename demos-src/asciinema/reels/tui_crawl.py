@@ -23,6 +23,13 @@ import drive  # noqa: E402
 NAME = "tui-crawl"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Recursive", "en.wikipedia.org", "9C1")
+BEATS = (
+    ("crawl modal", r"Recursive"),
+    ("url entered", r"en\.wikipedia\.org"),
+    ("crawl finished", r"(crawl|add)\s+(done|complete)|all caught up"),
+    ("cited answer", r"Sources:"),
+)
+
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 

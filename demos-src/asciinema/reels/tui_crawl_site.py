@@ -25,16 +25,26 @@ from reels.tui_crawl import fresh_root  # noqa: E402
 # which is where the larger model earns its load time.
 CHAT_MODEL = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
+# The crawl is minutes of progress bar; compress it and label it.
+SPEED_WINDOWS = ("crawl", "gen")
+
 NAME = "tui-crawl-site"
 COLS, ROWS = 128, 41
 MUST_STRINGS = ("Recursive", "Max pages", "Full-size_car")
+BEATS = (
+    ("crawl modal", r"Recursive"),
+    ("page cap set", r"Max pages"),
+    ("crawl finished", r"(crawl|add)\s+(done|complete)|all caught up"),
+    ("cited answer", r"Sources:"),
+)
+
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/crawl-site"
 URL = "https://en.wikipedia.org/wiki/Full-size_car"
-MAX_PAGES = "5"
+MAX_PAGES = "25"
 QUESTION = "what defines a full-size car, and name two examples?"
 
 
@@ -88,8 +98,10 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(0.3)
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
+        s.mark("crawl_start")
         timings["crawl"] = s.wait_for(r"(crawl|add)\s+(done|complete)|all caught up",
-                                      timeout=1200)
+                                      timeout=2400)
+        s.mark("crawl_end")
         time.sleep(2.2)
 
         s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
