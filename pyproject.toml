@@ -43,9 +43,7 @@ dependencies = [
     "typer>=0.12",
     "tiktoken",
     "textual>=0.75",
-    # 2.x renamed the high-level server (mcp.server.fastmcp.FastMCP became
-    # mcp.server.mcpserver.MCPServer) and moved the streamable-http settings
-    # onto the app factory, so 1.x cannot run this code. 1.x is maintenance-only.
+    # Floor is 2.0: the tool server needs mcp.server.mcpserver, which 1.x lacks.
     "mcp>=2.0.0,<3",
     "pillow>=11.3.0",
     "litestar>=2.0",
