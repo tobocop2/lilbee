@@ -262,3 +262,38 @@ def test_the_real_download_callback_propagates_the_cancel() -> None:
     on_bytes = make_download_callback(cancelling_on_update, throttle_interval=0.0)
     with pytest.raises(TaskCancelledError):
         on_bytes(1, 100)
+
+
+async def test_a_cancelled_wiki_build_stops_the_pass(monkeypatch) -> None:
+    """A build is minutes of GPU work on a thread asyncio cannot interrupt.
+
+    The handler stays sync so in-process callers keep the plain signature, so
+    the offload publishes the token and the handler picks it up.
+    """
+    import lilbee.wiki as wiki_mod
+    from lilbee.core.config import cfg
+    from lilbee.mcp_server import _offload_sync, wiki_build
+
+    monkeypatch.setattr(cfg, "wiki", True, raising=False)
+    seen: dict[str, threading.Event] = {}
+    started = threading.Event()
+
+    def fake_build(_config, *, cancel=None, on_progress=None):
+        assert cancel is not None, "the wiki build was given no stop token"
+        seen["token"] = cancel
+        started.set()
+        for _ in range(200):
+            time.sleep(0.01)
+            if cancel.is_set():
+                return {"paths": [], "entities": 0, "count": 0}
+        raise AssertionError("the build ran to completion despite the cancel")
+
+    monkeypatch.setattr(wiki_mod, "run_full_build", fake_build)
+    runner = _offload_sync(wiki_build)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner)
+        while not started.is_set():
+            await anyio.sleep(0.01)
+        tg.cancel_scope.cancel()
+    await anyio.sleep(0.4)
+    assert seen["token"].is_set(), "the build was never told to stop"
