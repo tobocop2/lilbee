@@ -8,6 +8,8 @@ and ensures consistent messaging.
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
+from importlib.util import find_spec
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
@@ -112,6 +114,8 @@ CMD_REBUILD_CONFIRM_MESSAGE = (
     "are left alone."
 )
 TASK_NAME_SYNC = "Sync documents"
+TASK_NAME_WIKI = "Wikify"
+TASK_NAME_WIKI_WIPE = "Delete wiki"
 TASK_NAME_REBUILD = "Rebuild index"
 TASK_NAME_IMPORT = "Import {file}"
 TASK_NAME_EXPORT = "Export {file}"
@@ -225,6 +229,14 @@ CHAT_COMPACTED_STRANDED_TOAST = (
 )
 CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
+CMD_WIKI_GENERATE_NO_EVIDENCE = (
+    "Nothing left in the index for {slug}; its sources are gone. "
+    "Run `lilbee wiki index` to refresh."
+)
+CMD_WIKI_WIPE_NEEDS_YES = "Use --yes to confirm wiping the wiki in JSON mode"
+CMD_WIKI_WIPE_WARNING = (
+    "This deletes every generated wiki page and its indexed rows.\n  Pages: {path}"
+)
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
 STREAM_CANCELLED = "\n\n*Response cancelled.*"
@@ -359,6 +371,8 @@ SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
+# spaCy installs its NER model as an importable top-level package.
+_SPACY_MODEL_PACKAGE = "en_core_web_sm"
 WIKI_EMPTY_NEEDS_SPACY_LEAF = "spaCy not installed (see right pane)"
 WIKI_EMPTY_NEEDS_SPACY_DETAIL = (
     "## Wiki entity extraction needs spaCy\n\n"
@@ -384,23 +398,60 @@ def wiki_empty_state_detail() -> str:
     return WIKI_NO_CONTENT
 
 
+@lru_cache(maxsize=1)
 def _spacy_available() -> bool:
-    try:
-        from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
+    """True when spaCy and its NER model are both importable.
 
-        load_spacy_pipeline()
-    except (ImportError, OSError):
-        return False
-    except Exception:
-        # An unexpected spaCy-internal failure: don't claim availability (that
-        # would hide the install guidance); log it and treat spaCy as absent.
-        log.debug("spaCy availability check failed unexpectedly", exc_info=True)
-        return False
-    return True
+    Presence check only: the empty state repaints on every view switch and
+    every filter keystroke, so loading the pipeline here would stall the UI
+    thread for a second per paint. Cached because the answer cannot change
+    within a session.
+    """
+    return all(find_spec(name) is not None for name in ("spacy", _SPACY_MODEL_PACKAGE))
 
 
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
+WIKI_NO_MATCHES = "No pages match '{filter}'"
+WIKI_LOAD_FAILED_LEAF = "Failed to load pages (see right pane)"
+WIKI_LOAD_FAILED = "## Failed to load wiki pages\n\n{error}"
+WIKI_BUILD_STARTING = "Starting wiki run..."
+WIKI_BUILD_PHASE = "{phase}..."
+WIKI_BUILD_PAGE = "{label} ({current}/{total})"
+WIKI_BUILD_DONE = "Wiki build finished: {count} pages"
+WIKI_ALREADY_ACTIVE = "Wiki build in progress, please wait"
+WIKI_STUBS_HEADING = "Not written yet"
+WIKI_STUB_LABEL = "[dim]{title}[/] [dim italic](not written)[/]"
+WIKI_STUB_DETAIL = (
+    "# {title}\n\n"
+    "*This page has not been written yet.*\n\n"
+    "{label} appears in {sources}. Opening it offers to write the page, which "
+    "spends one LLM call and is GPU-heavy.\n\n"
+    "If you would rather not be asked about pages like this, turn the wiki off "
+    "in settings."
+)
+WIKI_STUB_CONFIRM_TITLE = "Write this page?"
+WIKI_STUB_CONFIRM_MESSAGE = (
+    "Writing {label} spends one LLM call and is GPU-heavy. It draws on {sources}.\n\n"
+    "You can turn the wiki off in settings if you would rather not be asked."
+)
+WIKI_STUB_TASK = "Write {label}"
+WIKI_STUB_DONE = "Wrote {label}"
+WIKI_STUB_FAILED = "Could not write {label}: {error}"
+WIKI_STUB_STALE = "Nothing left to write {label} from; its sources are gone"
+WIKI_WIPE_CONFIRM_TITLE = "Delete the wiki?"
+WIKI_WIPE_CONFIRM_MESSAGE = (
+    "This deletes every generated page and its indexed rows. "
+    "Your documents are not touched. This cannot be undone."
+)
+WIKI_WIPE_DISABLED_TITLE = "Wiki turned off. Delete what it generated?"
+WIKI_WIPE_DISABLED_MESSAGE = (
+    "Turning the wiki off stops new pages being written, but the pages already "
+    "generated stay on disk and in search. Delete them now?"
+)
+WIKI_WIPE_RUNNING = "Deleting wiki pages..."
+WIKI_WIPE_DONE = "Wiki deleted: {count} pages removed"
+WIKI_WIPE_NOTHING = "No wiki pages to delete"
 WIKI_INDEX_LABEL = "Index"
 WIKI_LOG_LABEL = "Log"
 WIKI_DRAFTS_TITLE = "Wiki Drafts"
@@ -425,6 +476,10 @@ WIKI_DRAFTS_ACCEPTED = "Accepted {slug}"
 WIKI_DRAFTS_REJECTED = "Rejected {slug}"
 WIKI_DRAFTS_ACCEPT_FAILED = "Accept failed: {error}"
 WIKI_DRAFTS_REJECT_FAILED = "Reject failed: {error}"
+WIKI_DRAFTS_ACCEPT_TASK = "Accept draft {slug}"
+WIKI_DRAFTS_REJECT_TASK = "Reject draft {slug}"
+WIKI_DRAFTS_MISSING = "missing: {slug}"
+WIKI_DRAFTS_NO_MATCHES = "No drafts match '{filter}'"
 WIKI_DRAFTS_PUBLISHED_YES = "yes"
 WIKI_DRAFTS_PUBLISHED_NO = "no"
 WIKI_DRAFTS_SEARCH_PLACEHOLDER = "Filter drafts..."

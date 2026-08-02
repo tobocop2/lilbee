@@ -186,6 +186,32 @@ class TestOnlyEntityKind:
         assert {e.label for e in result} == {"Henry Ford"}
 
 
+class TestAvailability:
+    def test_available_when_pipeline_loads(self) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({}):
+            assert extractor.available() is True
+
+    def test_unavailable_when_pipeline_missing(self) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with patch(
+            "lilbee.wiki.entity_extractor.ner_concepts._load_spacy",
+            return_value=None,
+        ):
+            assert extractor.available() is False
+
+    def test_llm_backed_extractors_report_available(self) -> None:
+        """The LLM-schema extractors have no loadable backend to miss, so they
+        report available; their extract raises NotImplementedError on use."""
+        from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
+        from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
+            NerConceptsPlusLlmTypesExtractor,
+        )
+
+        assert LlmTaggedExtractor(MagicMock(), cfg).available() is True
+        assert NerConceptsPlusLlmTypesExtractor(MagicMock(), cfg).available() is True
+
+
 class TestDedupAndAggregation:
     def test_duplicate_ner_surface_folds_into_one(self) -> None:
         doc = _FakeDoc(
@@ -200,6 +226,22 @@ class TestDedupAndAggregation:
         assert len(result) == 1
         rec = result[0]
         assert len(rec.chunk_refs) == 2
+
+    def test_surfaces_that_slug_alike_fold_into_one(self) -> None:
+        """ "Ford Motor Co." and "Ford Motor Co" produce the same slug and so
+        are one subject. Keyed by the normalized surface they stayed two
+        aggregates with the same slug, which an incremental refresh summed into
+        a doubled mention count and duplicated refs."""
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        doc_map = {
+            "c0": _FakeDoc(ents=[_FakeSpan("Ford Motor Co.", "ORG")]),
+            "c1": _FakeDoc(ents=[_FakeSpan("Ford Motor Co", "ORG")]),
+        }
+        with _patch_pipeline(doc_map):
+            result = extractor.extract([_chunk("a.md", 0, "c0"), _chunk("a.md", 1, "c1")])
+        fords = [e for e in result if e.slug == "ford-motor-co"]
+        assert len(fords) == 1
+        assert len(fords[0].chunk_refs) == 2
 
     def test_output_sorted_by_slug(self) -> None:
         doc = _FakeDoc(
@@ -247,6 +289,34 @@ class TestReturnRecordShape:
             result = extractor.extract([_chunk("s.txt", 0, "t")])
         labels = {e.label for e in result}
         assert labels == {"Ford"}
+
+
+class TestWrappedSurfaces:
+    """spaCy spans cross wrapped lines constantly in PDF text."""
+
+    def test_a_wrapped_span_still_becomes_an_entity(self) -> None:
+        """The label gate rejects a line break, so without collapsing first the
+        mention is lost entirely and the subject can fall under the floor."""
+        doc = _FakeDoc(ents=[_FakeSpan("Henry\nFord", "PERSON")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"Henry Ford founded it": doc}):
+            result = extractor.extract([_chunk("hist.txt", 0, "Henry Ford founded it")])
+        assert [e.label for e in result] == ["Henry Ford"]
+
+    def test_a_wrapped_span_folds_into_its_unwrapped_mentions(self) -> None:
+        """Same subject, so the counts must add up rather than split in two."""
+        docs = {
+            "a": _FakeDoc(ents=[_FakeSpan("Henry\nFord", "PERSON")]),
+            "b": _FakeDoc(ents=[_FakeSpan("Henry Ford", "PERSON")]),
+            "c": _FakeDoc(ents=[_FakeSpan("Henry Ford", "PERSON")]),
+        }
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline(docs):
+            result = extractor.extract(
+                [_chunk("hist.txt", i, name) for i, name in enumerate("abc")]
+            )
+        assert len(result) == 1
+        assert len(result[0].chunk_refs) == 3
 
 
 class TestLabelSanityRejection:

@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import IO, TYPE_CHECKING, cast
 
 from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
@@ -73,47 +73,59 @@ def build_page_dataset(store: Store, source: str | None = None) -> pa.Table:
     (bb-bqg).
     """
     import pyarrow as pa
-    import pyarrow.compute as pc
 
-    captured = store.page_text_sources()
+    tracked = _with_wide_offsets(store.sources_arrow())
     if source is not None:
-        table = store.page_texts_arrow(source)
-        if source not in captured:
+        table = _with_wide_offsets(store.page_texts_arrow(source))
+        if table.num_rows == 0:
             table = _reconstructed_arrow(store, [source], table.schema)
     else:
         # One scan for every captured page instead of a filtered query per source:
         # the per-source loop was O(sources) and its fixed per-query overhead, not
-        # data size, hung the export on a large store. Restrict to tracked sources
-        # so an orphaned page-text row (source record gone) stays out, matching the
-        # old get_sources()-scoped universe.
-        names = {s["filename"] for s in store.get_sources()}
-        table = store.page_texts_arrow()
-        if names:
-            table = table.filter(
-                pc.is_in(table.column("source"), value_set=pa.array(sorted(names), pa.string()))
-            )
-        extra = _reconstructed_arrow(store, sorted(names - captured), table.schema)
+        # data size, hung the export on a large store. The semi-join restricts it
+        # to tracked sources, so an orphaned page-text row (source record gone)
+        # stays out, matching the old get_sources()-scoped universe.
+        keys = tracked.select(["source"])
+        table = _with_wide_offsets(store.page_texts_arrow()).join(
+            keys, keys="source", join_type="left semi"
+        )
+        # Tracked sources the scan found no page text for: older indexes and code,
+        # rebuilt from their chunks. Normally empty, and an anti-join keeps the
+        # comparison in Arrow rather than differencing two sets of every filename.
+        missing = keys.join(table.select(["source"]), keys="source", join_type="left anti")
+        extra = _reconstructed_arrow(
+            store, sorted(missing.column("source").to_pylist()), table.schema
+        )
         if extra.num_rows:
             table = pa.concat_tables([table, extra])
-    table = _with_source_metadata(store, table)
+    # Denormalize each source's title/authors/created_at onto its page rows, so an
+    # export/import cycle keeps them instead of falling back to the filename stem.
+    # Left outer: a source with no metadata keeps its pages, with nulls.
+    table = table.join(tracked, keys="source", join_type="left outer")
     return table.sort_by([("source", "ascending"), ("page", "ascending")])
 
 
-def _with_source_metadata(store: Store, table: pa.Table) -> pa.Table:
-    """Denormalize each source's extraction metadata onto its page rows.
+def _with_wide_offsets(table: pa.Table) -> pa.Table:
+    """*table* with its string columns retyped to 64-bit offsets.
 
-    The dataset is per page while title/authors/created_at live per source, so
-    without this an export/import cycle drops them and the import can only fall
-    back to the filename stem. Absent metadata stays null.
+    pyarrow's ``string`` addresses a column's data with int32 offsets, capping it
+    at 2GB, and every step below this one (filter, concat, metadata append, sort)
+    materializes one array per column. A corpus whose page text passes 2GB
+    overflows there, so the export widens on the way out of the scan; the store's
+    own schema is untouched. Both writers take the wider type, and parquet records
+    it in its arrow metadata and reads it back as ``large_string``, so the rows an
+    import decodes are ordinary strings either way.
     """
     import pyarrow as pa
 
-    by_name: dict[str, dict] = {s["filename"]: dict(s) for s in store.get_sources()}
-    sources = table.column("source").to_pylist()
-    for column in SourceMeta._fields:
-        values = [by_name.get(name, {}).get(column) for name in sources]
-        table = table.append_column(column, pa.array(values, pa.string()))
-    return table
+    return table.cast(
+        pa.schema(
+            [
+                field.with_type(pa.large_string()) if pa.types.is_string(field.type) else field
+                for field in table.schema
+            ]
+        )
+    )
 
 
 def _reconstructed_arrow(store: Store, sources: list[str], schema: pa.Schema) -> pa.Table:
@@ -142,33 +154,56 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
     return rows
 
 
-def _serialize_parquet(table: pa.Table) -> bytes:
-    import io
+# Rows encoded per write. A page row is a few hundred bytes of text, so this
+# keeps a batch in the low megabytes whatever the corpus size.
+_WRITE_BATCH_ROWS = 10_000
 
+
+def _write_parquet(table: pa.Table, sink: IO[bytes]) -> None:
+    """Encode *table* into *sink* as parquet, one row group per batch.
+
+    Build-vs-buy: pyarrow's own writer does the batching, and feeding a
+    ParquetWriter row group by row group produces byte-identical output.
+    """
     import pyarrow.parquet as pq
 
-    buffer = io.BytesIO()
-    pq.write_table(table, buffer)
-    return buffer.getvalue()
+    pq.write_table(table, sink, row_group_size=_WRITE_BATCH_ROWS)
 
 
-def _serialize_jsonl(table: pa.Table) -> bytes:
-    # One JSON object per row, keyed by the table's columns, so jsonl stays in
-    # step with the schema (and with parquet) rather than a hardcoded field list.
-    return "".join(json.dumps(row) + "\n" for row in table.to_pylist()).encode("utf-8")
+def _write_jsonl(table: pa.Table, sink: IO[bytes]) -> None:
+    """Encode *table* into *sink* as jsonl, one write per batch.
+
+    One JSON object per row, keyed by the table's columns, so jsonl stays in step
+    with the schema (and with parquet) rather than a hardcoded field list. Only a
+    batch is converted to Python objects at a time: converting the whole table
+    cost about 19x the size of the file it produced (77GB peak for a 4.15GB
+    export of an 8.8M-row corpus), because the row dicts, the joined string and
+    its encoded bytes were all live at once.
+    """
+    for batch in table.to_batches(max_chunksize=_WRITE_BATCH_ROWS):
+        sink.write("".join(json.dumps(row) + "\n" for row in batch.to_pylist()).encode("utf-8"))
 
 
-_SERIALIZERS = {DatasetFormat.PARQUET: _serialize_parquet, DatasetFormat.JSONL: _serialize_jsonl}
+_WRITERS = {DatasetFormat.PARQUET: _write_parquet, DatasetFormat.JSONL: _write_jsonl}
 
 
 def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
-    """Encode the dataset *table* to bytes in the given format."""
-    return _SERIALIZERS[fmt](table)
+    """Encode the dataset *table* to bytes in the given format.
+
+    For callers that must hand back one buffer (the HTTP download). A file
+    export uses :func:`write_dataset`, which never holds the encoded dataset.
+    """
+    import io
+
+    buffer = io.BytesIO()
+    _WRITERS[fmt](table, buffer)
+    return buffer.getvalue()
 
 
 def write_dataset(table: pa.Table, path: Path, fmt: DatasetFormat) -> None:
-    """Write the dataset *table* to *path* in the given format."""
-    path.write_bytes(serialize_dataset(table, fmt))
+    """Write the dataset *table* to *path* in the given format, a batch at a time."""
+    with path.open("wb") as sink:
+        _WRITERS[fmt](table, sink)
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:

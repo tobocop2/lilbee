@@ -32,13 +32,13 @@ from conftest import (
     SYNC_TIMEOUT,
     Lane,
     ModelTask,
+    auth_headers,
     extract_search_results,
     lilbee_env,
     resolve_registered_name,
     run_lilbee_with_env,
     seed_fixture_corpus,
     serve_lilbee_with,
-    skip_if_search_unauthenticated,
 )
 
 # Reranker search is slower than the bare semantic search; bump above the
@@ -130,24 +130,21 @@ def test_http_search_with_reranker_set_returns_results(
     assert pre_sync.returncode == 0, pre_sync.stderr
 
     with serve_lilbee_with(lane, lilbee_env_with_models) as base_url:
+        headers = auth_headers(lilbee_env_with_models)
         put = httpx.put(
             f"{base_url}/api/models/reranker",
             json={"model": reranker_name},
             timeout=HTTP_SLOW_TIMEOUT,
+            headers=headers,
         )
-        if put.status_code == httpx.codes.UNAUTHORIZED:
-            pytest.skip(
-                "HTTP write endpoints require a bearer token in this build; "
-                "reranker registration is covered by the model-pull step above"
-            )
         assert put.status_code in (httpx.codes.OK, httpx.codes.ACCEPTED), put.text
 
         response = httpx.get(
             f"{base_url}/api/search",
             params={"q": "lithium battery", "top_k": 3},
             timeout=STATUS_TIMEOUT,
+            headers=headers,
         )
-        skip_if_search_unauthenticated(response)
         assert response.status_code == httpx.codes.OK, response.text
         results = extract_search_results(response.json())
         assert results, f"HTTP search with reranker returned no rows: {response.json()}"

@@ -2,8 +2,9 @@
 
 Pruning rules:
 1. All cited sources deleted -> archive the page
-2. Concept cluster shrinks below 3 sources -> archive synthesis page
-3. >50% of citations are stale (stale_hash or excerpt_missing) -> flag for regeneration
+2. Synthesis cluster shrinks below MIN_CLUSTER_SOURCES live sources -> archive the page
+3. Stale citations (stale_hash or excerpt_missing) exceed
+   ``wiki_stale_citation_threshold`` -> flag the page in the prune report
 
 Archived pages are moved to wiki/archive/ and removed from the vector store.
 """
@@ -18,10 +19,13 @@ from pathlib import Path
 
 from lilbee.core.config import Config, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.types import CitationRecord
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
+from lilbee.wiki.persistence import subdir_from_wiki_source
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
+    WIKI_BUILD_LOCK,
     WIKI_CONTENT_SUBDIRS,
     WikiLogAction,
     WikiSubdir,
@@ -37,6 +41,7 @@ class PruneAction(Enum):
 
     ARCHIVED = "archived"
     FLAGGED = "flagged"
+    RECONCILED = "reconciled"
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,29 @@ class PruneReport:
     def flagged_count(self) -> int:
         return sum(1 for r in self.records if r.action == PruneAction.FLAGGED)
 
+    @property
+    def reconciled_count(self) -> int:
+        return sum(1 for r in self.records if r.action == PruneAction.RECONCILED)
+
+
+def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
+    """Delete a wiki page's chunk and citation rows. Returns whether it succeeded."""
+    try:
+        store.delete_by_source(wiki_source)
+        if not store.delete_citations_for_wiki(wiki_source):
+            log.warning(
+                "Citation delete failed for %s; the next prune pass retries it", wiki_source
+            )
+            return False
+    except Exception:
+        log.warning(
+            "Failed to delete store rows for %s; the next prune pass retries them",
+            wiki_source,
+            exc_info=True,
+        )
+        return False
+    return True
+
 
 def _archive_page(
     wiki_source: str,
@@ -77,7 +105,14 @@ def _archive_page(
     store: Store,
     config: Config,
 ) -> None:
-    """Move a wiki page to wiki/archive/ and clean up store data."""
+    """Move a wiki page to wiki/archive/, then delete its store rows.
+
+    The file moves first so a crash or a failed delete leaves rows without a
+    page, which :func:`_reconcile_orphan_rows` deletes on the next pass.
+    Deleting rows first would leave a page on disk with no citations, and every
+    archival check reads an uncited page as "nothing to do", so nothing would
+    ever retry it.
+    """
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
@@ -91,46 +126,64 @@ def _archive_page(
         log.info("Archived wiki page %s -> %s", source_path, archive_path)
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
+    _delete_wiki_rows(wiki_source, store)
 
-    try:
-        store.delete_by_source(wiki_source)
-    except Exception:
-        # Best-effort maintenance: the page is already archived on disk, and a
-        # stale index row must not abort the rest of the prune pass.
-        log.warning("Failed to delete index rows for %s", wiki_source, exc_info=True)
-    store.delete_citations_for_wiki(wiki_source)
+
+def _live_sources(citations: list[CitationRecord], store: Store, config: Config) -> set[str]:
+    """Return the distinct cited source files still backing a page.
+
+    A document source is live only when it is both registered in the store and
+    present on disk. ``lilbee remove`` unregisters a source while its file may
+    remain on disk, and an on-disk delete removes the file; either drops it. A
+    source whose raw chunks were pruned at publish (``wiki_prune_raw``) stays
+    registered and so stays live. Wiki-page sources (a synthesis page citing
+    other pages) never appear in the document registry, so they are judged by
+    file presence alone.
+    """
+    from lilbee.data.ingest.discovery import resolve_source_path
+
+    registered = store.source_ingested_at_map()
+    wiki_prefix = config.wiki_dir + "/"
+    live: set[str] = set()
+    for source_filename in {c["source_filename"] for c in citations}:
+        if not resolve_source_path(source_filename).exists():
+            continue
+        if source_filename.startswith(wiki_prefix) or source_filename in registered:
+            live.add(source_filename)
+    return live
 
 
 def _check_all_sources_deleted(
     wiki_source: str,
     store: Store,
+    config: Config | None = None,
 ) -> bool:
-    """Return True if every cited source file has been deleted from disk."""
-    from lilbee.data.ingest.discovery import resolve_source_path
-
+    """Return True if every cited source has left the library (file deleted or
+    the source removed from the index)."""
+    if config is None:
+        config = cfg
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    source_files = {c["source_filename"] for c in citations}
-    return all(not resolve_source_path(f).exists() for f in source_files)
+    return not _live_sources(citations, store, config)
 
 
 def _check_cluster_below_threshold(
     wiki_source: str,
     store: Store,
+    config: Config,
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
-    from lilbee.data.ingest.discovery import resolve_source_path
-
-    if f"/{WikiSubdir.SYNTHESIS}/" not in wiki_source:
+    # Match the subdir component, not the substring: a summary whose slug is
+    # ``synthesis/report`` or a wiki_dir ending in ``synthesis`` would satisfy a
+    # substring test and get its rows deleted as a shrunken cluster.
+    if subdir_from_wiki_source(wiki_source, config.wiki_dir) != WikiSubdir.SYNTHESIS:
         return False
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    source_files = {c["source_filename"] for c in citations}
-    live_count = sum(1 for f in source_files if resolve_source_path(f).exists())
-    return live_count < min_sources
+    return len(_live_sources(citations, store, config)) < min_sources
 
 
 def _check_stale_majority(
@@ -138,7 +191,7 @@ def _check_stale_majority(
     store: Store,
     config: Config,
 ) -> bool:
-    """Return True if >50% of citations are stale (stale_hash or excerpt_missing)."""
+    """Return True if the stale citation fraction exceeds ``wiki_stale_citation_threshold``."""
     issues = lint_wiki_page(wiki_source, store, config)
     if not issues:
         return False
@@ -156,7 +209,7 @@ def _archive_and_record(
     config: Config,
     reason: str,
 ) -> PruneRecord:
-    """Archive a wiki page and return a PruneRecord for the action."""
+    """Archive a wiki page and return its PruneRecord."""
     _archive_page(wiki_source, wiki_root, store, config)
     return PruneRecord(wiki_source=wiki_source, action=PruneAction.ARCHIVED, reason=reason)
 
@@ -165,17 +218,17 @@ def _evaluate_page(
     wiki_source: str, wiki_root: Path, store: Store, config: Config
 ) -> PruneRecord | None:
     """Check a single wiki page against pruning rules. Returns a record or None."""
-    if _check_all_sources_deleted(wiki_source, store):
+    if _check_all_sources_deleted(wiki_source, store, config):
         return _archive_and_record(
             wiki_source, wiki_root, store, config, "all cited sources deleted"
         )
-    if _check_cluster_below_threshold(wiki_source, store):
+    if _check_cluster_below_threshold(wiki_source, store, config):
         return _archive_and_record(
             wiki_source,
             wiki_root,
             store,
             config,
-            f"concept cluster below {MIN_CLUSTER_SOURCES} live sources",
+            f"synthesis cluster below {MIN_CLUSTER_SOURCES} live sources",
         )
     if _check_stale_majority(wiki_source, store, config):
         return PruneRecord(
@@ -186,15 +239,49 @@ def _evaluate_page(
     return None
 
 
-def _finalize_prune(report: PruneReport, config: Config) -> None:
-    """Update wiki index and log after pruning."""
+def _reconcile_orphan_rows(store: Store, wiki_root: Path, config: Config) -> list[PruneRecord]:
+    """Delete wiki rows whose page is no longer a file under a content subdir.
+
+    The page scan only ever revisits pages still on disk, so rows left behind by
+    an interrupted archive, a manual delete, or a migration would otherwise keep
+    serving retired content in search forever.
+    """
+    prefix = config.wiki_dir + "/"
+    records: list[PruneRecord] = []
+    for wiki_source in sorted(store.wiki_chunk_sources() | store.wiki_citation_sources()):
+        subdir = subdir_from_wiki_source(wiki_source, config.wiki_dir)
+        page_path = wiki_root / wiki_source.removeprefix(prefix)
+        if subdir in WIKI_CONTENT_SUBDIRS and page_path.is_file():
+            continue
+        if not _delete_wiki_rows(wiki_source, store):
+            continue
+        log.info("Reconciled orphaned wiki rows for %s (no page on disk)", wiki_source)
+        records.append(
+            PruneRecord(
+                wiki_source=wiki_source,
+                action=PruneAction.RECONCILED,
+                reason="indexed rows without a page on disk",
+            )
+        )
+    return records
+
+
+def _finalize_prune(report: PruneReport, wiki_root: Path, config: Config) -> None:
+    """Update wiki index and log after pruning.
+
+    A pass that reconciled rows for a wiki directory the user deleted writes
+    nothing back: index.md and log.md would recreate the tree it removed.
+    """
     if not report.records:
         return
     log.info(
-        "Wiki prune: %d archived, %d flagged",
+        "Wiki prune: %d archived, %d flagged, %d reconciled",
         report.archived_count,
         report.flagged_count,
+        report.reconciled_count,
     )
+    if not wiki_root.exists():
+        return
     update_wiki_index(config)
     for rec in report.records:
         append_wiki_log(
@@ -205,22 +292,28 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
 
 
 def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
-    """Scan all wiki pages and prune stale/orphaned ones."""
+    """Scan all wiki pages and prune stale/orphaned ones.
+
+    The page scan covers pages still on disk; reconciliation then covers rows
+    whose page is not, including the case of a wiki directory removed wholesale.
+    Archiving and the index rewrite make this a writer, so it holds the wiki
+    build mutex for the whole pass.
+    """
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
     report = PruneReport()
-    if not wiki_root.exists():
-        return report
-    for subdir in WIKI_CONTENT_SUBDIRS:
-        subdir_path = wiki_root / subdir
-        if not subdir_path.exists():
-            continue
-        for md_path in sorted(subdir_path.rglob("*.md")):
-            relative = md_path.relative_to(wiki_root)
-            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
-            record = _evaluate_page(wiki_source, wiki_root, store, config)
-            if record:
-                report.records.append(record)
-    _finalize_prune(report, config)
+    with WIKI_BUILD_LOCK:
+        for subdir in WIKI_CONTENT_SUBDIRS:
+            subdir_path = wiki_root / subdir
+            if not subdir_path.is_dir():
+                continue
+            for md_path in sorted(subdir_path.rglob("*.md")):
+                relative = md_path.relative_to(wiki_root)
+                wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
+                record = _evaluate_page(wiki_source, wiki_root, store, config)
+                if record:
+                    report.records.append(record)
+        report.records.extend(_reconcile_orphan_rows(store, wiki_root, config))
+        _finalize_prune(report, wiki_root, config)
     return report

@@ -244,6 +244,7 @@ class TestLogActionConstants:
         )
 
         assert WikiLogAction.BUILD == "build"
+        assert WikiLogAction.SYNTHESIZE == "synthesize"
         assert WikiLogAction.INGEST == "ingest"
         assert WikiLogAction.LINT == "lint"
         # Pre-existing constant is unchanged so old log entries still read the same.

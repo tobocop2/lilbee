@@ -185,6 +185,8 @@ class TaskBarController:
         """
         if task_type == TaskType.DOWNLOAD.value:
             self._notify_model_installed()
+        elif task_type in (TaskType.SYNC.value, TaskType.WIKI.value):
+            self.reload_wiki_screens()
 
     def _task_type_of(self, task_id: str) -> str | None:
         task = self.queue.get_task(task_id)
@@ -419,6 +421,22 @@ class TaskBarController:
                 except QueryError:
                     log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
                 break
+
+    def reload_wiki_screens(self) -> None:
+        """Rescan open wiki and drafts screens after a task rewrote pages or drafts on disk."""
+        from textual.css.query import QueryError
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        for screen in self.app.screen_stack:
+            # screen_stack is typed Screen[Any]; narrow at runtime to the
+            # wiki views that expose a reload.
+            if isinstance(screen, WikiScreen | WikiDraftsScreen):
+                try:
+                    screen.reload()
+                except QueryError:
+                    log.debug("Wiki screen not mounted yet; skipping reload", exc_info=True)
 
     def start_download(
         self,

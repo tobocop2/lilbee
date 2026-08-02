@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "lancedb",
+    "lancedb[pylance]",
     "xberg>=1.0.4",
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.

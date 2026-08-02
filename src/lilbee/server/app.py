@@ -96,6 +96,8 @@ from lilbee.server.wiki import (
     wiki_draft_diff_route,
     wiki_draft_reject_route,
     wiki_drafts_route,
+    wiki_generate_route,
+    wiki_index_route,
     wiki_lint_route,
     wiki_list_route,
     wiki_prune_route,
@@ -103,6 +105,7 @@ from lilbee.server.wiki import (
     wiki_status_route,
     wiki_synthesize_route,
     wiki_update_route,
+    wiki_wipe_route,
 )
 
 if TYPE_CHECKING:
@@ -305,6 +308,9 @@ def create_app() -> Litestar:
             wiki_citations_reverse_route,
             wiki_lint_route,
             wiki_prune_route,
+            wiki_index_route,
+            wiki_generate_route,
+            wiki_wipe_route,
             wiki_build_route,
             wiki_update_route,
             wiki_status_route,
