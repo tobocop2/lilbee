@@ -58,6 +58,11 @@ _DEFAULT_COLUMNS = 4
 _CARD_MIN_WIDTH = 32
 _CARD_GUTTER = 1
 
+# Body width of the narrowest grid column (GridSelect min_column_width 30,
+# less the gutter and the two side borders). Used when a caller renders card
+# lines without a concrete column width.
+_DEFAULT_BODY_WIDTH = 27
+
 _BORDER_TOP_LEFT = "╭"
 _BORDER_TOP_RIGHT = "╮"
 _BORDER_BOTTOM_LEFT = "╰"
@@ -383,14 +388,13 @@ def _render_card_strip(
     The body is always panel-tinted so cards read as discrete tiles even on
     dark themes.
     """
+    inner_width = max(3, width - _CARD_GUTTER)
+    body_width = inner_width - 2  # subtract the two side-border columns
     body = (
         _frontier_lines(row)
         if row.kind == CatalogRowKind.FRONTIER
-        else _local_lines(row, selected=selected)
+        else _local_lines(row, selected=selected, body_width=body_width)
     )
-
-    inner_width = max(3, width - _CARD_GUTTER)
-    body_width = inner_width - 2  # subtract the two side-border columns
     # Gap between cards on the same row; theme-tinted so it reads as a card
     # separator, not as raw black.
     gap = Content.styled(" " * _CARD_GUTTER, _GAP_STYLE) if _CARD_GUTTER else Content("")
@@ -423,14 +427,23 @@ def _render_card_strip(
 
 
 def _pad_line(content: Content, width: int) -> Content:
-    """Right-pad *content* to *width* columns with plain spaces."""
+    """Fit *content* to exactly *width* columns, padding or truncating.
+
+    Truncating here rather than trusting each line builder keeps the card
+    frame intact by construction: one over-wide line otherwise pushes its
+    right border out and misaligns every card beside it in the row.
+    """
     rendered_width = content.cell_length
-    if rendered_width >= width:
+    if rendered_width > width:
+        return content.truncate(width, ellipsis=True)
+    if rendered_width == width:
         return content
     return Content.assemble(content, Content(" " * (width - rendered_width)))
 
 
-def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
+def _local_lines(
+    row: LocalCatalogRow, *, selected: bool, body_width: int = _DEFAULT_BODY_WIDTH
+) -> list[Content]:
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.widgets.model_card import _compat_pill
 
@@ -464,7 +477,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     # with an inline chip strip so the user sees every available size
     # at a glance without expanding into the drawer.
     if len(row.size_variants) > 1:
-        specs = _build_size_variant_strip(row.size_variants)
+        specs = _build_size_variant_strip(row.size_variants, body_width)
     else:
         specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
@@ -478,8 +491,8 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     return lines
 
 
-def _build_size_variant_strip(variants: list[SizeVariant]) -> Content:
-    """Inline chip strip showing every quant for a family-aggregated card.
+def _build_size_variant_strip(variants: list[SizeVariant], width: int) -> Content:
+    """Inline chip strip showing the quants of a family-aggregated card.
 
     Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
     available sizes at a glance. A family that varies by parameter count
@@ -487,10 +500,27 @@ def _build_size_variant_strip(variants: list[SizeVariant]) -> Content:
     fall back to the full per-variant label. Per-variant fit colors aren't
     applied here; the drawer (right pane) carries the full fit-per-size
     detail when a card is highlighted.
+
+    Duplicate labels collapse, then chips that do not fit *width* are dropped
+    and counted as ``+N``: a family can hold more variants than a card column
+    has room for, and the long fallback labels reach that limit quickly.
     """
     quants = [v.quant if v.quant != "--" else v.label for v in variants]
     labels = quants if len(set(quants)) == len(quants) else [v.label for v in variants]
-    return Content.styled(f" {MIDDLE_DOT} ".join(labels), "$text-muted")
+    # Two repos in one family can share a parameter count and quant, which
+    # renders the same chip twice and reads as a bug.
+    labels = list(dict.fromkeys(labels))
+    sep = f" {MIDDLE_DOT} "
+    shown = len(labels)
+    while shown > 1:
+        text = sep.join(labels[:shown])
+        hidden = len(labels) - shown
+        if hidden:
+            text = f"{text}  +{hidden}"
+        if len(text) <= width:
+            return Content.styled(text, "$text-muted")
+        shown -= 1
+    return Content.styled(labels[0][:width] if labels else "", "$text-muted")
 
 
 def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:

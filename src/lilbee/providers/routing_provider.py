@@ -9,7 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from lilbee.catalog import is_rerank_ref
+from lilbee.app.services import get_services
+from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
@@ -367,17 +368,28 @@ def _is_native_rerank_ref(model: str) -> bool:
 
     Two acceptance paths:
 
-    1. The ref resolves to a featured rerank catalog entry.
-    2. The ref has the native HuggingFace GGUF shape
+    1. The ref has the native HuggingFace GGUF shape
        ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix) and is
        not claimed by a local-server prefix (``ollama/``, ``lm_studio/``),
-       matching :func:`parse_model_ref`'s exemption. This lets users point
-       ``cfg.reranker_model`` at any installed native GGUF reranker instead of
-       only the ones that ship in ``FEATURED_ALL``. Non-GGUF refs without a
-       known SDK prefix still raise downstream through ``parse_model_ref``.
+       matching :func:`parse_model_ref`'s exemption.
+    2. The bare ``<org>/<repo>`` names a repo with an installed quant.
+
+    The model's name is deliberately not consulted. Hosted rerankers are
+    usually called rerankers too (``cohere/rerank-english-v3.0``), so matching
+    on the name captures them and starves the SDK backend. The registry answers
+    "is this one of ours" without guessing. Non-GGUF refs without a known SDK
+    prefix still raise downstream through :func:`parse_model_ref`.
     """
     if not model:
         return False
-    if is_rerank_ref(model):
+    if routes_to_native_gguf(model):
         return True
-    return routes_to_native_gguf(model)
+    if not is_bare_hf_repo(model):
+        return False
+    try:
+        return get_services().registry.installed_ref_for_repo(model) is not None
+    except Exception:
+        # An unreadable registry must not silently reroute reranking to a
+        # hosted backend the user never configured.
+        log.warning("Could not check the registry for %s; treating as hosted", model, exc_info=True)
+        return False

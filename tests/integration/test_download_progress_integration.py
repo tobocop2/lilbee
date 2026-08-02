@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.catalog import FEATURED_EMBEDDING, CatalogModel, download_model
+from lilbee.catalog import CatalogModel, download_model
 from lilbee.core.config import cfg
+from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
 
-_TINY_MODEL = FEATURED_EMBEDDING[0]
+_TINY_MODEL = EMBED_ENTRY
 
 
 class TestRealDownloadProgress:

@@ -1993,7 +1993,7 @@ class TestCatalogBrowseMcp:
 
     def test_browse_rejects_invalid_size(self, isolated_env, mock_svc):
         """An unknown size bucket returns the uniform error envelope."""
-        result = catalog_browse(size="huge", featured=True)
+        result = catalog_browse(size="gigantic", featured=True)
         assert "error" in result
 
     def test_browse_rejects_invalid_sort(self, isolated_env, mock_svc):

@@ -76,6 +76,9 @@ class SettingDef:
     # List editors validate each line as a regex only when this is set; flag-style
     # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
     validate_regex: bool = False
+    # Credentials: the TUI masks the editor so the value is never on screen in
+    # plain text, including while it is being pasted.
+    secret: bool = False
 
 
 def get_default(key: str) -> object:
@@ -834,42 +837,49 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="OpenRouter API key (enables frontier models in chat picker)",
     ),
     "gemini_api_key": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="Google Gemini API key (enables frontier models in chat picker)",
     ),
     "anthropic_api_key": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="Anthropic API key (enables frontier models in chat picker)",
     ),
     "openai_api_key": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="OpenAI API key (enables frontier models in chat picker)",
     ),
     "mistral_api_key": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="Mistral API key (enables frontier models in chat picker)",
     ),
     "deepseek_api_key": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
+        secret=True,
         help_text="DeepSeek API key (enables frontier models in chat picker)",
     ),
     "hf_token": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.SYSTEM,
+        secret=True,
         help_text=(
             "HuggingFace access token. Avoids the unauthenticated download "
             "rate limit and unlocks gated repos. Stored in plain text in "

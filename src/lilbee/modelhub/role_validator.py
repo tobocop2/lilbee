@@ -3,7 +3,7 @@
 import os
 import sys
 
-from lilbee.catalog import CatalogModel, find_catalog_entry
+from lilbee.catalog import CatalogModel, find_pick
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
@@ -61,50 +61,60 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
     return ref.split("/", 1)[0] in PROVIDER_PREFIXES
 
 
-def _canonical_featured_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
-    """Role-check a featured entry and pick the canonical ref to persist."""
+def _canonical_pick_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
+    """Role-check a current pick and choose the canonical ref to persist."""
     if entry.task != want:
         raise TaskMismatchError(ref, ModelTask(entry.task), want)
-    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
-    # the exact installed quant; fall back to the catalog ref otherwise.
+    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on the
+    # exact installed quant; fall back to the pick's own ref otherwise.
     if is_native_gguf_ref(ref):
         return ref
     canonical: str = entry.ref
     return canonical
 
 
-def _validate_installed_ref(ref: str, want: ModelTask) -> str:
-    """Role-check a non-featured ref by consulting the installed registry.
+def _installed_ref_and_task(ref: str) -> tuple[str, str | None]:
+    """Canonical installed ref for *ref* and its manifest task, task None if absent.
 
-    A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full
-    ref so the persisted value always names the exact GGUF file.
+    A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full ref
+    so the persisted value always names the exact GGUF file.
     """
     registry = ModelRegistry(cfg.models_dir)
     if is_bare_hf_repo(ref):
         ref = registry.installed_ref_for_repo(ref) or ref
-    installed_task = _resolve_installed_task(registry, ref)
-    if installed_task is None:
-        raise ValueError(
-            f"Model '{ref}' is not installed. "
-            "Install it with 'lilbee model pull <ref>' "
-            "(or POST /api/models/pull) before assigning it to a role."
-        )
-    if installed_task != want:
-        raise TaskMismatchError(ref, installed_task, want)
-    return ref
+    return ref, _resolve_installed_task(registry, ref)
+
+
+def _not_installed(ref: str) -> ValueError:
+    """The error for a ref that is neither a current pick nor installed."""
+    return ValueError(
+        f"Model '{ref}' is not installed. "
+        "Install it with 'lilbee model pull <ref>' "
+        "(or POST /api/models/pull) before assigning it to a role."
+    )
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
     """Check *ref* is assignable to *field_name*; return the canonical ref.
 
-    Accepts featured catalog refs and installed non-featured refs (any model
-    the user has pulled). Raises ``TaskMismatchError`` on role mismatch and
-    ``ValueError`` when the model is neither featured nor installed.
+    A current pick carries its own task, so it can be role-checked before it is
+    installed, which is what the catalog UI offers. Anything else is checked
+    against the installed manifest, the only other thing that can vouch for a
+    model's role. Raises ``TaskMismatchError`` on role mismatch and
+    ``ValueError`` when the model is neither a pick nor installed.
     """
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
-    entry = find_catalog_entry(ref)
+    # The manifest is consulted first because it answers without touching the
+    # network. This runs on the TUI main thread from /model and the model-bar
+    # picker, where resolving picks would block the UI.
+    installed_ref, installed_task = _installed_ref_and_task(ref)
+    if installed_task is not None:
+        if installed_task != want:
+            raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)
+        return installed_ref
+    entry = find_pick(ref)
     if entry is not None:
-        return _canonical_featured_ref(ref, entry, want)
-    return _validate_installed_ref(ref, want)
+        return _canonical_pick_ref(ref, entry, want)
+    raise _not_installed(installed_ref)

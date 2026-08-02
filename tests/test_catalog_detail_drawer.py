@@ -194,7 +194,6 @@ async def test_description_falls_back_to_family_when_no_catalog_model() -> None:
                 param_count="0.6B",
                 quant="Q4",
                 size_mb=400,
-                recommended=False,
             ),
         ),
     )
