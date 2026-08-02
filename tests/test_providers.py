@@ -2629,18 +2629,6 @@ class TestReadGgufMetadata:
 
 
 class TestFindMmprojForModel:
-    def test_catalog_lookup(self) -> None:
-        """find_mmproj_for_model uses catalog lookup first."""
-        from lilbee.providers.gguf_meta import find_mmproj_for_model
-
-        with mock.patch(
-            "lilbee.catalog.find_mmproj_file",
-            return_value=Path("/found.gguf"),
-        ):
-            result = find_mmproj_for_model(Path("/models/model.gguf"))
-
-        assert result == Path("/found.gguf")
-
     def test_directory_fallback(self, tmp_path: Path) -> None:
         """find_mmproj_for_model falls back to directory scan."""
         from lilbee.providers.gguf_meta import find_mmproj_for_model
@@ -2650,13 +2638,7 @@ class TestFindMmprojForModel:
         mmproj = tmp_path / "model-mmproj-fp16.gguf"
         mmproj.touch()
 
-        with mock.patch(
-            "lilbee.catalog.find_mmproj_file",
-            return_value=None,
-        ):
-            result = find_mmproj_for_model(model_path)
-
-        assert result == mmproj
+        assert find_mmproj_for_model(model_path) == mmproj
 
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
@@ -2666,13 +2648,7 @@ class TestFindMmprojForModel:
         model_path = tmp_path / "model.gguf"
         model_path.touch()
 
-        with (
-            mock.patch(
-                "lilbee.catalog.find_mmproj_file",
-                return_value=None,
-            ),
-            pytest.raises(ProviderError, match="No mmproj"),
-        ):
+        with pytest.raises(ProviderError, match="No mmproj"):
             find_mmproj_for_model(model_path)
 
     def test_hf_cache_blob_walks_to_snapshots(self, tmp_path: Path) -> None:
@@ -2691,9 +2667,7 @@ class TestFindMmprojForModel:
         blob_path.touch()
         (snap / "mmproj-f16.gguf").touch()
 
-        with mock.patch("lilbee.catalog.find_mmproj_file", return_value=None):
-            result = find_mmproj_for_model(blob_path)
-        assert result == snap / "mmproj-f16.gguf"
+        assert find_mmproj_for_model(blob_path) == snap / "mmproj-f16.gguf"
 
     def test_hf_cache_blob_without_snapshots_falls_through(self, tmp_path: Path) -> None:
         """blobs/ dir with no sibling snapshots/ tree returns None from the HF
@@ -2709,10 +2683,7 @@ class TestFindMmprojForModel:
 
         from lilbee.providers.base import ProviderError
 
-        with (
-            mock.patch("lilbee.catalog.find_mmproj_file", return_value=None),
-            pytest.raises(ProviderError, match="No mmproj"),
-        ):
+        with pytest.raises(ProviderError, match="No mmproj"):
             find_mmproj_for_model(blob_path)
 
     def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
@@ -2731,10 +2702,7 @@ class TestFindMmprojForModel:
 
         from lilbee.providers.base import ProviderError
 
-        with (
-            mock.patch("lilbee.catalog.find_mmproj_file", return_value=None),
-            pytest.raises(ProviderError, match="No mmproj"),
-        ):
+        with pytest.raises(ProviderError, match="No mmproj"):
             find_mmproj_for_model(blob_path)
 
 
@@ -3497,6 +3465,10 @@ class TestRoutingProviderRerank:
         assert rp.supports_rerank() is True
 
     def test_supports_rerank_native_delegates_to_llama(self) -> None:
+        """A bare repo is native once it is installed; the registry decides."""
+        from conftest import install_fake_model
+
+        install_fake_model("gpustack/bge-reranker-v2-m3-GGUF", "bge-Q4_K_M.gguf", "rerank")
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.supports_rerank.return_value = True
@@ -3505,6 +3477,28 @@ class TestRoutingProviderRerank:
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
         assert rp.supports_rerank() is True
         mock_llama.supports_rerank.assert_called_once()
+
+    def test_uninstalled_bare_repo_is_not_native(self) -> None:
+        """Nothing can vouch for an uninstalled bare repo, so it goes hosted."""
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+
+        assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF") is False
+
+    def test_unreadable_registry_falls_back_to_hosted(self, caplog) -> None:
+        """A broken registry must not silently claim a repo as native."""
+        from lilbee.providers import routing_provider
+
+        def boom():
+            raise RuntimeError("registry unreadable")
+
+        with (
+            mock.patch.object(routing_provider, "get_services", boom),
+            caplog.at_level("WARNING"),
+        ):
+            result = routing_provider._is_native_rerank_ref("gpustack/bge-reranker-GGUF")
+
+        assert result is False
+        assert any("Could not check the registry" in r.getMessage() for r in caplog.records)
 
     def test_supports_rerank_hosted_delegates_to_sdk(self) -> None:
         rp = self._make_provider()
@@ -3518,6 +3512,9 @@ class TestRoutingProviderRerank:
         assert rp.supports_rerank() is True
 
     def test_rerank_routes_bare_gguf_to_local_engine(self) -> None:
+        from conftest import install_fake_model
+
+        install_fake_model("gpustack/bge-reranker-v2-m3-GGUF", "bge-Q4_K_M.gguf", "rerank")
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
@@ -3540,7 +3537,7 @@ class TestRoutingProviderRerank:
     def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
         """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
 
-        Users install community GGUF rerankers that are not in FEATURED_ALL.
+        Users install community GGUF rerankers that are not in SAMPLE_PICKS.
         Without this fall-back, the route silently falls through to the SDK
         provider and surfaces a misleading 'hosted rerank backend not
         available' error to the user (bb-4zvk).

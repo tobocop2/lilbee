@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lilbee.catalog.download import split_shard_filenames
-from lilbee.catalog.query import find_catalog_entry, reclassify_by_name
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
     NATIVE_GGUF_REF_MIN_SLASHES,
     format_native_gguf_ref,
@@ -396,11 +396,7 @@ class ModelRegistry:
         """
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
-            entry = find_catalog_entry(ref)
-            if entry is not None:
-                task = entry.task
-            else:
-                task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
+            task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
             total_size, shard_blobs = (
                 _shard_accounting(snapshot_path) if snapshot_path is not None else (None, [])
             )

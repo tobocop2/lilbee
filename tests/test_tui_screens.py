@@ -14,10 +14,9 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 from textual.widgets._tabbed_content import ContentTabs
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from conftest import PICKS_CHAT, PICKS_EMBEDDING, TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
 from lilbee.catalog import (
-    FEATURED_EMBEDDING,
     CatalogModel,
     CatalogResult,
 )
@@ -217,7 +216,6 @@ class TestVariantToRowDedup:
             param_count="v1.5",
             quant="Q4_K_M",
             size_mb=300,
-            recommended=True,
         )
         family = ModelFamily(
             slug="nomic-embed-text",
@@ -238,7 +236,6 @@ class TestVariantToRowDedup:
             param_count="v1.5",
             quant="Q4_K_M",
             size_mb=300,
-            recommended=True,
         )
         family = ModelFamily(
             slug="nomic-embed-text",
@@ -259,7 +256,6 @@ class TestVariantToRowDedup:
             param_count="0.6B",
             quant="Q4_K_M",
             size_mb=400,
-            recommended=False,
         )
         family = ModelFamily(
             slug="qwen3",
@@ -401,7 +397,6 @@ class TestBackendField:
             param_count="0.6B",
             quant="Q4_K_M",
             size_mb=400,
-            recommended=False,
         )
         family = ModelFamily(
             slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
@@ -10888,30 +10883,41 @@ def _patch_setup_ram(ram_gb: float = 16.0):
 def test_pick_recommended_small_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, embed = _pick_recommended(3.0)
+    chat, embed = _pick_recommended(3.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 3.0
-    assert embed == FEATURED_EMBEDDING[0]
+    assert embed == PICKS_EMBEDDING[0]
 
 
 def test_pick_recommended_medium_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, _ = _pick_recommended(8.0)
+    chat, _ = _pick_recommended(8.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 8.0
 
 
 def test_pick_recommended_large_ram():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    chat, _ = _pick_recommended(32.0)
+    chat, _ = _pick_recommended(32.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert chat is not None
     assert chat.min_ram_gb <= 32.0
 
 
-def test_pick_recommended_always_nomic_embed():
+def test_pick_recommended_takes_the_first_embedding_pick():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
-    _, embed = _pick_recommended(4.0)
-    assert embed.hf_repo == FEATURED_EMBEDDING[0].hf_repo
+    _, embed = _pick_recommended(4.0, PICKS_CHAT, PICKS_EMBEDDING)
+    assert embed is not None
+    assert embed.hf_repo == PICKS_EMBEDDING[0].hf_repo
+
+
+def test_pick_recommended_returns_nothing_without_picks():
+    """HuggingFace unreachable means no recommendation to offer."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    assert _pick_recommended(64.0, (), ()) == (None, None)
 
 
 def test_scan_installed_models_empty():
@@ -11046,12 +11052,11 @@ async def test_setup_wizard_deselects_previous():
 
 async def test_setup_wizard_commit_chat_selection_writes_settings():
     """An installed chat card applies synchronously (no download to defer behind)."""
-    from lilbee.catalog import FEATURED_CHAT
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    installed_ref = FEATURED_CHAT[0].ref
+    installed_ref = PICKS_CHAT[0].ref
     with _patch_setup_scan(chat=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -11068,12 +11073,11 @@ async def test_setup_wizard_commit_chat_selection_writes_settings():
 
 async def test_setup_wizard_commit_embed_selection_writes_settings():
     """An installed embedding card applies synchronously (no download to defer behind)."""
-    from lilbee.catalog import FEATURED_EMBEDDING
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    installed_ref = FEATURED_EMBEDDING[0].ref
+    installed_ref = PICKS_EMBEDDING[0].ref
     with _patch_setup_scan(embed=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -11469,7 +11473,6 @@ async def test_catalog_select_variant_row():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",
@@ -11503,7 +11506,6 @@ async def test_catalog_install_variant_creates_catalog_model():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",
@@ -11566,7 +11568,6 @@ async def test_catalog_get_highlighted_variant_name():
                 param_count="8B",
                 quant="Q4_K_M",
                 size_mb=4096,
-                recommended=True,
             )
             family = ModelFamily(
                 slug="testmodel",
@@ -14605,3 +14606,54 @@ async def test_model_swap_worker_returns_quietly_when_cancelled():
             await pilot.pause()
         assert screen.swapping_model is True  # gate still held by the newer swap
         assert not any("Now using" in str(c.args[0]) for c in notify.call_args_list)
+
+
+async def test_settings_masks_credentials_but_keeps_the_value():
+    """API keys and the HF token render masked; the stored value is untouched.
+
+    Textual masks only the rendering, so a pasted key never appears on screen
+    while the real value still submits and saves.
+    """
+    from textual.widgets import Input, TabbedContent
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import EDITOR_ID_PREFIX
+
+    secret_keys = [k for k, d in SETTINGS_MAP.items() if d.secret]
+    assert secret_keys, "no setting is marked secret"
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.15)
+        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        # Panes compose lazily, so every group has to be visited to reach its
+        # editors; a credential hiding in an unvisited pane is the whole risk.
+        checked: list[str] = []
+        for pane in list(tabbed.query("TabPane")):
+            if not pane.id:
+                continue
+            tabbed.active = pane.id
+            await pilot.pause(0.15)
+            for key in secret_keys:
+                for editor in app.screen.query(f"#{EDITOR_ID_PREFIX}{key}").results(Input):
+                    assert editor.password is True, f"{key} renders in plain text"
+                    checked.append(key)
+        missing = set(secret_keys) - set(checked)
+        assert not missing, f"credential editors never rendered: {missing}"
+
+        editor = app.screen.query(f"#{EDITOR_ID_PREFIX}{checked[-1]}").first(Input)
+        editor.value = "sk-proj-REALSECRET123"
+        await pilot.pause()
+        assert editor.value == "sk-proj-REALSECRET123"
+
+
+async def test_settings_leaves_non_credentials_visible():
+    """Masking is opt-in: ordinary settings stay readable."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        for editor in app.screen.query(Input):
+            key = editor.name or ""
+            if not key.endswith("_api_key") and key != "hf_token":
+                assert editor.password is False, f"{key} is masked but is not a credential"

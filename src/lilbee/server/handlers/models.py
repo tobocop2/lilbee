@@ -13,15 +13,12 @@ from pydantic import BaseModel
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
-    FEATURED_RERANK,
-    FEATURED_VISION,
     ModelFamily,
     enrich_catalog,
-    find_catalog_entry,
     get_catalog,
     get_families,
+    get_picks,
+    picks_for,
 )
 from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
 from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
@@ -144,12 +141,16 @@ async def list_models() -> ModelsResponse:
     """
     # list_installed walks the model filesystem; offload it like list_external_models.
     installed = set(await asyncio.to_thread(get_services().model_manager.list_installed))
+    # Resolving the picks hits HuggingFace on the first call of the process, so
+    # offload it too rather than stalling the event loop. The four picks_for
+    # reads below are served from the memo this fills.
+    await asyncio.to_thread(get_picks)
 
     return ModelsResponse(
-        chat=_catalog_section(FEATURED_CHAT, cfg.chat_model, installed),
-        embedding=_catalog_section(FEATURED_EMBEDDING, cfg.embedding_model, installed),
-        vision=_catalog_section(FEATURED_VISION, cfg.vision_model, installed),
-        reranker=_catalog_section(FEATURED_RERANK, cfg.reranker_model, installed),
+        chat=_catalog_section(picks_for(ModelTask.CHAT), cfg.chat_model, installed),
+        embedding=_catalog_section(picks_for(ModelTask.EMBEDDING), cfg.embedding_model, installed),
+        vision=_catalog_section(picks_for(ModelTask.VISION), cfg.vision_model, installed),
+        reranker=_catalog_section(picks_for(ModelTask.RERANK), cfg.reranker_model, installed),
     )
 
 
@@ -162,27 +163,14 @@ async def _set_model(
     return SetModelResponse(model=model)
 
 
-def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
-    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*.
+def _resolve_via_available_repo(model: str, available: set[str]) -> str | None:
+    """Resolve a bare ``hf_repo`` to whichever quant of it *available* lists.
 
     Sorted scan so the pick is deterministic when several quants are installed.
     """
-    entry = find_catalog_entry(model)
-    if entry is None:
-        return None
-    return next((ref for ref in sorted(available) if ref.startswith(f"{entry.hf_repo}/")), None)
-
-
-def _resolve_via_installed_repo(model: str, available: set[str]) -> str | None:
-    """Resolve a bare ``hf_repo`` to its installed quant, featured or not.
-
-    Only refs the provider also lists are accepted, so remote-only
-    provider modes don't activate a model they can't serve.
-    """
     if not is_bare_hf_repo(model):
         return None
-    ref = get_services().registry.installed_ref_for_repo(model)
-    return ref if ref in available else None
+    return next((ref for ref in sorted(available) if ref.startswith(f"{model}/")), None)
 
 
 def _resolve_via_parse(model: str, available: set[str]) -> str | None:
@@ -226,8 +214,7 @@ def _require_model_available(model: str) -> str:
     if model in available:
         return model
     hit = (
-        _resolve_via_catalog(model, available)
-        or _resolve_via_installed_repo(model, available)
+        _resolve_via_available_repo(model, available)
         or _resolve_via_parse(model, available)
         or _resolve_via_provider_key(model)
     )
@@ -463,7 +450,9 @@ async def models_catalog(
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
-    result = get_catalog(
+    # get_catalog resolves the picks, which is HTTP on the first call.
+    result = await asyncio.to_thread(
+        get_catalog,
         task=parsed_task,
         search=search,
         size=parsed_size,

@@ -94,14 +94,6 @@ def test_unknown_pill_text_is_self_explanatory() -> None:
     assert COMPAT_PILL_UNKNOWN == "untested"
 
 
-def test_featured_entries_carry_supported_compat() -> None:
-    """Curated featured models are known to run; none may render an unknown pill."""
-    from lilbee.catalog import FEATURED_ALL
-
-    assert FEATURED_ALL
-    assert all(m.compat is ModelCompat.SUPPORTED for m in FEATURED_ALL)
-
-
 def test_catalog_to_row_marks_installed_rows_supported() -> None:
     """An installed model demonstrably runs, whatever the catalog probe said."""
     from lilbee.catalog.models import CatalogModel
@@ -166,3 +158,125 @@ def test_non_native_backend_pill_is_shown() -> None:
     row.backend = "Ollama"
     out = _render_local(row, selected=False)
     assert "Ollama" in out.plain
+
+
+class TestWorstCaseCardLayout:
+    """The widest a card can get: unsupported architecture that also won't fit."""
+
+    @staticmethod
+    def _worst_case_row():
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.runtime.hardware import FitChip, FitLevel
+
+        row = LocalCatalogRow(
+            name="DavidAU/Qwen3.6-27B-Fable-Fusion-Uncensored-Heretic-NEO-MAX-MTP",
+            task="chat",
+            params="405B",
+            size="431.1 GB",
+            quant="Q4_K_M",
+            downloads="4.6M",
+            featured=True,
+            installed=True,
+            sort_downloads=4_600_000,
+            sort_size=431.1,
+            ref="a/b-GGUF",
+            compat=ModelCompat.UNSUPPORTED,
+        )
+        row.fit = FitChip(level=FitLevel.WONT_RUN, headroom_gb=-646.0)
+        return row
+
+    def test_both_chips_render_on_the_secondary_line(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        secondary = lines[2].plain
+        assert msg.COMPAT_PILL_UNSUPPORTED in secondary
+        assert "won't run" in secondary
+
+    def test_it_stays_inside_the_card_body_budget(self) -> None:
+        """Overflowing the body pushes every card border below it out of line."""
+        from lilbee.cli.tui.widgets.model_grid import _CARD_BODY_HEIGHT, _local_lines
+
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        assert len(lines) <= _CARD_BODY_HEIGHT
+
+    def test_no_line_exceeds_the_narrowest_grid_column(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+        narrowest_column = 30  # GridSelect(min_column_width=30) on every catalog grid
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        assert max(len(line.plain) for line in lines) <= narrowest_column
+
+
+class TestSizeVariantStripFitsTheCard:
+    """A family card's quant strip must never push the card border out of line."""
+
+    @staticmethod
+    def _variants(n: int):
+        from lilbee.cli.tui.screens.catalog_utils import SizeVariant
+
+        # Colliding quants force the long per-variant label, the widest form.
+        return [
+            SizeVariant(label=f"{27 + i}B Q4_K_M", quant="Q4_K_M", size_gb=15.0 + i, ref=f"a/{i}")
+            for i in range(n)
+        ]
+
+    def test_it_never_exceeds_the_width_it_is_given(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        for count in (2, 5, 12):
+            for width in (20, 27, 40):
+                strip = _build_size_variant_strip(self._variants(count), width)
+                assert strip.cell_length <= width, f"{count} variants at width {width}"
+
+    def test_dropped_chips_are_counted(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        strip = _build_size_variant_strip(self._variants(5), 27)
+        assert "+" in strip.plain
+
+    def test_duplicate_labels_collapse(self) -> None:
+        """Two repos in one family can share param count and quant."""
+        from lilbee.cli.tui.screens.catalog_utils import SizeVariant
+        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+        dupes = [
+            SizeVariant(label="27B Q4_K_M", quant="Q4_K_M", size_gb=15.7, ref="a/1"),
+            SizeVariant(label="27B Q4_K_M", quant="Q4_K_M", size_gb=15.8, ref="a/2"),
+        ]
+        assert _build_size_variant_strip(dupes, 60).plain.count("27B Q4_K_M") == 1
+
+    def test_pad_line_truncates_an_over_wide_line(self) -> None:
+        """The frame holds by construction, whatever a line builder produces."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        assert _pad_line(Content("x" * 80), 27).cell_length == 27
+
+    def test_a_family_card_row_stays_within_the_narrowest_column(self) -> None:
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+        from lilbee.runtime.hardware import FitChip, FitLevel
+
+        row = LocalCatalogRow(
+            name="Qwen3.6 27B",
+            task="vision",
+            params="27B",
+            size="15.4 GB",
+            quant="Q4_K_M",
+            downloads="1M",
+            featured=True,
+            installed=False,
+            sort_downloads=1,
+            sort_size=15.4,
+            ref="a/1",
+            compat=ModelCompat.SUPPORTED,
+        )
+        row.fit = FitChip(level=FitLevel.FITS, headroom_gb=10.0)
+        row.size_variants = self._variants(5)
+        body_width = 27
+        lines = _local_lines(row, selected=True, body_width=body_width)
+        assert max(line.cell_length for line in lines) <= body_width

@@ -1,28 +1,20 @@
 """Model catalog. Discovers available GGUF models from HuggingFace.
 
-Three levels:
-1. Featured models. Curated favorites (hardcoded, always available)
+Two levels:
+1. Picks. The most popular models of each parameter tier, fetched live
 2. HF API models. Fetched from HuggingFace API, paginated and filterable
-3. Combined catalog. Featured first, then HF results
+
+The combined catalog puts picks first, then HF results.
 """
 
 from lilbee.catalog.download import (
     DownloadConfig,
     download_mmproj,
     download_model,
-    find_mmproj_file,
     resolve_filename,
 )
 from lilbee.catalog.download_progress import ProgressCallback, make_download_callback
 from lilbee.catalog.families import get_families
-from lilbee.catalog.featured import (
-    FEATURED_ALL,
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
-    FEATURED_RERANK,
-    FEATURED_VISION,
-    VISION_MMPROJ_FILES,
-)
 from lilbee.catalog.formatting import (
     PARAM_COUNT_RE,
     QUANT_TIERS,
@@ -42,25 +34,25 @@ from lilbee.catalog.models import (
     ModelFamily,
     ModelVariant,
 )
+from lilbee.catalog.picks import (
+    find_pick,
+    get_picks,
+    picks_for,
+    reset_picks,
+)
 from lilbee.catalog.query import (
-    CatalogIndex,
     build_adhoc_entry,
-    find_catalog_entry,
     get_catalog,
     is_rerank_ref,
     resolve_pull_target,
+    size_bucket,
 )
+from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN
 
 __all__ = [
-    "FEATURED_ALL",
-    "FEATURED_CHAT",
-    "FEATURED_EMBEDDING",
-    "FEATURED_RERANK",
-    "FEATURED_VISION",
+    "DEFAULT_MMPROJ_PATTERN",
     "PARAM_COUNT_RE",
     "QUANT_TIERS",
-    "VISION_MMPROJ_FILES",
-    "CatalogIndex",
     "CatalogModel",
     "CatalogResult",
     "DownloadConfig",
@@ -78,13 +70,16 @@ __all__ = [
     "download_task_name",
     "enrich_catalog",
     "extract_quant",
-    "find_catalog_entry",
-    "find_mmproj_file",
+    "find_pick",
     "get_catalog",
     "get_families",
+    "get_picks",
     "is_rerank_ref",
     "make_download_callback",
+    "picks_for",
     "quant_tier",
+    "reset_picks",
     "resolve_filename",
     "resolve_pull_target",
+    "size_bucket",
 ]

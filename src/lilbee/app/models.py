@@ -106,7 +106,6 @@ class CatalogEntryData(BaseModel):
     description: str
     task: ModelTask
     featured: bool
-    recommended: bool
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
 
@@ -122,7 +121,6 @@ class CatalogEntryData(BaseModel):
             description=entry.description,
             task=entry.task,
             featured=entry.featured,
-            recommended=entry.recommended,
             architecture=entry.architecture,
             compat=entry.compat,
         )
@@ -300,10 +298,10 @@ def show_model_data(ref: str) -> ShowModelResult:
     is unknown to both the catalog and the installed set.
     """
     # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
-    from lilbee.catalog import find_catalog_entry
+    from lilbee.catalog import find_pick
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
-    entry = find_catalog_entry(ref)
+    entry = find_pick(ref)
     source = get_services().model_manager.get_source(ref)
     if entry is None and source is None:
         raise ModelNotFoundError(f"model not found: {ref}")

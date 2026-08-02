@@ -15,7 +15,13 @@ from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
-from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage, estimate_min_ram_gb
+from lilbee.catalog.models import (
+    CatalogModel,
+    HfGgufMeta,
+    HfPage,
+    estimate_min_ram_gb,
+    estimate_size_gb,
+)
 from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
 
 log = logging.getLogger(__name__)
@@ -81,8 +87,6 @@ _HF_GGUF_SEARCH_TERM = "GGUF"
 
 _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 
-_BYTES_PER_GB = 1024**3
-
 
 def hf_token() -> str | None:
     """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
@@ -129,7 +133,7 @@ def repo_has_mmproj(hf_repo: str) -> bool:
     """
     from huggingface_hub import HfApi
 
-    from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN
+    from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN
 
     try:
         siblings = HfApi(token=hf_token()).model_info(hf_repo).siblings or []
@@ -149,23 +153,6 @@ def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
     if not gguf_files:
         return GGUF_GLOB
     return pick_best_gguf(gguf_files)
-
-
-def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
-    """Estimate model size in GB from the GGUF the row will actually pull.
-
-    Sizes the same quant ``_resolve_sibling_gguf`` names (via ``pick_best_gguf``),
-    not the repo's largest GGUF. Sizing the largest (often an F16/BF16) while the
-    row names the Q4_K_M quant mis-buckets the model under size filtering.
-    """
-    gguf_files = [s for s in siblings if s.rfilename.endswith(".gguf")]
-    if not gguf_files:
-        return 0.0
-    picked = pick_best_gguf([s.rfilename for s in gguf_files])
-    for sib in gguf_files:
-        if sib.rfilename == picked and sib.size:
-            return round(sib.size / _BYTES_PER_GB, 1)
-    return 0.0  # unknown: display as "?" in UI
 
 
 class HfClient:
@@ -263,15 +250,13 @@ class HfClient:
             item = ModelInfo(**raw)
             card_desc = item.card_data.get("description", "") if item.card_data else ""
             gguf_meta = HfGgufMeta(**(item.gguf or {}))
-            if gguf_meta.total > 0:
-                size_gb = round(gguf_meta.total / _BYTES_PER_GB, 1)
-            else:
-                size_gb = _estimate_size_from_siblings(item.siblings or [])
+            gguf_filename = _resolve_sibling_gguf(item.siblings or [])
+            size_gb = estimate_size_gb(gguf_meta.total, gguf_filename)
             task = pipeline_to_task(item.pipeline_tag or "")
             models.append(
                 CatalogModel(
                     hf_repo=item.id,
-                    gguf_filename=_resolve_sibling_gguf(item.siblings or []),
+                    gguf_filename=gguf_filename,
                     size_gb=size_gb,
                     min_ram_gb=estimate_min_ram_gb(size_gb),
                     description=card_desc[:120] if card_desc else "",
@@ -280,6 +265,7 @@ class HfClient:
                     task=task,
                     architecture=gguf_meta.architecture,
                     compat=classify(gguf_meta.architecture),
+                    params=gguf_meta.total,
                 )
             )
             self.cache_arch(item.id, gguf_meta.architecture)

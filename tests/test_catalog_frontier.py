@@ -378,6 +378,45 @@ class TestFetchFrontierWorker:
         assert rows == []
 
 
+class TestFetchFamiliesWorker:
+    """The families worker resolves picks off the UI thread."""
+
+    def test_returns_families_from_the_picks(self) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        families = screen._fetch_families.__wrapped__(screen)
+        assert families
+        assert {f.task for f in families} == {"chat", "embedding", "vision", "rerank"}
+
+    def test_returns_empty_list_when_get_families_raises(self, monkeypatch) -> None:
+        """A HuggingFace outage must leave the catalog empty, not crash the worker."""
+        from lilbee.cli.tui.screens import catalog as catalog_mod
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        def _boom() -> list:
+            raise RuntimeError("huggingface is down")
+
+        monkeypatch.setattr(catalog_mod, "get_families", _boom)
+        screen = CatalogScreen.__new__(CatalogScreen)
+        assert screen._fetch_families.__wrapped__(screen) == []
+
+
+class TestFamiliesWorkerCancel:
+    def test_a_cancelled_families_worker_stops_the_spinner(self) -> None:
+        """A cancelled fetch must clear the in-flight flag, or the spinner runs forever."""
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_FAMILIES, CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._loading_more = False
+        screen._search_in_flight = False
+        screen._families_in_flight = True
+
+        screen._handle_worker_error_or_cancel(_WORKER_FETCH_FAMILIES)
+
+        assert screen._families_in_flight is False
+
+
 class TestFrontierSelection:
     """ModelList.Selected on the Frontier tab routes through _select_row."""
 

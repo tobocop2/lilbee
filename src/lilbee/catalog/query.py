@@ -1,15 +1,14 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
-import functools
 import logging
-from typing import Any, NamedTuple
+from typing import Any
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.app.services import get_services
-from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.catalog.refs import GGUF_GLOB, format_native_gguf_ref, hf_repo_from_ref
+from lilbee.catalog.picks import get_picks
+from lilbee.catalog.refs import GGUF_GLOB, hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
 log = logging.getLogger(__name__)
@@ -23,11 +22,30 @@ def _search_blob(m: CatalogModel) -> str:
     return f"{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
 
 
-_SIZE_RANGES: dict[CatalogSize, tuple[float, float]] = {
-    CatalogSize.SMALL: (0.0, 3.0),
-    CatalogSize.MEDIUM: (3.0, 10.0),
-    CatalogSize.LARGE: (10.0, float("inf")),
-}
+# Upper bound in billions of parameters for each bucket below HUGE, which takes
+# everything above the last one. Keyed on parameters rather than on-disk bytes so
+# a model keeps its bucket whichever quant is picked, and so buckets match how
+# model sizes are actually talked about ("a 70B"). HUGE starts where consumer
+# hardware stops.
+_PARAM_TIER_CEILINGS: tuple[tuple[float, CatalogSize], ...] = (
+    (4.0, CatalogSize.SMALL),
+    (20.0, CatalogSize.MEDIUM),
+    (70.0, CatalogSize.LARGE),
+)
+
+_PARAMS_PER_BILLION = 1e9
+
+
+def size_bucket(params: int) -> CatalogSize | None:
+    """Bucket a parameter count. None when the repo publishes no count."""
+    if params <= 0:
+        return None
+    billions = params / _PARAMS_PER_BILLION
+    for ceiling, bucket in _PARAM_TIER_CEILINGS:
+        if billions < ceiling:
+            return bucket
+    return CatalogSize.HUGE
+
 
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
 # two ``/`` separators; one-slash refs are bare repo IDs.
@@ -47,13 +65,14 @@ def get_catalog(
     model_manager: Any = None,
 ) -> CatalogResult:
     """Get paginated, filtered catalog of models."""
-    # Featured models only on the first page
-    all_models = list(FEATURED_ALL) if offset == 0 else []
+    picks = get_picks()
+    # Picks only on the first page
+    all_models = list(picks) if offset == 0 else []
     hf_has_more = False
 
     # Optionally fetch from HF API
     if not featured:
-        hf_task, hf_library = _task_to_pipeline(task)
+        hf_task, hf_library = task_to_pipeline(task)
         hf_page = get_services().hf_client.fetch_models(
             pipeline_tag=hf_task,
             limit=limit,
@@ -62,9 +81,9 @@ def get_catalog(
             search=search,
         )
         hf_has_more = hf_page.has_more
-        # Deduplicate: skip HF models whose repo matches a featured model
-        featured_repos = {m.hf_repo for m in FEATURED_ALL}
-        hf_models = [m for m in hf_page.models if m.hf_repo not in featured_repos]
+        # Deduplicate: skip HF models already shown as a pick
+        pick_repos = {m.hf_repo for m in picks}
+        hf_models = [m for m in hf_page.models if m.hf_repo not in pick_repos]
         all_models.extend(hf_models)
 
     # Filter by task
@@ -80,8 +99,7 @@ def get_catalog(
 
     # Filter by size
     if size is not None:
-        lo, hi = _SIZE_RANGES[size]
-        all_models = [m for m in all_models if lo <= m.size_gb < hi]
+        all_models = [m for m in all_models if size_bucket(m.params) == size]
 
     # A repo is "installed" if any of its quants has a manifest.
     if installed is not None and model_manager is not None:
@@ -109,7 +127,7 @@ def get_catalog(
     )
 
 
-def _task_to_pipeline(task: ModelTask | None) -> tuple[str, str | None]:
+def task_to_pipeline(task: ModelTask | None) -> tuple[str, str | None]:
     """Map task name to HuggingFace pipeline tag and library filter."""
     mapping: dict[ModelTask, tuple[str, str | None]] = {
         ModelTask.CHAT: ("text-generation", None),
@@ -165,60 +183,11 @@ def _sort_models(models: list[CatalogModel], sort: CatalogSort) -> list[CatalogM
     return sorted(models, key=key_fn, reverse=reverse)
 
 
-class CatalogIndex(NamedTuple):
-    """Case-insensitive lookup indexes for find_catalog_entry."""
-
-    by_hf_repo: dict[str, CatalogModel]
-    by_full_ref: dict[str, CatalogModel]  # repo + concrete filename
-
-
-@functools.cache
-def _build_catalog_index() -> CatalogIndex:
-    """Build case-insensitive lookup indexes for find_catalog_entry."""
-    by_hf_repo: dict[str, CatalogModel] = {}
-    by_full_ref: dict[str, CatalogModel] = {}
-    for m in FEATURED_ALL:
-        by_hf_repo.setdefault(m.hf_repo.lower(), m)
-        if "*" not in m.gguf_filename:
-            by_full_ref[format_native_gguf_ref(m.hf_repo, m.gguf_filename).lower()] = m
-    return CatalogIndex(by_hf_repo, by_full_ref)
-
-
-def find_catalog_entry(query: str) -> CatalogModel | None:
-    """Find a featured model by hf_repo or by ``hf_repo/filename`` ref.
-
-    Tries the query as-is, then strips a trailing ``/<filename>.gguf``,
-    then strips a leading non-HF provider prefix (``ollama/``, etc.).
-    Case-insensitive; returns ``None`` on miss.
-    """
-    if not query:
-        return None
-    idx = _build_catalog_index()
-    q = query.lower()
-    candidates = [q]
-    # Strip the filename for ``<repo>/<filename>.gguf`` queries so the
-    # bare-repo index catches featured entries whose gguf_filename is a
-    # glob (most are).
-    if q.endswith(".gguf") and q.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
-        candidates.append(q.rsplit("/", 1)[0])
-    if "/" in q:
-        prefix, rest = q.split("/", 1)
-        hf_owners = {r.split("/", 1)[0] for r in idx.by_hf_repo if "/" in r}
-        if prefix not in hf_owners:
-            candidates.append(rest)
-    for c in candidates:
-        hit = idx.by_full_ref.get(c) or idx.by_hf_repo.get(c)
-        if hit is not None:
-            return hit
-    return None
-
-
 def is_rerank_ref(model_ref: str) -> bool:
-    """Return True iff *model_ref* resolves to a rerank catalog entry."""
+    """Return True iff *model_ref* names a reranker."""
     if not model_ref:
         return False
-    entry = find_catalog_entry(model_ref)
-    return entry is not None and entry.task == ModelTask.RERANK
+    return reclassify_by_name(model_ref, ModelTask.CHAT) == ModelTask.RERANK
 
 
 def _is_hf_repo_id(value: str) -> bool:
@@ -238,7 +207,7 @@ def build_adhoc_entry(
     gguf_filename: str = GGUF_GLOB,
     task: ModelTask = ModelTask.CHAT,
 ) -> CatalogModel:
-    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo.
+    """Minimal CatalogModel for a HuggingFace GGUF repo.
 
     *gguf_filename* defaults to the ``*.gguf`` glob (bare-repo pull picks the best
     quant); pass a concrete filename, which may include a repo subdirectory, to
@@ -257,12 +226,11 @@ def build_adhoc_entry(
 
 
 def resolve_pull_target(model: str) -> CatalogModel | None:
-    """Resolve *model* to a pullable entry.
+    """Resolve *model* to a pullable entry, HF-first.
 
-    A ref that names a concrete ``.gguf`` file (flat or in a repo subdir) is
-    honored exactly, HF-first: the explicit quant wins over a featured entry's
-    default. A bare ``owner/name`` repo prefers the featured entry, then falls
-    back to an ad-hoc glob pull that picks the best quant.
+    A ref naming a concrete ``.gguf`` file (flat or in a repo subdir) is honored
+    exactly. A bare ``owner/name`` repo pulls through the ``*.gguf`` glob, which
+    picks the best quant. Returns None when *model* is not a usable repo id.
     """
     # circular: modelhub.registry imports catalog.query at top
     from lilbee.modelhub.registry import parse_hf_ref
@@ -272,22 +240,11 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
-        task = _task_for_repo(hf_repo, model)
+        task = ModelTask(reclassify_by_name(model, ModelTask.CHAT))
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
-    featured = find_catalog_entry(model)
-    if featured is not None:
-        return featured
     if not _is_hf_repo_id(model):
         return None
-    return build_adhoc_entry(model, task=_task_for_repo(model, model))
-
-
-def _task_for_repo(hf_repo: str, ref: str) -> ModelTask:
-    """Featured entries keep their catalog task; other repos are classified by name."""
-    featured = find_catalog_entry(hf_repo)
-    if featured is not None:
-        return featured.task
-    return ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
+    return build_adhoc_entry(model, task=ModelTask(reclassify_by_name(model, ModelTask.CHAT)))
 
 
 # Embedding detection by name, for servers (LM Studio) that report ids but no

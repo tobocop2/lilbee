@@ -222,7 +222,7 @@ def make_editor(key: str, defn: SettingDef) -> Widget:
         return make_checkbox(key, value)
     if defn.render is RenderStyle.MULTILINE:
         return make_multiline_editor(key, value)
-    return make_input(key, value)
+    return make_input(key, value, secret=defn.secret)
 
 
 def make_multiline_editor(key: str, value: str) -> ListTextArea:
@@ -287,7 +287,18 @@ def make_checkbox(key: str, value: str) -> Checkbox:
     )
 
 
-def make_input(key: str, value: str) -> Input:
-    """Create an Input widget for string/number settings."""
+def make_input(key: str, value: str, *, secret: bool = False) -> Input:
+    """Create an Input widget for string/number settings.
+
+    ``secret`` renders the field masked. Textual masks only the rendering, so
+    the real value is still submitted and saved, and text pasted into a masked
+    field never appears on screen.
+    """
     display = "" if value == "None" else value.replace(" (model default)", "")
-    return Input(value=display, name=key, classes="setting-editor", id=f"{EDITOR_ID_PREFIX}{key}")
+    return Input(
+        value=display,
+        name=key,
+        password=secret,
+        classes="setting-editor",
+        id=f"{EDITOR_ID_PREFIX}{key}",
+    )

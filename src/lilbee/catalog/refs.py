@@ -8,6 +8,11 @@ NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 GGUF_GLOB = "*.gguf"
 
+# Vision models need both the main GGUF and an mmproj (CLIP projection) file.
+# Resolved by glob rather than a per-repo table: every mainstream VL repo names
+# its projector this way, and a table would be one more thing to maintain.
+DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
+
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
 
 
