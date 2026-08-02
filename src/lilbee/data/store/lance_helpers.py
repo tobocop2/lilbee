@@ -44,7 +44,7 @@ def install_lancedb_thread_error_suppressor() -> None:
     threading.excepthook = _hook
 
 
-def _table_names(db: lancedb.DBConnection) -> list[str]:
+def table_names(db: lancedb.DBConnection) -> list[str]:
     """Get list of table names, handling the ListTablesResponse object."""
     result = db.list_tables()
     try:
@@ -54,7 +54,7 @@ def _table_names(db: lancedb.DBConnection) -> list[str]:
 
 
 def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
-    if name in _table_names(db):
+    if name in table_names(db):
         return db.open_table(name)
     try:
         return db.create_table(name, schema=schema)

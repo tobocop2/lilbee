@@ -368,3 +368,30 @@ class TestTheDeathPipe:
         child_guard._watch_via_death_pipe(1234)  # must not raise
 
         assert held == {}
+
+
+class TestBindLifetimeToParent:
+    """A spawned worker holds a GPU fleet; orphaning it leaves the card allocated."""
+
+    def test_the_kernel_is_asked_to_signal_this_process_when_its_parent_dies(self, monkeypatch):
+        libc = mock.MagicMock()
+        monkeypatch.setattr(child_guard, "_libc", libc)
+        monkeypatch.setattr(child_guard.os, "getppid", lambda: 4321)
+
+        child_guard.bind_lifetime_to_parent(4321)
+
+        libc.prctl.assert_called_once_with(child_guard._PR_SET_PDEATHSIG, 15, 0, 0, 0)
+
+    def test_a_worker_whose_parent_already_died_exits(self, monkeypatch):
+        """The death signal cannot fire for a parent that was gone before the call."""
+        monkeypatch.setattr(child_guard, "_libc", None)
+        monkeypatch.setattr(child_guard.os, "getppid", lambda: 1)
+
+        with pytest.raises(SystemExit):
+            child_guard.bind_lifetime_to_parent(4321)
+
+    def test_a_platform_without_prctl_still_checks_the_parent(self, monkeypatch):
+        monkeypatch.setattr(child_guard, "_libc", None)
+        monkeypatch.setattr(child_guard.os, "getppid", lambda: 4321)
+
+        child_guard.bind_lifetime_to_parent(4321)  # must not raise
