@@ -610,9 +610,7 @@ class Searcher:
         query_vec = self._embedder.embed_query(question)
         # Retrieve the reranker's candidate depth when one is loaded, else top_k.
         retrieve_k = (
-            max(top_k, self._config.rerank_candidates)
-            if self._config.reranker_model
-            else top_k
+            max(top_k, self._config.rerank_candidates) if self._config.reranker_model else top_k
         )
         results = self._store.search(
             query_vec,
