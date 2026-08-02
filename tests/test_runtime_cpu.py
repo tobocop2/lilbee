@@ -49,6 +49,14 @@ def test_env_override_rejects_non_integer(monkeypatch, caplog) -> None:
     assert any("LILBEE_CPU_QUOTA" in rec.message for rec in caplog.records)
 
 
+def _affinity(cpus: int):
+    """Pin the affinity signal. Unpatched, the runner's own mask joins the min
+    and a test that fixes cpu_count and the quota still reads the host."""
+    return mock.patch(
+        "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(cpus)), create=True
+    )
+
+
 def _write_cgroup(root: Path, files: dict[str, str]) -> None:
     for rel, text in files.items():
         target = root / rel
@@ -96,6 +104,7 @@ def test_cgroup_absent_is_none(tmp_path) -> None:
 def test_available_cpu_count_rounds_a_fractional_quota_up() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        _affinity(96),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=7.65),
     ):
         assert available_cpu_count() == 8
@@ -104,9 +113,7 @@ def test_available_cpu_count_rounds_a_fractional_quota_up() -> None:
 def test_available_cpu_count_takes_min_of_signals() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=128),
-        mock.patch(
-            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(64)), create=True
-        ),
+        _affinity(64),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=8),
     ):
         assert available_cpu_count() == 8
@@ -115,9 +122,7 @@ def test_available_cpu_count_takes_min_of_signals() -> None:
 def test_available_cpu_count_ignores_absent_quota() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=16),
-        mock.patch(
-            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(16)), create=True
-        ),
+        _affinity(16),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=None),
     ):
         assert available_cpu_count() == 16
@@ -135,9 +140,7 @@ def test_engine_thread_count_is_none_when_nothing_constrains_the_process() -> No
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=16),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=None),
-        mock.patch(
-            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(16)), create=True
-        ),
+        _affinity(16),
     ):
         assert engine_thread_count() is None
 
@@ -147,6 +150,7 @@ def test_engine_thread_count_rounds_a_fractional_quota_down() -> None:
     # lockstep group throttled (measured 63.5 vs 60.3 tok/s).
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        _affinity(96),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=7.65),
     ):
         assert engine_thread_count() == 7
@@ -156,9 +160,7 @@ def test_engine_thread_count_follows_an_affinity_mask() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=None),
-        mock.patch(
-            "lilbee.runtime.cpu.os.sched_getaffinity", return_value=set(range(8)), create=True
-        ),
+        _affinity(8),
     ):
         assert engine_thread_count() == 8
 
@@ -166,6 +168,7 @@ def test_engine_thread_count_follows_an_affinity_mask() -> None:
 def test_engine_thread_count_floors_at_one() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        _affinity(96),
         mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=0.4),
     ):
         assert engine_thread_count() == 1

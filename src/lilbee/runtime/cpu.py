@@ -125,8 +125,8 @@ def engine_thread_count() -> int | None:
     The budget rounds DOWN here, unlike :func:`available_cpu_count`. An engine's
     threads compute in lockstep across a barrier, so one thread over the quota
     gets the whole group throttled and every other thread waits for it. Measured
-    on a 96-core pod with a 7.65-core quota, one server generating: 11.4 tok/s at
-    the engine's own count of 48, 60.3 at 8 threads, 63.5 at 7.
+    on a 96-core pod with a 7.65-core quota, one server generating: 11.4 tok/s on
+    the engine's own count, 60.3 at 8 threads, 63.5 at 7.
 
     Not ``cpu_quota()``: that halves the budget to leave the asyncio scheduler a
     share, which an out-of-process engine does not compete with.
