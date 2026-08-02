@@ -3714,10 +3714,12 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     # An earlier run of this same installation opted in, then exited.
     request_keep_warm(machine, prov_mod.cfg.data_root)
-    p = FleetProvider()
-    assert p._ensure_fleet() is True
+    # A restarted run binds and releases under one pid, so the patch covers the
+    # whole run. filelock 3.30+ no-ops release() when the pid moved mid-hold.
     restarted_pid = os.getpid() + 4242
     monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # this run is a new process
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
     p.shutdown()
     assert stopped == [machine]
 
