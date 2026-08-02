@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import pytest
 from mcp.shared.memory import create_client_server_memory_streams
 from tools.qa.mcp_stdio_probe import CORE_TOOLS
 
@@ -243,3 +244,21 @@ async def test_a_cancelled_dataset_import_stops_re_embedding(monkeypatch) -> Non
     await anyio.sleep(0.5)
     assert state["aborted"], "the import never saw the cancellation"
     assert state["rows"] < at_cancel + 30, "the import kept re-embedding past the cancel"
+
+
+def test_the_real_download_callback_propagates_the_cancel() -> None:
+    """The MCP tool's stop only works if the real byte-callback chain lets it out.
+
+    pull_model_data wraps on_update in make_download_callback, so a swallowed
+    exception there would leave the download running with the tool none the
+    wiser. The tool's own test fakes pull_model_data and cannot see this link.
+    """
+    from lilbee.catalog.download_progress import make_download_callback
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    def cancelling_on_update(_progress: object) -> None:
+        raise TaskCancelledError
+
+    on_bytes = make_download_callback(cancelling_on_update, throttle_interval=0.0)
+    with pytest.raises(TaskCancelledError):
+        on_bytes(1, 100)
