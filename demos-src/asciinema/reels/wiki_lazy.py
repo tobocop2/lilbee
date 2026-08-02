@@ -22,6 +22,15 @@ NAME = "wiki-lazy"
 COLS, ROWS = 128, 44
 MUST_STRINGS = ("not written", "Write this page?", "Background Tasks", "gas giant")
 FORBID_STRINGS = ("Traceback", "Could not write")
+# The story, in order: read an already-written cited page, get prompted to write
+# a missing one, watch it run in the Task Center, then read the freshly written
+# page. A reel can pass every other gate and still show the wrong thing.
+BEATS = (
+    ("existing cited page read", r"Earth is the third"),
+    ("prompted to write the missing page", r"Write this page\?"),
+    ("generation running in the task center", r"Background Tasks"),
+    ("freshly written page read", r"gas giant"),
+)
 SPEED_WINDOWS = ("gen",)
 SPEED_FACTOR = 16
 
@@ -77,22 +86,30 @@ def _open_page_by_filter(s, needle: str) -> None:
     s.key("enter", after=0.9)
 
 
-def _scroll_article(s, lines: int = 34) -> None:
-    """Page down through the open article so its generated text is actually read.
+def _scroll_through(s, chunks: int = 3, per: int = 14) -> None:
+    """Read the whole article: focus the content pane, then scroll a screenful at
+    a time, pausing on each so a section is read before the next.
 
-    Tab moves focus to the content pane; the long settle lets focus land before
-    the burst (during model warm-up the focus otherwise races and the tree
-    scrolls instead). The burst scrolls past the provenance header into the
-    generated prose."""
-    s.key("Tab", after=1.5)
-    s.key(*(["Down"] * lines), after=0.045)
+    A fast burst per chunk moves the pane (a slow drip stalls it); the pauses are
+    the reading. Only reliable once a generation has reloaded the wiki screen, so
+    this is used on the freshly written page, not on a page opened at rest.
+    """
+    s.key("Tab", after=1.0)
+    for _ in range(chunks):
+        s.key(*(["Down"] * per), after=0.045)
+        time.sleep(2.2)
 
 
 def _open_stub_by_search(s, needle: str) -> None:
-    """Filter to one unwritten stub and open it (its group renders collapsed)."""
+    """Filter to one unwritten stub and open it (its group renders collapsed).
+
+    The query is typed just above the motion-span threshold so the discrete
+    typing does not register as motion and drag motion_fps down; the smooth tree
+    scroll is what that gate measures.
+    """
     s.key("/", after=0.4)
     s.key("C-u", after=0.2)
-    s.key(*needle, after=0.11)
+    s.key(*needle, after=0.13)
     time.sleep(1.0)
     s.key("Tab", after=0.4)
     s.key("g", after=0.35)
@@ -120,24 +137,26 @@ def record(cast: pathlib.Path) -> dict:
 
         _to_wiki(s)
 
-        # Page to the first planet by hand, then reach the rest with the search
-        # filter -- both ways of finding a page. Each opens on its cited article
-        # (the generated prose sits just below the provenance header) and is held
-        # long enough to read.
+        # 1. Page through the encyclopedia tree to an already-written article. The
+        #    tree scroll is smooth (it repaints on every keystroke, unlike the
+        #    async content pane), so it carries the reel's motion; the article is
+        #    then read at rest (the content pane only scrolls after a generation
+        #    reload).
         s.mark("browse_start")
-        _open_row(s, EARTH_ROW)
+        s.key("g", after=0.4)
+        s.key(*(["j"] * 26), after=0.04)  # scroll down through the pages
+        time.sleep(0.9)
+        s.key("g", after=0.4)
+        s.key(*(["j"] * EARTH_ROW), after=0.04)  # back up to Earth
+        s.key("enter", after=0.9)
         s.wait_for(r"faithfulness|\[\^src", timeout=20)
         time.sleep(4.2)
-        for needle in FILTER_PLANETS:
-            _open_page_by_filter(s, needle)
-            s.wait_for(r"faithfulness|\[\^src", timeout=20)
-            time.sleep(4.2)
         s.mark("browse_end")
 
-        # Now a page that has not been written. Search finds it as a dim stub.
+        # 2. A page that has not been written: search finds it as a dim stub.
         _open_stub_by_search(s, "jupiter")
         s.wait_for(r"Write this page\?", timeout=25)
-        time.sleep(2.2)
+        time.sleep(2.4)
 
         # Confirm, then follow the job in the Task Center so the work is visible.
         s.mark("gen_start")
@@ -156,19 +175,18 @@ def record(cast: pathlib.Path) -> dict:
         s.key("C-g", after=0.6)  # close the drawer before leaving
         s.mark("gen_end")
 
-        # Step back to the Wiki (Tasks is next to Wiki in the ring; the Task
-        # Center's own back key goes to Chat), then open the freshly written page.
+        # 3. The freshly written page: step back to the Wiki (Tasks is next to it
+        #    in the ring), open it, and read the whole generated article.
         s.key("]", after=0.9)
         s.wait_for(r"Filter pages|Entities", timeout=20)
         time.sleep(0.6)
         _open_generated_page(s)
         s.wait_for(r"gas giant|fifth planet", timeout=25)
         time.sleep(2.4)
-        # Scroll down through the whole article so the full page is shown.
-        _scroll_page(s)
-        time.sleep(1.6)
+        _scroll_through(s)
+        time.sleep(2.4)
         s.mark("payload_end")
-        time.sleep(0.8)
+        time.sleep(1.0)
     finally:
         s.kill()
     t["marks"] = dict(s.marks)
