@@ -1,9 +1,9 @@
 {
-  "version": "0.6.90b420.dev729",
+  "version": "0.6.90b420.dev730",
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-linux-x86_64-rocm",
-      "sha256": "badcf852b212faaa0c1ed665450560a4ea660623f3f41ccac5b603a683465ed4"
+      "sha256": "c3a3b834e49e44022354ebe194f8aa1b390a51a16951465013833f701afebc41"
     }
   }
 }
