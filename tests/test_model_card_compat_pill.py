@@ -158,3 +158,52 @@ def test_non_native_backend_pill_is_shown() -> None:
     row.backend = "Ollama"
     out = _render_local(row, selected=False)
     assert "Ollama" in out.plain
+
+
+class TestWorstCaseCardLayout:
+    """The widest a card can get: unsupported architecture that also won't fit."""
+
+    @staticmethod
+    def _worst_case_row():
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.runtime.hardware import FitChip, FitLevel
+
+        row = LocalCatalogRow(
+            name="DavidAU/Qwen3.6-27B-Fable-Fusion-Uncensored-Heretic-NEO-MAX-MTP",
+            task="chat",
+            params="405B",
+            size="431.1 GB",
+            quant="Q4_K_M",
+            downloads="4.6M",
+            featured=True,
+            installed=True,
+            sort_downloads=4_600_000,
+            sort_size=431.1,
+            ref="a/b-GGUF",
+            compat=ModelCompat.UNSUPPORTED,
+        )
+        row.fit = FitChip(level=FitLevel.WONT_RUN, headroom_gb=-646.0)
+        return row
+
+    def test_both_chips_render_on_the_secondary_line(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        secondary = lines[2].plain
+        assert msg.COMPAT_PILL_UNSUPPORTED in secondary
+        assert "won't run" in secondary
+
+    def test_it_stays_inside_the_card_body_budget(self) -> None:
+        """Overflowing the body pushes every card border below it out of line."""
+        from lilbee.cli.tui.widgets.model_grid import _CARD_BODY_HEIGHT, _local_lines
+
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        assert len(lines) <= _CARD_BODY_HEIGHT
+
+    def test_no_line_exceeds_the_narrowest_grid_column(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+        narrowest_column = 30  # GridSelect(min_column_width=30) on every catalog grid
+        lines = _local_lines(self._worst_case_row(), selected=True)
+        assert max(len(line.plain) for line in lines) <= narrowest_column
