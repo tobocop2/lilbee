@@ -1314,7 +1314,8 @@ class ChatScreen(Screen[None]):
             # (model bar, scope chip, status bar) refresh. The boundary's
             # _invalidate_caches now handles llm_provider service reset.
             self.app.set_setting(key, parsed)
-            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
+            shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
+            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
