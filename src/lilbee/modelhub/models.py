@@ -98,14 +98,7 @@ def get_free_disk_gb(path: Path) -> float:
     return usage.free / (1024**3)
 
 
-# Ceiling for a model chosen without a human present. The catalog spans every
-# parameter tier, so on a large host the largest fitting entry can be a 100B+
-# model; a non-interactive caller must not be handed a 68 GB download it never
-# asked for.
-_UNATTENDED_MAX_SIZE_GB = 12.0
-
-
-def pick_default_model(ram_gb: float, *, max_size_gb: float | None = None) -> ModelInfo:
+def pick_default_model(ram_gb: float) -> ModelInfo:
     """Choose the largest catalog model that fits in *ram_gb*.
 
     Raises ``RuntimeError`` when the catalog is empty, which happens when
@@ -118,11 +111,7 @@ def pick_default_model(ram_gb: float, *, max_size_gb: float | None = None) -> Mo
             "Could not reach HuggingFace to choose a chat model. "
             "Check your connection, or pull one explicitly with 'lilbee model pull <ref>'."
         )
-    eligible = [
-        m
-        for m in catalog
-        if m.min_ram_gb <= ram_gb and (max_size_gb is None or m.size_gb <= max_size_gb)
-    ]
+    eligible = [m for m in catalog if m.min_ram_gb <= ram_gb]
     if not eligible:
         # Nothing fits: the smallest entry is the only honest offer.
         return min(catalog, key=lambda m: m.size_gb)
@@ -250,10 +239,11 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
 
 
 def ensure_chat_model() -> str | None:
-    """If no chat models are installed, pick and pull one. Returns the pulled ref or None.
+    """If no chat models are installed, prompt for one and pull it. Returns the pulled ref or None.
 
     Interactive (TTY): show catalog picker with descriptions and sizes.
-    Non-interactive (CI/pipes): auto-pick recommended model silently.
+    Non-interactive (CI/pipes): raise with guidance; models are never
+    downloaded without the user choosing one.
     The caller is responsible for persisting the returned ref via the
     settings boundary; this function only handles the pull side.
     """
@@ -264,18 +254,15 @@ def ensure_chat_model() -> str | None:
     if list_installed_models():
         return None
 
-    ram_gb = get_system_ram_gb()
-    free_gb = get_free_disk_gb(cfg.data_dir)
-
-    if sys.stdin.isatty():
-        model_info = prompt_model_choice(ram_gb)
-    else:
-        model_info = pick_default_model(ram_gb, max_size_gb=_UNATTENDED_MAX_SIZE_GB)
-        sys.stderr.write(
-            f"No chat model found. Auto-installing '{model_info.display_name}' "
-            f"(detected {ram_gb:.0f} GB RAM)...\n"
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
+            "or run 'lilbee' in a terminal to pick from the model catalog."
         )
 
+    ram_gb = get_system_ram_gb()
+    free_gb = get_free_disk_gb(cfg.data_dir)
+    model_info = prompt_model_choice(ram_gb)
     return validate_disk_and_pull(model_info, free_gb)
 
 

@@ -22,6 +22,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
+from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -2372,6 +2373,39 @@ class TestEnsureChatModelWiring:
         mock_apply.assert_called_once_with(
             {"chat_model": "bartowski/SmolLM2-135M-Instruct-GGUF/smol.gguf"}
         )
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_falls_back_to_installed_chat_model(self, mock_sync, mock_svc):
+        """A persisted ref that is not installed swaps to an installed chat model."""
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        cfg.chat_model = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        mock_apply.assert_called_once_with({"chat_model": ref})
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_errors_with_guidance_when_nothing_installed(self, mock_sync, mock_svc):
+        """No installed chat model and no terminal: error with pull guidance, no download."""
+        from lilbee.modelhub import models as models_mod
+
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch.object(models_mod, "pull_with_progress") as mock_pull,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert "lilbee model pull" in result.output
+        mock_pull.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4777,6 +4811,28 @@ class TestSelfCheck:
             "main_gpu",
             "gpu_devices",
         }
+
+    def test_prefers_installed_models_over_download(self) -> None:
+        """Installed chat and embedding models are checked in place, nothing is downloaded."""
+        from tests.conftest import install_fake_model
+
+        install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        install_fake_model("acme/embeddinggemma-GGUF", "embeddinggemma.gguf", "embedding")
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._download_self_check_model",
+                side_effect=AssertionError("must not download when models are installed"),
+            ),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True
+        assert payload["chat_model"].startswith(str(cfg.models_dir))
+        assert payload["embedding_dims"] == 768
 
     def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"

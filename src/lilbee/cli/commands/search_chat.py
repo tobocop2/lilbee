@@ -80,6 +80,37 @@ _scope_option = typer.Option(
 )
 
 
+def _swap_stale_models_to_installed() -> None:
+    """Swap a persisted chat/embedding ref that no longer resolves to an
+    installed model of the same role and persist the swap, mirroring the TUI's
+    startup canonicalization. Leaves the ref alone when nothing suitable is
+    installed; the engine's not-installed error then names the fix.
+    """
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.modelhub.model_manager import (
+        ValidationResult,
+        canonicalize_chat_model,
+        canonicalize_embedding_model,
+    )
+
+    for canon, field, label in (
+        (canonicalize_chat_model(), "chat_model", "Chat"),
+        (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+    ):
+        if canon.status == ValidationResult.OK or canon.effective == canon.original:
+            continue
+        try:
+            apply_settings_update({field: canon.effective})
+        except (ValueError, OSError):
+            continue
+        if not cfg.json_mode:
+            console.print(
+                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+                f"using installed {canon.effective!r} instead.",
+                style=theme.WARNING,
+            )
+
+
 def _reject_if_empty(value: str, label: str) -> None:
     """Exit with a uniform error if *value* is empty/whitespace (matches REST)."""
     if value and value.strip():
@@ -194,6 +225,7 @@ def ask(
         pulled = ensure_chat_model()
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
+        _swap_stale_models_to_installed()
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:
