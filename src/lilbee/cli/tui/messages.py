@@ -123,6 +123,8 @@ IMPORT_STATUS_LOADING = "Loading dataset..."
 EXPORT_STATUS_RUNNING = "Exporting..."
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
+# Stands in for a credential's value wherever one would otherwise be echoed.
+MASKED_VALUE = "************"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
 CMD_SET_TYPE_HINT = "{key} needs {kind}"
 CMD_SET_CHOICES = "{key} must be one of {choices}"

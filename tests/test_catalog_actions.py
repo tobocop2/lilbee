@@ -1319,3 +1319,32 @@ class TestForYouByRole:
             )
         ]
         assert for_you_by_role(rows) == []
+
+
+async def test_spinner_tick_updates_the_loading_more_hint() -> None:
+    """The mid-fetch hint refresh, driven directly rather than via a timer race.
+
+    Only a real interval tick landing while a page fetch was in flight reached
+    this branch, so it covered on fast runners and not on slow ones.
+    """
+    from textual.widgets import Static
+
+    from tests._async_wait import wait_until
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = True
+        # The hint mounts via the compose cascade, which needs more than one
+        # tick on the slower runners.
+        await wait_until(pilot, lambda: bool(screen.query("#grid-chat .scroll-hint")))
+        hint = screen.query_one("#grid-chat .scroll-hint", Static)
+
+        screen._loading_more = True
+        screen._spinner_frame = 0
+        screen._tick_loading_spinner()
+        await pilot.pause()
+
+        assert "loading more models" in str(hint.render()).lower()

@@ -3103,6 +3103,30 @@ async def test_chat_slash_set_unknown_key():
             assert "Unknown setting" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_set_masks_a_credential_in_the_echo():
+    """/set confirms a credential without printing it back in the toast."""
+    from lilbee.app.settings_map import SETTINGS_MAP
+
+    secret_key = next(k for k, d in SETTINGS_MAP.items() if d.secret and d.writable)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set(f"{secret_key} sk-live-do-not-print-me")
+            message = mock_notify.call_args[0][0]
+    assert "sk-live-do-not-print-me" not in message
+    assert secret_key in message
+
+
+async def test_chat_slash_set_still_echoes_a_non_credential():
+    """Masking is keyed on the secret flag, not applied to every setting."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("top_k 10")
+            message = mock_notify.call_args[0][0]
+    assert "10" in message
+
+
 async def test_chat_slash_set_invalid_value():
     """A type mismatch reads as human copy, never a raw Python exception."""
     app = ChatTestApp()
