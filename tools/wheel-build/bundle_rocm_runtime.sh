@@ -34,11 +34,17 @@ rocm_lib_dirs="${rocm_root}/lib ${rocm_root}/lib/llvm/lib"
 # the ahead-of-time path, so the DT_NEEDED walk cannot see it and neither can an ldd
 # gate. It survives today only because librocroller happens to declare it. Seeded
 # explicitly so pruning an unrelated edge cannot take the code-object manager with it.
-required_libs="libamdhip64 librocblas libhipblas libamd_comgr"
+required_libs="libamdhip64 librocblas libhipblas libamd_comgr libnuma"
 # Stems loaded by name at runtime. Only the SONAME form is taken: ROCm ships
 # libamd_comgr.so, .so.3 and .so.3.0.0, and cp -L would turn each into its own
 # 152 MiB copy.
 dlopened_libs="libamd_comgr.so"
+# System libraries the closure copies from the build host rather than the ROCm tree.
+# Everything else outside the tree stays with the host (libc, libstdc++, libgomp,
+# libdrm), but libnuma is absent from the freedesktop flatpak runtime and from
+# minimal distros, and it is tiny. LGPL-2.1.
+bundled_system_libs="libnuma"
+system_lib_dirs="${SYSTEM_LIB_DIRS:-/usr/lib/x86_64-linux-gnu /usr/lib64 /lib/x86_64-linux-gnu /lib64}"
 
 needed_by() {
   readelf -d "$1" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'
@@ -84,6 +90,21 @@ resolve_in_rocm() {
   done
 }
 
+# Only for the bundled_system_libs whitelist; any other system SONAME resolves to
+# nothing here and stays with the host.
+resolve_in_system() {
+  local soname="$1" stem dir
+  for stem in ${bundled_system_libs}; do
+    case "${soname}" in "${stem}.so"*) ;; *) continue ;; esac
+    for dir in ${system_lib_dirs}; do
+      if [ -e "${dir}/${soname}" ]; then
+        printf '%s' "${dir}/${soname}"
+        return
+      fi
+    done
+  done
+}
+
 # Breadth-first over DT_NEEDED, seeded with everything the build produced rather than
 # the HIP backend alone: llama-server went through the same compiler and links libomp
 # where the backend does not. SONAMEs move between ROCm releases, so the closure is
@@ -100,6 +121,7 @@ copy_rocm_closure() {
         case " ${bundled} " in *" ${soname} "*) continue ;; esac
         if [ -e "${pkg_bin_dir}/${soname}" ]; then continue; fi
         src="$(resolve_in_rocm "${soname}")"
+        [ -n "${src}" ] || src="$(resolve_in_system "${soname}")"
         # A miss means the host owns it.
         [ -n "${src}" ] || continue
         cp -L "${src}" "${pkg_bin_dir}/"
@@ -310,7 +332,7 @@ assert_bundle_is_complete() {
   local required
   for required in ${required_libs}; do
     compgen -G "${pkg_bin_dir}/${required}.so*" >/dev/null || {
-      echo "no ${required} under ${rocm_root}: the ROCm bundle is incomplete" >&2
+      echo "no ${required} in the bundle: the ROCm bundle is incomplete" >&2
       exit 1
     }
   done
