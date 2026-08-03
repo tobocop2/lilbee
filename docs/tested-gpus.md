@@ -21,7 +21,7 @@ lilbee places models by reading what the engine reports: which devices exist, ho
 | Intel UHD + GTX 1650 Ti | Vulkan, hybrid | Integrated excluded from packing, discrete kept |
 | Apple Silicon | Metal | Unified-memory budgeting |
 | Intel Xeon Platinum 8481C | CPU | Host-only load with no GPU present |
-| AMD Instinct MI300X (192 GB) | ROCm | Readback, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering |
+| AMD Instinct MI300X (192 GB) | ROCm | Readback, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering, warm-engine adoption across processes, flatpak sandbox GPU access, amd-smi and rocm-smi capture |
 | AMD Radeon RX 9060 XT (16 GB) | ROCm, Vulkan | Full offload on RDNA4 (gfx1200), flatpak sandbox GPU access, power-based utilization capture |
 
 The work is usually ingest and chat. Rows naming a specific finding have a captured engine log behind them, on the `tools/gpu-verification-harness` branch alongside the script that produced them; those captures are engine build 9665 `e3a74b299`, except Apple Silicon at 9310 `e2ef8fe42`.
@@ -53,6 +53,8 @@ Confirmed on Vulkan (1070 Ti, Intel UHD) and ROCm (MI300X, `CLIP using ROCm0 bac
 On an RX 9060 XT (Bazzite, kernel 6.16), `rocm-smi` and `gpu_busy_percent` read a constant 100% from the moment a llama-server holds a compute context until it exits, idle or generating alike. The shader clock pins high (~44W against a 17W true idle), while the memory clock stays at its 456MHz floor. This is amdgpu's perf-level policy for resident compute contexts, not load.
 
 Real activity shows in power draw and memory clock: during inference power steps to 50-103W and mclk to 1258MHz, and both fall back the moment the request completes while the busy flag still reads 100%. Read power and mclk, not the percent. From #677 on, lilbee's fleet panel derives AMD utilization from power draw over the board cap, so a pegged 100% in `rocm-smi` next to a moving lilbee gauge is expected, not a disagreement to debug.
+
+The pegging is consumer-RDNA behavior, not AMD-wide: an MI300X with the same two llama-servers resident and 10 GB held reads 0% busy, and its flag moves honestly with load (3% idle to 82% generating). Residency still shows in power there too (159W bare, 195W with the engine loaded, 750W cap). Datacenter cards also lack an edge temperature sensor; junction carries the reading, and amd-smi (AMDSMI 26.x) wraps its JSON in a top-level `gpu_data` key and exposes no power cap at all — both handled from #677 on.
 
 ### Driver and engine measure different things
 
