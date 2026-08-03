@@ -1538,6 +1538,9 @@ def _launch_for(
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
         slots=slots,
         ctx=ctx,
+        built_ctx_target=(
+            (cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target) if is_chat else 0
+        ),
         replica=plan.replica,
         rerank_mode=rerank_mode,
         # What placement charged this instance, for the post-launch check against

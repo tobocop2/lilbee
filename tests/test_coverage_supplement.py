@@ -2069,12 +2069,15 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, CatalogScreen)
+            container = screen._grid_container
             with (
                 mock.patch.object(screen, "_mount_grid_section"),
                 mock.patch.object(screen, "_mount_grid_ctas"),
-                mock.patch.object(screen._grid_container, "scroll_to") as scroll_to,
+                mock.patch.object(container, "scroll_to") as scroll_to,
             ):
-                screen._mount_remaining_grid_sections([], hf_count=0, prior_scroll_y=12.5)
+                screen._mount_remaining_grid_sections(
+                    container, [], hf_count=0, prior_scroll_y=12.5
+                )
                 scroll_to.assert_called_once()
 
     def test_mount_remaining_returns_when_restore_focused_section_succeeds(self) -> None:
@@ -2107,7 +2110,7 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             mock.patch.object(screen, "_focus_first_grid") as focus_first,
         ):
             screen._mount_remaining_grid_sections(
-                [], hf_count=0, focus_anchor=("Chat", 0), prior_scroll_y=0.0
+                fake_container, [], hf_count=0, focus_anchor=("Chat", 0), prior_scroll_y=0.0
             )
             focus_first.assert_not_called()
 

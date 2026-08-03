@@ -6,6 +6,7 @@ Every route requires the token: memories are the human's notes about themselves.
 from __future__ import annotations
 
 from litestar import delete, get, patch, post
+from litestar.params import FromPath
 
 from lilbee.server.handlers.memory import (
     list_local_memories,
@@ -36,12 +37,14 @@ async def memories_remember_route(data: RememberRequest) -> RememberResponse:
 
 
 @patch("/api/memories/{memory_id:str}")
-async def memories_update_route(memory_id: str, data: MemorySharedRequest) -> MemoryFlagsResponse:
+async def memories_update_route(
+    memory_id: FromPath[str], data: MemorySharedRequest
+) -> MemoryFlagsResponse:
     """Set a memory's shared-with-agents flag."""
     return await update_memory_shared(memory_id, data.shared)
 
 
 @delete("/api/memories/{memory_id:str}", status_code=200)
-async def memories_remove_route(memory_id: str) -> MemoryRemoveResponse:
+async def memories_remove_route(memory_id: FromPath[str]) -> MemoryRemoveResponse:
     """Delete a memory by id."""
     return await remove_memory(memory_id)
