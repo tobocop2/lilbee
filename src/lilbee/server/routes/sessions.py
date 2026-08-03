@@ -7,6 +7,7 @@ personal as the memory store next door.
 from __future__ import annotations
 
 from litestar import delete, get, patch, post, put
+from litestar.params import FromPath
 
 from lilbee.server.handlers.sessions import (
     add_session_message,
@@ -37,7 +38,7 @@ async def sessions_list_route() -> SessionListResponse:
 
 
 @get("/api/sessions/{session_id:str}")
-async def session_get_route(session_id: str) -> SessionDetailResponse:
+async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     """Return a conversation's metadata and full transcript."""
     return await get_session(session_id)
 
@@ -50,21 +51,21 @@ async def session_create_route(data: SessionCreateRequest) -> SessionDetailRespo
 
 @post("/api/sessions/{session_id:str}/messages")
 async def session_add_message_route(
-    session_id: str, data: SessionMessageCreateRequest
+    session_id: FromPath[str], data: SessionMessageCreateRequest
 ) -> SessionDetailResponse:
     """Append a turn to a conversation."""
     return await add_session_message(session_id, data)
 
 
 @post("/api/sessions/{session_id:str}/claim")
-async def session_claim_route(session_id: str) -> SessionDetailResponse:
+async def session_claim_route(session_id: FromPath[str]) -> SessionDetailResponse:
     """Claim a conversation for this surface so it can append."""
     return await claim_session(session_id)
 
 
 @put("/api/sessions/{session_id:str}/summary")
 async def session_set_summary_route(
-    session_id: str, data: SessionSummaryRequest
+    session_id: FromPath[str], data: SessionSummaryRequest
 ) -> SessionDetailResponse:
     """Replace a conversation's compaction summary."""
     return await set_session_summary(session_id, data)
@@ -72,13 +73,13 @@ async def session_set_summary_route(
 
 @patch("/api/sessions/{session_id:str}")
 async def session_rename_route(
-    session_id: str, data: SessionRenameRequest
+    session_id: FromPath[str], data: SessionRenameRequest
 ) -> SessionRenameResponse:
     """Rename a conversation."""
     return await rename_session(session_id, data.title)
 
 
 @delete("/api/sessions/{session_id:str}", status_code=200)
-async def session_delete_route(session_id: str) -> SessionDeleteResponse:
+async def session_delete_route(session_id: FromPath[str]) -> SessionDeleteResponse:
     """Delete a conversation."""
     return await delete_session(session_id)

@@ -75,6 +75,32 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
         raise
 
 
+def _installed_model_path(want: str, configured: str) -> Path | None:
+    """Path of an installed native GGUF whose task is *want*, or ``None``.
+
+    Prefers the configured ref when it is installed and matches the role,
+    so the check exercises the model the user actually runs.
+    """
+    from lilbee.catalog.query import reclassify_by_name
+    from lilbee.modelhub.registry import ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    try:
+        manifests = [
+            m for m in registry.list_installed() if reclassify_by_name(m.ref, m.task) == want
+        ]
+    except Exception:
+        return None
+    refs = [m.ref for m in manifests]
+    ordered = [configured, *refs] if configured in refs else refs
+    for ref in ordered:
+        try:
+            return registry.resolve(ref)
+        except (KeyError, ValueError):
+            continue
+    return None
+
+
 _self_check_chat_path_option = typer.Option(
     None,
     "--chat-model-path",
@@ -247,16 +273,25 @@ def self_check_cmd(
     Failure here means either the bundled binary / its shared libraries don't load
     or one of the cfg-driven knobs is misconfigured for the host.
 
-    Two legs:
+    Two legs, each preferring an already-installed model of the role. Only when
+    nothing suitable is installed does a leg download a pinned tiny model to a
+    temp dir, removed when the leg finishes:
 
-    1. **Chat**: downloads ``Qwen3-0.6B-Q8_0.gguf`` (~500MB), spawns a chat
-       server, and requests a tiny completion.
-    2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB),
-       spawns an embedding server, and requests one embedding vector.
+    1. **Chat**: ``Qwen3-0.6B-Q8_0.gguf`` (~500MB), spawns a chat server, and
+       requests a tiny completion.
+    2. **Embedding**: ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB), spawns an
+       embedding server, and requests one embedding vector.
 
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
+    from lilbee.catalog.types import ModelTask
+
+    if chat_model_path is None:
+        chat_model_path = _installed_model_path(ModelTask.CHAT, cfg.chat_model)
+    if embed_model_path is None and not skip_embedding:
+        embed_model_path = _installed_model_path(ModelTask.EMBEDDING, cfg.embedding_model)
+
     with _teardown_on_sigterm():
         text, chat_path = _self_check_leg(
             chat_model_path,

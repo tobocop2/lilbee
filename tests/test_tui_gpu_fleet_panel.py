@@ -347,23 +347,17 @@ async def test_panel_shows_dash_when_util_is_none(monkeypatch: pytest.MonkeyPatc
 async def test_panel_updates_on_second_tick(monkeypatch: pytest.MonkeyPatch) -> None:
     """The panel re-renders when stats change between ticks.
 
-    The initial on_mount probe fires with empty devices (empty result); the
-    two explicit ticks return 10% then 90% and we assert each change lands.
+    The probe reports whatever the test has staged rather than keying off the
+    call count, so the on_mount interval firing mid-setup cannot shift the
+    sequence out from under the explicit ticks.
     """
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
-    results = [
-        {},  # initial on_mount probe (no devices yet)
-        {0: _make_stat(0, utilization_pct=10)},
-        {0: _make_stat(0, utilization_pct=90)},
-    ]
-    probe_calls: list[int] = []
+    staged: dict[str, object] = {"result": {}}  # on_mount probe: no devices yet
 
     def _probe(devices: object) -> object:  # type: ignore[no-untyped-def]
-        idx = len(probe_calls)
-        probe_calls.append(idx)
-        return results[min(idx, len(results) - 1)]
+        return staged["result"]
 
     monkeypatch.setattr(panel_mod, "probe_gpu_stats", _probe)
 
@@ -378,6 +372,7 @@ async def test_panel_updates_on_second_tick(monkeypatch: pytest.MonkeyPatch) -> 
         await app.workers.wait_for_complete()
 
         # First explicit tick
+        staged["result"] = {0: _make_stat(0, utilization_pct=10)}
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -385,6 +380,7 @@ async def test_panel_updates_on_second_tick(monkeypatch: pytest.MonkeyPatch) -> 
         assert "10%" in first_render
 
         # Second explicit tick
+        staged["result"] = {0: _make_stat(0, utilization_pct=90)}
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()

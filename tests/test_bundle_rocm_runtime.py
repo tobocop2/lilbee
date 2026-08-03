@@ -180,14 +180,21 @@ def _run(
     needed: dict[str, list[str]] | None = None,
     targets: str | None = None,
     with_patchelf: bool = True,
+    system_libs: tuple[str, ...] = ("libnuma.so.1",),
 ) -> subprocess.CompletedProcess[str]:
     stub_dir = tmp_path / "stub"
     _write_stub_readelf(stub_dir, _NEEDED if needed is None else needed)
     if with_patchelf:
         _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
     _link_real_tools(stub_dir)
+    # The build host's system lib dir, hermetic so the test never reads the real one.
+    system_dir = tmp_path / "sys"
+    system_dir.mkdir(exist_ok=True)
+    for name in system_libs:
+        (system_dir / name).write_text(f"elf: {name}")
     env = {
         "ROCM_PATH": str(rocm_tree),
+        "SYSTEM_LIB_DIRS": str(system_dir),
         "PATH": str(stub_dir),
     }
     if targets is not None:
@@ -241,7 +248,22 @@ def test_leaves_host_libraries_alone(bundled):
     """libc and libstdc++ come from the machine; bundling them breaks the ABI."""
     assert not (bundled / "libstdc++.so.6").exists()
     assert not (bundled / "libc.so.6").exists()
-    assert not (bundled / "libnuma.so.1").exists()
+
+
+def test_bundles_libnuma_from_the_system_dirs(bundled):
+    """libnuma is linked but lives outside the ROCm tree, and the flatpak runtime lacks it.
+
+    Leaving it to the host shipped a rocm flatpak whose llama-server could not load:
+    the freedesktop runtime carries every other host library the bundle relies on.
+    """
+    assert (bundled / "libnuma.so.1").is_file()
+
+
+def test_fails_when_libnuma_is_missing_from_the_system(bin_dir, rocm_tree, tmp_path):
+    """A build host without libnuma would silently reopen the flatpak gap."""
+    result = _run(bin_dir, rocm_tree, tmp_path, system_libs=())
+    assert result.returncode == 1
+    assert "libnuma" in result.stderr
 
 
 def test_bundles_the_rocblas_kernels(bundled):
@@ -334,6 +356,7 @@ def test_repoints_copied_libraries_at_the_bundle(bundled, tmp_path):
         "libhipblas.so.3",
         "libomp.so",
         "libamd_comgr.so.3",
+        "libnuma.so.1",
     }
     assert all("--set-rpath $ORIGIN" in line for line in rewrites)
 

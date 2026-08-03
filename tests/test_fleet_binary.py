@@ -224,6 +224,26 @@ class TestEnginePin:
         finally:
             cfg.placement = original
 
+    def test_ctx_sizing_values_are_not_part_of_the_load_signature(self) -> None:
+        # Ctx sizing shares by window coverage (contract.chat_ctx_covers), not
+        # value equality: a co-tenant whose target fits inside the running
+        # window must compute the same pin and adopt the engine.
+        originals = {k: getattr(cfg, k) for k in ("num_ctx", "num_ctx_max", "chat_n_ctx_target")}
+        try:
+            cfg.num_ctx = None
+            cfg.num_ctx_max = None
+            cfg.chat_n_ctx_target = 12288
+            base = binary_mod._load_config_signature()
+            cfg.chat_n_ctx_target = 49152
+            assert binary_mod._load_config_signature() == base
+            cfg.num_ctx = 4096
+            assert binary_mod._load_config_signature() == base
+            cfg.num_ctx_max = 16384
+            assert binary_mod._load_config_signature() == base
+        finally:
+            for key, value in originals.items():
+                setattr(cfg, key, value)
+
     def test_gpu_devices_is_part_of_the_load_signature(self) -> None:
         original = cfg.gpu_devices
         try:
