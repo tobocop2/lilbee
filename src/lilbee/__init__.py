@@ -5,14 +5,6 @@ from __future__ import annotations
 import os
 import threading
 
-# Disable huggingface_hub's xet transfer by default so the download bar stays
-# smooth: xet reports progress in a few coarse jumps (the bar looks stuck),
-# while the plain HTTP path with small chunks updates several times a second.
-# The catalog re-enables xet per-download for large files (catalog/download.py),
-# where xet's speed is worth the coarser bar. Set HF_HUB_DISABLE_XET=0 to force
-# xet for every download.
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
 # leak cursor escapes into the TUI. Our custom tqdm_class is NOT a subclass
 # of huggingface_hub.utils.tqdm, so huggingface_hub's `_create_progress_bar`
@@ -77,14 +69,14 @@ _prestart_mp_resource_tracker()
 def _shrink_hf_download_chunk_size() -> None:
     """Shrink huggingface_hub's 10MB download chunk to 200KB.
 
-    Default DOWNLOAD_CHUNK_SIZE=10MB means the tqdm callback only fires
-    every ~7 seconds on a 1.5MB/s connection, making downloads look stuck
-    between jumps. 200KB chunks drive the callback several times per
-    second at typical home-internet rates, so the UI renders smooth
-    real-time progress. Monkey-patched here because HF exposes no env
-    override. Runtime cost: tqdm call overhead is negligible (~µs) and
-    HTTP iter_bytes accumulates into chunks of this size, so smaller
-    chunks do not produce more network round-trips.
+    Only the plain HTTP path reads this constant, which xet leaves as the
+    fallback for repos HF has not moved to xet storage, for machines outside the
+    five architectures huggingface_hub ships hf_xet for, and for anyone who set
+    HF_HUB_DISABLE_XET. There the progress callback fires once per chunk:
+    measured on a 396MB GGUF, 10MB chunks gave 38 events with 4.4s median gaps,
+    200KB gave 1938 events with 0.07s gaps. Monkey-patched because HF exposes no
+    env override. Runtime cost is negligible: httpx accumulates into chunks of
+    this size, so smaller chunks add no network round-trips.
     """
     try:
         from huggingface_hub import constants as _hf_constants

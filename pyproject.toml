@@ -58,7 +58,7 @@ dependencies = [
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
     "gguf>=0.18",
-    "huggingface_hub>=1.11.0",
+    "huggingface_hub>=1.26.0",
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.

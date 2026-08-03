@@ -120,9 +120,14 @@ CHILD_MODULE_FLAGS=(
 # litellm.proxy is not trimmable, despite nothing in lilbee importing it:
 # litellm/__init__.py pulls in 9 of its modules on a bare import, so
 # --nofollow-import-to=litellm.proxy is an ImportError at startup.
+#
+# hf_xet is included explicitly so the package configuration's hf_xet metadata
+# is emitted: Nuitka only ships metadata for a distribution whose top-level
+# module it actually compiled.
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
+    --user-package-configuration-file=tools/wheel-build/lilbee.nuitka-package.config.yml \
     --no-deployment-flag=self-execution \
     --onefile-as-archive \
     --onefile-cache-mode=cached \
@@ -154,6 +159,7 @@ uv run --no-sync python -m nuitka \
     --include-package=rich               --include-package-data=rich \
     --include-package=litestar           --include-package-data=litestar \
     --include-package=mcp                --include-package-data=mcp \
+    --include-package=hf_xet \
     --include-distribution-metadata=lilbee \
     --include-distribution-metadata=litellm \
     --include-distribution-metadata=Crawl4AI \

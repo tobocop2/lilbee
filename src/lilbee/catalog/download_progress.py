@@ -90,6 +90,13 @@ class _CallbackProgressBar(_base_tqdm):
     ``disable=True`` path (std.py:988), and the multiprocessing lock's lazy init
     raises ``ValueError`` when ``sys.stderr.fileno() == -1`` (Textual, Jupyter,
     pytest capture). A thread lock sidesteps that fd handling entirely.
+
+    huggingface_hub reports two byte streams. ``update`` carries bytes written to
+    disk; ``update_transfer`` carries bytes off the network. On the xet path the
+    disk stream only moves when a buffered block flushes (a handful of events for
+    a whole file), while the transfer stream moves continuously. On the HTTP path
+    both fire for the same chunk. Tracking them separately and reporting the
+    larger keeps xet smooth without double-counting HTTP.
     """
 
     _lock = threading.RLock()
@@ -102,14 +109,34 @@ class _CallbackProgressBar(_base_tqdm):
         kwargs["disable"] = True
         kwargs["file"] = io.StringIO()  # absorb any accidental tqdm output
         super().__init__(*args, **kwargs)
-        self._cumulative = 0
+        # tqdm's `initial` is the resume offset: bytes already on disk from an
+        # interrupted attempt, which huggingface_hub does not re-report. Seeding
+        # both counters from it keeps a resumed download's percentage absolute.
+        self._written = int(self.n)
+        self._transferred = int(self.n)
+
+    @property
+    def _cumulative(self) -> int:
+        return max(self._written, self._transferred)
 
     def update(self, n: float = 1) -> bool | None:
         # The base only tracks cumulative bytes and suppresses output; forwarding
         # to the callback (with split-shard aggregation) lives in the
         # _ProgressTracker subclass below.
-        self._cumulative += int(n)
+        self._written += int(n)
         return None
+
+    def update_transfer(self, n: float = 1) -> bool | None:
+        """Absorb the network-bytes stream.
+
+        huggingface_hub routes xet transfer progress into this bar only when the
+        method exists; otherwise it opens its own tqdm on stderr alongside.
+        """
+        self._transferred += int(n)
+        return None
+
+    def set_transfer_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+        """No-op: huggingface_hub sets a transfer rate on bars that take transfer."""
 
 
 class _ProgressTracker:
@@ -137,13 +164,21 @@ class _ProgressTracker:
         tracker = self
 
         class _Cls(_CallbackProgressBar):
-            def update(self, n: float = 1) -> bool | None:
+            def _report(self) -> None:
                 tracker.was_used = True
-                self._cumulative += int(n)
                 done = tracker._completed_base + self._cumulative
                 shard_total = self.total if self.total is not None else 0
                 total = tracker.grand_total or (tracker._completed_base + shard_total)
                 tracker._callback(int(done), int(total))
+
+            def update(self, n: float = 1) -> bool | None:
+                super().update(n)
+                self._report()
+                return None
+
+            def update_transfer(self, n: float = 1) -> bool | None:
+                super().update_transfer(n)
+                self._report()
                 return None
 
         return _Cls

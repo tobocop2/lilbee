@@ -3,7 +3,6 @@
 import fnmatch
 import logging
 import re
-import threading
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -49,55 +48,12 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
-_HTTP_TOO_LARGE_MARKER = "too large to be downloaded using the regular download method"
-
-_xet_flip_lock = threading.Lock()
-"""Serializes the global ``HF_HUB_DISABLE_XET`` flip in ``_download_with_xet``.
-
-The flag is a huggingface_hub module global with no per-call override, so two
-overlapping xet downloads would otherwise nest their save/restore and leave xet
-permanently toggled. Holding the lock for the whole download keeps the window
-exclusive; over-cap xet downloads are rare large files, so serializing them is
-an acceptable cost for a correct restore."""
-
-
-def _download_with_xet(config: DownloadConfig) -> Path:
-    """Re-run the download with xet enabled, for files past the HTTP size cap.
-
-    xet is enabled by default, but a user can force the slow HTTP path with
-    ``HF_HUB_DISABLE_XET=1``; huggingface_hub then refuses files over its HTTP
-    size cap, and only xet can fetch them. ``is_xet_available()`` reads the
-    constant live, so flip it on for this one download (under ``_xet_flip_lock``
-    so concurrent xet downloads cannot corrupt the restore) and restore it after.
-    hf_xet is a hard dependency, so the xet path is always available.
-    """
-    from huggingface_hub import constants, hf_hub_download
-
-    with _xet_flip_lock:
-        original = constants.HF_HUB_DISABLE_XET
-        constants.HF_HUB_DISABLE_XET = False
-        try:
-            log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
-            return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
-        finally:
-            constants.HF_HUB_DISABLE_XET = original
-
-
-def _hf_download_or_translate(
-    entry: CatalogModel, config: DownloadConfig, *, use_xet: bool = False
-) -> Path:
-    """Run the HF download and translate every error class into a clean exception.
-
-    *use_xet* forces xet for this file (large files, where xet's speed beats the
-    smoother HTTP bar). Otherwise the default HTTP path is used, with a one-shot
-    xet fallback for files past huggingface_hub's HTTP size cap.
-    """
+def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
     try:
-        if use_xet:
-            return _download_with_xet(config)
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
@@ -112,20 +68,10 @@ def _hf_download_or_translate(
         raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
-    except ValueError as exc:
-        if not use_xet and _HTTP_TOO_LARGE_MARKER in str(exc):
-            return _download_with_xet(config)
-        raise RuntimeError(f"Failed to download {entry.hf_repo}: ValueError: {exc}") from None
     except Exception as exc:
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
-
-
-# Above this total model size, fetch via xet (much faster) even though its
-# progress bar is coarser; below it, the HTTP path's smooth per-chunk bar is
-# worth the wait. Read from the catalog's known size_gb, so no extra probe.
-_XET_SIZE_THRESHOLD_GB = 8.0
 
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -200,19 +146,10 @@ def download_model(
         if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
         else 0
     )
-    # Big models go over xet (fast, coarser bar); small ones stay on the HTTP
-    # path for its smooth per-chunk progress. Decided once from the catalog size.
-    use_xet = entry.size_gb >= _XET_SIZE_THRESHOLD_GB
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
-        log.info(
-            "Downloading %s/%s → %s (%s)",
-            entry.hf_repo,
-            shard,
-            models_dir,
-            "xet" if use_xet else "http",
-        )
+        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
         config = DownloadConfig(
             repo_id=entry.hf_repo,
             filename=shard,
@@ -220,7 +157,7 @@ def download_model(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_path = _hf_download_or_translate(entry, config, use_xet=use_xet)
+        shard_path = _hf_download_or_translate(entry, config)
         shard_paths.append(shard_path)
         if tracker is not None:
             tracker.shard_done(shard_path.stat().st_size)
