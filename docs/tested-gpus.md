@@ -22,6 +22,7 @@ lilbee places models by reading what the engine reports: which devices exist, ho
 | Apple Silicon | Metal | Unified-memory budgeting |
 | Intel Xeon Platinum 8481C | CPU | Host-only load with no GPU present |
 | AMD Instinct MI300X (192 GB) | ROCm | Readback, dedicated-VRAM sizing, `HIP_VISIBLE_DEVICES` filtering |
+| AMD Radeon RX 9060 XT (16 GB) | ROCm, Vulkan | Full offload on RDNA4 (gfx1200), flatpak sandbox GPU access, power-based utilization capture |
 
 The work is usually ingest and chat. Rows naming a specific finding have a captured engine log behind them, on the `tools/gpu-verification-harness` branch alongside the script that produced them; those captures are engine build 9665 `e3a74b299`, except Apple Silicon at 9310 `e2ef8fe42`.
 
@@ -46,6 +47,12 @@ Host allocators are excluded from device memory. Charging one to a card reports 
 A projector's weights appear in **no buffer line** on any backend. The engine reports them only as prose. Estimates must be corrected before comparison, or every correctly-sized vision load reports a shortfall that is not there.
 
 Confirmed on Vulkan (1070 Ti, Intel UHD) and ROCm (MI300X, `CLIP using ROCm0 backend`).
+
+### AMD reports 100% busy whenever the engine is resident
+
+On an RX 9060 XT (Bazzite, kernel 6.16), `rocm-smi` and `gpu_busy_percent` read a constant 100% from the moment a llama-server holds a compute context until it exits, idle or generating alike. The shader clock pins high (~44W against a 17W true idle), while the memory clock stays at its 456MHz floor. This is amdgpu's perf-level policy for resident compute contexts, not load.
+
+Real activity shows in power draw and memory clock: during inference power steps to 50-103W and mclk to 1258MHz, and both fall back the moment the request completes while the busy flag still reads 100%. lilbee's fleet panel therefore derives AMD utilization from power draw over the board cap; a pegged 100% in `rocm-smi` next to a moving lilbee gauge is expected, not a disagreement to debug.
 
 ### Driver and engine measure different things
 
