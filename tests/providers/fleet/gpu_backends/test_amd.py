@@ -47,6 +47,19 @@ _ROCM_SMI_JSON_VRAM = (
     "}}"
 )
 
+# Captured on an RX 9060 XT (ROCm 7 / Bazzite): busy flag pegs at 100 whenever a
+# compute context is resident, so power draw is the activity signal.
+_ROCM_SMI_JSON_REAL_9060XT = (
+    '{"card0": {"Temperature (Sensor edge) (C)": "39.0",'
+    ' "Temperature (Sensor junction) (C)": "41.0",'
+    ' "Temperature (Sensor memory) (C)": "61.0",'
+    ' "Max Graphics Package Power (W)": "175.0",'
+    ' "Average Graphics Package Power (W)": "17.0",'
+    ' "GPU use (%)": "100",'
+    ' "VRAM Total Memory (B)": "17095983104",'
+    ' "VRAM Total Used Memory (B)": "9518669824"}}'
+)
+
 
 # ---------------------------------------------------------------------------
 # _parse_amd_smi -- flat shape
@@ -150,6 +163,48 @@ def test_parse_rocm_smi_vram_absent_leaves_sentinel() -> None:
     result = _parse_rocm_smi(_ROCM_SMI_JSON, frozenset({0}))
     assert result[0].free_bytes == 0
     assert result[0].total_bytes == 0
+
+
+def test_parse_rocm_smi_power_overrides_pegged_busy_flag() -> None:
+    """Real 9060 XT capture: busy flag reads 100 at idle; power/cap is the signal."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON_REAL_9060XT, frozenset({0}))
+    assert result[0].utilization_pct == 10  # round(100 * 17 / 175)
+
+
+def test_parse_rocm_smi_power_socket_key_variant() -> None:
+    """Datacenter cards (MI300X) report socket power under a different key."""
+    raw = (
+        '{"card0": {"Current Socket Graphics Package Power (W)": "375.0",'
+        ' "Max Graphics Package Power (W)": "750.0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 50
+
+
+def test_parse_rocm_smi_power_clamped_to_100() -> None:
+    """Transient spikes above the cap clamp to 100."""
+    raw = (
+        '{"card0": {"Average Graphics Package Power (W)": "200.0",'
+        ' "Max Graphics Package Power (W)": "175.0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 100
+
+
+def test_parse_rocm_smi_busy_flag_fallback_without_power() -> None:
+    """Power keys absent (older rocm-smi): the busy flag is still reported."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON, frozenset({0}))
+    assert result[0].utilization_pct == 35
+
+
+def test_parse_rocm_smi_busy_flag_fallback_on_zero_cap() -> None:
+    """A zero/unparseable power cap cannot divide; fall back to the busy flag."""
+    raw = (
+        '{"card0": {"Average Graphics Package Power (W)": "44.0",'
+        ' "Max Graphics Package Power (W)": "0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 100
 
 
 def test_parse_rocm_smi_empty_string() -> None:

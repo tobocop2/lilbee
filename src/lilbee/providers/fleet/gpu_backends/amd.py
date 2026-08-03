@@ -16,11 +16,29 @@ _TOOL_AMD_SMI = "amd-smi"
 _TOOL_ROCM_SMI = "rocm-smi"
 
 _AMD_SMI_ARGS = ("metric", "--usage", "--temperature", "--json")
-_ROCM_SMI_ARGS = ("--showuse", "--showmeminfo", "vram", "--showtemp", "--json")
+_ROCM_SMI_ARGS = (
+    "--showuse",
+    "--showmeminfo",
+    "vram",
+    "--showtemp",
+    "--showpower",
+    "--showmaxpower",
+    "--json",
+)
 
 # rocm-smi key names for VRAM (byte values).
 _ROCM_VRAM_TOTAL_KEY = "VRAM Total Memory (B)"
 _ROCM_VRAM_USED_KEY = "VRAM Total Used Memory (B)"
+
+# amdgpu reports 100% busy whenever a compute context is resident, idle or not,
+# so power draw as a fraction of the board cap is the activity signal on AMD.
+# Consumer cards report "Average Graphics Package Power"; datacenter cards
+# (MI300X) report "Current Socket Graphics Package Power".
+_ROCM_POWER_KEYS = (
+    "Average Graphics Package Power (W)",
+    "Current Socket Graphics Package Power (W)",
+)
+_ROCM_POWER_CAP_KEYS = ("Max Graphics Package Power (W)",)
 
 _TIMEOUT_S = 5.0
 
@@ -92,6 +110,8 @@ def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
 def _parse_rocm_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
     """Parse rocm-smi JSON into UtilSample per index, or {} on failure.
 
+    utilization_pct is power draw as a percent of the board power cap when both
+    keys are present; the busy flag is the fallback for older rocm-smi output.
     VRAM is parsed when the rocm-smi VRAM keys are present (byte values);
     absent keys leave free_bytes/total_bytes as 0 (structural-fallback sentinel).
     """
@@ -112,6 +132,10 @@ def _parse_rocm_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         if index is None or index not in indices:
             continue
         util = extract_int(val, ("GPU use (%)", "GPU_UTIL", "gfx_activity"))
+        power = extract_int(val, _ROCM_POWER_KEYS)
+        cap = extract_int(val, _ROCM_POWER_CAP_KEYS)
+        if power is not None and cap:
+            util = min(100, round(power * 100 / cap))
         temp = extract_int(val, ("Temperature (Sensor edge) (C)", "temp_edge", "temp"))
         # VRAM keys carry byte strings; parse when present.
         total_b = extract_int(val, (_ROCM_VRAM_TOTAL_KEY,))
