@@ -1,4 +1,9 @@
-"""ROCm/HIP GPU utilization via amd-smi (preferred) or rocm-smi (fallback)."""
+"""ROCm/HIP GPU utilization via rocm-smi (preferred) or amd-smi (fallback).
+
+rocm-smi leads because it reports power draw, the board power cap, and VRAM in
+one call; amd-smi (checked on AMDSMI 26.0.2 / MI300X) exposes no power cap in
+metric or static output, so its path cannot derive power-based activity and
+reports the raw busy flag instead."""
 
 from __future__ import annotations
 
@@ -44,12 +49,12 @@ _TIMEOUT_S = 5.0
 
 
 class AmdBackend:
-    """ROCm/HIP util via amd-smi, falling back to rocm-smi."""
+    """ROCm/HIP util via rocm-smi, falling back to amd-smi."""
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
-        result = _amd_smi_samples(indices)
+        result = _rocm_smi_samples(indices)
         if not result:
-            result = _rocm_smi_samples(indices)
+            result = _amd_smi_samples(indices)
         return result
 
 
@@ -79,8 +84,12 @@ def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return {}
-    # amd-smi metric --json emits a list of GPU objects or {"gpu": [...]}.
-    items: list[object] = data if isinstance(data, list) else data.get("gpu", [])
+    # amd-smi metric --json emits a list of GPU objects, {"gpu": [...]}, or
+    # {"gpu_data": [...]} (AMDSMI 26.x, seen on MI300X).
+    if isinstance(data, list):
+        items: list[object] = data
+    else:
+        items = data.get("gpu_data") or data.get("gpu", [])
     samples: dict[int, UtilSample] = {}
     for item in items:
         if not isinstance(item, dict):
@@ -136,7 +145,16 @@ def _parse_rocm_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         cap = extract_int(val, _ROCM_POWER_CAP_KEYS)
         if power is not None and cap:
             util = min(100, round(power * 100 / cap))
-        temp = extract_int(val, ("Temperature (Sensor edge) (C)", "temp_edge", "temp"))
+        # Datacenter cards (MI300X) have no edge sensor; junction carries it.
+        temp = extract_int(
+            val,
+            (
+                "Temperature (Sensor edge) (C)",
+                "Temperature (Sensor junction) (C)",
+                "temp_edge",
+                "temp",
+            ),
+        )
         # VRAM keys carry byte strings; parse when present.
         total_b = extract_int(val, (_ROCM_VRAM_TOTAL_KEY,))
         used_b = extract_int(val, (_ROCM_VRAM_USED_KEY,))
