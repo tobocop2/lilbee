@@ -2433,7 +2433,10 @@ class TestEnsureChatModelWiring:
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
             "answer text", "\n\nSour", "ces:\n", "1. [doc.pdf](file:///kb/doc.pdf), page 2"
         )
-        term = Console(force_terminal=True, width=200)
+        # legacy_windows=False: rich emits OSC 8 only off the legacy path, and a
+        # Windows runner's captured stdout is not a console handle, so
+        # force_terminal alone leaves the link stripped there.
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
         with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
             result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0, result.output
