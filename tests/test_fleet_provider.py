@@ -3283,7 +3283,9 @@ class TestLaunchStateRoundTrip:
 # ── The engine acquisition ladder ───────────────────────────────────
 
 
-def _engine_state_file(engine_dir: Path, group: str, *, pin: str, model: str, role: str) -> Path:
+def _engine_state_file(
+    engine_dir: Path, group: str, *, pin: str, model: str, role: str, ctx: int = 0, slots: int = 1
+) -> Path:
     """A live engine's state record as another process would have written it."""
     import json
 
@@ -3303,6 +3305,8 @@ def _engine_state_file(engine_dir: Path, group: str, *, pin: str, model: str, ro
                         "argv": ["/bin/llama-server"],
                         "env_overrides": {},
                         "model": model,
+                        "ctx": ctx,
+                        "slots": slots,
                     }
                 ],
                 "engine_pin": pin,
@@ -3409,7 +3413,9 @@ def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Pa
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "_placeable_wanted", lambda: set())  # nothing placeable
+    monkeypatch.setattr(
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0)
+    )  # nothing placeable
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
     p = FleetProvider()
@@ -3953,6 +3959,80 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     holder.release_and_check_last()
 
 
+def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Same model, live window covers the demand: attach, never restart.
+
+    A sibling process that computed a different auto ctx target (its RAM tier
+    differs) wrote its pin with that value. The co-tenant's own plan fits inside
+    the running per-slot window, so it must bind instead of tearing the warm
+    engine down and rebooting it twice per one-shot ask.
+    """
+    from lilbee.providers.fleet import binary as binary_mod
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    monkeypatch.setattr(cfg, "num_ctx", None, raising=False)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 49152, raising=False)
+    sibling_pin = binary_mod.engine_pin()
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 12288, raising=False)
+    own_pin = binary_mod.engine_pin()
+
+    swap, machine, _built = _install_ladder(
+        monkeypatch,
+        tmp_path,
+        launches=[_fake_launch(WorkerRole.CHAT, model="m-chat", ctx=12288)],
+        pin=own_pin,
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(
+        machine, "chat", pin=sibling_pin, model="m-chat", role="chat", ctx=12288, slots=4
+    )
+    holder = hold_user_lock(machine, pid=999_888)  # the sibling still serves from it
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    try:
+        assert p._ensure_fleet() is True
+        assert len(swap.binds) == 1  # attached to the running engine
+        assert swap.started == [] and stopped == []  # never restarted it
+    finally:
+        holder.release_and_check_last()
+
+
+def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pinned window larger than the live per-slot ctx still restarts the engine."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(
+        monkeypatch,
+        tmp_path,
+        launches=[_fake_launch(WorkerRole.CHAT, model="m-chat", ctx=16384)],
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    monkeypatch.setattr(cfg, "num_ctx", 16384, raising=False)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat", ctx=8192, slots=1)
+    holder = hold_user_lock(machine, pid=999_888)
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    try:
+        assert p._ensure_fleet() is True
+        assert swap.binds == []  # too small to adopt
+        assert stopped == [machine]  # replaced in place with the larger window
+        assert swap.started  # rebuilt fresh
+    finally:
+        holder.release_and_check_last()
+
+
 def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch) -> None:
     """The bind path handles an undecodable contract itself, not by call ordering.
 
@@ -4068,7 +4148,7 @@ def _connection_error() -> Exception:
     return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
 
 
-def test_placeable_wanted_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
+def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
     # A role dropped by co-placement gets no launch, so it is not wanted; bind
     # then matches a running engine instead of rebuilding it every start. Chat is
     # configured but the plan below places only embed+rerank (chat could not
@@ -4087,13 +4167,13 @@ def test_placeable_wanted_drops_roles_the_plan_does_not_place(monkeypatch) -> No
         ),
     )
 
-    assert prov_mod._placeable_wanted() == {
+    assert prov_mod._placeable_demand().pairs == {
         (WorkerRole.EMBED, "m-embed"),
         (WorkerRole.RERANK, "m-rerank"),
     }  # chat placed nowhere -> not wanted
 
 
-def test_placeable_wanted_is_empty_without_an_engine_binary(monkeypatch) -> None:
+def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     def _no_binary() -> planning_mod.FleetPlan:
@@ -4101,10 +4181,10 @@ def test_placeable_wanted_is_empty_without_an_engine_binary(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
 
-    assert prov_mod._placeable_wanted() == set()
+    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0)
 
 
-def test_placeable_wanted_propagates_a_real_planning_failure(monkeypatch) -> None:
+def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     def _wedged() -> planning_mod.FleetPlan:
@@ -4113,7 +4193,7 @@ def test_placeable_wanted_propagates_a_real_planning_failure(monkeypatch) -> Non
     monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
 
     with pytest.raises(ProviderError, match="wedged"):
-        prov_mod._placeable_wanted()
+        prov_mod._placeable_demand()
 
 
 def test_release_holds_drops_membership_without_stopping_engines(monkeypatch) -> None:

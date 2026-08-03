@@ -1,6 +1,6 @@
 """The bind contract: models + engine pin decide sharing; derived values do not."""
 
-from lilbee.providers.fleet.contract import contract_matches
+from lilbee.providers.fleet.contract import chat_ctx_covers, contract_matches
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import WorkerRole
@@ -68,6 +68,37 @@ def test_undecodable_contract_refuses() -> None:
 def test_empty_engine_contract_refuses() -> None:
     state = _state(pin="pin-a")
     assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+
+
+def test_chat_ctx_covers_adopts_a_larger_live_window() -> None:
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=12288)]
+    assert chat_ctx_covers(launches, 8192) is True
+
+
+def test_chat_ctx_covers_accepts_an_equal_window() -> None:
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=12288)]
+    assert chat_ctx_covers(launches, 12288) is True
+
+
+def test_chat_ctx_covers_refuses_a_window_smaller_than_the_demand() -> None:
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=8192)]
+    assert chat_ctx_covers(launches, 12288) is False
+
+
+def test_chat_ctx_covers_accepts_with_no_demand() -> None:
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=8192)]
+    assert chat_ctx_covers(launches, 0) is True
+
+
+def test_chat_ctx_covers_accepts_an_unrecorded_live_window() -> None:
+    # A record from before ctx was persisted carries 0; adopt, never restart.
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=0)]
+    assert chat_ctx_covers(launches, 12288) is True
+
+
+def test_chat_ctx_covers_ignores_non_chat_launches() -> None:
+    launches = [_launch(WorkerRole.EMBED, "m-embed", ctx=512)]
+    assert chat_ctx_covers(launches, 12288) is True
 
 
 def test_empty_wanted_binds_a_pin_equal_nonempty_engine() -> None:
