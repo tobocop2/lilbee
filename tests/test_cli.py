@@ -2375,6 +2375,37 @@ class TestEnsureChatModelWiring:
         )
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_render_as_terminal_hyperlinks(self, mock_sync, mock_svc):
+        """On a terminal, markdown source links become OSC 8 hyperlinks so they
+        are clickable even when the path wraps across lines. The marker split
+        across tokens must still be detected."""
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer text", "\n\nSour", "ces:\n", "1. [doc.pdf](file:///kb/doc.pdf), page 2"
+        )
+        term = Console(force_terminal=True, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "answer text" in out
+        assert "\x1b]8;" in out and "file:///kb/doc.pdf" in out  # OSC 8 hyperlink
+        assert "doc.pdf" in out
+        assert "](file:///" not in out  # raw markdown replaced
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_stay_markdown_when_piped(self, mock_sync, mock_svc):
+        """Piped output keeps the raw markdown link so consumers still get the
+        URL (OSC 8 would silently drop it)."""
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)"
+        )
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_falls_back_to_installed_chat_model_without_persisting(self, mock_sync, mock_svc):
         """A stale persisted ref swaps to an installed model for this run only:
         the answer flows, the notice goes to stderr, and config.toml is never

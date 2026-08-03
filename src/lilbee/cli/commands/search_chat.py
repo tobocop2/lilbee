@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -111,6 +113,55 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
             f"using installed {canon.effective!r} for this run.",
             style=theme.WARNING,
         )
+
+
+_MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")
+
+
+def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
+    """Stream an answer to stdout verbatim, then render its Sources block.
+
+    Tokens print with markup off: model text is data, and Rich markup would eat
+    the ``[label]`` of every markdown source link (and let the model restyle the
+    terminal). On a terminal the Sources block's ``[label](file://...)`` links
+    become OSC 8 hyperlinks, clickable even when the path wraps; piped output
+    keeps the raw markdown so consumers still see the URL. The marker can span
+    tokens, so a marker-sized tail is held back until it can be classified.
+    """
+    from rich.markup import escape
+
+    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
+
+    buf = ""
+    hold = len(SOURCES_BLOCK_MARKER)
+    in_sources = False
+    for token in stream:
+        on_first_token()
+        buf += token.content
+        if in_sources:
+            continue
+        if SOURCES_BLOCK_MARKER in buf:
+            head, _, buf = buf.partition(SOURCES_BLOCK_MARKER)
+            console.print(head, end="", markup=False)
+            in_sources = True
+        elif len(buf) > hold:
+            console.print(buf[:-hold], end="", markup=False)
+            buf = buf[-hold:]
+    if not in_sources:
+        console.print(buf, markup=False)
+        return
+    console.print(SOURCES_BLOCK_MARKER, end="", markup=False)
+    if not console.is_terminal:
+        console.print(buf, markup=False)
+        return
+    parts: list[str] = []
+    last = 0
+    for m in _MD_FILE_LINK_RE.finditer(buf):
+        parts.append(escape(buf[last : m.start()]))
+        parts.append(f"[link={m.group(2)}]{escape(m.group(1))}[/link]")
+        last = m.end()
+    parts.append(escape(buf[last:]))
+    console.print("".join(parts), highlight=False)
 
 
 def _reject_if_empty(value: str, label: str) -> None:
@@ -255,12 +306,14 @@ def ask(
         err = announce_cold_start(WorkerRole.CHAT, str(cfg.chat_model))
         stream = get_services().searcher.ask_stream(question, chunk_type=chunk_type)
         first = True
-        for token in stream:
+
+        def _on_first_token() -> None:
+            nonlocal first
             if first:
                 announce_ready(err, WorkerRole.CHAT)
                 first = False
-            console.print(token.content, end="")
-        console.print()
+
+        _print_answer_stream(stream, on_first_token=_on_first_token)
     except EmbeddingModelMismatchError as exc:
         _exit_embedding_mismatch(exc)
     except (RuntimeError, ProviderError) as exc:
