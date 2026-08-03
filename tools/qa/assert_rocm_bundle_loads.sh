@@ -14,8 +14,9 @@ bundle_dir="${1:?the wheel bin/ directory is required}"
 image="ubuntu:22.04"
 
 # The wheel's host contract: what must match the running kernel driver rather than
-# travel with the userspace. Everything else ROCm needs is in the bundle.
-host_packages="libnuma1 libdrm2 libdrm-amdgpu1 libelf1"
+# travel with the userspace. Everything else ROCm needs is in the bundle, including
+# libnuma, which the flatpak runtime and minimal distros do not ship.
+host_packages="libdrm2 libdrm-amdgpu1 libelf1"
 
 # binutils supplies the readelf the failure path uses to report runpaths.
 diagnostic_packages="binutils"

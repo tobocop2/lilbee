@@ -74,9 +74,10 @@ _EMBED_N_SEQ_MAX = 64
 # path packs sub-batches without a /tokenize round-trip per input. The factor is
 # held below the corpus average (data.extract.chunk.CHARS_PER_TOKEN, 4 for Latin text)
 # so the estimate over-counts tokens and a sub-batch never packs past the
-# server's n_batch (== token_cap). Rerank does not estimate: its
-# query</s></s>candidate pairs are token-dense (the separator is several tokens
-# in a few chars), so char estimation would under-count and over-pack.
+# server's n_batch (== token_cap). Rerank pairs are token-dense (the separator
+# is several tokens in a few chars), so an under-count can slip an over-cap
+# pair through; the rerank path re-truncates exactly on the server's overflow
+# error instead of paying a /tokenize round trip per pair up front.
 _EMBED_EST_CHARS_PER_TOKEN = 3
 # llama-swap's error body when the spawned llama-server exited before serving.
 _UPSTREAM_DIED_MARKER = "exited prematurely"
@@ -970,17 +971,46 @@ class LlamaServerClient:
         pairs to ``/v1/embeddings`` and read each item's first embedding value as the
         score, so the ``/v1/rerank`` template-dependency (and its zero-output failure
         modes) is moot.
+
+        All pairs go out in one request per ``_EMBED_N_SEQ_MAX`` sequences: the
+        server queues one task per input, so splitting a query-time pool into
+        per-pair requests only adds HTTP round trips.
         """
         if not candidates:
             return []
         if self._rerank_mode is RerankMode.LLM:
             return self._rerank_llm(query, candidates)
-        pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
+        pairs = [
+            self._fit_estimated(f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}")
+            for candidate in candidates
+        ]
         scores: list[float] = []
-        for sub_batch in self._truncate_and_subbatch(pairs, estimate=False):
-            data = self._embeddings_call(sub_batch)
+        for start in range(0, len(pairs), _EMBED_N_SEQ_MAX):
+            data = self._rerank_batch(pairs[start : start + _EMBED_N_SEQ_MAX])
             scores.extend(_rerank_score(item) for item in data)
         return scores
+
+    def _fit_estimated(self, text: str) -> str:
+        """Truncate *text* to the token cap only when its char estimate exceeds it."""
+        if self._token_cap is None:
+            return text
+        return self._fit_input(text, self._token_cap, estimate=True)[0]
+
+    def _rerank_batch(self, batch: list[str]) -> list[dict[str, Any]]:
+        """Score one rerank batch, redoing it with exact truncation on overflow.
+
+        The char estimate under-counts token-dense pairs, so an over-cap pair
+        can slip through untruncated; the server rejects it as CONTEXT_OVERFLOW
+        and the batch is redone with exact server-side tokenization.
+        """
+        try:
+            return self._embeddings_call(batch)
+        except ProviderError as exc:
+            if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or self._token_cap is None:
+                raise
+            cap = self._token_cap
+            exact = [self._fit_input(text, cap, estimate=False)[0] for text in batch]
+            return self._embeddings_call(exact)
 
     def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
         """Score each candidate by an LLM's yes/no first-token logprob.
@@ -1058,15 +1088,14 @@ class LlamaServerClient:
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
         request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences -- without this, a corpus of many small chunks packs one request
-        past the server's batch limit and the server returns a 500. No cap
+        sequences, bounding per-request size and the busy-retry window. No cap
         (chat/vision) sends a single batch untouched.
 
-        When ``estimate`` is set (the embed path) the per-input token count comes
-        from :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
+        When ``estimate`` is set the per-input token count comes from
+        :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
         rare input whose estimate exceeds the cap -- eliminating a round-trip per
-        chunk during bulk ingest. Rerank passes ``estimate=False`` to tokenize
-        every pair exactly, since its pairs are too token-dense to estimate.
+        chunk during bulk ingest. ``estimate=False`` (the overflow redo) tokenizes
+        every input exactly.
         """
         if self._token_cap is None:
             return [texts]

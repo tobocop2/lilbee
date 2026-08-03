@@ -115,13 +115,6 @@ class TestPickDefaultModel:
         result = models.pick_default_model(32.0)
         assert result.min_ram_gb <= 32.0
 
-    def test_unattended_pick_is_capped_below_the_largest_fitting(self):
-        """A piped run must not be handed a 68 GB download on a big host."""
-        uncapped = models.pick_default_model(128.0)
-        capped = models.pick_default_model(128.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
-        assert uncapped.size_gb > models._UNATTENDED_MAX_SIZE_GB
-        assert capped.size_gb <= models._UNATTENDED_MAX_SIZE_GB
-
     def test_raises_when_the_catalog_is_empty(self, monkeypatch):
         """HuggingFace unreachable must surface as a message, not an IndexError."""
         monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
@@ -287,27 +280,16 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
     @mock.patch.object(models, "list_installed_models", return_value=[])
-    def test_non_interactive_auto_picks(
+    def test_non_interactive_errors_instead_of_pulling(
         self, _mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull
     ):
-        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
-            pulled = models.ensure_chat_model()
-        expected = models.pick_default_model(32.0, max_size_gb=models._UNATTENDED_MAX_SIZE_GB)
-        mock_pull.assert_called_once_with(expected.ref, console=None)
-        assert pulled == expected.ref
-        assert expected.size_gb <= models._UNATTENDED_MAX_SIZE_GB
-
-    @mock.patch.object(models, "pull_with_progress")
-    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
-    @mock.patch.object(models, "list_installed_models", return_value=[])
-    def test_non_interactive_low_ram(
-        self, _mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull
-    ):
-        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
+        """No terminal to prompt on means error with guidance, never a silent download."""
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+            pytest.raises(RuntimeError, match="lilbee model pull"),
+        ):
             models.ensure_chat_model()
-        expected = models.pick_default_model(8.0)
-        mock_pull.assert_called_once_with(expected.ref, console=None)
+        mock_pull.assert_not_called()
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -328,7 +310,8 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "list_installed_models", return_value=[])
     def test_insufficient_disk_raises(self, _mock_list, mock_vram_estimate, mock_disk_estimate):
         with (
-            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value="1"),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
             models.ensure_chat_model()
@@ -339,8 +322,9 @@ class TestEnsureChatModel:
     def test_non_chat_only_install_still_pulls(self, mock_ram, mock_disk, mock_pull):
         """Regression (bb-ziks.67): an installed reranker/vision model is not a chat
         model, so the real (task-filtered) list_installed_models excludes it and the
-        bootstrap still pulls one rather than short-circuiting. Drives the real
-        list_installed_models through reclassify_by_name (no mock of the classifier)."""
+        bootstrap still engages the picker rather than short-circuiting. Drives the
+        real list_installed_models through reclassify_by_name (no mock of the
+        classifier)."""
         from lilbee.catalog.types import ModelTask
 
         # A manifest that declares task="chat" but whose ref names a reranker; the
@@ -349,12 +333,13 @@ class TestEnsureChatModel:
         with (
             mock.patch.object(models, "ModelRegistry") as mock_registry,
             mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
-            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value=""),
         ):
             mock_registry.return_value.list_installed.return_value = [reranker]
             # The reranker is excluded, so the chat-task list is empty...
             assert models.list_installed_models() == []
-            # ...and the bootstrap therefore pulls a real chat model.
+            # ...and the bootstrap therefore prompts for a real chat model.
             pulled = models.ensure_chat_model()
         assert pulled == models.pick_default_model(16.0).ref
         mock_pull.assert_called_once()

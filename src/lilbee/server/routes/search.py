@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import NoReturn
+from typing import Annotated, NoReturn
 
 from litestar import get, post
 from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, ValidationException
-from litestar.params import Parameter
+from litestar.params import FromQuery, QueryParameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
@@ -147,9 +147,9 @@ def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) 
 
 @get("/api/search")
 async def search_route(
-    q: str = Parameter(query="q"),
-    top_k: int = Parameter(query="top_k", default=5, ge=1, le=100),
-    chunk_type: str | None = Parameter(query="chunk_type", default=None),
+    q: FromQuery[str],
+    top_k: Annotated[int, QueryParameter(ge=1, le=100)] = 5,
+    chunk_type: FromQuery[str | None] = None,
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     try:
