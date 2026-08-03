@@ -419,6 +419,24 @@ def apply_settings_update(
     )
 
 
+def apply_ephemeral_model_swap(field: str, ref: str) -> None:
+    """Apply a chat/embedding model swap to cfg for this process only.
+
+    Performs the same embedding side effects as the persisted path (legacy
+    store meta pinned under the OLD ref first, then embedding_dim re-derived
+    for the new one) so the mismatch gate and table width stay correct, but
+    never writes config.toml.
+    """
+    if field == "embedding_model":
+        _pin_legacy_store_meta()
+        dim = _embedder_dim_from_gguf(ref)
+        setattr(cfg, field, ref)
+        if dim is not None:
+            cfg.embedding_dim = dim
+        return
+    setattr(cfg, field, ref)
+
+
 def _pin_legacy_store_meta() -> None:
     """Pin the current embedding ref into store meta before swapping it."""
     # heavy: ~100ms (lance + store init); only paid when embedding_model is in the batch.

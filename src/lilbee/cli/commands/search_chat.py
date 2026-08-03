@@ -16,6 +16,7 @@ from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
+    chat_model_overridden,
     console,
     data_dir_option,
     global_option,
@@ -94,6 +95,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     """
     from rich.console import Console
 
+    from lilbee.app.settings import apply_ephemeral_model_swap
     from lilbee.modelhub.model_manager import (
         ValidationResult,
         canonicalize_chat_model,
@@ -107,7 +109,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     for canon, field, label in checks:
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
             continue
-        setattr(cfg, field, canon.effective)
+        apply_ephemeral_model_swap(field, canon.effective)
         err.print(
             f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
             f"using installed {canon.effective!r} for this run.",
@@ -135,18 +137,32 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     buf = ""
     hold = len(SOURCES_BLOCK_MARKER)
     in_sources = False
-    for token in stream:
-        on_first_token()
-        buf += token.content
-        if in_sources:
-            continue
-        if SOURCES_BLOCK_MARKER in buf:
-            head, _, buf = buf.partition(SOURCES_BLOCK_MARKER)
-            console.print(head, end="", markup=False)
-            in_sources = True
-        elif len(buf) > hold:
-            console.print(buf[:-hold], end="", markup=False)
-            buf = buf[-hold:]
+    flushed = False
+    try:
+        for token in stream:
+            on_first_token()
+            if token.is_reasoning:
+                # Reasoning is not filtered by StreamingCitationFilter, so a
+                # thinking trace drafting a Sources: list must never trip the
+                # marker scan; it prints live and bypasses the buffer.
+                console.print(token.content, end="", markup=False)
+                continue
+            buf += token.content
+            if in_sources:
+                continue
+            if SOURCES_BLOCK_MARKER in buf:
+                head, _, buf = buf.partition(SOURCES_BLOCK_MARKER)
+                console.print(head, end="", markup=False)
+                in_sources = True
+            elif len(buf) > hold:
+                console.print(buf[:-hold], end="", markup=False)
+                buf = buf[-hold:]
+        flushed = True
+    finally:
+        if not flushed and buf and not in_sources:
+            # An exception escaped the stream mid-answer: the held tail is
+            # real answer text; print it before the error surfaces.
+            console.print(buf, markup=False)
     if not in_sources:
         console.print(buf, markup=False)
         return
@@ -278,7 +294,7 @@ def ask(
         pulled = ensure_chat_model()
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
-        _swap_stale_models_to_installed(chat_overridden=model is not None)
+        _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:

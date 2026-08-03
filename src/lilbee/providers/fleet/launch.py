@@ -27,6 +27,12 @@ class InstanceLaunch:
     weights_bytes: int = 0  # model file size on disk; scales the cold-load timeout
     slots: int = 1  # --parallel continuous-batching slots; chat concurrency capacity
     ctx: int = 0  # per-slot context the server runs with; what a client should fit to
+    # The chat ctx target the builder planned against (num_ctx pin else
+    # chat_n_ctx_target); 0 for non-chat roles and pre-field records. A
+    # co-tenant whose target this covers adopts the engine even when the
+    # served window is smaller: the same planner aiming at least as high
+    # already achieved this window, so a rebuild cannot beat it.
+    built_ctx_target: int = 0
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
     # GPU bytes placement charged this instance. Carried so the engine's own
@@ -58,6 +64,7 @@ class InstanceLaunch:
             "weights_bytes": self.weights_bytes,
             "slots": self.slots,
             "ctx": self.ctx,
+            "built_ctx_target": self.built_ctx_target,
             "replica": self.replica,
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
             "est_vram_bytes": self.est_vram_bytes,
@@ -83,6 +90,7 @@ class InstanceLaunch:
                 str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
             },
             ctx=int(payload.get("ctx") or 0),
+            built_ctx_target=int(payload.get("built_ctx_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
         )

@@ -6,9 +6,16 @@ from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import WorkerRole
 
 
-def _launch(role: WorkerRole, model: str, *, ctx: int = 0) -> InstanceLaunch:
+def _launch(
+    role: WorkerRole, model: str, *, ctx: int = 0, built_ctx_target: int = 0
+) -> InstanceLaunch:
     return InstanceLaunch(
-        role=role, argv=["/bin/llama-server"], env_overrides={}, model=model, ctx=ctx
+        role=role,
+        argv=["/bin/llama-server"],
+        env_overrides={},
+        model=model,
+        ctx=ctx,
+        built_ctx_target=built_ctx_target,
     )
 
 
@@ -88,6 +95,30 @@ def test_chat_ctx_covers_refuses_a_window_smaller_than_the_demand() -> None:
 def test_chat_ctx_covers_accepts_with_no_demand() -> None:
     launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=8192)]
     assert chat_ctx_covers(launches, 0) is True
+
+
+def test_chat_ctx_covers_adopts_when_builder_aimed_at_least_as_high() -> None:
+    """A window below the demand still covers when the builder's target reached
+    it: the same planner already aimed that high and achieved this window, so
+    a replace would rebuild the identical window in a loop (model ceiling or
+    tight cards)."""
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=16384, built_ctx_target=24576)]
+    assert chat_ctx_covers(launches, 24576) is True
+
+
+def test_chat_ctx_covers_refuses_when_builder_aimed_lower() -> None:
+    """A builder that aimed lower than this demand may have left window on the
+    table (the multi-GPU deflation case); refusing rebuilds at the higher
+    target exactly once, and the new record then covers."""
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=16384, built_ctx_target=16384)]
+    assert chat_ctx_covers(launches, 65536) is False
+
+
+def test_chat_ctx_covers_refuses_pre_field_records_below_demand() -> None:
+    """Old records without built_ctx_target keep the plain window rule: one
+    rebuild after upgrade records the target and converges."""
+    launches = [_launch(WorkerRole.CHAT, "m-chat", ctx=16384)]
+    assert chat_ctx_covers(launches, 24576) is False
 
 
 def test_chat_ctx_covers_accepts_an_unrecorded_live_window() -> None:

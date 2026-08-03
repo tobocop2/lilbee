@@ -421,7 +421,8 @@ class TestAsk:
 
 
 class TestDiagnosticsRouting:
-    """ask/search/chat stdout stays answer-only; diagnostics go to logs/cli.log."""
+    """ask/search stdout stays answer-only; diagnostics go to logs/cli.log.
+    chat is exempt: it hands off to the TUI, which owns its own logging."""
 
     @pytest.fixture(autouse=True)
     def _reset_warning_capture(self):
@@ -2404,6 +2405,73 @@ class TestEnsureChatModelWiring:
         result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0, result.output
         assert "[doc.pdf](file:///kb/doc.pdf)" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_root_position_model_override_is_never_swapped(self, mock_sync, mock_svc):
+        """--model before the subcommand binds via the app callback; the swap
+        guard must see it there too, not only on ask's own parameter."""
+        from tests.conftest import install_fake_model
+
+        install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(
+                app, ["--model", "acme/Missing-GGUF/missing.gguf", "ask", "test"]
+            )
+        assert cfg.chat_model == "acme/Missing-GGUF/missing.gguf"
+        mock_apply.assert_not_called()
+        assert "using installed" not in result.stderr
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_reasoning_tokens_stream_live_and_never_latch_sources(self, mock_sync, mock_svc):
+        """A thinking trace containing the Sources marker must not flip the
+        printer into buffering; reasoning prints live and the real block still
+        renders afterward."""
+        from lilbee.retrieval.reasoning import StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                StreamToken(content="thinking\n\nSources:\ndraft plan\n", is_reasoning=True),
+                StreamToken(content="real answer", is_reasoning=False),
+                StreamToken(
+                    content="\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)", is_reasoning=False
+                ),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "real answer" in result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_embedding_swap_pins_meta_and_rederives_dim(self, mock_sync, mock_svc):
+        """The invocation-only embedding swap performs the persisted path's side
+        effects: legacy meta pinned under the old ref first, embedding_dim
+        re-derived for the new one; config.toml still untouched."""
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/embedder-GGUF", "embed.gguf", "embedding")
+        cfg.embedding_model = "gone/embedder-GGUF/gone.gguf"
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings._pin_legacy_store_meta") as mock_pin,
+            mock.patch("lilbee.app.settings._embedder_dim_from_gguf", return_value=1024),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert cfg.embedding_model == ref
+        assert cfg.embedding_dim == 1024
+        mock_pin.assert_called_once()
+        mock_apply.assert_not_called()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_falls_back_to_installed_chat_model_without_persisting(self, mock_sync, mock_svc):

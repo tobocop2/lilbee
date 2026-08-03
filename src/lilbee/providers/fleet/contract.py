@@ -45,14 +45,18 @@ def chat_ctx_covers(launches: Iterable[InstanceLaunch], demanded_ctx: int) -> bo
 
     ``launches`` are the running engine's recorded launches. A zero demand, no
     chat launch, or a record without a positive chat ctx never refuses: derived
-    values are adopted from the running engine. A refusal sends the ladder to
-    its replace-or-overflow decision.
+    values are adopted from the running engine. A window below the demand still
+    covers when the record's ``built_ctx_target`` reaches the demand: the same
+    planner aimed at least as high and achieved this window, so replacing the
+    engine would rebuild the same window in a loop. A refusal sends the ladder
+    to its replace-or-overflow decision.
     """
-    live = min(
-        (launch.ctx for launch in launches if launch.role is WorkerRole.CHAT and launch.ctx > 0),
-        default=0,
-    )
-    return demanded_ctx <= 0 or live <= 0 or demanded_ctx <= live
+    chat = [launch for launch in launches if launch.role is WorkerRole.CHAT and launch.ctx > 0]
+    live = min((launch.ctx for launch in chat), default=0)
+    if demanded_ctx <= 0 or live <= 0 or demanded_ctx <= live:
+        return True
+    built_target = min((launch.built_ctx_target for launch in chat), default=0)
+    return built_target > 0 and demanded_ctx <= built_target
 
 
 def contract_matches(state: SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:

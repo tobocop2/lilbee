@@ -94,6 +94,22 @@ def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
         _apply_data_root(Path(data_env))
 
 
+class _OverrideState:
+    """Which one-off CLI overrides were given this invocation, wherever the
+    flag sat (typer binds --model both before and after the subcommand)."""
+
+    def __init__(self) -> None:
+        self.chat_model = False
+
+
+_override_state = _OverrideState()
+
+
+def chat_model_overridden() -> bool:
+    """Whether --model was passed anywhere on this invocation's command line."""
+    return _override_state.chat_model
+
+
 def apply_overrides(
     data_dir: Path | None = None,
     model: str | None = None,
@@ -114,6 +130,8 @@ def apply_overrides(
 
     _resolve_data_root(data_dir, use_global)
 
+    if model is not None:
+        _override_state.chat_model = True
     overrides: dict[str, Any] = {
         "chat_model": model,
         "temperature": temperature,
@@ -145,6 +163,7 @@ def _default(
     ),
 ) -> None:
     """Start interactive chat when no command is given."""
+    _override_state.chat_model = False
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
