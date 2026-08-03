@@ -1329,13 +1329,18 @@ async def test_spinner_tick_updates_the_loading_more_hint() -> None:
     """
     from textual.widgets import Static
 
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        hint = screen._grid_container.query_one(".scroll-hint", Static)
+        # The hint mounts via the compose cascade, which needs more than one
+        # tick on the slower runners.
+        await wait_until(pilot, lambda: bool(screen.query("#grid-chat .scroll-hint")))
+        hint = screen.query_one("#grid-chat .scroll-hint", Static)
 
         screen._loading_more = True
         screen._spinner_frame = 0
