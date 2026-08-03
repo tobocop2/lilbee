@@ -14,6 +14,7 @@ from typing import Any
 from litestar import Response, get, patch, post
 from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import NotFoundException, ValidationException
+from litestar.params import FromQuery
 from litestar.response import Stream
 from litestar.status_codes import HTTP_202_ACCEPTED
 from pydantic import ValidationError
@@ -85,7 +86,7 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
 
 @get("/api/source")
 async def source_content_route(
-    source: str, raw: bool = False
+    source: FromQuery[str], raw: FromQuery[bool] = False
 ) -> SourceContentResponse | Response[bytes]:
     """Return stored source file as JSON (``raw=0``) or raw bytes (``raw=1``)."""
     try:

@@ -6,9 +6,11 @@ and what their machine fits, which is host inventory.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
-from litestar.params import Parameter
+from litestar.params import FromPath, FromQuery, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
@@ -92,14 +94,14 @@ async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
 
 @get("/api/models/catalog")
 async def models_catalog_route(
-    task: str | None = Parameter(query="task", default=None),
-    search: str = Parameter(query="search", default=""),
-    size: str | None = Parameter(query="size", default=None),
-    installed: bool | None = Parameter(query="installed", default=None),
-    featured: bool | None = Parameter(query="featured", default=None),
-    sort: str = Parameter(query="sort", default="featured"),
-    limit: int = Parameter(query="limit", default=20, ge=1, le=1000),
-    offset: int = Parameter(query="offset", default=0, ge=0),
+    task: FromQuery[str | None] = None,
+    search: FromQuery[str] = "",
+    size: FromQuery[str | None] = None,
+    installed: FromQuery[bool | None] = None,
+    featured: FromQuery[bool | None] = None,
+    sort: FromQuery[str] = "featured",
+    limit: Annotated[int, QueryParameter(ge=1, le=1000)] = 20,
+    offset: Annotated[int, QueryParameter(ge=0)] = 0,
 ) -> ModelsCatalogResponse:
     """Browse the model catalog with optional filters."""
     try:
@@ -151,7 +153,7 @@ async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
 
 @delete("/api/models/{model:str}", status_code=200)
 async def models_delete_route(
-    model: str, source: str = ModelSource.NATIVE.value
+    model: FromPath[str], source: FromQuery[str] = ModelSource.NATIVE.value
 ) -> ModelsDeleteResponse:
     """Delete a model from the specified source."""
     try:

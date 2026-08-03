@@ -14,7 +14,7 @@ from typing import Any
 from litestar import MediaType, Response, delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.openapi.datastructures import ResponseSpec
-from litestar.params import Parameter
+from litestar.params import FromPath, FromQuery
 from litestar.response import Stream
 from litestar.status_codes import HTTP_409_CONFLICT
 
@@ -107,7 +107,7 @@ async def wiki_drafts_route() -> list[DraftInfoResponse]:
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
-async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
+async def wiki_draft_diff_route(slug: FromPath[str]) -> WikiDraftDiffResponse:
     """Return the unified diff of a draft against its published counterpart.
 
     The ``diff`` action prefix precedes the slug because Litestar's
@@ -128,7 +128,7 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
 
 
 @post("/api/wiki/drafts/accept/{slug:path}")
-async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
+async def wiki_draft_accept_route(slug: FromPath[str]) -> WikiDraftAcceptResponse:
     """Accept a draft: overwrite the published page and re-index its chunks.
 
     See :func:`wiki_draft_diff_route` for the action-prefix rationale.
@@ -150,7 +150,7 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
 
 
 @delete("/api/wiki/drafts/{slug:path}", status_code=200)
-async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
+async def wiki_draft_reject_route(slug: FromPath[str]) -> WikiDraftRejectResponse:
     """Reject a draft: delete the draft file without touching the published page."""
     _require_wiki()
     slug = slug.lstrip("/")
@@ -166,7 +166,7 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
 
 @get("/api/wiki/citations")
 async def wiki_citations_reverse_route(
-    source: str = Parameter(query="source", default=""),
+    source: FromQuery[str] = "",
 ) -> list[WikiCitationRecord]:
     """Reverse citation lookup: which wiki pages cite a given source."""
     _require_wiki()
@@ -178,7 +178,7 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/{slug:path}")
-async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
+async def wiki_read_route(slug: FromPath[str]) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()
     slug = slug.lstrip("/")
@@ -211,7 +211,7 @@ async def _citations_for_slug(slug: str) -> WikiCitationsResult:
 
 @post("/api/wiki/lint")
 async def wiki_lint_route(
-    wiki_source: str = Parameter(query="wiki_source", default=""),
+    wiki_source: FromQuery[str] = "",
 ) -> WikiLintResult:
     """Lint the wiki; an empty ``wiki_source`` lints every page.
 
@@ -268,7 +268,7 @@ async def wiki_index_route() -> WikiIndexResult:
 
 
 @post("/api/wiki/generate/{slug:path}")
-async def wiki_generate_route(slug: str) -> WikiGenerateResult:
+async def wiki_generate_route(slug: FromPath[str]) -> WikiGenerateResult:
     """Generate one indexed page. Costs a single LLM call.
 
     404 when the slug names nothing in the index, 409 when the index entry is
@@ -320,7 +320,7 @@ async def wiki_wipe_route() -> WikiWipeResult:
     },
 )
 async def wiki_build_route(
-    dry_run: bool = Parameter(query="dry_run", default=False),
+    dry_run: FromQuery[bool] = False,
 ) -> Stream | Response[WikiBuildDryRunResult]:
     """Build the concept and entity wiki across all ingested sources.
 
