@@ -1,4 +1,4 @@
-"""Tests for the ROCm/HIP utilization backend (amd-smi + rocm-smi fallback)."""
+"""Tests for the ROCm/HIP utilization backend (rocm-smi preferred, amd-smi fallback)."""
 
 from __future__ import annotations
 
@@ -45,6 +45,45 @@ _ROCM_SMI_JSON_VRAM = (
     '"VRAM Total Memory (B)": "17179869184",'
     '"VRAM Total Used Memory (B)": "2147483648"'
     "}}"
+)
+
+# Captured on an MI300X (AMDSMI 26.0.2 / ROCm 7.0.2): modern amd-smi wraps the
+# device list in a top-level "gpu_data" key, readings are value-wrapped under
+# category blocks, edge temp is "N/A" (only hotspot/mem exist), and no power
+# cap is exposed anywhere in metric or static output.
+_AMD_SMI_JSON_GPU_DATA_MI300X = (
+    '{"gpu_data": [{"gpu": 0,'
+    ' "usage": {"gfx_activity": {"value": 0, "unit": "%"},'
+    ' "umc_activity": {"value": 0, "unit": "%"}, "mm_activity": "N/A"},'
+    ' "power": {"socket_power": {"value": 158, "unit": "W"},'
+    ' "gfx_voltage": "N/A", "power_management": "ENABLED"},'
+    ' "temperature": {"edge": "N/A", "hotspot": {"value": 45, "unit": "C"},'
+    ' "mem": {"value": 38, "unit": "C"}}}]}'
+)
+
+# Captured on an MI300X (rocm-smi, same host): socket power spelling, 750W cap,
+# and no edge temp sensor at all (junction and memory only).
+_ROCM_SMI_JSON_REAL_MI300X = (
+    '{"card0": {"Temperature (Sensor junction) (C)": "45.0",'
+    ' "Temperature (Sensor memory) (C)": "38.0",'
+    ' "Max Graphics Package Power (W)": "750.0",'
+    ' "Current Socket Graphics Package Power (W)": "159.0",'
+    ' "GPU use (%)": "0",'
+    ' "VRAM Total Memory (B)": "205822885888",'
+    ' "VRAM Total Used Memory (B)": "299687936"}}'
+)
+
+# Captured on an RX 9060 XT (ROCm 7 / Bazzite): busy flag pegs at 100 whenever a
+# compute context is resident, so power draw is the activity signal.
+_ROCM_SMI_JSON_REAL_9060XT = (
+    '{"card0": {"Temperature (Sensor edge) (C)": "39.0",'
+    ' "Temperature (Sensor junction) (C)": "41.0",'
+    ' "Temperature (Sensor memory) (C)": "61.0",'
+    ' "Max Graphics Package Power (W)": "175.0",'
+    ' "Average Graphics Package Power (W)": "17.0",'
+    ' "GPU use (%)": "100",'
+    ' "VRAM Total Memory (B)": "17095983104",'
+    ' "VRAM Total Used Memory (B)": "9518669824"}}'
 )
 
 
@@ -152,6 +191,64 @@ def test_parse_rocm_smi_vram_absent_leaves_sentinel() -> None:
     assert result[0].total_bytes == 0
 
 
+def test_parse_amd_smi_gpu_data_wrapper_real_mi300x() -> None:
+    """AMDSMI 26.x wraps devices in a top-level gpu_data key; parsing must not
+    silently return {} (which previously masked the whole amd-smi path)."""
+    result = _parse_amd_smi(_AMD_SMI_JSON_GPU_DATA_MI300X, frozenset({0}))
+    assert result[0].utilization_pct == 0
+    assert result[0].temperature_c == 45  # edge is N/A; hotspot carries the reading
+
+
+def test_parse_rocm_smi_junction_temp_fallback_real_mi300x() -> None:
+    """MI300X has no edge sensor; junction is the reading. Power 159/750 -> 21%."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON_REAL_MI300X, frozenset({0}))
+    assert result[0].temperature_c == 45
+    assert result[0].utilization_pct == 21
+    assert result[0].total_bytes == 205822885888
+
+
+def test_parse_rocm_smi_power_overrides_pegged_busy_flag() -> None:
+    """Real 9060 XT capture: busy flag reads 100 at idle; power/cap is the signal."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON_REAL_9060XT, frozenset({0}))
+    assert result[0].utilization_pct == 10  # round(100 * 17 / 175)
+
+
+def test_parse_rocm_smi_power_socket_key_variant() -> None:
+    """Datacenter cards (MI300X) report socket power under a different key."""
+    raw = (
+        '{"card0": {"Current Socket Graphics Package Power (W)": "375.0",'
+        ' "Max Graphics Package Power (W)": "750.0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 50
+
+
+def test_parse_rocm_smi_power_clamped_to_100() -> None:
+    """Transient spikes above the cap clamp to 100."""
+    raw = (
+        '{"card0": {"Average Graphics Package Power (W)": "200.0",'
+        ' "Max Graphics Package Power (W)": "175.0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 100
+
+
+def test_parse_rocm_smi_busy_flag_fallback_without_power() -> None:
+    """Power keys absent (older rocm-smi): the busy flag is still reported."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON, frozenset({0}))
+    assert result[0].utilization_pct == 35
+
+
+def test_parse_rocm_smi_busy_flag_fallback_on_zero_cap() -> None:
+    """A zero/unparseable power cap cannot divide; fall back to the busy flag."""
+    raw = (
+        '{"card0": {"Average Graphics Package Power (W)": "44.0",'
+        ' "Max Graphics Package Power (W)": "0", "GPU use (%)": "100"}}'
+    )
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 100
+
+
 def test_parse_rocm_smi_empty_string() -> None:
     assert _parse_rocm_smi("", _INDICES) == {}
 
@@ -170,23 +267,28 @@ def test_parse_rocm_smi_non_dict_top_level() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sample_uses_amd_smi_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sample_prefers_rocm_smi_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rocm-smi carries power, cap, and VRAM in one call, so it leads even when
+    amd-smi is present (which exposes no power cap at all, verified on MI300X)."""
     monkeypatch.setattr(
         amd_mod,
         "run_smi",
-        lambda tool, *_a, **_k: _AMD_SMI_JSON_FLAT if tool == amd_mod._TOOL_AMD_SMI else "",
+        lambda tool, *_a, **_k: (
+            _ROCM_SMI_JSON_REAL_MI300X if tool == amd_mod._TOOL_ROCM_SMI else _AMD_SMI_JSON_FLAT
+        ),
     )
     result = AmdBackend().sample(frozenset({0}))
-    assert result[0].utilization_pct == 72
+    assert result[0].utilization_pct == 21  # power-derived, not the flat 72 busy value
 
 
-def test_falls_back_to_rocm_smi_when_amd_smi_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_falls_back_to_amd_smi_when_rocm_smi_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     def _run_smi(tool: str, *_a: object, **_k: object) -> str:
-        return "" if tool == amd_mod._TOOL_AMD_SMI else _ROCM_SMI_JSON
+        return "" if tool == amd_mod._TOOL_ROCM_SMI else _AMD_SMI_JSON_GPU_DATA_MI300X
 
     monkeypatch.setattr(amd_mod, "run_smi", _run_smi)
     result = AmdBackend().sample(frozenset({0}))
-    assert result[0].utilization_pct == 35
+    assert result[0].utilization_pct == 0
+    assert result[0].temperature_c == 45
 
 
 def test_sample_returns_empty_when_both_tools_return_empty(monkeypatch: pytest.MonkeyPatch) -> None:
