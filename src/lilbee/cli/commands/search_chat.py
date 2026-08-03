@@ -32,6 +32,7 @@ from lilbee.cli.helpers import (
     auto_sync,
     json_output,
 )
+from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
@@ -109,6 +110,7 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    route_diagnostics_to_log_file()
 
     _reject_if_empty(query, "query")
 
@@ -182,6 +184,7 @@ def ask(
         num_ctx=num_ctx,
         seed=seed,
     )
+    route_diagnostics_to_log_file()
     _reject_if_empty(question, "question")
 
     try:
@@ -287,6 +290,7 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
+    route_diagnostics_to_log_file()
 
     if cfg.json_mode:
         json_output({"error": "Chat requires a terminal, not --json"})

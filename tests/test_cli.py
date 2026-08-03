@@ -419,6 +419,76 @@ class TestAsk:
         assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
 
 
+class TestDiagnosticsRouting:
+    """ask/search/chat stdout stays answer-only; diagnostics go to logs/cli.log."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warning_capture(self):
+        # Earlier CLI invocations latch logging's capture flag while pytest
+        # restores showwarning per test; clear both sides so capture re-arms.
+        logging.captureWarnings(False)
+        yield
+        logging.captureWarnings(False)
+
+    @staticmethod
+    def _noisy_stream(*texts):
+        """Stream that emits a Python warning and a WARNING log record first."""
+        import warnings
+
+        from lilbee.retrieval.reasoning import StreamToken
+
+        warnings.warn("lancedb fork support is experimental", RuntimeWarning, stacklevel=1)
+        logging.getLogger("lilbee.data.ingest.pipeline").warning(
+            "Sync reconciliation: 1 document file(s) on disk are absent from the index"
+        )
+        for t in texts:
+            yield StreamToken(content=t, is_reasoning=False)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_stdout_answer_only_diagnostics_in_log_file(
+        self, mock_sync, mock_svc, isolated_env
+    ):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        assert "The answer" in result.stdout
+        assert "Sync reconciliation" not in result.stdout
+        assert "fork support" not in result.stdout
+        log_text = (isolated_env / "logs" / "cli.log").read_text()
+        assert "Sync reconciliation" in log_text
+        assert "fork support" in log_text
+
+    def test_search_stdout_results_only_diagnostics_in_log_file(self, mock_svc, isolated_env):
+        def _noisy_search(*args, **kwargs):
+            logging.getLogger("lilbee.data.ingest.pipeline").warning(
+                "Sync reconciliation: 1 document file(s) on disk are absent from the index"
+            )
+            return []
+
+        mock_svc.searcher.search.side_effect = _noisy_search
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert "No results found." in result.stdout
+        assert "Sync reconciliation" not in result.stdout
+        log_text = (isolated_env / "logs" / "cli.log").read_text()
+        assert "Sync reconciliation" in log_text
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_explicit_log_level_keeps_stderr_routing(self, mock_sync, mock_svc, isolated_env):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        result = runner.invoke(app, ["--log-level", "DEBUG", "ask", "q"])
+        assert result.exit_code == 0
+        assert not (isolated_env / "logs" / "cli.log").exists()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_env_log_level_keeps_stderr_routing(self, mock_sync, mock_svc, isolated_env):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        with mock.patch.dict(os.environ, {"LILBEE_LOG_LEVEL": "INFO"}):
+            result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        assert not (isolated_env / "logs" / "cli.log").exists()
+
+
 def _mismatch_error(*, dims_match=True):
     from lilbee.data.store import EmbeddingModelMismatchError
 

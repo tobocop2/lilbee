@@ -157,9 +157,11 @@ def _default(
             f"  Detail: {config_load_error}\n"
         )
 
-    level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
-    if log_level is not None:
-        level_str = log_level.upper()
+    env_level = os.environ.get("LILBEE_LOG_LEVEL", "")
+    level_str = (log_level or env_level or "WARNING").upper()
+    from lilbee.cli.log_routing import set_explicit_verbosity
+
+    set_explicit_verbosity(bool(log_level or env_level))
     _log_levels = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
