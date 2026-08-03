@@ -2274,6 +2274,23 @@ class TestAskProviderError:
         assert "ghost" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_mid_stream_flushes_held_tail(self, mock_sync, mock_svc):
+        """An exception escaping the stream mid-answer must not swallow the
+        marker-sized answer tail the printer holds back."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.retrieval.reasoning import StreamToken
+
+        def _boom():
+            yield StreamToken(content="partial answ", is_reasoning=False)
+            raise ProviderError("engine died")
+
+        mock_svc.searcher.ask_stream.return_value = _boom()
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "partial answ" in result.output
+        assert "engine died" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_provider_error_json(self, mock_sync, mock_svc):
         from lilbee.providers.base import ProviderError
 
