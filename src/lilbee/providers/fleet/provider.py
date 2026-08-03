@@ -725,9 +725,8 @@ def _demanded_chat_ctx(
     planned = max((launch.ctx for launch in chat_launches), default=0)
     if planned <= 0:
         return 0
+    # Always positive: num_ctx validates ge=1 and chat_n_ctx_target ge=512.
     target = cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target
-    if target <= 0:
-        return 0
     split = any(len(launch.est_vram_by_device) > 1 for launch in chat_launches)
     return target if split else min(target, planned)
 

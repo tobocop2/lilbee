@@ -432,6 +432,37 @@ class TestDiagnosticsRouting:
         yield
         logging.captureWarnings(False)
 
+    def test_routing_skips_when_log_dir_cannot_be_created(self) -> None:
+        """An unwritable data root leaves diagnostics on stderr instead of dying."""
+        from lilbee.cli.log_routing import route_diagnostics_to_log_file, set_explicit_verbosity
+
+        set_explicit_verbosity(False)
+        with mock.patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
+            assert route_diagnostics_to_log_file() is None
+
+    def test_routing_removes_the_stderr_stream_handler(self, tmp_path: Path) -> None:
+        """The console handler basicConfig installed is detached so diagnostics
+        stop echoing to stderr once the file handler is on."""
+        import sys
+
+        from lilbee.cli.log_routing import route_diagnostics_to_log_file, set_explicit_verbosity
+
+        set_explicit_verbosity(False)
+        root = logging.getLogger()
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        root.addHandler(stderr_handler)
+        try:
+            with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
+                m_cfg.data_root = tmp_path
+                path = route_diagnostics_to_log_file()
+            assert path is not None
+            assert stderr_handler not in root.handlers
+        finally:
+            root.removeHandler(stderr_handler)
+            for h in list(root.handlers):
+                if isinstance(h, logging.FileHandler) and str(tmp_path) in str(h.baseFilename):
+                    root.removeHandler(h)
+
     @staticmethod
     def _noisy_stream(*texts):
         """Stream that emits a Python warning and a WARNING log record first."""
@@ -4955,6 +4986,30 @@ class TestSelfCheck:
             "main_gpu",
             "gpu_devices",
         }
+
+    def test_installed_model_path_none_when_registry_listing_fails(self) -> None:
+        """A broken registry (corrupt manifests) falls back to the download leg."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.commands.setup import _installed_model_path
+
+        with mock.patch(
+            "lilbee.modelhub.registry.ModelRegistry.list_installed",
+            side_effect=OSError("corrupt manifest"),
+        ):
+            assert _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf") is None
+
+    def test_installed_model_path_skips_unresolvable_refs(self) -> None:
+        """A manifest whose blob is gone is skipped; nothing suitable yields None."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.commands.setup import _installed_model_path
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        with mock.patch(
+            "lilbee.modelhub.registry.ModelRegistry.resolve",
+            side_effect=KeyError("blob missing"),
+        ):
+            assert _installed_model_path(ModelTask.CHAT, ref) is None
 
     def test_prefers_installed_models_over_download(self) -> None:
         """Installed chat and embedding models are checked in place, nothing is downloaded."""
