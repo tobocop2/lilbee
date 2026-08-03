@@ -14415,7 +14415,7 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
             before = len(list(screen._grid_container.query(".section-heading")))
-            screen._mount_remaining_grid_sections(sections, hf_count=1)
+            screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"

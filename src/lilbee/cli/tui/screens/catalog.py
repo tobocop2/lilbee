@@ -1295,9 +1295,12 @@ class CatalogScreen(Screen[None]):
         container = self._grid_container
         prior_scroll_y = container.scroll_y
         container.remove_children()
-        self._mount_grid_section(sections[0])
+        self._mount_grid_section(sections[0], container)
+        # Pass the container itself; the deferred callback must not re-query
+        # by id because the pane can be unmounted before it runs.
         self.call_after_refresh(
             self._mount_remaining_grid_sections,
+            container,
             sections[1:],
             hf_count=hf_count,
             focus_anchor=focus_anchor,
@@ -1336,12 +1339,12 @@ class CatalogScreen(Screen[None]):
             return True
         return False
 
-    def _mount_grid_section(self, section: GridSection) -> None:
+    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> None:
         # ``name=section.heading`` doubles as the section identity used by
         # ``_capture_focused_section`` / ``_restore_focused_section`` to
         # preserve the cursor across teardown + remount.
         grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
-        self._grid_container.mount_all(
+        container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
                 grid,
@@ -1350,18 +1353,23 @@ class CatalogScreen(Screen[None]):
 
     def _mount_remaining_grid_sections(
         self,
+        container: VerticalScroll,
         remaining: list[GridSection],
         hf_count: int,
         focus_anchor: tuple[str, int | None] | None = None,
         prior_scroll_y: float = 0.0,
     ) -> None:
+        # Runs one refresh after _remount_grid_sections; the pane can be
+        # unmounted by then (screen teardown, tab remount).
+        if not container.is_running:
+            return
         for section in remaining:
-            self._mount_grid_section(section)
+            self._mount_grid_section(section, container)
         self._mount_grid_ctas(hf_count=hf_count)
         # Restore the prior viewport position; mounting fresh sections shifts
         # the layout and ``focus()`` below would otherwise overshoot.
         if prior_scroll_y:
-            self._grid_container.scroll_to(y=prior_scroll_y, animate=False)
+            container.scroll_to(y=prior_scroll_y, animate=False)
         # Lock focus onto a grid once mount completes so j / k / PgDn /
         # PgUp dispatch correctly. Without this, on first paint the focus
         # race can leave nothing focused and the catalog feels frozen
