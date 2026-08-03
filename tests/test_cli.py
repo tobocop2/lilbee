@@ -2433,9 +2433,8 @@ class TestEnsureChatModelWiring:
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
             "answer text", "\n\nSour", "ces:\n", "1. [doc.pdf](file:///kb/doc.pdf), page 2"
         )
-        # legacy_windows=False: rich emits OSC 8 only off the legacy path, and a
-        # Windows runner's captured stdout is not a console handle, so
-        # force_terminal alone leaves the link stripped there.
+        # rich emits OSC 8 only off the legacy path, and a Windows runner's
+        # captured stdout is not a console handle.
         term = Console(force_terminal=True, legacy_windows=False, width=200)
         with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
             result = runner.invoke(app, ["ask", "test"])
@@ -2445,6 +2444,21 @@ class TestEnsureChatModelWiring:
         assert "\x1b]8;" in out and "file:///kb/doc.pdf" in out  # OSC 8 hyperlink
         assert "doc.pdf" in out
         assert "](file:///" not in out  # raw markdown replaced
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_stay_markdown_on_a_legacy_windows_console(self, mock_sync, mock_svc):
+        """Rich emits no OSC 8 on the legacy path, so the hyperlink branch would
+        render the label and drop the URL. Legacy consoles keep the markdown."""
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)"
+        )
+        term = Console(force_terminal=True, legacy_windows=True, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in cap.get()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_sources_stay_markdown_when_piped(self, mock_sync, mock_svc):

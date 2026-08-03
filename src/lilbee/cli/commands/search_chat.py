@@ -127,7 +127,8 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     the ``[label]`` of every markdown source link (and let the model restyle the
     terminal). On a terminal the Sources block's ``[label](file://...)`` links
     become OSC 8 hyperlinks, clickable even when the path wraps; piped output
-    keeps the raw markdown so consumers still see the URL. The marker can span
+    and legacy Windows consoles keep the raw markdown so the URL survives (Rich
+    emits no OSC 8 on the legacy path, which would drop it). The marker can span
     tokens, so a marker-sized tail is held back until it can be classified.
     """
     from rich.markup import escape
@@ -167,8 +168,8 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
         console.print(buf, markup=False)
         return
     console.print(SOURCES_BLOCK_MARKER, end="", markup=False)
-    if not console.is_terminal:
-        console.print(buf, markup=False)
+    if not console.is_terminal or console.legacy_windows:
+        console.print(buf, markup=False, highlight=False)
         return
     parts: list[str] = []
     last = 0
