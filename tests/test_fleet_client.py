@@ -836,6 +836,47 @@ def test_embed_estimates_tokens_without_per_input_tokenize() -> None:
     assert [c for batch in sent for c in batch] == chunks  # order preserved
 
 
+def test_rerank_scores_all_pairs_in_one_request() -> None:
+    # Per-pair requests only add HTTP round trips: the server queues one task
+    # per input, so the whole candidate pool goes out as a single POST with no
+    # per-pair /tokenize probe.
+    posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request.url.path)
+        if request.url.path.endswith(("/tokenize", "/detokenize")):
+            raise AssertionError("within-cap pairs must not hit the server tokenizer")
+        inputs = json.loads(request.content)["input"]
+        return httpx.Response(200, json=_embed_body([[float(i)] for i in range(len(inputs))]))
+
+    candidates = [f"candidate chunk {i} " + "text " * 20 for i in range(48)]
+    scores = _capped_client(handler, cap=200).rerank("q", candidates)
+    assert scores == [float(i) for i in range(48)]
+    assert posts == ["/v1/embeddings"]
+
+
+def test_rerank_retruncates_exactly_when_estimate_undercounts() -> None:
+    # The char estimate under-counts token-dense pairs; when an over-cap pair
+    # slips through, the server rejects the batch and it is redone with exact
+    # server-side truncation instead of failing the rerank pass.
+    embed_inputs: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(12))})  # 12 > cap 10
+        if request.url.path.endswith("/detokenize"):
+            return httpx.Response(200, json={"content": "t"})
+        embed_inputs.append(list(body["input"]))
+        if len(embed_inputs) == 1:
+            return httpx.Response(500, text="input is too large to process. increase n_batch")
+        return httpx.Response(200, json=_embed_body([[0.875] for _ in body["input"]]))
+
+    # 23 chars estimate to 8 tokens (under cap 10), so the pair is sent as-is.
+    assert _capped_client(handler, cap=10).rerank("q", ["under-estimated"]) == [0.875]
+    assert embed_inputs == [["q</s></s>under-estimated"], ["t"]]
+
+
 def test_rerank_truncates_oversize_pairs() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

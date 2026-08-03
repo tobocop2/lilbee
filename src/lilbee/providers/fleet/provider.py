@@ -45,7 +45,12 @@ from lilbee.providers.fleet.client import (
     is_rebuildable_failure,
     retry_on_busy,
 )
-from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
+from lilbee.providers.fleet.contract import (
+    chat_ctx_covers,
+    contract_matches,
+    decoded_launches,
+    served_pairs,
+)
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -655,8 +660,16 @@ def _configured_model_for(role: WorkerRole) -> str:
     return getattr(cfg, field) or "" if field else ""
 
 
-def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
-    """Configured (role, model) pairs a fresh plan would actually serve.
+class _EngineDemand(NamedTuple):
+    """What this process needs an engine to serve: pairs plus its chat window."""
+
+    pairs: set[tuple[WorkerRole, str]]
+    # Per-slot chat tokens this process needs; 0 demands nothing.
+    chat_ctx: int
+
+
+def _placeable_demand() -> _EngineDemand:
+    """Configured (role, model) pairs a fresh plan would serve, and the chat window.
 
     A configured role is wanted only when the planner would place it. The plan
     is the co-placement authority: a role that fits alone but cannot co-tenant (a
@@ -673,19 +686,49 @@ def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
     )
 
     try:
-        placed = {launch.role for launch in plan_all_launches().launches}
+        plan = plan_all_launches()
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
-            return set()
+            return _EngineDemand(set(), 0)
         raise
+    placed = {launch.role for launch in plan.launches}
     total_vram = placeable_total_vram()
-    return {
+    pairs = {
         (role, model)
         for role in WorkerRole
         if role in placed
         and (model := _configured_model_for(role))
         and role_model_placeable(role, model, total_vram)
     }
+    return _EngineDemand(pairs, _demanded_chat_ctx(plan.launches, pairs))
+
+
+def _demanded_chat_ctx(
+    launches: Iterable[InstanceLaunch], pairs: set[tuple[WorkerRole, str]]
+) -> int:
+    """Per-slot chat window this process needs an engine to serve; 0 for none.
+
+    The cfg target (a ``num_ctx`` pin, else ``chat_n_ctx_target``) capped by
+    this process's own planned chat window: a window the plan itself cannot
+    reach (model ceiling, hardware) is not a demand a rebuild could satisfy,
+    so capping keeps the fit check from rebuilding the engine in a loop.
+
+    The cap applies only to a single-device chat plan, whose window is sized
+    against device totals and holds regardless of what is resident. A
+    tensor-split plan is sized against live free VRAM, which a resident
+    incumbent deflates; capping by it would shrink the demand to whatever the
+    incumbent left free and let the fit check pass vacuously.
+    """
+    if not any(role is WorkerRole.CHAT for role, _model in pairs):
+        return 0
+    chat_launches = [launch for launch in launches if launch.role is WorkerRole.CHAT]
+    planned = max((launch.ctx for launch in chat_launches), default=0)
+    if planned <= 0:
+        return 0
+    # Always positive: num_ctx validates ge=1 and chat_n_ctx_target ge=512.
+    target = cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target
+    split = any(len(launch.est_vram_by_device) > 1 for launch in chat_launches)
+    return target if split else min(target, planned)
 
 
 def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
@@ -862,10 +905,10 @@ class FleetProvider:
         races an arrival.
         """
         pin = engine_pin()
-        wanted = _placeable_wanted()
+        demand = _placeable_demand()
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
-            machine = self._acquire_in_dir(machine_dir, pin, wanted, is_overflow=False)
+            machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
             if machine is not None:
                 return machine
         else:
@@ -883,10 +926,10 @@ class FleetProvider:
         # The machine slot holds a live incompatible engine in active use: overflow
         # to this config root's private dir rather than evict another model setup.
         private = private_engine_dir(config_root)
-        return self._acquire_in_dir(private, pin, wanted, is_overflow=True) or False
+        return self._acquire_in_dir(private, pin, demand, is_overflow=True) or False
 
     def _acquire_in_dir(
-        self, engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]], *, is_overflow: bool
+        self, engine_dir: Path, pin: str, demand: _EngineDemand, *, is_overflow: bool
     ) -> bool | None:
         """Bind or build one engine dir; ``None`` on the slot means overflow next.
 
@@ -905,9 +948,10 @@ class FleetProvider:
         so a process that can serve nothing never destroys a warm engine it can't
         replace. Held under the cross-process build lock.
         """
+        wanted = demand.pairs
         with build_lock(engine_dir):
             states = _healthy_states(engine_dir)
-            if wanted and self._bind_all_in_dir(engine_dir, states, pin, wanted):
+            if wanted and self._bind_all_in_dir(engine_dir, states, pin, demand):
                 self._hold_membership(engine_dir)
                 return True
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
@@ -938,15 +982,17 @@ class FleetProvider:
         engine_dir: Path,
         states: dict[SwapGroup, SwapState],
         pin: str,
-        wanted: set[tuple[WorkerRole, str]],
+        demand: _EngineDemand,
     ) -> bool:
-        """Bind every group needed to cover *wanted*; False leaves nothing bound.
+        """Bind every group needed to cover the demanded pairs; False leaves nothing bound.
 
-        Binding never touches groups serving models outside *wanted*; the dir
-        matches only when healthy, pin-equal groups cover every wanted pair.
-        (Whether an unmatched dir's engine is then replaced or overflowed
-        around is the ladder's call, based on live users.)
+        Binding never touches groups serving models outside the demand; the dir
+        matches only when healthy, pin-equal groups cover every wanted pair and
+        the served chat window covers the demanded per-slot ctx. (Whether an
+        unmatched dir's engine is then replaced or overflowed around is the
+        ladder's call, based on live users.)
         """
+        wanted = demand.pairs
         candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()
         for group, state in states.items():
@@ -954,6 +1000,9 @@ class FleetProvider:
             if found is None:
                 continue
             bindable, launches, pairs = found
+            if not chat_ctx_covers(launches, demand.chat_ctx):
+                # The live chat window is smaller than this process needs.
+                return False
             candidates.append((group, bindable, launches))
             covered |= pairs
         if covered != wanted:

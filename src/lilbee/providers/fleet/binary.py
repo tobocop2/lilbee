@@ -120,18 +120,26 @@ def _binary_signature(path: Path) -> str:
     return f"{st.st_size}-{st.st_mtime_ns}"
 
 
+# Ctx sizing keys share by window coverage (contract.chat_ctx_covers), not
+# value equality: a running window that covers the demand serves both peers.
+# chat_n_ctx_target in particular defaults per process from its cgroup-capped
+# RAM, so exact equality here restarted a warm engine per co-tenant.
+_CTX_SIZING_KEYS = frozenset({"num_ctx", "num_ctx_max", "chat_n_ctx_target"})
+
+
 def _load_config_signature() -> str:
     """A deterministic digest of the settings an engine bakes in at launch.
 
     These decide cross-process sharing, since an engine launched with one set
     cannot serve a peer that configured another: the ``LOAD_AFFECTING_KEYS`` a
-    single process reloads on, plus the placement keys that fix which devices a
-    launch uses, so a peer with different placement binds its own engine.
+    single process reloads on (minus the ctx sizing keys, matched by coverage
+    instead), plus the placement keys that fix which devices a launch uses, so
+    a peer with different placement binds its own engine.
     """
     from lilbee.core.config import cfg
     from lilbee.core.config.keys import LOAD_AFFECTING_KEYS, PLACEMENT_PIN_KEYS
 
-    keys = LOAD_AFFECTING_KEYS | PLACEMENT_PIN_KEYS
+    keys = (LOAD_AFFECTING_KEYS - _CTX_SIZING_KEYS) | PLACEMENT_PIN_KEYS
     return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(keys))
 
 

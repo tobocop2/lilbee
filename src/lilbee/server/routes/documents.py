@@ -7,12 +7,12 @@ files and ``/api/export`` serializes the whole corpus.
 from __future__ import annotations
 
 import asyncio
+from typing import Annotated
 
 from litestar import Request, Response, get, post
 from litestar.datastructures import UploadFile
-from litestar.enums import RequestEncodingType
 from litestar.exceptions import ValidationException
-from litestar.params import Body, Parameter
+from litestar.params import FromQuery, MultipartBody, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel, Field
 
@@ -70,7 +70,7 @@ async def add_route(data: AddRequest) -> Stream:
 
 @post("/api/add/upload")
 async def add_upload_route(
-    data: list[UploadFile] = Body(media_type=RequestEncodingType.MULTI_PART),
+    data: MultipartBody[list[UploadFile]],
 ) -> Stream:
     """Ingest uploaded file content with streaming SSE progress.
 
@@ -95,9 +95,9 @@ async def add_upload_route(
 
 @get("/api/documents")
 async def documents_list_route(
-    search: str = Parameter(query="search", default=""),
-    limit: int = Parameter(query="limit", default=50, ge=1, le=1000),
-    offset: int = Parameter(query="offset", default=0, ge=0),
+    search: FromQuery[str] = "",
+    limit: Annotated[int, QueryParameter(ge=1, le=1000)] = 50,
+    offset: Annotated[int, QueryParameter(ge=0)] = 0,
 ) -> DocumentListResponse:
     """List indexed documents with metadata, paginated and searchable."""
     return await handlers.list_documents(search=search, limit=limit, offset=offset)
@@ -111,8 +111,8 @@ async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
 
 @get("/api/export")
 async def export_route(
-    fmt: str = Parameter(query="format", default=""),
-    source: str = Parameter(query="source", default=""),
+    fmt: Annotated[str, QueryParameter(name="format")] = "",
+    source: FromQuery[str] = "",
 ) -> Response[bytes]:
     """Download the per-page text dataset as a file (parquet by default)."""
     from lilbee.app.dataset import DatasetError, export_to_bytes
@@ -134,7 +134,7 @@ async def export_route(
 @post("/api/import")
 async def import_route(
     request: Request,
-    fmt: str = Parameter(query="format", default=""),
+    fmt: Annotated[str, QueryParameter(name="format")] = "",
 ) -> Stream:
     """Import an uploaded per-page dataset with streaming SSE progress events.
 

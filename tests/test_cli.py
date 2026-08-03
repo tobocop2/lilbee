@@ -22,6 +22,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
+from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -417,6 +418,108 @@ class TestAsk:
         result = runner.invoke(app, ["--json", "ask", "--scope", "wiki", "q"])
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
+
+
+class TestDiagnosticsRouting:
+    """ask/search stdout stays answer-only; diagnostics go to logs/cli.log.
+    chat is exempt: it hands off to the TUI, which owns its own logging."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warning_capture(self):
+        # Earlier CLI invocations latch logging's capture flag while pytest
+        # restores showwarning per test; clear both sides so capture re-arms.
+        logging.captureWarnings(False)
+        yield
+        logging.captureWarnings(False)
+
+    def test_routing_skips_when_log_dir_cannot_be_created(self) -> None:
+        """An unwritable data root leaves diagnostics on stderr instead of dying."""
+        from lilbee.cli.log_routing import route_diagnostics_to_log_file, set_explicit_verbosity
+
+        set_explicit_verbosity(False)
+        with mock.patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
+            assert route_diagnostics_to_log_file() is None
+
+    def test_routing_removes_the_stderr_stream_handler(self, tmp_path: Path) -> None:
+        """The console handler basicConfig installed is detached so diagnostics
+        stop echoing to stderr once the file handler is on."""
+        import sys
+
+        from lilbee.cli.log_routing import route_diagnostics_to_log_file, set_explicit_verbosity
+
+        set_explicit_verbosity(False)
+        root = logging.getLogger()
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        root.addHandler(stderr_handler)
+        try:
+            with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
+                m_cfg.data_root = tmp_path
+                path = route_diagnostics_to_log_file()
+            assert path is not None
+            assert stderr_handler not in root.handlers
+        finally:
+            root.removeHandler(stderr_handler)
+            for h in list(root.handlers):
+                if isinstance(h, logging.FileHandler) and str(tmp_path) in str(h.baseFilename):
+                    root.removeHandler(h)
+
+    @staticmethod
+    def _noisy_stream(*texts):
+        """Stream that emits a Python warning and a WARNING log record first."""
+        import warnings
+
+        from lilbee.retrieval.reasoning import StreamToken
+
+        warnings.warn("lancedb fork support is experimental", RuntimeWarning, stacklevel=1)
+        logging.getLogger("lilbee.data.ingest.pipeline").warning(
+            "Sync reconciliation: 1 document file(s) on disk are absent from the index"
+        )
+        for t in texts:
+            yield StreamToken(content=t, is_reasoning=False)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_stdout_answer_only_diagnostics_in_log_file(
+        self, mock_sync, mock_svc, isolated_env
+    ):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        assert "The answer" in result.stdout
+        assert "Sync reconciliation" not in result.stdout
+        assert "fork support" not in result.stdout
+        log_text = (isolated_env / "logs" / "cli.log").read_text()
+        assert "Sync reconciliation" in log_text
+        assert "fork support" in log_text
+
+    def test_search_stdout_results_only_diagnostics_in_log_file(self, mock_svc, isolated_env):
+        def _noisy_search(*args, **kwargs):
+            logging.getLogger("lilbee.data.ingest.pipeline").warning(
+                "Sync reconciliation: 1 document file(s) on disk are absent from the index"
+            )
+            return []
+
+        mock_svc.searcher.search.side_effect = _noisy_search
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert "No results found." in result.stdout
+        assert "Sync reconciliation" not in result.stdout
+        log_text = (isolated_env / "logs" / "cli.log").read_text()
+        assert "Sync reconciliation" in log_text
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_explicit_log_level_keeps_stderr_routing(self, mock_sync, mock_svc, isolated_env):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        result = runner.invoke(app, ["--log-level", "DEBUG", "ask", "q"])
+        assert result.exit_code == 0
+        assert not (isolated_env / "logs" / "cli.log").exists()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_env_log_level_keeps_stderr_routing(self, mock_sync, mock_svc, isolated_env):
+        mock_svc.searcher.ask_stream.return_value = self._noisy_stream("The answer")
+        with mock.patch.dict(os.environ, {"LILBEE_LOG_LEVEL": "INFO"}):
+            result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        assert not (isolated_env / "logs" / "cli.log").exists()
 
 
 def _mismatch_error(*, dims_match=True):
@@ -2202,6 +2305,23 @@ class TestAskProviderError:
         assert "ghost" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_mid_stream_flushes_held_tail(self, mock_sync, mock_svc):
+        """An exception escaping the stream mid-answer must not swallow the
+        marker-sized answer tail the printer holds back."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.retrieval.reasoning import StreamToken
+
+        def _boom():
+            yield StreamToken(content="partial answ", is_reasoning=False)
+            raise ProviderError("engine died")
+
+        mock_svc.searcher.ask_stream.return_value = _boom()
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "partial answ" in result.output
+        assert "engine died" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_provider_error_json(self, mock_sync, mock_svc):
         from lilbee.providers.base import ProviderError
 
@@ -2302,6 +2422,182 @@ class TestEnsureChatModelWiring:
         mock_apply.assert_called_once_with(
             {"chat_model": "bartowski/SmolLM2-135M-Instruct-GGUF/smol.gguf"}
         )
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_render_as_terminal_hyperlinks(self, mock_sync, mock_svc):
+        """On a terminal, markdown source links become OSC 8 hyperlinks so they
+        are clickable even when the path wraps across lines. The marker split
+        across tokens must still be detected."""
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer text", "\n\nSour", "ces:\n", "1. [doc.pdf](file:///kb/doc.pdf), page 2"
+        )
+        # rich emits OSC 8 only off the legacy path, and a Windows runner's
+        # captured stdout is not a console handle.
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "answer text" in out
+        assert "\x1b]8;" in out and "file:///kb/doc.pdf" in out  # OSC 8 hyperlink
+        assert "doc.pdf" in out
+        assert "](file:///" not in out  # raw markdown replaced
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_stay_markdown_on_a_legacy_windows_console(self, mock_sync, mock_svc):
+        """Rich emits no OSC 8 on the legacy path, so the hyperlink branch would
+        render the label and drop the URL. Legacy consoles keep the markdown."""
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)"
+        )
+        term = Console(force_terminal=True, legacy_windows=True, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in cap.get()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_sources_stay_markdown_when_piped(self, mock_sync, mock_svc):
+        """Piped output keeps the raw markdown link so consumers still get the
+        URL (OSC 8 would silently drop it)."""
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)"
+        )
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_root_position_model_override_is_never_swapped(self, mock_sync, mock_svc):
+        """--model before the subcommand binds via the app callback; the swap
+        guard must see it there too, not only on ask's own parameter."""
+        from tests.conftest import install_fake_model
+
+        install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(
+                app, ["--model", "acme/Missing-GGUF/missing.gguf", "ask", "test"]
+            )
+        assert cfg.chat_model == "acme/Missing-GGUF/missing.gguf"
+        mock_apply.assert_not_called()
+        assert "using installed" not in result.stderr
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_reasoning_tokens_stream_live_and_never_latch_sources(self, mock_sync, mock_svc):
+        """A thinking trace containing the Sources marker must not flip the
+        printer into buffering; reasoning prints live and the real block still
+        renders afterward."""
+        from lilbee.retrieval.reasoning import StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                StreamToken(content="thinking\n\nSources:\ndraft plan\n", is_reasoning=True),
+                StreamToken(content="real answer", is_reasoning=False),
+                StreamToken(
+                    content="\n\nSources:\n1. [doc.pdf](file:///kb/doc.pdf)", is_reasoning=False
+                ),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert "real answer" in result.output
+        assert "[doc.pdf](file:///kb/doc.pdf)" in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_embedding_swap_pins_meta_and_rederives_dim(self, mock_sync, mock_svc):
+        """The invocation-only embedding swap performs the persisted path's side
+        effects: legacy meta pinned under the old ref first, embedding_dim
+        re-derived for the new one; config.toml still untouched."""
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/embedder-GGUF", "embed.gguf", "embedding")
+        cfg.embedding_model = "gone/embedder-GGUF/gone.gguf"
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings._pin_legacy_store_meta") as mock_pin,
+            mock.patch("lilbee.app.settings._embedder_dim_from_gguf", return_value=1024),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert cfg.embedding_model == ref
+        assert cfg.embedding_dim == 1024
+        mock_pin.assert_called_once()
+        mock_apply.assert_not_called()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_falls_back_to_installed_chat_model_without_persisting(self, mock_sync, mock_svc):
+        """A stale persisted ref swaps to an installed model for this run only:
+        the answer flows, the notice goes to stderr, and config.toml is never
+        rewritten from a one-shot command."""
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        cfg.chat_model = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert cfg.chat_model == ref
+        mock_apply.assert_not_called()
+        assert "using installed" in result.stderr
+        assert "using installed" not in result.stdout
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_model_override_is_never_swapped(self, mock_sync, mock_svc):
+        """An explicit --model is honored as given: no silent substitute even
+        when an installed alternative exists, and persisted config untouched.
+        The engine's own not-installed error (covered elsewhere) then names
+        the fix."""
+        from tests.conftest import install_fake_model
+
+        install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            result = runner.invoke(
+                app, ["ask", "--model", "acme/Missing-GGUF/missing.gguf", "test"]
+            )
+        assert cfg.chat_model == "acme/Missing-GGUF/missing.gguf"
+        mock_apply.assert_not_called()
+        assert "using installed" not in result.stderr
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_errors_with_guidance_when_nothing_installed(self, mock_sync, mock_svc):
+        """No installed chat model and no terminal: error with pull guidance, no download."""
+        from lilbee.modelhub import models as models_mod
+
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch.object(models_mod, "pull_with_progress") as mock_pull,
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert "lilbee model pull" in result.output
+        mock_pull.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4707,6 +5003,52 @@ class TestSelfCheck:
             "main_gpu",
             "gpu_devices",
         }
+
+    def test_installed_model_path_none_when_registry_listing_fails(self) -> None:
+        """A broken registry (corrupt manifests) falls back to the download leg."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.commands.setup import _installed_model_path
+
+        with mock.patch(
+            "lilbee.modelhub.registry.ModelRegistry.list_installed",
+            side_effect=OSError("corrupt manifest"),
+        ):
+            assert _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf") is None
+
+    def test_installed_model_path_skips_unresolvable_refs(self) -> None:
+        """A manifest whose blob is gone is skipped; nothing suitable yields None."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.commands.setup import _installed_model_path
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        with mock.patch(
+            "lilbee.modelhub.registry.ModelRegistry.resolve",
+            side_effect=KeyError("blob missing"),
+        ):
+            assert _installed_model_path(ModelTask.CHAT, ref) is None
+
+    def test_prefers_installed_models_over_download(self) -> None:
+        """Installed chat and embedding models are checked in place, nothing is downloaded."""
+        from tests.conftest import install_fake_model
+
+        install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        install_fake_model("acme/embeddinggemma-GGUF", "embeddinggemma.gguf", "embedding")
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._download_self_check_model",
+                side_effect=AssertionError("must not download when models are installed"),
+            ),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True
+        assert payload["chat_model"].startswith(str(cfg.models_dir))
+        assert payload["embedding_dims"] == 768
 
     def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"

@@ -2,7 +2,9 @@
 
 The contract is the per-role models plus the engine build pin. Planner-derived
 values (ctx, slots) are accepted from the running engine, never recomputed:
-they vary legitimately with GPU occupancy at plan time.
+they vary legitimately with GPU occupancy at plan time. The one exception is
+``chat_ctx_covers``: a live chat window smaller than what this process needs
+cannot be adopted, since no prompt fit can grow it.
 """
 
 from __future__ import annotations
@@ -10,12 +12,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from lilbee.providers.fleet.swap_manager import SwapState
-    from lilbee.providers.roles import WorkerRole
 
 
 def decoded_launches(state: SwapState) -> list[InstanceLaunch] | None:
@@ -36,6 +38,25 @@ def served_pairs(state: SwapState) -> set[tuple[WorkerRole, str]] | None:
     """The (role, model) pairs the engine behind *state* serves, or ``None``."""
     launches = decoded_launches(state)
     return None if launches is None else {(launch.role, launch.model) for launch in launches}
+
+
+def chat_ctx_covers(launches: Iterable[InstanceLaunch], demanded_ctx: int) -> bool:
+    """Whether the engine's per-slot chat window serves *demanded_ctx* tokens.
+
+    ``launches`` are the running engine's recorded launches. A zero demand, no
+    chat launch, or a record without a positive chat ctx never refuses: derived
+    values are adopted from the running engine. A window below the demand still
+    covers when the record's ``built_ctx_target`` reaches the demand: the same
+    planner aimed at least as high and achieved this window, so replacing the
+    engine would rebuild the same window in a loop. A refusal sends the ladder
+    to its replace-or-overflow decision.
+    """
+    chat = [launch for launch in launches if launch.role is WorkerRole.CHAT and launch.ctx > 0]
+    live = min((launch.ctx for launch in chat), default=0)
+    if demanded_ctx <= 0 or live <= 0 or demanded_ctx <= live:
+        return True
+    built_target = min((launch.built_ctx_target for launch in chat), default=0)
+    return built_target > 0 and demanded_ctx <= built_target
 
 
 def contract_matches(state: SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:

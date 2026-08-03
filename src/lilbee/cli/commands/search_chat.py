@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -14,6 +16,7 @@ from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
+    chat_model_overridden,
     console,
     data_dir_option,
     global_option,
@@ -32,6 +35,7 @@ from lilbee.cli.helpers import (
     auto_sync,
     json_output,
 )
+from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
@@ -79,6 +83,104 @@ _scope_option = typer.Option(
 )
 
 
+def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
+    """Swap a stale chat/embedding ref to an installed model for this run only.
+
+    The persisted config is never rewritten from a one-shot command; durable
+    swaps belong to the TUI's interactive startup canonicalization. An explicit
+    --model override is honored as given, so an unusable value surfaces the
+    engine's not-installed error instead of a silent substitute. The notice
+    prints to stderr in every mode: stdout stays answer-only and JSON stays
+    parseable.
+    """
+    from rich.console import Console
+
+    from lilbee.app.settings import apply_ephemeral_model_swap
+    from lilbee.modelhub.model_manager import (
+        ValidationResult,
+        canonicalize_chat_model,
+        canonicalize_embedding_model,
+    )
+
+    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
+    if not chat_overridden:
+        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
+    err = Console(stderr=True)
+    for canon, field, label in checks:
+        if canon.status == ValidationResult.OK or canon.effective == canon.original:
+            continue
+        apply_ephemeral_model_swap(field, canon.effective)
+        err.print(
+            f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+            f"using installed {canon.effective!r} for this run.",
+            style=theme.WARNING,
+        )
+
+
+_MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")
+
+
+def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
+    """Stream an answer to stdout verbatim, then render its Sources block.
+
+    Tokens print with markup off: model text is data, and Rich markup would eat
+    the ``[label]`` of every markdown source link (and let the model restyle the
+    terminal). On a terminal the Sources block's ``[label](file://...)`` links
+    become OSC 8 hyperlinks, clickable even when the path wraps; piped output
+    and legacy Windows consoles keep the raw markdown so the URL survives (Rich
+    emits no OSC 8 on the legacy path, which would drop it). The marker can span
+    tokens, so a marker-sized tail is held back until it can be classified.
+    """
+    from rich.markup import escape
+
+    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
+
+    buf = ""
+    hold = len(SOURCES_BLOCK_MARKER)
+    in_sources = False
+    flushed = False
+    try:
+        for token in stream:
+            on_first_token()
+            if token.is_reasoning:
+                # Reasoning is not filtered by StreamingCitationFilter, so a
+                # thinking trace drafting a Sources: list must never trip the
+                # marker scan; it prints live and bypasses the buffer.
+                console.print(token.content, end="", markup=False)
+                continue
+            buf += token.content
+            if in_sources:
+                continue
+            if SOURCES_BLOCK_MARKER in buf:
+                head, _, buf = buf.partition(SOURCES_BLOCK_MARKER)
+                console.print(head, end="", markup=False)
+                in_sources = True
+            elif len(buf) > hold:
+                console.print(buf[:-hold], end="", markup=False)
+                buf = buf[-hold:]
+        flushed = True
+    finally:
+        if not flushed and buf and not in_sources:
+            # An exception escaped the stream mid-answer: the held tail is
+            # real answer text; print it before the error surfaces.
+            console.print(buf, markup=False)
+    if not in_sources:
+        console.print(buf, markup=False)
+        return
+    console.print(SOURCES_BLOCK_MARKER, end="", markup=False)
+    if not console.is_terminal or console.legacy_windows:
+        console.print(buf, markup=False, highlight=False)
+        return
+    parts: list[str] = []
+    last = 0
+    for m in _MD_FILE_LINK_RE.finditer(buf):
+        parts.append(escape(buf[last : m.start()]))
+        parts.append(f"[link={m.group(2)}]{escape(m.group(1))}[/link]")
+        last = m.end()
+    parts.append(escape(buf[last:]))
+    console.print("".join(parts), highlight=False)
+
+
 def _reject_if_empty(value: str, label: str) -> None:
     """Exit with a uniform error if *value* is empty/whitespace (matches REST)."""
     if value and value.strip():
@@ -109,6 +211,7 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    route_diagnostics_to_log_file()
 
     _reject_if_empty(query, "query")
 
@@ -182,6 +285,7 @@ def ask(
         num_ctx=num_ctx,
         seed=seed,
     )
+    route_diagnostics_to_log_file()
     _reject_if_empty(question, "question")
 
     try:
@@ -191,6 +295,7 @@ def ask(
         pulled = ensure_chat_model()
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
+        _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:
@@ -218,12 +323,14 @@ def ask(
         err = announce_cold_start(WorkerRole.CHAT, str(cfg.chat_model))
         stream = get_services().searcher.ask_stream(question, chunk_type=chunk_type)
         first = True
-        for token in stream:
+
+        def _on_first_token() -> None:
+            nonlocal first
             if first:
                 announce_ready(err, WorkerRole.CHAT)
                 first = False
-            console.print(token.content, end="")
-        console.print()
+
+        _print_answer_stream(stream, on_first_token=_on_first_token)
     except EmbeddingModelMismatchError as exc:
         _exit_embedding_mismatch(exc)
     except (RuntimeError, ProviderError) as exc:
@@ -287,6 +394,9 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
+    # No diagnostics routing here: chat hands off to the TUI, which owns its
+    # logging (tui.log). Routing first would latch captureWarnings and leave a
+    # NOTSET cli.log handler running under the TUI.
 
     if cfg.json_mode:
         json_output({"error": "Chat requires a terminal, not --json"})
