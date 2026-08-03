@@ -52,7 +52,7 @@ Confirmed on Vulkan (1070 Ti, Intel UHD) and ROCm (MI300X, `CLIP using ROCm0 bac
 
 On an RX 9060 XT (Bazzite, kernel 6.16), `rocm-smi` and `gpu_busy_percent` read a constant 100% from the moment a llama-server holds a compute context until it exits, idle or generating alike. The shader clock pins high (~44W against a 17W true idle), while the memory clock stays at its 456MHz floor. This is amdgpu's perf-level policy for resident compute contexts, not load.
 
-Real activity shows in power draw and memory clock: during inference power steps to 50-103W and mclk to 1258MHz, and both fall back the moment the request completes while the busy flag still reads 100%. lilbee's fleet panel therefore derives AMD utilization from power draw over the board cap; a pegged 100% in `rocm-smi` next to a moving lilbee gauge is expected, not a disagreement to debug.
+Real activity shows in power draw and memory clock: during inference power steps to 50-103W and mclk to 1258MHz, and both fall back the moment the request completes while the busy flag still reads 100%. Read power and mclk, not the percent. From #677 on, lilbee's fleet panel derives AMD utilization from power draw over the board cap, so a pegged 100% in `rocm-smi` next to a moving lilbee gauge is expected, not a disagreement to debug.
 
 ### Driver and engine measure different things
 

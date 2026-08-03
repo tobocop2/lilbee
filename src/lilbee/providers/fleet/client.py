@@ -1088,8 +1088,7 @@ class LlamaServerClient:
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
         request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences -- without this, a corpus of many small chunks packs one request
-        past the server's batch limit and the server returns a 500. No cap
+        sequences, bounding per-request size and the busy-retry window. No cap
         (chat/vision) sends a single batch untouched.
 
         When ``estimate`` is set the per-input token count comes from

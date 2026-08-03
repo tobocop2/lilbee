@@ -15,6 +15,7 @@ _MAX_BYTES = 1_048_576  # 1 MiB
 _BACKUP_COUNT = 5
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
+
 class _DiagnosticsRouter:
     """Holds whether the user asked for a log level this invocation."""
 

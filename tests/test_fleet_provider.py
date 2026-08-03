@@ -4173,6 +4173,30 @@ def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> No
     }  # chat placed nowhere -> not wanted
 
 
+def test_demanded_chat_ctx_capped_by_single_device_plan(monkeypatch) -> None:
+    # A single-card plan sizes against device totals (residency-independent),
+    # so its window is what any rebuild could reach: the cap applies.
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 65536)
+    launch = _fake_launch(WorkerRole.CHAT, ctx=16384)
+    launch.est_vram_by_device = {"CUDA0": 1}
+    pairs = {(WorkerRole.CHAT, "m-chat")}
+    assert prov_mod._demanded_chat_ctx([launch], pairs) == 16384
+
+
+def test_demanded_chat_ctx_not_capped_by_a_split_plan(monkeypatch) -> None:
+    # A tensor-split plan is sized against live free VRAM, which a resident
+    # incumbent deflates: capping by it would let any warm engine pass the
+    # fits-within check. The demand stays the raw target so a too-small
+    # incumbent is replaced.
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 65536)
+    launch = _fake_launch(WorkerRole.CHAT, ctx=4096)
+    launch.est_vram_by_device = {"CUDA0": 1, "CUDA1": 1}
+    pairs = {(WorkerRole.CHAT, "m-chat")}
+    assert prov_mod._demanded_chat_ctx([launch], pairs) == 65536
+
+
 def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 

@@ -712,14 +712,24 @@ def _demanded_chat_ctx(
     this process's own planned chat window: a window the plan itself cannot
     reach (model ceiling, hardware) is not a demand a rebuild could satisfy,
     so capping keeps the fit check from rebuilding the engine in a loop.
+
+    The cap applies only to a single-device chat plan, whose window is sized
+    against device totals and holds regardless of what is resident. A
+    tensor-split plan is sized against live free VRAM, which a resident
+    incumbent deflates; capping by it would shrink the demand to whatever the
+    incumbent left free and let the fit check pass vacuously.
     """
     if not any(role is WorkerRole.CHAT for role, _model in pairs):
         return 0
-    planned = max((launch.ctx for launch in launches if launch.role is WorkerRole.CHAT), default=0)
+    chat_launches = [launch for launch in launches if launch.role is WorkerRole.CHAT]
+    planned = max((launch.ctx for launch in chat_launches), default=0)
     if planned <= 0:
         return 0
     target = cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target
-    return min(target, planned) if target > 0 else 0
+    if target <= 0:
+        return 0
+    split = any(len(launch.est_vram_by_device) > 1 for launch in chat_launches)
+    return target if split else min(target, planned)
 
 
 def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:

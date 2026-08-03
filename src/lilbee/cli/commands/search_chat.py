@@ -80,35 +80,37 @@ _scope_option = typer.Option(
 )
 
 
-def _swap_stale_models_to_installed() -> None:
-    """Swap a persisted chat/embedding ref that no longer resolves to an
-    installed model of the same role and persist the swap, mirroring the TUI's
-    startup canonicalization. Leaves the ref alone when nothing suitable is
-    installed; the engine's not-installed error then names the fix.
+def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
+    """Swap a stale chat/embedding ref to an installed model for this run only.
+
+    The persisted config is never rewritten from a one-shot command; durable
+    swaps belong to the TUI's interactive startup canonicalization. An explicit
+    --model override is honored as given, so an unusable value surfaces the
+    engine's not-installed error instead of a silent substitute. The notice
+    prints to stderr in every mode: stdout stays answer-only and JSON stays
+    parseable.
     """
-    from lilbee.app.settings import apply_settings_update
+    from rich.console import Console
+
     from lilbee.modelhub.model_manager import (
         ValidationResult,
         canonicalize_chat_model,
         canonicalize_embedding_model,
     )
 
-    for canon, field, label in (
-        (canonicalize_chat_model(), "chat_model", "Chat"),
-        (canonicalize_embedding_model(), "embedding_model", "Embedding"),
-    ):
+    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
+    if not chat_overridden:
+        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
+    err = Console(stderr=True)
+    for canon, field, label in checks:
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
             continue
-        try:
-            apply_settings_update({field: canon.effective})
-        except (ValueError, OSError):
-            continue
-        if not cfg.json_mode:
-            console.print(
-                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-                f"using installed {canon.effective!r} instead.",
-                style=theme.WARNING,
-            )
+        setattr(cfg, field, canon.effective)
+        err.print(
+            f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+            f"using installed {canon.effective!r} for this run.",
+            style=theme.WARNING,
+        )
 
 
 def _reject_if_empty(value: str, label: str) -> None:
@@ -225,7 +227,7 @@ def ask(
         pulled = ensure_chat_model()
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
-        _swap_stale_models_to_installed()
+        _swap_stale_models_to_installed(chat_overridden=model is not None)
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:
@@ -322,7 +324,9 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
-    route_diagnostics_to_log_file()
+    # No diagnostics routing here: chat hands off to the TUI, which owns its
+    # logging (tui.log). Routing first would latch captureWarnings and leave a
+    # NOTSET cli.log handler running under the TUI.
 
     if cfg.json_mode:
         json_output({"error": "Chat requires a terminal, not --json"})
