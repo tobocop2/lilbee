@@ -69,9 +69,9 @@ def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
 def _free_bytes(path: Path) -> int | None:
     """Free space on the volume that will hold *path*, which need not exist yet.
 
-    The models dir is absent until the first download creates it, and statvfs
-    raises on a missing path, so measure the nearest existing ancestor: it is
-    the same volume.
+    The models dir is absent until the first download creates it, and
+    shutil.disk_usage raises on a missing path, so measure the nearest existing
+    ancestor: it is the same volume.
     """
     probe = path.resolve()
     while True:
