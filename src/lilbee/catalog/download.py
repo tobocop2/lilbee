@@ -3,6 +3,7 @@
 import fnmatch
 import logging
 import re
+import shutil
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -48,6 +49,64 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
+_BYTES_PER_GB = 1024**3
+
+
+def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
+    """Bytes an interrupted attempt at *hf_repo* already holds on disk.
+
+    A resumed download only needs the remainder, so counting the ``.incomplete``
+    blobs keeps the check from refusing a pull that would in fact finish.
+    """
+    repo_dir = models_dir / f"models--{hf_repo.replace('/', '--')}"
+    if not repo_dir.is_dir():
+        return 0
+    return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
+
+
+def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
+    """Refuse a download the disk cannot hold, naming the shortfall.
+
+    huggingface_hub checks the same thing and only logs a warning, so without
+    this the transfer runs until the volume fills and dies partway. On the xet
+    path that surfaces as a reconstruction error rather than ENOSPC, because
+    hf_xet raises OSError only for auth and not-found, so the message the user
+    gets names neither the disk nor the file.
+    """
+    if needed == _SIZE_UNKNOWN:
+        return  # offline or unresolvable; nothing to compare against
+    available = shutil.disk_usage(models_dir).free + _repo_partial_bytes(models_dir, entry.hf_repo)
+    if needed <= available:
+        return
+    raise RuntimeError(
+        f"Not enough disk space for {entry.hf_repo}: needs "
+        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
+    )
+
+
+_LOW_DISK_FLOOR = 512 * 1024**2
+"""Free bytes below which a failed download is reported as a full disk.
+
+The pre-flight cannot catch a volume that fills mid-transfer, which is how a
+download far smaller than the free space still dies. Checking the live figure
+names the real condition rather than matching on a backend's error text."""
+
+
+def _raise_if_disk_exhausted(entry: CatalogModel, config: DownloadConfig) -> None:
+    """Re-raise a failed download as a disk problem when the volume is full."""
+    if config.cache_dir is None:
+        return
+    try:
+        free = shutil.disk_usage(config.cache_dir).free
+    except OSError:
+        return  # the path went away with the failure; leave the original error
+    if free >= _LOW_DISK_FLOOR:
+        return
+    raise RuntimeError(
+        f"Ran out of disk space downloading {entry.hf_repo}: {free / _BYTES_PER_GB:.1f} GB free."
+    ) from None
+
+
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
@@ -69,6 +128,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
+        _raise_if_disk_exhausted(entry, config)
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
@@ -132,20 +192,15 @@ def download_model(
             on_progress(size, size)  # Report 100% immediately (every shard)
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
+    shard_sizes = [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+    sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
+    _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
+
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
     # 0->100% against the real total, not N separate per-shard cycles. Only use
     # the sum when every shard size is known (0 = unresolved/offline); a partial
     # sum would undercount the total and let progress run past 100%.
-    shard_sizes = (
-        [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
-        if len(shards) > 1
-        else []
-    )
-    grand_total = (
-        sum(shard_sizes)
-        if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
-        else 0
-    )
+    grand_total = sum(shard_sizes) if len(shards) > 1 and sizes_known else 0
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
