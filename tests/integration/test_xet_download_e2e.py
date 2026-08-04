@@ -1,0 +1,189 @@
+"""End-to-end acceptance for the xet download path, against real HuggingFace.
+
+Covers the four model roles a working install needs, including a vision model
+whose projector is a second file fetched by a different code path, and the two
+queue behaviours a user can trigger by accident:
+
+  * every role downloads and lands on disk
+  * a vision model brings its mmproj with it
+  * every transfer really went over xet, not the HTTP fallback
+  * asking twice for one model downloads it once
+  * a cancelled download can be started again and finishes
+
+Needs network and roughly 1.1GB of disk. Run on a pod:
+
+    uv run pytest tests/integration/test_xet_download_e2e.py -v -m slow
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+from textual.app import ComposeResult
+from textual.widgets import Static
+
+from lilbee.catalog import CatalogModel, download_model
+from lilbee.catalog.types import ModelTask
+from lilbee.cli.tui.task_queue import TERMINAL_STATUSES, TaskStatus
+from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+from tests._lilbee_app_test_host import LilbeeAppHost
+
+pytestmark = pytest.mark.slow
+
+
+def _entry(hf_repo: str, gguf: str, task: str, size_gb: float) -> CatalogModel:
+    return CatalogModel(
+        hf_repo=hf_repo,
+        gguf_filename=gguf,
+        size_gb=size_gb,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=task,
+    )
+
+
+# Pinned rather than taken from the picks: the picks are whatever is trending
+# and can be enormous. Each is xet-backed, and SmolVLM ships an mmproj.
+CHAT = _entry("unsloth/Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf", ModelTask.CHAT, 0.4)
+EMBED = _entry(
+    "nomic-ai/nomic-embed-text-v1.5-GGUF",
+    "nomic-embed-text-v1.5.Q4_K_M.gguf",
+    ModelTask.EMBEDDING,
+    0.1,
+)
+RERANK = _entry(
+    "gpustack/bge-reranker-v2-m3-GGUF", "bge-reranker-v2-m3-Q2_K.gguf", ModelTask.RERANK, 0.3
+)
+VISION = _entry(
+    "ggml-org/SmolVLM-256M-Instruct-GGUF",
+    "SmolVLM-256M-Instruct-Q8_0.gguf",
+    ModelTask.VISION,
+    0.3,
+)
+
+ROLES = [
+    pytest.param(CHAT, id="chat"),
+    pytest.param(EMBED, id="embed"),
+    pytest.param(RERANK, id="rerank"),
+    pytest.param(VISION, id="vision"),
+]
+
+
+@pytest.fixture
+def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A models dir of its own, so every pull in this module is a real one."""
+    from lilbee.core.config.model import cfg
+
+    target = tmp_path / "models"
+    target.mkdir()
+    monkeypatch.setattr(cfg, "models_dir", target)
+    return target
+
+
+@pytest.fixture
+def xet_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every file huggingface_hub actually fetched over xet.
+
+    Availability is not use: HF_HUB_DISABLE_XET, a non-xet repo or a metadata
+    gap all silently route to plain HTTP, and the download still succeeds. Only
+    counting xet_get proves which transport ran.
+    """
+    import huggingface_hub.file_download as fd
+
+    seen: list[str] = []
+    real = fd.xet_get
+
+    def _spy(**kwargs: object) -> object:
+        seen.append(str(kwargs.get("displayed_filename") or kwargs.get("incomplete_path")))
+        return real(**kwargs)  # ty: ignore[missing-argument]
+
+    monkeypatch.setattr(fd, "xet_get", _spy)
+    return seen
+
+
+def _gguf_names(models_dir: Path) -> set[str]:
+    return {p.name for p in models_dir.rglob("*.gguf")}
+
+
+@pytest.mark.parametrize("entry", ROLES)
+def test_every_role_downloads_over_xet(
+    entry: CatalogModel, models_dir: Path, xet_calls: list[str]
+) -> None:
+    path = download_model(entry)
+
+    assert path.exists(), f"{entry.hf_repo} reported success but nothing is on disk"
+    assert path.stat().st_size > 0
+    assert xet_calls, f"{entry.hf_repo} downloaded over HTTP, not xet"
+
+
+def test_vision_model_brings_its_projector(models_dir: Path, xet_calls: list[str]) -> None:
+    """The mmproj is a second file on a separate path, and a vision model is
+    unusable without it: the role dies at plan time with a warning no re-pull
+    cures, so 'the GGUF arrived' is not enough."""
+    download_model(VISION)
+
+    names = _gguf_names(models_dir)
+    assert any("mmproj" in n.lower() for n in names), f"no projector among {sorted(names)}"
+    assert any("mmproj" not in n.lower() for n in names), "projector but no model"
+    assert len(xet_calls) >= 2, f"expected both files over xet, saw {xet_calls}"
+
+
+class _Host(LilbeeAppHost):
+    def compose(self) -> ComposeResult:
+        yield Static("host")
+
+
+def _await_terminal(
+    controller: TaskBarController, task_id: str, timeout: float = 600.0
+) -> TaskStatus:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        task = controller.queue.get_task(task_id)
+        if task is not None and task.status in TERMINAL_STATUSES:
+            return task.status
+        time.sleep(0.2)
+    raise AssertionError(f"task {task_id} never finished")
+
+
+async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str]) -> None:
+    """Two install presses on one model must not queue it twice, and must not
+    transfer it twice: one task could still have opened two connections."""
+    app = _Host()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        first = controller.start_download(EMBED)
+        second = controller.start_download(EMBED)
+
+        assert first == second
+        assert len(controller.queue.active_tasks) + len(controller.queue.queued_tasks) == 1
+
+        assert _await_terminal(controller, first) is TaskStatus.DONE
+        assert _gguf_names(models_dir)
+        assert len(xet_calls) == 1, f"one model, {len(xet_calls)} transfers: {xet_calls}"
+
+
+async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> None:
+    """Cancelling must not poison the model: dedupe spans queued and active work
+    only, so a terminal task has to leave the way clear for a retry."""
+    app = _Host()
+    async with app.run_test():
+        controller = TaskBarController(app)
+
+        first = controller.start_download(CHAT)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            task = controller.queue.get_task(first)
+            if task is not None and task.status is TaskStatus.ACTIVE:
+                break
+            time.sleep(0.1)
+        assert controller.queue.cancel(first)
+        assert _await_terminal(controller, first) is TaskStatus.CANCELLED
+
+        second = controller.start_download(CHAT)
+        assert second != first, "the cancelled task was handed back instead of a new one"
+        assert _await_terminal(controller, second) is TaskStatus.DONE
+        assert any("Qwen3-0.6B" in n for n in _gguf_names(models_dir))
