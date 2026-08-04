@@ -111,22 +111,22 @@ jobs:
         include:
           - app-id: io.github.tobocop2.lilbee
             asset: lilbee-linux-x86_64
-            bundle: lilbee.flatpak
+            ref: lilbee.flatpakref
             sha: ${{ needs.resolve.outputs.sha_stock }}
             size: ${{ needs.resolve.outputs.size_stock }}
           - app-id: io.github.tobocop2.lilbee.cuda
             asset: lilbee-linux-x86_64-cu125
-            bundle: lilbee-cuda.flatpak
+            ref: lilbee-cuda.flatpakref
             sha: ${{ needs.resolve.outputs.sha_cuda }}
             size: ${{ needs.resolve.outputs.size_cuda }}
           - app-id: io.github.tobocop2.lilbee.rocm
             asset: lilbee-linux-x86_64-rocm
-            bundle: lilbee-rocm.flatpak
+            ref: lilbee-rocm.flatpakref
             sha: ${{ needs.resolve.outputs.sha_rocm }}
             size: ${{ needs.resolve.outputs.size_rocm }}
           - app-id: io.github.tobocop2.lilbee.compat
             asset: lilbee-compat-linux-x86_64
-            bundle: lilbee-compat.flatpak
+            ref: lilbee-compat.flatpakref
             sha: ${{ needs.resolve.outputs.sha_compat }}
             size: ${{ needs.resolve.outputs.size_compat }}
     steps:
@@ -142,4 +142,4 @@ jobs:
           app-id: ${{ matrix['app-id'] }}
           manifest-path: packaging/flatpak/${{ matrix['app-id'] }}.yml
           asset-name: ${{ matrix.asset }}
-          bundle-name: ${{ matrix.bundle }}
+          ref-name: ${{ matrix.ref }}
