@@ -413,7 +413,7 @@ class WikiScreen(Screen[None]):
         self.action_go_back()
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def _tree_or_none(self) -> Tree[str | None] | None:
         if isinstance(self.focused, Input):

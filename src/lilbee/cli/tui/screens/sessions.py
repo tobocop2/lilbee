@@ -43,7 +43,7 @@ class SessionsScreen(Screen[None]):
             yield Footer()
 
     def action_go_back(self) -> None:
-        self.app.switch_view(msg.DEFAULT_VIEW)
+        self.app.go_back()
 
     @on(SessionListPanel.Resumed)
     def _on_resumed(self, event: SessionListPanel.Resumed) -> None:

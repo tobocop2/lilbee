@@ -105,7 +105,8 @@ class SettingsScreen(Screen[None]):
     AUTO_FOCUS = "#settings-tabs Tabs"
     HELP = (
         "Browse and edit configuration.\n\n"
-        "Use / to search, Enter to confirm, Escape to return to the list."
+        "Tab / Shift+Tab move between fields, > and < jump between groups, "
+        "Ctrl+R resets the focused field, and q or Escape goes back."
     )
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -570,7 +571,7 @@ class SettingsScreen(Screen[None]):
         set_widget_value(widget, value)
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def _active_pane_body(self) -> _LazyGroupBody | None:
         """Resolve the currently-active settings tab body (a VerticalScroll).
@@ -619,8 +620,17 @@ class SettingsScreen(Screen[None]):
         """Step the active settings tab by *delta*, wrapping around the strip.
 
         Shortcut for users who don't want to Tab through every field to
-        reach the next group. Mirrors CatalogScreen.action_cycle_tab.
+        reach the next group. Mirrors CatalogScreen.action_cycle_tab,
+        including a focused-editor bail: the bindings are priority=True, so
+        without it typing < or > into a value field would switch tabs and
+        eat the character. SkipAction (not a bare return) hands the key on
+        to the focused editor.
         """
+        from textual.actions import SkipAction
+        from textual.widgets import Input, TextArea
+
+        if isinstance(self.app.focused, (Input, TextArea)):
+            raise SkipAction()
         try:
             tabs = self.query_one("#settings-tabs", TabbedContent)
         except Exception:

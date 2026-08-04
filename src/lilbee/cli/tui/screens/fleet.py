@@ -60,5 +60,5 @@ class FleetScreen(Screen[None]):
         self.query_one(FleetBody).action_clear()
 
     def action_go_back(self) -> None:
-        """Return to Chat via the guarded switch_view (inverse of Fleet entry)."""
-        self.app.switch_view("Chat")
+        """Return to the view the user came from via the guarded switch_view."""
+        self.app.go_back()

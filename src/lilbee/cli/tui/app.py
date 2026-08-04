@@ -132,6 +132,9 @@ class LilbeeApp(App[None]):
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
+        # Guarded like open_tasks in check_action: a focused text input
+        # types the literal letter instead.
+        Binding("m", "open_catalog", "Models", show=True),
         Binding("f4", "toggle_lilbee_path", "Path/Name", show=True),
         # Non-priority so Chat's "focus_commands" and Catalog's
         # "focus_search" still win on those screens. Fires only on
@@ -167,6 +170,9 @@ class LilbeeApp(App[None]):
         super().__init__()
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
+        # The view the user came from; go_back returns here so q/Escape mean
+        # "back", not "Chat", on every top-level view.
+        self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
         # Names of non-Chat screens already installed via install_screen.
@@ -486,6 +492,8 @@ class LilbeeApp(App[None]):
         if view_name != "Chat" and get_views().get(view_name) is None:
             return
         self._switching = True
+        if view_name != self.active_view:
+            self._previous_view = self.active_view
 
         awaitable: AwaitComplete | None = None
         if view_name == "Chat":
@@ -566,8 +574,13 @@ class LilbeeApp(App[None]):
         it as a literal character. Showing ``t Tasks`` there would lie.
         """
         # isinstance: a focused Input/TextArea consumes printable keys before
-        # non-priority screen/app bindings see them, so `t` types a literal there.
-        if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
+        # non-priority screen/app bindings see them, so `t`/`m` type literals
+        # there. run_sync is a priority binding, so without this guard a
+        # capital S typed into any text field would silently start a document
+        # sync instead of inserting the character.
+        if action in ("open_tasks", "open_catalog", "run_sync") and isinstance(
+            self.focused, (Input, TextArea)
+        ):
             return False
         # None (not False): hide the Sessions binding from the footer entirely
         # when sessions are off, rather than show it greyed. There is nothing to
@@ -576,9 +589,17 @@ class LilbeeApp(App[None]):
             return None
         return super().check_action(action, parameters)
 
+    def go_back(self) -> None:
+        """Return to the view the user came from (Chat when there is none)."""
+        self.switch_view(self._previous_view or msg.DEFAULT_VIEW)
+
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
+
+    def action_open_catalog(self) -> None:
+        """Jump to the model catalog (m key)."""
+        self.switch_view("Catalog")
 
     def action_toggle_fleet(self) -> None:
         """Toggle the Fleet drawer (ctrl+g): dock placement beside the current

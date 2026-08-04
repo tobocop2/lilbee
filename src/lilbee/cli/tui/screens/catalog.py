@@ -899,6 +899,7 @@ class CatalogScreen(Screen[None]):
         # Update the per-tab cache key (not a stray singular attribute) so a
         # subsequent _refresh_list for this tab sees the appended rows as cached.
         self._list_cache_keys[self._active_tab_id_cache] = (
+            self._data_version,
             tuple((r.name, r.installed) for r in self._rows),
             self._get_search_text(),
         )
@@ -1246,7 +1247,12 @@ class CatalogScreen(Screen[None]):
             r for r in tab_rows if r.kind == CatalogRowKind.LOCAL
         ]
         self._rows = local_tab_rows
+        # _data_version is part of the key: row signatures cover only
+        # (name, installed), so a worker landing that changes rendered state
+        # the signature misses (frontier key_status, fit, compat) must still
+        # repaint rather than read as cache-hot.
         row_key = (
+            self._data_version,
             tuple(row_cache_signature(r) for r in tab_rows),
             search,
         )
@@ -1701,7 +1707,10 @@ class CatalogScreen(Screen[None]):
         else:
             self._rows = list(all_rows)
         search = self._get_search_text()
+        # _data_version mirrors the grid key: worker landings must repaint
+        # even when (name, installed) shapes coincide.
         list_key = (
+            self._data_version,
             tuple((r.name, r.installed) for r in self._rows),
             search,
         )
@@ -1721,6 +1730,7 @@ class CatalogScreen(Screen[None]):
         # Cache key reflects the filtered shape so a no-op _refresh_list
         # immediately after a filter pass does not double-render.
         self._list_cache_keys[self._active_tab_id_cache] = (
+            self._data_version,
             tuple((r.name, r.installed) for r in self._rows),
             search,
         )
@@ -2006,13 +2016,13 @@ class CatalogScreen(Screen[None]):
 
     def action_go_back(self) -> None:
         # An open filter collapses to hidden (restoring grid/list focus);
-        # otherwise q / Esc leaves for Chat.
+        # otherwise q / Esc returns to the view the user came from.
         if self._filter_open:
             self._search_input.value = ""
             self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
             return
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def _focus_list_or_grid(self) -> None:
         """Move focus from the filter input to the active view's list/grid."""

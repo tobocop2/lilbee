@@ -98,7 +98,7 @@ class TaskCenter(Screen[None]):
             yield Footer()
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def on_mount(self) -> None:
         self._tick: int = 0

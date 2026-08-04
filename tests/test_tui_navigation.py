@@ -672,3 +672,72 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
             await pilot.pause()
     finally:
         services_mod.set_services(None)
+
+
+async def test_m_opens_catalog_and_q_returns_to_previous_view():
+    """m jumps to the catalog from any view; q returns to the view the user
+    came from rather than always landing on Chat."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Settings")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        await pilot.press("q")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+
+async def test_capital_s_and_m_type_into_chat_input():
+    """The S sync binding and the m catalog binding must not steal characters
+    from a focused text input."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        assert chat_input.has_focus, "Chat input should auto-focus on mount"
+
+        with mock.patch.object(LilbeeApp, "action_run_sync") as run_sync:
+            await pilot.press("S")
+            await pilot.pause()
+            assert not run_sync.called, "S must type, not start a document sync"
+        await pilot.press("m")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen), "m must not navigate mid-typing"
+        assert chat_input.value == "Sm"
+
+
+async def test_settings_editor_accepts_angle_brackets():
+    """< and > must type into a focused settings editor, not switch panes."""
+    from textual.widgets import TabbedContent
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Settings")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+        editor = None
+        for _ in range(20):
+            editors = app.screen.query(Input)
+            if editors:
+                editor = editors.first()
+                break
+            await pilot.pause()
+        if editor is None:
+            pytest.skip("no Input editors mounted on the settings screen")
+        editor.focus()
+        await pump_until(pilot, lambda: editor.has_focus)
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        active_before = tabs.active
+        before = editor.value
+
+        await pilot.press("less_than_sign", "greater_than_sign")
+        await pilot.pause()
+        assert editor.value == f"{before}<>", "angle brackets must type literally"
+        assert tabs.active == active_before, "panes must not cycle mid-typing"

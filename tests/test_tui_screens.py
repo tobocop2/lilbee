@@ -838,7 +838,10 @@ async def test_settings_cycle_pane_handles_missing_tabs():
 
     screen = SettingsScreen.__new__(SettingsScreen)
     screen._pane_groups = {}
-    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
+    with (
+        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
+        patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")),
+    ):
         SettingsScreen.action_cycle_pane(screen, 1)
 
 
@@ -853,7 +856,10 @@ async def test_settings_cycle_pane_no_panes_short_circuits():
     screen._pane_groups = {}
     fake_tabs = MagicMock(spec=TabbedContent)
     fake_tabs.active = "settings-tab-models"
-    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+    with (
+        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
+        patch.object(SettingsScreen, "query_one", return_value=fake_tabs),
+    ):
         SettingsScreen.action_cycle_pane(screen, 1)
 
 
@@ -875,7 +881,10 @@ async def test_settings_cycle_pane_unknown_active_starts_from_zero():
     }
     fake_tabs = MagicMock(spec=TabbedContent)
     fake_tabs.active = "not-in-pane-groups"
-    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+    with (
+        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
+        patch.object(SettingsScreen, "query_one", return_value=fake_tabs),
+    ):
         SettingsScreen.action_cycle_pane(screen, 1)
     # Fell through to index 0 + delta 1 -> second pane.
     assert fake_tabs.active == "settings-tab-ingest"
@@ -5319,6 +5328,37 @@ async def test_catalog_grid_hf_count_is_per_active_task():
             assert prep is not None
             _sections, hf_count = prep
             assert hf_count == len(chat_models)
+
+
+async def test_catalog_data_version_bump_invalidates_view_caches():
+    """A worker landing that changes rendered state without changing the
+    (name, installed) row shape (e.g. frontier key_status after adding an
+    API key) must repaint, not read as cache-hot."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    models = [
+        _make_catalog_model(name=f"chat-{i}", hf_repo=f"o/c{i}", task="chat", featured=False)
+        for i in range(2)
+    ]
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._families = []
+            screen._remote_models = []
+            screen._hf_models = models
+            screen._hf_fetched_tasks.add(ModelTask.CHAT)
+            assert screen._prepare_grid_refresh() is not None
+            # Unchanged data: the per-tab cache reads hot.
+            assert screen._prepare_grid_refresh() is None
+            # Same row shape, new data version: must repaint.
+            screen._data_version += 1
+            assert screen._prepare_grid_refresh() is not None
 
 
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
@@ -13898,6 +13938,9 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            # Scheduled refreshes repaint the container on worker landings
+            # (_data_version keys); they would unmount the test's grid.
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
@@ -14253,6 +14296,8 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            # Same repaint shield as the model_grid_branch test above.
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 99

@@ -397,7 +397,7 @@ class StatusScreen(Screen[None]):
             self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def action_cursor_down(self) -> None:
         self.query_one("#status-scroll", VerticalScroll).scroll_down()
