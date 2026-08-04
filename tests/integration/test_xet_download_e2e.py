@@ -9,6 +9,7 @@ queue behaviours a user can trigger by accident:
   * every transfer really went over xet, not the HTTP fallback
   * asking twice for one model downloads it once
   * a cancelled download can be started again and finishes
+  * cancelling the running download leaves the queue behind it intact
 
 Off by default. The other integration tests download a few megabytes; this
 one moves roughly 1.1GB, and `make test-integration` has no slow filter, so
@@ -119,9 +120,20 @@ def xet_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-def _bytes_in_flight(models_dir: Path) -> int:
-    """Bytes sitting in partial blobs, which only grow while a transfer runs."""
-    return sum(p.stat().st_size for p in models_dir.rglob("*.incomplete"))
+def _bytes_in_flight(models_dir: Path, hf_repo: str | None = None) -> int:
+    """Bytes sitting in partial blobs, which only grow while a transfer runs.
+
+    Scoped to one repo when *hf_repo* is given, so a cancelled model can be
+    measured while the next queued download is writing.
+    """
+    from huggingface_hub.file_download import repo_folder_name
+
+    root = models_dir
+    if hf_repo is not None:
+        root = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+        if not root.is_dir():
+            return 0
+    return sum(p.stat().st_size for p in root.rglob("*.incomplete"))
 
 
 def _gguf_names(models_dir: Path) -> set[str]:
@@ -230,3 +242,46 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
         assert second != first, "the cancelled task was handed back instead of a new one"
         assert await _await_terminal(pilot, controller, second) is TaskStatus.DONE
         assert any("Qwen3-0.6B" in n for n in _gguf_names(models_dir))
+
+
+async def test_a_queue_survives_cancelling_the_download_that_is_running(
+    models_dir: Path, xet_calls: list[str]
+) -> None:
+    """Three models queue behind one. Cancelling the running one must stop only
+    its bytes, promote the next, and leave the model downloadable again.
+
+    The abort is session-wide, so the risk this pins is the queue behind it
+    dying with the cancelled transfer.
+    """
+    app = _Host()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        first, second, third = (controller.start_download(m) for m in (CHAT, EMBED, RERANK))
+
+        await _await_active(pilot, controller, first)
+        assert len(controller.queue.active_tasks) == 1, "downloads must not run concurrently"
+        assert len(controller.queue.queued_tasks) == 2
+
+        controller.cancel_task(first)
+        assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
+
+        # Scoped to the cancelled repo: the promoted download is writing too.
+        settled = _bytes_in_flight(models_dir, CHAT.hf_repo)
+        await asyncio.sleep(5)
+        assert _bytes_in_flight(models_dir, CHAT.hf_repo) == settled, (
+            "cancelled model kept transferring"
+        )
+
+        # The session-wide abort must not have killed the queue behind it.
+        assert await _await_terminal(pilot, controller, second) is TaskStatus.DONE
+        assert await _await_terminal(pilot, controller, third) is TaskStatus.DONE
+
+        again = controller.start_download(CHAT)
+        assert again not in (first, second, third)
+        assert await _await_terminal(pilot, controller, again) is TaskStatus.DONE
+
+        names = _gguf_names(models_dir)
+        for entry in (CHAT, EMBED, RERANK):
+            stem = entry.gguf_filename.removesuffix(".gguf")
+            assert any(stem in n for n in names), f"{entry.hf_repo} missing from {sorted(names)}"
+        assert xet_calls, "transfers did not go over xet"
