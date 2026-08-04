@@ -141,6 +141,26 @@ def _raise_if_disk_exhausted(entry: CatalogModel, config: DownloadConfig) -> Non
     ) from None
 
 
+_XET_CANCELLED_MARKER = "Operation cancelled"
+
+
+def abort_active_download() -> None:
+    """Stop the xet transfer running in this process.
+
+    Raising out of the progress callback aborts the HTTP path, because http_get
+    calls it inline in the read loop. xet drives the same callback from a thread
+    it owns, so the exception is swallowed there and the transfer runs to
+    completion while the task shows cancelled; the finished bytes then keep
+    consuming bandwidth other downloads are waiting for. hf_xet cancels only at
+    session granularity, which is why downloads run one at a time.
+    """
+    try:
+        from huggingface_hub.utils._xet import abort_xet_session
+    except ImportError:
+        return  # xet unavailable; the HTTP path cancels on its own
+    abort_xet_session()
+
+
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
@@ -150,6 +170,16 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
+    except RuntimeError as exc:
+        # An aborted session surfaces as a plain RuntimeError from the Rust
+        # layer; it is a cancellation, not a failure, so the row must not
+        # read "failed".
+        if _XET_CANCELLED_MARKER in str(exc):
+            raise TaskCancelledError(str(exc)) from None
+        _raise_if_disk_exhausted(entry, config)
+        raise RuntimeError(
+            f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
+        ) from None
     except GatedRepoError:
         raise PermissionError(
             f"{entry.hf_repo} requires HuggingFace authentication. "

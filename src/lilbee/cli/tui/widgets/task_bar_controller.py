@@ -24,7 +24,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_DOWNLOAD_CONCURRENCY = 2
+# One at a time. hf_xet cancels at session granularity and nothing finer is
+# exposed, so aborting one concurrent transfer would kill the others sharing the
+# process-global session. Measured cost is small: two concurrent xet downloads
+# aggregated 3.87 MB/s against 3.39 MB/s for one, so the link is the limit.
+_DOWNLOAD_CONCURRENCY = 1
 _BYTES_PER_MB = 1024 * 1024
 
 
@@ -169,9 +173,27 @@ class TaskBarController:
         self._advance_all(self._task_type_of(task_id))
 
     def cancel_task(self, task_id: str) -> None:
-        """Mark a task cancelled. Row lingers in history until the user clears it."""
+        """Mark a task cancelled. Row lingers in history until the user clears it.
+
+        A running download also has its transfer aborted. Marking the row is not
+        enough on the xet path: it drives the progress callback from its own
+        thread, so raising there is swallowed and the bytes keep arriving behind
+        a row that says cancelled.
+        """
+        task = self.queue.get_task(task_id)
+        was_running_download = (
+            task is not None
+            and task.task_type == TaskType.DOWNLOAD.value
+            and task.status is TaskStatus.ACTIVE
+        )
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
+        if was_running_download:
+            # Only for the active one: the abort is session-wide, so doing it
+            # for a merely queued row would kill whichever transfer is running.
+            from lilbee.catalog.download import abort_active_download
+
+            abort_active_download()
         self._advance_all(task_type)
 
     def _after_done_hooks(self, task_type: str | None) -> None:

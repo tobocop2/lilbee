@@ -387,8 +387,12 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_downloads_two_active_one_queued() -> None:
-    """Capacity 2: submit 3 distinct models, first two go ACTIVE, third stays QUEUED.
+async def test_downloads_run_one_at_a_time() -> None:
+    """Submit 3 distinct models: one goes ACTIVE, the rest wait.
+
+    Downloads are serialised because hf_xet cancels at session granularity, so
+    aborting one concurrent transfer would kill the others sharing the
+    process-global session.
 
     The models have to differ. _make_model derives hf_repo from *display*, so
     passing a slug positionally built the same model three times and this test
@@ -405,12 +409,12 @@ async def test_concurrent_downloads_two_active_one_queued() -> None:
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             ids = [controller.start_download(_make_model(display=f"Model {i}")) for i in range(3)]
-            _wait_until(lambda: len(controller.queue.active_tasks) == 2)
+            _wait_until(lambda: len(controller.queue.active_tasks) == 1)
 
             active_ids = {t.task_id for t in controller.queue.active_tasks}
             queued_ids = {t.task_id for t in controller.queue.queued_tasks}
-            assert len(active_ids) == 2
-            assert len(queued_ids) == 1
+            assert len(active_ids) == 1
+            assert len(queued_ids) == 2
             assert active_ids | queued_ids == set(ids)
 
             release[0] = True

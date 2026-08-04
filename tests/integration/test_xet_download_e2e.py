@@ -117,6 +117,11 @@ def xet_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
+def _bytes_in_flight(models_dir: Path) -> int:
+    """Bytes sitting in partial blobs, which only grow while a transfer runs."""
+    return sum(p.stat().st_size for p in models_dir.rglob("*.incomplete"))
+
+
 def _gguf_names(models_dir: Path) -> set[str]:
     return {p.name for p in models_dir.rglob("*.gguf")}
 
@@ -209,6 +214,13 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
         await _await_active(pilot, controller, first)
         assert controller.queue.cancel(first)
         assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
+
+        # The row saying cancelled is not the claim; the bytes stopping is.
+        # xet drives the progress callback from its own thread, so raising there
+        # is swallowed and the transfer finishes behind a cancelled row.
+        settled = _bytes_in_flight(models_dir)
+        await asyncio.sleep(5)
+        assert _bytes_in_flight(models_dir) == settled, "cancelled download kept transferring"
 
         second = controller.start_download(CHAT)
         assert second != first, "the cancelled task was handed back instead of a new one"
