@@ -7,7 +7,6 @@ strings (``"on $panel"`` / ``"$primary"``) so themes own their contrast.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -70,6 +69,9 @@ _BORDER_BOTTOM_RIGHT = "╯"
 _BORDER_HORIZONTAL = "─"
 _BORDER_VERTICAL = "│"
 
+_DOUBLE_CLICK_CHAIN = 2
+"""events.Click.chain value for the second click of a double-click."""
+
 # Theme-token style strings; resolved at render time on the active theme.
 _CARD_BODY_STYLE = "on $panel"
 # Every card draws a border at all times so the grid reads as discrete tiles.
@@ -88,6 +90,11 @@ class _CardLines:
     """Pre-rendered content lines for one card. Each entry is one terminal row."""
 
     lines: list[Content]
+
+
+def _row_key(row: CatalogRow) -> tuple[CatalogRowKind, str]:
+    """Identity used to re-locate the highlighted row across a dataset swap."""
+    return (row.kind, row.name)
 
 
 class ModelGrid(Widget, can_focus=True):
@@ -134,11 +141,6 @@ class ModelGrid(Widget, can_focus=True):
         grid: ModelGrid
         index: int
 
-    # Window inside which a second click on the same card counts as a
-    # double-click and posts Selected. Single click outside this window only
-    # highlights so users can't accidentally trigger an install with one mis-tap.
-    _DOUBLE_CLICK_WINDOW_S: ClassVar[float] = 0.5
-
     def __init__(
         self,
         rows: list[CatalogRow] | None = None,
@@ -150,8 +152,9 @@ class ModelGrid(Widget, can_focus=True):
         super().__init__(name=name, id=id, classes=classes)
         self._rows: list[CatalogRow] = list(rows or [])
         self._cards_per_row: int = _DEFAULT_COLUMNS
-        self._last_click_index: int | None = None
-        self._last_click_at: float = 0.0
+        # A highlight assigned before layout (restore-after-remount, initial
+        # focus) can't scroll into view yet; on_resize completes it.
+        self._reveal_pending: bool = False
         # render_line is called once per terminal row, so each card is asked for
         # _CARD_HEIGHT times per repaint; cache the built lines so a card renders
         # once. Flushed on set_rows and highlight changes, and on a resize that
@@ -170,11 +173,37 @@ class ModelGrid(Widget, can_focus=True):
         return self._cards_per_row
 
     def set_rows(self, rows: list[CatalogRow]) -> None:
-        """Replace the dataset and reset the highlight."""
+        """Replace the dataset, keeping the cursor on the same row when it survives.
+
+        Background refreshes land through here constantly (HF pages arrive a
+        few rows at a time), so the highlight follows the row's identity into
+        the new dataset; resetting it would strand the cursor mid-navigation.
+        """
+        previous_index = self.highlighted
+        previous_key = (
+            _row_key(self._rows[previous_index])
+            if previous_index is not None and 0 <= previous_index < len(self._rows)
+            else None
+        )
         self._rows = list(rows)
         self._card_cache.clear()
-        self.highlighted = None
+        self.highlighted = self._relocated_highlight(previous_index, previous_key)
         self.refresh(layout=True)
+
+    def _relocated_highlight(
+        self, previous_index: int | None, previous_key: tuple[CatalogRowKind, str] | None
+    ) -> int | None:
+        """Where the cursor lands after a dataset replacement."""
+        if not self._rows:
+            return None
+        if previous_key is not None:
+            for index, row in enumerate(self._rows):
+                if _row_key(row) == previous_key:
+                    return index
+        if previous_index is not None:
+            return min(previous_index, len(self._rows) - 1)
+        # A focused grid always shows a cursor; an unfocused one stays bare.
+        return 0 if self.has_focus else None
 
     def on_resize(self) -> None:
         new_cols = self._columns_for_width(self.size.width)
@@ -182,6 +211,12 @@ class ModelGrid(Widget, can_focus=True):
             self._cards_per_row = new_cols
             self._card_cache.clear()
             self.refresh(layout=True)
+        if self._reveal_pending:
+            self._reveal_highlight()
+
+    def on_show(self) -> None:
+        if self._reveal_pending:
+            self._reveal_highlight()
 
     @staticmethod
     def _columns_for_width(width: int) -> int:
@@ -205,37 +240,60 @@ class ModelGrid(Widget, can_focus=True):
         return rows * _ROW_HEIGHT
 
     def watch_highlighted(self, _old: int | None, new: int | None) -> None:
-        """Repaint, scroll the cell into view, post Highlighted.
+        """Repaint, post Highlighted, scroll the cell into view.
 
-        ModelGrid itself has ``height: auto`` so it isn't scrollable; the
-        outer ``#catalog-grid`` VerticalScroll is. We translate the cell's
-        local offset to the parent's doc coords (using ``virtual_region``)
-        and ask the parent to scroll. The Highlighted message lets the
-        catalog screen run keyboard-driven prefetch on every cursor move.
+        The Highlighted message lets the catalog screen run keyboard-driven
+        prefetch and drawer updates on every cursor move; it is posted even
+        before layout so listeners never miss a move, while the scroll part
+        waits for a real size (``_reveal_pending`` + ``on_resize``).
         """
         # The two cards whose selected state flipped must re-render; clearing
         # also bounds the cache to one repaint's worth of cards.
         self._card_cache.clear()
         self.refresh()
-        if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
+        if new is None:
+            self._reveal_pending = False
             return
         self.post_message(self.Highlighted(self, new))
-        parent = self.parent
-        if not isinstance(parent, Widget):
+        self._reveal_highlight(new)
+
+    def _reveal_highlight(self, index: int | None = None) -> None:
+        """Scroll the highlighted cell into view, deferring until layout exists."""
+        if index is None:
+            index = self.highlighted
+        if index is None:
+            self._reveal_pending = False
             return
+        if self._cards_per_row <= 0 or self.size.width <= 0:
+            self._reveal_pending = True
+            return
+        self._reveal_pending = False
         col_width = max(1, self.size.width // self._cards_per_row)
-        row = new // self._cards_per_row
-        col = new % self._cards_per_row
-        grid_doc = self.virtual_region
-        parent.scroll_to_region(
-            Region(
-                grid_doc.x + col * col_width,
-                grid_doc.y + row * _ROW_HEIGHT,
-                col_width,
-                _CARD_HEIGHT,
-            ),
-            animate=False,
-        )
+        row, col = divmod(index, self._cards_per_row)
+        cell = Region(col * col_width, row * _ROW_HEIGHT, col_width, _CARD_HEIGHT)
+        self._scroll_region_into_view(cell)
+
+    def _scroll_region_into_view(self, cell: Region) -> None:
+        """Reveal *cell* (grid-local coords) by scrolling every ancestor that can.
+
+        ModelGrid paints cards as strips, so there is no child widget to hand
+        to ``Screen.scroll_to_widget``; this mirrors its ancestor walk for a
+        region instead of assuming any particular ancestor is the scrollable.
+        """
+        region = cell.translate(self.virtual_region.offset)
+        widget: Widget = self
+        while isinstance(widget.parent, Widget):
+            container = widget.parent
+            scroll_offset = container.scroll_to_region(region, animate=False)
+            widget = container
+            if not region or not isinstance(widget.parent, Widget):
+                break
+            region = (
+                region.translate(-scroll_offset)
+                .translate(container.styles.margin.top_left)
+                .translate(container.styles.border.spacing.top_left)
+                .translate(container.virtual_region_with_margin.offset)
+            )
 
     def on_focus(self) -> None:
         """Auto-highlight first card on focus so Tab navigation has visible feedback."""
@@ -315,27 +373,16 @@ class ModelGrid(Widget, can_focus=True):
         return index
 
     def on_click(self, event: events.Click) -> None:
-        """Single click only highlights; double-click on the same card posts Selected.
+        """Single click only highlights; a double-click on the same card installs.
 
-        The 'second click on a highlighted card installs' rule the previous
-        catalog used was unsafe under the new auto-highlight-on-focus path:
-        a fresh focus pre-highlights index 0, so a single mouse click on
-        card 0 immediately fired Selected and started an install. Now we
-        require two clicks on the same card within ``_DOUBLE_CLICK_WINDOW_S``
-        to install; a stray click only highlights, matching the toad gesture
-        users expect.
+        A single click must never install (auto-highlight-on-focus made that
+        a one-mis-tap hazard). ``event.chain`` carries the click multiplicity,
+        so the double-click window follows the user's terminal settings.
         """
         index = self._cell_at(event.x, event.y)
         if index is None:
             return
-        now = time.monotonic()
-        is_double_click = (
-            self._last_click_index == index
-            and now - self._last_click_at <= self._DOUBLE_CLICK_WINDOW_S
-        )
-        self._last_click_index = index
-        self._last_click_at = now
-        if is_double_click:
+        if event.chain >= _DOUBLE_CLICK_CHAIN and index == self.highlighted:
             self.post_message(self.Selected(self, self._rows[index]))
             return
         self.highlighted = index

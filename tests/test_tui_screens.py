@@ -5014,6 +5014,7 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     screen = CatalogScreen.__new__(CatalogScreen)
+    screen._active_tab_id_cache = "chat"
     target = MagicMock(spec=ModelGrid)
     target.highlighted = 0
     target.columns_per_row = 1
@@ -5029,6 +5030,7 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
 
     # Cursor mid-grid (not last row) does NOT scroll to end.
     screen2 = CatalogScreen.__new__(CatalogScreen)
+    screen2._active_tab_id_cache = "chat"
     target2 = MagicMock(spec=ModelGrid)
     target2.highlighted = 0
     target2.columns_per_row = 1
@@ -5661,6 +5663,23 @@ async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
                 assert not load_more.called
 
 
+def _grid_leave_row(name: str) -> LocalCatalogRow:
+    """Minimal chat row for grids exercised by the LeaveUp/LeaveDown handlers
+    (the handlers skip empty grids, so stub grids must carry a row)."""
+    return LocalCatalogRow(
+        name=name,
+        task="chat",
+        params="8B",
+        size="4.0 GB",
+        quant="Q4_K_M",
+        downloads="5K",
+        featured=False,
+        installed=False,
+        sort_downloads=5000,
+        sort_size=4.0,
+    )
+
+
 async def test_catalog_grid_leave_down_at_last_section_loads_more():
     """LeaveDown from the final grid section must fetch more rather than
     move focus past the grid area when there is more data to fetch."""
@@ -5679,7 +5698,7 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
             screen._grid_view = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            last_grid = ModelGrid([])
+            last_grid = ModelGrid([_grid_leave_row("tail")])
             event = ModelGrid.LeaveDown(last_grid)
             with (
                 patch.object(
@@ -5695,9 +5714,9 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
                 assert not focus_next.called
 
 
-async def test_catalog_grid_leave_down_in_middle_focuses_next():
-    """LeaveDown from a non-last grid must move focus to the next sibling,
-    not fetch more rows."""
+async def test_catalog_grid_leave_down_in_middle_enters_next_grid():
+    """LeaveDown from a non-last grid must enter the next sibling grid's top
+    row (never the generic focus chain), not fetch more rows."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -5713,8 +5732,8 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
             screen._grid_view = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            middle_grid = ModelGrid([])
-            tail_grid = ModelGrid([])
+            middle_grid = ModelGrid([_grid_leave_row("a")])
+            tail_grid = ModelGrid([_grid_leave_row("b")])
             event = ModelGrid.LeaveDown(middle_grid)
             with (
                 patch.object(
@@ -5723,10 +5742,10 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
                     return_value=[middle_grid, tail_grid],
                 ),
                 patch.object(screen, "_load_more") as load_more,
-                patch.object(screen, "focus_next") as focus_next,
+                patch.object(screen, "_enter_grid") as enter_grid,
             ):
                 screen._on_grid_leave_down(event)
-                assert focus_next.called
+                enter_grid.assert_called_once_with(tail_grid, from_above=True)
                 assert not load_more.called
 
 
@@ -11358,8 +11377,10 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = False
+            # Scope to the chat pane: screen-wide query also matches the
+            # Discover rails, which the leave handlers deliberately ignore.
             for _ in range(20):
-                grids = list(screen.query(ModelGrid))
+                grids = list(screen.query("#grid-chat ModelGrid"))
                 if len(grids) >= 2:
                     break
                 await pilot.pause()
@@ -11367,7 +11388,7 @@ async def test_catalog_grid_leave_down_focuses_next():
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
             await pilot.pause()
-            grids = list(screen.query(ModelGrid))
+            grids = list(screen.query("#grid-chat ModelGrid"))
             grids[0].focus()
             # Wait for focus to settle: focus() lands over one or more refresh
             # hops, so a bare pause can leave grids[0] unfocused and LeaveDown
@@ -11431,7 +11452,9 @@ async def test_catalog_grid_leave_up_focuses_previous():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            grids = list(screen.query(ModelGrid))
+            # Chat pane only: the Discover rails are sibling ModelGrids the
+            # leave handlers deliberately ignore.
+            grids = list(screen.query("#grid-chat ModelGrid"))
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[1].focus()

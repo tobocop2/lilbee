@@ -336,6 +336,110 @@ async def test_grid_arrows_stay_on_catalog():
         assert isinstance(app.screen, CatalogScreen)
 
 
+def _discover_row(name: str, *, installed: bool = False):
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+    return LocalCatalogRow(
+        name=name,
+        task=ModelTask.CHAT,
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=installed,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref=name,
+        backend="native",
+    )
+
+
+async def test_discover_arrow_flow_keeps_visible_cursor_on_rail_grids():
+    """Arrowing through Discover must always leave focus on a visible rail grid
+    with a highlight -- never on a hidden sibling pane's grid, and the cursor
+    must come back when arrowing up again (bb-hca4h's Discover symptom)."""
+    from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+        screen = app.screen
+        assert isinstance(screen, CatalogScreen)
+
+        def _seed_rails() -> None:
+            rails = screen.query_one("#discover-rails", DiscoverRails)
+            rails.set_rails(
+                for_you=[_discover_row("Alpha"), _discover_row("Beta")],
+                collection=[_discover_row("Gamma", installed=True)],
+                fresh=[_discover_row("Delta"), _discover_row("Epsilon")],
+            )
+
+        # Deterministic rail content: worker landings re-seed the same rows.
+        screen._populate_discover_rails = _seed_rails  # type: ignore[method-assign]
+        await pilot.press("1")  # Discover tab
+        await pilot.pause()
+        _seed_rails()
+        await pilot.pause()
+
+        rails = screen.query_one("#discover-rails", DiscoverRails)
+        rail_grids = list(rails.query(ModelGrid))
+        visited: list[ModelGrid] = []
+        for _ in range(8):
+            await pilot.press("down")
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, ModelGrid), f"focus left the grids: {focused!r}"
+            assert focused in rail_grids, "arrows drove a grid outside the Discover pane"
+            assert focused.highlighted is not None, "cursor vanished mid-navigation"
+            visited.append(focused)
+        assert rails.query_one("#discover-grid-fresh", ModelGrid) in visited
+
+        for _ in range(8):
+            await pilot.press("up")
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, ModelGrid)
+            assert focused in rail_grids
+            assert focused.highlighted is not None
+        assert app.focused is rails.query_one("#discover-grid-for-you", ModelGrid)
+
+
+async def test_grid_cursor_survives_dataset_refresh():
+    """A background page landing (set_rows) must not strand the cursor (bb-hca4h)."""
+    from textual.app import ComposeResult
+    from textual.containers import VerticalScroll
+
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    class _App(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            with VerticalScroll():
+                yield ModelGrid([_discover_row(f"m{i}") for i in range(6)], id="mg")
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        grid = pilot.app.query_one("#mg", ModelGrid)
+        grid.focus()
+        await pilot.pause()
+        await pilot.press("right", "right")
+        await pilot.pause()
+        assert grid.highlighted == 2
+        # Simulate an HF page landing: same rows plus a new page appended.
+        grid.set_rows([_discover_row(f"m{i}") for i in range(10)])
+        await pilot.pause()
+        assert grid.highlighted == 2, "refresh stranded the cursor"
+        await pilot.press("right")
+        await pilot.pause()
+        assert grid.highlighted == 3, "cursor teleported after refresh"
+
+
 async def test_footer_present_on_screens():
     """Every screen should have a Footer widget."""
     app = LilbeeApp()

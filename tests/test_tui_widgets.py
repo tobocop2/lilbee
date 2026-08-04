@@ -4334,8 +4334,8 @@ class TestGridSelect:
             grid = app.query_one(GridSelect)
             assert grid.validate_highlighted(100) == len(grid.children) - 1
 
-    def test_action_cursor_up_leave_when_no_grid(self) -> None:
-        """When grid_size is None, cursor_up posts LeaveUp."""
+    def test_action_cursor_up_stays_put_when_no_grid(self) -> None:
+        """When grid_size is None (layout not arranged), cursor_up stays put."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         grid = GridSelect(min_column_width=20)
@@ -4344,10 +4344,10 @@ class TestGridSelect:
         messages: list[object] = []
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_cursor_up()
-        assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
+        assert messages == []
 
-    def test_action_cursor_down_leave_when_no_grid(self) -> None:
-        """When grid_size is None, cursor_down posts LeaveDown."""
+    def test_action_cursor_down_stays_put_when_no_grid(self) -> None:
+        """When grid_size is None (layout not arranged), cursor_down stays put."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         grid = GridSelect(min_column_width=20)
@@ -4355,7 +4355,7 @@ class TestGridSelect:
         messages: list[object] = []
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_cursor_down()
-        assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
+        assert messages == []
 
     async def test_action_cursor_up_when_highlighted_none(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -6117,16 +6117,17 @@ def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
 
 
 class TestModelGridOnClick:
-    """Click hit-test math: first click highlights, second click posts Selected."""
+    """Click hit-test math: single click highlights, double-click posts Selected."""
 
     @staticmethod
-    def _click(x: int, y: int) -> object:
+    def _click(x: int, y: int, chain: int = 1) -> object:
         click = mock.Mock()
         click.x = x
         click.y = y
+        click.chain = chain
         return click
 
-    def test_first_click_highlights_second_click_selects(self) -> None:
+    def test_single_click_highlights_double_click_selects(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
@@ -6138,13 +6139,30 @@ class TestModelGridOnClick:
         grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
         received: list[ModelGrid.Selected] = []
         grid.post_message = received.append  # type: ignore[method-assign]
-        click = self._click(60, 1)  # second column, first card line
-        grid.on_click(click)
+        grid.on_click(self._click(60, 1))  # second column, first card line
         assert grid.highlighted == 1
         assert received == []
-        grid.on_click(click)
+        grid.on_click(self._click(60, 1, chain=2))
         assert received and isinstance(received[0], ModelGrid.Selected)
         assert received[0].row is rows[1]
+
+    def test_double_click_on_unhighlighted_card_only_highlights(self) -> None:
+        """A double-click landing on a card other than the cursor's re-aims
+        the cursor instead of installing."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.focus = lambda: None  # type: ignore[method-assign]
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        grid.highlighted = 0
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.on_click(self._click(60, 1, chain=2))
+        assert received == []
+        assert grid.highlighted == 1
 
     def test_click_outside_dataset_is_ignored(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -6589,16 +6607,48 @@ class TestModelGridHighlightHelpers:
         # 1 + 4 = 5
         assert grid.highlighted == 5
 
-    def test_set_rows_replaces_dataset_and_resets_highlight(self) -> None:
+    def test_set_rows_keeps_cursor_on_same_row_by_identity(self) -> None:
+        """The highlighted row is re-located in the new dataset, not reset."""
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
-        grid.highlighted = 1
-        new_rows = [_vgrid_row("c"), _vgrid_row("d"), _vgrid_row("e")]
         grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.set_rows([_vgrid_row("c"), _vgrid_row("b"), _vgrid_row("a")])
+        assert grid.highlighted == 1  # "b" moved to index 1, cursor follows
+
+    def test_set_rows_clamps_cursor_when_row_vanishes(self) -> None:
+        """No identity match: fall back to the clamped previous index."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row(f"m{i}") for i in range(5)])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 4
+        new_rows = [_vgrid_row("x"), _vgrid_row("y")]
         grid.set_rows(new_rows)
         assert grid.rows == new_rows
+        assert grid.highlighted == 1
+
+    def test_set_rows_without_prior_highlight_stays_bare(self) -> None:
+        """An unfocused grid with no cursor gains none from a data refresh."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.set_rows([_vgrid_row("b"), _vgrid_row("c")])
+        assert grid.highlighted is None
+
+    def test_set_rows_empty_clears_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0
+        grid.set_rows([])
         assert grid.highlighted is None
 
 
@@ -6971,14 +7021,17 @@ class TestCatalogFocusEdgeGuards:
 
         grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        entered: list[tuple[ModelGrid, bool]] = []
 
         class _StubScreen:
-            _grid_container = type(
-                "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
-            )()
             _loading_more = False
             focus_previous_called = False
-            focus_next_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_a, grid_b]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
 
             def _active_task_has_more(self) -> bool:
                 return False
@@ -6986,22 +7039,18 @@ class TestCatalogFocusEdgeGuards:
             def focus_previous(self) -> None:
                 self.focus_previous_called = True
 
-            def focus_next(self) -> None:
-                self.focus_next_called = True
-
         screen = _StubScreen()
         # Mimic the screen handler executing on the first grid's LeaveUp.
         event = ModelGrid.LeaveUp(grid_a)
-        # Bind the catalog method to the stub; the real method only reads
-        # _grid_container, _active_task_has_more, and _loading_more, all of
-        # which the stub provides.
         CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
-        assert screen.focus_previous_called is False
+        assert entered == []
 
-        # Sanity: from a non-first grid, focus DOES move.
+        # From a non-first grid, the cursor enters the previous grid's last
+        # row deliberately -- never via the generic focus chain.
         event2 = ModelGrid.LeaveUp(grid_b)
         CatalogScreen._on_grid_leave_up(screen, event2)  # type: ignore[arg-type]
-        assert screen.focus_previous_called is True
+        assert entered == [(grid_a, False)]
+        assert screen.focus_previous_called is False
 
     async def test_leave_down_at_last_grid_with_no_more_keeps_focus(self) -> None:
         """Pressing Down at the last row of the bottom grid (no load_more) parks."""
@@ -7011,19 +7060,23 @@ class TestCatalogFocusEdgeGuards:
         grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
         scroll_end_calls: list[bool] = []
+        entered: list[tuple[ModelGrid, bool]] = []
 
         class _StubScreen:
             _grid_container = type(
                 "C",
                 (),
-                {
-                    "query": staticmethod(lambda _cls: [grid_a, grid_b]),
-                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
-                },
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
             )()
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_a, grid_b]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
 
             def _active_task_has_more(self) -> bool:
                 return False
@@ -7037,15 +7090,17 @@ class TestCatalogFocusEdgeGuards:
         screen = _StubScreen()
         event = ModelGrid.LeaveDown(grid_b)
         CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
-        assert screen.focus_next_called is False
+        assert entered == []
         assert screen.load_more_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
 
-        # From a non-last grid, focus DOES move (no scroll_end).
+        # From a non-last grid, the cursor enters the next grid's top row
+        # deliberately (no scroll_end, no generic focus chain).
         scroll_end_calls.clear()
         event2 = ModelGrid.LeaveDown(grid_a)
         CatalogScreen._on_grid_leave_down(screen, event2)  # type: ignore[arg-type]
-        assert screen.focus_next_called is True
+        assert entered == [(grid_b, True)]
+        assert screen.focus_next_called is False
         assert not scroll_end_calls
 
     async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
@@ -7060,14 +7115,14 @@ class TestCatalogFocusEdgeGuards:
             _grid_container = type(
                 "C",
                 (),
-                {
-                    "query": staticmethod(lambda _cls: [grid_b]),
-                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
-                },
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
             )()
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_b]
 
             def _active_task_has_more(self) -> bool:
                 return True

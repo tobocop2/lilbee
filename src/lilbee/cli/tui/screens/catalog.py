@@ -327,23 +327,28 @@ class CatalogScreen(Screen[None]):
         self._available_memory_bytes: int | None = available_memory_for_fit()
 
     def _grid_for_tab(self, tab_id: str) -> VerticalScroll:
-        """Return (and memoize) the VerticalScroll for *tab_id*.
+        """Return (and memoize) the scroll container hosting *tab_id*'s grids.
 
-        Discover has no grid; falls through to TAB_CHAT so callers that
-        access ``_grid_container`` while Discover is active never crash.
-        Cached references are validated via ``is_running`` so a stale
-        post-remount handle gets refreshed transparently.
+        Discover's container is the DiscoverRails scroll itself, so cursor
+        actions and leave handlers always operate on the visible tab's grids
+        (never a hidden sibling pane's). Cached references are validated via
+        ``is_running`` so a stale post-remount handle gets refreshed
+        transparently.
         """
-        target = TAB_CHAT if tab_id == TAB_DISCOVER else tab_id
-        cached = self._tab_grid_cache.get(target)
+        cached = self._tab_grid_cache.get(tab_id)
         if cached is not None and cached.is_running:
             return cached
-        container = self.query_one(f"#{_GRID_ID_PREFIX}{target}", VerticalScroll)
-        self._tab_grid_cache[target] = container
+        selector = "#discover-rails" if tab_id == TAB_DISCOVER else f"#{_GRID_ID_PREFIX}{tab_id}"
+        container = self.query_one(selector, VerticalScroll)
+        self._tab_grid_cache[tab_id] = container
         return container
 
     def _list_for_tab(self, tab_id: str) -> ModelList:
-        """Return (and memoize) the ModelList for *tab_id*. Same fallthrough as _grid_for_tab."""
+        """Return (and memoize) the ModelList for *tab_id*.
+
+        Discover has no list view; falls through to TAB_CHAT so callers that
+        touch ``_list_widget`` while Discover is active never crash.
+        """
         target = TAB_CHAT if tab_id == TAB_DISCOVER else tab_id
         cached = self._tab_list_cache.get(target)
         if cached is not None and cached.is_running:
@@ -547,11 +552,14 @@ class CatalogScreen(Screen[None]):
         )
 
     def _focus_first_grid(self) -> None:
-        """Focus the first grid widget in the active tab's container."""
-        for cls in (ModelGrid, GridSelect):
-            with contextlib.suppress(Exception):
-                self._grid_container.query(cls).first().focus()
+        """Focus the first populated grid widget in the active tab's container."""
+        with contextlib.suppress(Exception):
+            grids = self._pane_grids_with_rows()
+            if grids:
+                grids[0].focus()
                 return
+        with contextlib.suppress(Exception):
+            self._grid_container.query(GridSelect).first().focus()
 
     def _initial_focus_first_grid(self) -> None:
         """on_mount initial focus: skip if a later refresh-tick has already
@@ -1167,10 +1175,16 @@ class CatalogScreen(Screen[None]):
     def _refresh_view(self) -> None:
         """Refresh the active view (grid or list).
 
+        Discover renders rails, not sections; worker landings while it is
+        active repopulate the rails instead of painting a hidden task pane.
+
         Mount/remove of dozens of widgets is wrapped in batch_update so
         Textual coalesces layout passes; without it, the worker callback
         path can land inside an in-flight grid-list toggle and tear the
         DOM."""
+        if self._active_tab_id_cache == TAB_DISCOVER:
+            self._populate_discover_rails()
+            return
         with self.app.batch_update():
             if self._grid_view:
                 self._refresh_grid()
@@ -1191,6 +1205,9 @@ class CatalogScreen(Screen[None]):
         to paint then, and the guard runs before the row-cache update so the
         next mounted refresh still repaints.
         """
+        if self._active_tab_id_cache == TAB_DISCOVER:
+            # Discover paints rails via _populate_discover_rails, never sections.
+            return
         if not self._grid_mounted():
             return
         prep = self._prepare_grid_refresh()
@@ -1572,7 +1589,12 @@ class CatalogScreen(Screen[None]):
         ``immediate=True`` so the overshoot lands in the same compositor
         frame as the cell-into-view scroll above it; deferred would let a
         subsequent ``parent.scroll_to_region`` re-pin scroll_y to the cell.
+
+        Task tabs only: Discover/Library have no inline scroll hint, and the
+        overshoot would yank the rails viewport away from the cursor.
         """
+        if self._active_task() is None:
+            return
         focused = self._focused_grid()
         if not isinstance(focused, ModelGrid) or focused.highlighted is None:
             return
@@ -1585,38 +1607,69 @@ class CatalogScreen(Screen[None]):
             return
         self._grid_container.scroll_end(animate=False, immediate=True)
 
+    def _pane_grids_with_rows(self) -> list[ModelGrid]:
+        """The active pane's ModelGrids that have cards (empty rails skipped)."""
+        try:
+            return [g for g in self._grid_container.query(ModelGrid) if g.rows]
+        except NoMatches:
+            return []
+
+    @staticmethod
+    def _enter_grid(grid: ModelGrid, *, from_above: bool) -> None:
+        """Deliberate cursor entry into *grid* (toad's move_focus pattern).
+
+        Highlight before focus: on_focus only assigns a cursor when none is
+        set, so the entry cell wins and the arrival is always visible.
+        """
+        if from_above:
+            grid.highlight_first()
+        else:
+            grid.highlight_last()
+        grid.focus()
+
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
-        """Move focus to the next grid widget, or fetch more if at the end.
+        """Enter the next grid in the active pane, or fetch more at the end.
 
-        On the bottom-most grid we expose the inline scroll-hint Static
-        (mounted below the last grid via ``_mount_grid_ctas``) by scrolling
-        the parent VerticalScroll to its end. That mirrors the way mouse
-        wheel naturally overshoots past the last card to reveal the hint.
-        Cursor stays parked on the last cell.
+        Only grids are arrow targets (never the generic focus chain, which
+        can land on arrow-dead widgets and lose the cursor). On the
+        bottom-most grid we expose the inline scroll-hint Static (mounted
+        below the last grid via ``_mount_grid_ctas``) by scrolling the
+        container to its end; cursor stays parked on the last cell.
         """
         if isinstance(event, ModelGrid.LeaveDown):
-            grids = list(self._grid_container.query(ModelGrid))
-            if grids and event.grid is grids[-1]:
-                self._grid_container.scroll_end(animate=False, immediate=True)
-                if self._active_task_has_more() and not self._loading_more:
-                    self._load_more()
+            grids = self._pane_grids_with_rows()
+            try:
+                index = grids.index(event.grid)
+            except ValueError:
                 return
+            if index + 1 < len(grids):
+                self._enter_grid(grids[index + 1], from_above=True)
+                return
+            self._grid_container.scroll_end(animate=False, immediate=True)
+            if self._active_task_has_more() and not self._loading_more:
+                self._load_more()
+            return
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
     @on(ModelGrid.LeaveUp)
     def _on_grid_leave_up(self, event: Message) -> None:
-        """Move focus to the previous grid widget.
+        """Enter the previous grid in the active pane.
 
         On the topmost grid, return without moving focus so the cursor
         stays parked at the top row instead of leaking focus upward.
         """
         if isinstance(event, ModelGrid.LeaveUp):
-            grids = list(self._grid_container.query(ModelGrid))
-            if grids and event.grid is grids[0]:
+            grids = self._pane_grids_with_rows()
+            try:
+                index = grids.index(event.grid)
+            except ValueError:
                 return
+            if index > 0:
+                self._enter_grid(grids[index - 1], from_above=False)
+            return
         self.focus_previous()
 
     @on(GridSelect.Selected)
@@ -2272,11 +2325,9 @@ class CatalogScreen(Screen[None]):
             self._nudge_list(-1)
 
     def _first_grid_or_none(self) -> ModelGrid | None:
-        """Return the first ModelGrid in the active tab's container, or None."""
-        try:
-            return self._grid_container.query(ModelGrid).first()
-        except NoMatches:
-            return None
+        """Return the first non-empty ModelGrid in the active tab's container."""
+        grids = self._pane_grids_with_rows()
+        return grids[0] if grids else None
 
     def action_jump_top(self) -> None:
         if self._search_focused:
