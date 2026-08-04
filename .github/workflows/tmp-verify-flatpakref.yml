@@ -23,13 +23,16 @@ jobs:
 
       - name: The shipped bundle must still fail, so the new gate is not vacuous
         run: |
-          set -uo pipefail
+          set -euo pipefail
           curl -fsSL -o /tmp/old.flatpak \
             https://github.com/tobocop2/lilbee/releases/download/v0.6.90b420.dev730/lilbee.flatpak
-          flatpak install --user -y --noninteractive --bundle /tmp/old.flatpak
-          rc=$?
-          echo "bundle install exit=${rc}"
-          [ "${rc}" -ne 0 ] || { echo "::error::the bundle installed; the premise is wrong"; exit 1; }
+          # `if`, not `cmd; rc=$?`: the step runs under `bash -e`, which aborts on
+          # the failure this check exists to observe.
+          if flatpak install --user -y --noninteractive --bundle /tmp/old.flatpak; then
+            echo "::error::the bundle installed; the premise is wrong"
+            exit 1
+          fi
+          echo "the bundle was refused, as expected"
 
       - name: Install from the published flatpakref
         run: |
