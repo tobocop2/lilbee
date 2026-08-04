@@ -1,5 +1,5 @@
 name: Publish Flatpak
-description: "Build the Flatpak from the release binary, smoke-test it, push the signed OSTree repo to the flatpak-lilbee Pages repo, and attach a .flatpak bundle to the release."
+description: "Build the Flatpak from the release binary, smoke-test it, push the signed OSTree repo to the flatpak-lilbee Pages repo, and attach a .flatpakref installer to the release."
 
 inputs:
   pages-token:
@@ -18,7 +18,7 @@ inputs:
     description: "Size in bytes of the Linux binary release asset."
     required: true
   tag:
-    description: "Release tag the .flatpak bundle is attached to."
+    description: "Release tag the .flatpakref installer is attached to."
     required: true
   # The four below default to the stock build; the compat channel overrides them.
   app-id:
@@ -33,10 +33,10 @@ inputs:
     description: "Release asset the extra-data source points at."
     required: false
     default: lilbee-linux-x86_64
-  bundle-name:
-    description: "Filename of the single-file .flatpak bundle."
+  ref-name:
+    description: "Filename of the single-file .flatpakref installer."
     required: false
-    default: lilbee.flatpak
+    default: lilbee.flatpakref
 
 runs:
   using: composite
@@ -62,9 +62,13 @@ runs:
         echo "$GPG_PRIVATE_KEY" | gpg --homedir "$GNUPGHOME" --batch --import
         KEYID=$(gpg --homedir "$GNUPGHOME" --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
         [ -n "$KEYID" ] || { echo "no secret key found in FLATPAK_GPG_PRIVATE_KEY"; exit 1; }
+        # The flatpakref advertises the key the repo is signed with, exported here
+        # rather than committed, so the two cannot drift apart.
+        gpg --homedir "$GNUPGHOME" --export "$KEYID" > /tmp/flatpak-signing-key.gpg
         {
           echo "gnupghome=$GNUPGHOME"
           echo "keyid=$KEYID"
+          echo "pubkey=/tmp/flatpak-signing-key.gpg"
         } >> "$GITHUB_OUTPUT"
 
     - name: Clone the pages repo
@@ -104,29 +108,40 @@ runs:
         flatpak build-update-repo --generate-static-deltas --prune --prune-depth=2 \
           --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" /tmp/pages/repo
 
-    - name: Smoke test from the local repo
+    # Not `flatpak build-bundle`: a bundle carries the payload, and every channel
+    # keeps its binary out of the repo as extra-data, whose pointer build-bundle
+    # drops from the bundle's metadata (flatpak#1334). A flatpakref carries the
+    # remote instead, so the install goes through the repo that has the pointer.
+    - name: Render the flatpakref installers
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        REF: ${{ inputs.ref-name }}
+        PUBKEY: ${{ steps.gpg.outputs.pubkey }}
+      run: |
+        set -euo pipefail
+        render() {
+          python3 packaging/tools/render_flatpakref.py \
+            "packaging/flatpak/${APP_ID}.metainfo.xml" --gpg-key-file "$PUBKEY" "$@"
+        }
+        render --repo-url https://tobocop2.github.io/flatpak-lilbee/repo/ \
+          --remote-name lilbee > "/tmp/${REF}"
+        # The same installer aimed at the repo this run just built, so the smoke
+        # test exercises the file being shipped rather than a hand-added remote.
+        render --repo-url file:///tmp/pages/repo \
+          --remote-name lilbee-local > /tmp/local.flatpakref
+
+    - name: Smoke test the flatpakref install
       shell: bash
       env:
         EXPECTED: lilbee ${{ inputs.version }}
         APP_ID: ${{ inputs.app-id }}
       run: |
         set -euo pipefail
-        flatpak remote-add --user --no-gpg-verify lilbee-local file:///tmp/pages/repo
-        flatpak install --user -y --noninteractive lilbee-local "$APP_ID"
+        flatpak install --user -y --noninteractive --from /tmp/local.flatpakref
         ACTUAL=$(flatpak run "$APP_ID" --version)
         echo "flatpak: $ACTUAL"
         test "$ACTUAL" = "$EXPECTED"
-
-    - name: Build the single-file bundle
-      shell: bash
-      env:
-        APP_ID: ${{ inputs.app-id }}
-        BUNDLE: ${{ inputs.bundle-name }}
-      run: |
-        set -euo pipefail
-        flatpak build-bundle /tmp/pages/repo "/tmp/${BUNDLE}" "$APP_ID" \
-          --repo-url=https://tobocop2.github.io/flatpak-lilbee/repo \
-          --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
     - name: Push the pages repo
       shell: bash
@@ -147,12 +162,12 @@ runs:
         # serialize on a shared `concurrency` group instead, so there is no race to retry.
         git push
 
-    - name: Attach the bundle to the release
+    - name: Attach the installer to the release
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ inputs.tag }}
-        BUNDLE: ${{ inputs.bundle-name }}
+        REF: ${{ inputs.ref-name }}
       run: |
         set -euo pipefail
-        gh release upload "$TAG" "/tmp/${BUNDLE}" --repo "$GITHUB_REPOSITORY" --clobber
+        gh release upload "$TAG" "/tmp/${REF}" --repo "$GITHUB_REPOSITORY" --clobber
