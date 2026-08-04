@@ -158,7 +158,7 @@ ENGINE_WARMING = "Warming up the model"
 # time the engine had not committed to (same rename as TASKBAR_WARM_LOADING).
 ENGINE_ALMOST_READY = "Loading the engine"
 ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
-ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
+ENGINE_FAILED_HINT = "Open the Catalog to install a model, or pick a different one in Settings."
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
 # Shown once when a prompt first waits on a cold engine and keep_engine_warm is off.
 ENGINE_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
