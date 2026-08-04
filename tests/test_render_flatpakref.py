@@ -112,6 +112,12 @@ def test_the_suggested_remote_is_the_one_the_docs_name(app_id, key_file):
     assert _render(app_id, key_file)[_GROUP]["SuggestRemoteName"] == "lilbee"
 
 
+def test_every_published_channel_is_covered_here():
+    """A channel added without a case in this file would ship an untested installer."""
+    on_disk = {path.name.removesuffix(".metainfo.xml") for path in _FLATPAK.glob("*.metainfo.xml")}
+    assert on_disk == set(_APP_IDS)
+
+
 @pytest.mark.parametrize("app_id", _APP_IDS)
 def test_no_manifest_declares_a_branch_the_ref_would_not_know_about(app_id):
     """The rendered Branch is a constant; a manifest opting out of master breaks it silently."""
