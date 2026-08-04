@@ -168,9 +168,7 @@ class TaskCenter(Screen[None]):
 
         Falls back to the first active task if no row has focus.
         """
-        # Through the controller, not the queue: marking the row cancelled does
-        # not stop a running download, and only the controller aborts the
-        # transfer and promotes whatever was waiting behind it.
+        # cancel_task, not queue.cancel: only the controller aborts the transfer.
         focused = self.focused
         if isinstance(focused, TaskRow) and focused.id:
             self.app.task_bar.cancel_task(focused.id.removeprefix("task-"))

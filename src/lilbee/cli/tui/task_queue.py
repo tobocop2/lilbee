@@ -61,9 +61,8 @@ class Task:
     name: str
     task_type: str
     fn: Callable[[], None]
-    # Identity of the work, when a second request for the same thing is a
-    # mistake rather than a second job. ``enqueue`` refuses to add a task whose
-    # key already has one pending. None opts out.
+    # Identity of the work; ``enqueue`` refuses a second pending task with the
+    # same key. None opts out.
     dedupe_key: str | None = None
     status: TaskStatus = TaskStatus.QUEUED
     progress: float = 0.0
@@ -295,10 +294,8 @@ class TaskQueue:
     def cancel(self, task_id: str) -> bool:
         """Cancel a queued or active task. Returns True if cancelled.
 
-        Marks the row only; it does not stop work already in flight. Cancelling
-        a running download needs TaskBarController.cancel_task, which also
-        aborts the transfer. This stays row-only because stopping a transfer is
-        the downloader's business, not the queue's.
+        Marks the row only. Stopping a running download needs
+        ``TaskBarController.cancel_task``, which also aborts the transfer.
 
         Terminal rows (DONE / FAILED / CANCELLED) are immutable: a cancel
         call against an already-finished task is a no-op and returns

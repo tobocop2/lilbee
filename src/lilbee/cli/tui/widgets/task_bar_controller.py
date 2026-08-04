@@ -24,10 +24,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# One at a time. hf_xet cancels at session granularity and nothing finer is
-# exposed, so aborting one concurrent transfer would kill the others sharing the
-# process-global session. Measured cost is small: two concurrent xet downloads
-# aggregated 3.87 MB/s against 3.39 MB/s for one, so the link is the limit.
+# hf_xet aborts at session granularity, so a concurrent transfer dies with the
+# cancelled one.
 _DOWNLOAD_CONCURRENCY = 1
 _BYTES_PER_MB = 1024 * 1024
 
@@ -173,12 +171,10 @@ class TaskBarController:
         self._advance_all(self._task_type_of(task_id))
 
     def cancel_task(self, task_id: str) -> None:
-        """Mark a task cancelled. Row lingers in history until the user clears it.
+        """Mark a task cancelled, aborting the transfer if a download is running.
 
-        A running download also has its transfer aborted. Marking the row is not
-        enough on the xet path: it drives the progress callback from its own
-        thread, so raising there is swallowed and the bytes keep arriving behind
-        a row that says cancelled.
+        The row alone does not stop xet: it drives the progress callback from a
+        thread it owns, where a raise is swallowed.
         """
         task = self.queue.get_task(task_id)
         was_running_download = (
@@ -189,8 +185,7 @@ class TaskBarController:
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
         if was_running_download:
-            # Only for the active one: the abort is session-wide, so doing it
-            # for a merely queued row would kill whichever transfer is running.
+            # Session-wide abort: only for the running transfer.
             from lilbee.catalog.download import abort_active_download
 
             abort_active_download()
@@ -344,9 +339,7 @@ class TaskBarController:
             dedupe_key=dedupe_key,
         )
         if task_id in self._task_targets:
-            # The queue deduplicated and handed back the live task. It already
-            # has a target (running, or queued for a free slot); overwriting it
-            # would drop the original caller's on_success.
+            # Deduplicated: the live task keeps its original target.
             return task_id
         self._task_targets[task_id] = (target, on_success)
         self._try_start_next(task_type.value)
@@ -496,8 +489,7 @@ class TaskBarController:
 
 
 def download_key(model: CatalogModel) -> str:
-    """Identity of a pull. The repo alone is too coarse: two quants of one repo
-    are different files and may legitimately download at the same time."""
+    """Identity of a pull: repo plus filename, since one repo ships several quants."""
     return f"{model.hf_repo}::{model.gguf_filename}"
 
 

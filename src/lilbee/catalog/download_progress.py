@@ -109,9 +109,7 @@ class _CallbackProgressBar(_base_tqdm):
         kwargs["disable"] = True
         kwargs["file"] = io.StringIO()  # absorb any accidental tqdm output
         super().__init__(*args, **kwargs)
-        # tqdm's `initial` is the resume offset: bytes already on disk from an
-        # interrupted attempt, which huggingface_hub does not re-report. Seeding
-        # both counters from it keeps a resumed download's percentage absolute.
+        # `initial` is the resume offset; seeding both keeps a resumed percentage absolute.
         self._written = int(self.n)
         self._transferred = int(self.n)
 
@@ -129,8 +127,8 @@ class _CallbackProgressBar(_base_tqdm):
     def update_transfer(self, n: float = 1) -> bool | None:
         """Absorb the network-bytes stream.
 
-        huggingface_hub routes xet transfer progress into this bar only when the
-        method exists; otherwise it opens its own tqdm on stderr alongside.
+        huggingface_hub routes xet transfer progress here only when this method
+        exists; otherwise it opens a second tqdm on stderr.
         """
         self._transferred += int(n)
         return None

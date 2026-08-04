@@ -55,8 +55,7 @@ _BYTES_PER_GB = 1024**3
 def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
     """Bytes an interrupted attempt at *hf_repo* already holds on disk.
 
-    A resumed download only needs the remainder, so counting the ``.incomplete``
-    blobs keeps the check from refusing a pull that would in fact finish.
+    A resume needs only the remainder, so these count toward available space.
     """
     from huggingface_hub.file_download import repo_folder_name
 
@@ -69,9 +68,8 @@ def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
 def _free_bytes(path: Path) -> int | None:
     """Free space on the volume that will hold *path*, which need not exist yet.
 
-    The models dir is absent until the first download creates it, and
-    shutil.disk_usage raises on a missing path, so measure the nearest existing
-    ancestor: it is the same volume.
+    Measured at the nearest existing ancestor, since shutil.disk_usage raises on
+    a missing path.
     """
     probe = path.resolve()
     while True:
@@ -84,12 +82,7 @@ def _free_bytes(path: Path) -> int | None:
 
 
 def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
-    """Describe why *needed* bytes will not fit, or None when they will.
-
-    Callers that already know a size use this to refuse before starting any
-    work; ``_require_disk_space`` raises the same sentence from inside the
-    download so the two never drift.
-    """
+    """Describe why *needed* bytes will not fit, or None when they will."""
     if needed == _SIZE_UNKNOWN:
         return None  # offline or unresolvable; nothing to compare against
     free = _free_bytes(models_dir)
@@ -107,11 +100,8 @@ def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
 def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
     """Refuse a download the disk cannot hold, naming the shortfall.
 
-    huggingface_hub checks the same thing and only logs a warning, so without
-    this the transfer runs until the volume fills and dies partway. On the xet
-    path that surfaces as a reconstruction error rather than ENOSPC, because
-    hf_xet raises OSError only for auth and not-found, so the message the user
-    gets names neither the disk nor the file.
+    huggingface_hub only warns, and the xet path reports a full disk as a
+    reconstruction error naming neither the disk nor the file.
     """
     message = disk_shortfall(models_dir, entry.hf_repo, needed)
     if message is not None:
@@ -121,9 +111,7 @@ def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> N
 _LOW_DISK_FLOOR = 512 * 1024**2
 """Free bytes below which a failed download is reported as a full disk.
 
-The pre-flight cannot catch a volume that fills mid-transfer, which is how a
-download far smaller than the free space still dies. Checking the live figure
-names the real condition rather than matching on a backend's error text."""
+Catches a volume that filled mid-transfer, which the pre-flight cannot see."""
 
 
 def _raise_if_disk_exhausted(entry: CatalogModel, config: DownloadConfig) -> None:
@@ -147,12 +135,7 @@ _XET_CANCELLED_MARKER = "Operation cancelled"
 def abort_active_download() -> None:
     """Stop the xet transfer running in this process.
 
-    Raising out of the progress callback aborts the HTTP path, because http_get
-    calls it inline in the read loop. xet drives the same callback from a thread
-    it owns, so the exception is swallowed there and the transfer runs to
-    completion while the task shows cancelled; the finished bytes then keep
-    consuming bandwidth other downloads are waiting for. hf_xet cancels only at
-    session granularity, which is why downloads run one at a time.
+    Aborts at session granularity; hf_xet exposes nothing finer.
     """
     try:
         from huggingface_hub.utils._xet import abort_xet_session
@@ -183,11 +166,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
         if _XET_CANCELLED_MARKER in str(exc):
-            # An aborted session surfaces as a bare RuntimeError out of the Rust
-            # layer. It is the user's own cancel, so the row must not read
-            # failed. Checked here rather than in its own except clause, which
-            # would duplicate the two calls below and only stay correct while no
-            # handler above happens to derive from RuntimeError.
+            # An aborted session surfaces as a bare RuntimeError.
             raise TaskCancelledError(str(exc)) from None
         _raise_if_disk_exhausted(entry, config)
         raise RuntimeError(
@@ -329,8 +308,7 @@ def download_mmproj(
     tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
     _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
-    # Same translation as the GGUF itself: a gated repo, a dead network or a full
-    # disk reads the same whichever half of a vision model hit it.
+    # The projector gets the same error translation as the GGUF.
     path = _hf_download_or_translate(
         entry,
         DownloadConfig(

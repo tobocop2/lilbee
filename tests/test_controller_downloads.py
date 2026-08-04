@@ -390,13 +390,8 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
 async def test_downloads_run_one_at_a_time() -> None:
     """Submit 3 distinct models: one goes ACTIVE, the rest wait.
 
-    Downloads are serialised because hf_xet cancels at session granularity, so
-    aborting one concurrent transfer would kill the others sharing the
-    process-global session.
-
-    The models have to differ. _make_model derives hf_repo from *display*, so
-    passing a slug positionally built the same model three times and this test
-    was really asserting that one download could be queued three over.
+    The models must differ: _make_model derives hf_repo from *display*, so
+    identical names would exercise dedupe instead of capacity.
     """
     app = _Host()
     async with app.run_test() as pilot:

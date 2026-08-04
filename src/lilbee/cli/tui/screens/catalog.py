@@ -1916,10 +1916,8 @@ class CatalogScreen(Screen[None]):
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
-        # Refuse here rather than in the worker. The download would fail on its
-        # first instruction, and a task that fails instantly is already terminal
-        # by the next keypress, so dedupe cannot stop a second identical row.
-        # The catalog knows the size, so this costs no request.
+        # Refused before enqueue: a task that fails instantly is terminal, so
+        # dedupe would not stop a second row.
         shortfall = disk_shortfall(
             cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
         )
