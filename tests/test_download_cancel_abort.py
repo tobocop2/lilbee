@@ -70,6 +70,54 @@ def test_an_aborted_transfer_reads_as_cancelled_not_failed(
         dl._hf_download_or_translate(_entry(), config)
 
 
+async def test_cancelling_a_running_download_aborts_the_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row alone is not the fix: without the abort the bytes keep arriving."""
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+    from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    aborted: list[str] = []
+    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+
+    app = LilbeeAppHost()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        # Straight to the queue: advance() promotes to ACTIVE without the
+        # controller spawning a worker that would outlive the test.
+        task_id = controller.queue.enqueue(lambda: None, "Downloading x", TaskType.DOWNLOAD.value)
+        controller.queue.advance(TaskType.DOWNLOAD.value)
+        task = controller.queue.get_task(task_id)
+        assert task is not None and task.status is TaskStatus.ACTIVE
+
+        controller.cancel_task(task_id)
+
+    assert aborted == ["abort"], "a running download was cancelled without aborting it"
+
+
+async def test_cancelling_a_queued_download_leaves_the_running_one_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The abort is session-wide, so firing it for a row that never started
+    would kill whichever transfer is actually running."""
+    from lilbee.cli.tui.task_queue import TaskType
+    from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    aborted: list[str] = []
+    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+
+    app = LilbeeAppHost()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        queued = controller.queue.enqueue(lambda: None, "Downloading y", TaskType.DOWNLOAD.value)
+
+        controller.cancel_task(queued)
+
+    assert aborted == [], "cancelling a queued row aborted the active transfer"
+
+
 def test_an_unrelated_runtime_error_still_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

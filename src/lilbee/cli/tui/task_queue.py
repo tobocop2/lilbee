@@ -296,6 +296,11 @@ class TaskQueue:
     def cancel(self, task_id: str) -> bool:
         """Cancel a queued or active task. Returns True if cancelled.
 
+        Marks the row only; it does not stop work already in flight. Cancelling
+        a running download needs TaskBarController.cancel_task, which also
+        aborts the transfer. This stays row-only because stopping a transfer is
+        the downloader's business, not the queue's.
+
         Terminal rows (DONE / FAILED / CANCELLED) are immutable: a cancel
         call against an already-finished task is a no-op and returns
         False so callers that key off the return value (e.g. UI actions)

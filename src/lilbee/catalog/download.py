@@ -170,16 +170,6 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
-    except RuntimeError as exc:
-        # An aborted session surfaces as a plain RuntimeError from the Rust
-        # layer; it is a cancellation, not a failure, so the row must not
-        # read "failed".
-        if _XET_CANCELLED_MARKER in str(exc):
-            raise TaskCancelledError(str(exc)) from None
-        _raise_if_disk_exhausted(entry, config)
-        raise RuntimeError(
-            f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
-        ) from None
     except GatedRepoError:
         raise PermissionError(
             f"{entry.hf_repo} requires HuggingFace authentication. "
@@ -192,6 +182,13 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
+        if _XET_CANCELLED_MARKER in str(exc):
+            # An aborted session surfaces as a bare RuntimeError out of the Rust
+            # layer. It is the user's own cancel, so the row must not read
+            # failed. Checked here rather than in its own except clause, which
+            # would duplicate the two calls below and only stay correct while no
+            # handler above happens to derive from RuntimeError.
+            raise TaskCancelledError(str(exc)) from None
         _raise_if_disk_exhausted(entry, config)
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"

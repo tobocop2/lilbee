@@ -212,7 +212,11 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
 
         first = controller.start_download(CHAT)
         await _await_active(pilot, controller, first)
-        assert controller.queue.cancel(first)
+        # Through the controller, which is what every cancel key binding calls.
+        # queue.cancel marks the row but leaves the transfer running, so calling
+        # it here would assert the stop-the-bytes guarantee against a path that
+        # does not make it.
+        controller.cancel_task(first)
         assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
 
         # The row saying cancelled is not the claim; the bytes stopping is.
