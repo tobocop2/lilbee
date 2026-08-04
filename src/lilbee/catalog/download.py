@@ -58,7 +58,9 @@ def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
     A resumed download only needs the remainder, so counting the ``.incomplete``
     blobs keeps the check from refusing a pull that would in fact finish.
     """
-    repo_dir = models_dir / f"models--{hf_repo.replace('/', '--')}"
+    from huggingface_hub.file_download import repo_folder_name
+
+    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
     if not repo_dir.is_dir():
         return 0
     return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
@@ -264,18 +266,21 @@ def download_mmproj(
         log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
         return None
 
-    from huggingface_hub import hf_hub_download
-
+    models_dir = _models_dir()
     tracker = _ProgressTracker(on_progress) if on_progress else None
-    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, _models_dir())
-    path = Path(
-        hf_hub_download(
+    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
+    _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
+    # Same translation as the GGUF itself: a gated repo, a dead network or a full
+    # disk reads the same whichever half of a vision model hit it.
+    path = _hf_download_or_translate(
+        entry,
+        DownloadConfig(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
-            cache_dir=str(_models_dir()),
             token=hf_token(),
+            cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
-        )
+        ),
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
         # Cache hit: HF returned the cached path without invoking tqdm.
