@@ -698,7 +698,7 @@ class ChatScreen(Screen[None]):
         # (a live root elsewhere, or an owned file of that name); re-adding the
         # same path is idempotent, and a directory is left to register_sources'
         # own skipped notices rather than a duplicate-file prompt.
-        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name)]
+        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name, p)]
         if duplicates:
             self._prompt_overwrite(paths, duplicates)
             return
