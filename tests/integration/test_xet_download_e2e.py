@@ -17,11 +17,13 @@ Needs network and roughly 1.1GB of disk. Run on a pod:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
 import pytest
 from textual.app import ComposeResult
+from textual.pilot import Pilot
 from textual.widgets import Static
 
 from lilbee.catalog import CatalogModel, download_model
@@ -137,23 +139,42 @@ class _Host(LilbeeAppHost):
         yield Static("host")
 
 
-def _await_terminal(
-    controller: TaskBarController, task_id: str, timeout: float = 600.0
+async def _await_terminal(
+    pilot: Pilot[None], controller: TaskBarController, task_id: str, timeout: float = 1500.0
 ) -> TaskStatus:
+    """Wait by yielding to Textual, never by sleeping.
+
+    The worker marshals completion back with app.call_from_thread, so a blocking
+    sleep here starves the loop that has to drain it and the task never leaves
+    ACTIVE however long the download took.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = controller.queue.get_task(task_id)
         if task is not None and task.status in TERMINAL_STATUSES:
             return task.status
-        time.sleep(0.2)
+        await pilot.pause()
+        await asyncio.sleep(0.2)
     raise AssertionError(f"task {task_id} never finished")
 
 
+async def _await_active(pilot: Pilot[None], controller: TaskBarController, task_id: str) -> None:
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        task = controller.queue.get_task(task_id)
+        if task is not None and task.status is not TaskStatus.QUEUED:
+            return
+        await pilot.pause()
+        await asyncio.sleep(0.1)
+    raise AssertionError("download never started")
+
+
+@pytest.mark.timeout(1800)
 async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str]) -> None:
     """Two install presses on one model must not queue it twice, and must not
     transfer it twice: one task could still have opened two connections."""
     app = _Host()
-    async with app.run_test():
+    async with app.run_test() as pilot:
         controller = TaskBarController(app)
         first = controller.start_download(EMBED)
         second = controller.start_download(EMBED)
@@ -161,29 +182,25 @@ async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str
         assert first == second
         assert len(controller.queue.active_tasks) + len(controller.queue.queued_tasks) == 1
 
-        assert _await_terminal(controller, first) is TaskStatus.DONE
+        assert await _await_terminal(pilot, controller, first) is TaskStatus.DONE
         assert _gguf_names(models_dir)
         assert len(xet_calls) == 1, f"one model, {len(xet_calls)} transfers: {xet_calls}"
 
 
+@pytest.mark.timeout(1800)
 async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> None:
     """Cancelling must not poison the model: dedupe spans queued and active work
     only, so a terminal task has to leave the way clear for a retry."""
     app = _Host()
-    async with app.run_test():
+    async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
         first = controller.start_download(CHAT)
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            task = controller.queue.get_task(first)
-            if task is not None and task.status is TaskStatus.ACTIVE:
-                break
-            time.sleep(0.1)
+        await _await_active(pilot, controller, first)
         assert controller.queue.cancel(first)
-        assert _await_terminal(controller, first) is TaskStatus.CANCELLED
+        assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
 
         second = controller.start_download(CHAT)
         assert second != first, "the cancelled task was handed back instead of a new one"
-        assert _await_terminal(controller, second) is TaskStatus.DONE
+        assert await _await_terminal(pilot, controller, second) is TaskStatus.DONE
         assert any("Qwen3-0.6B" in n for n in _gguf_names(models_dir))
