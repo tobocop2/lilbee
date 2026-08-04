@@ -12,7 +12,7 @@ from textual.app import App
 
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
@@ -295,6 +295,7 @@ class TaskBarController:
         *,
         indeterminate: bool = False,
         on_success: Callable[[], None] | None = None,
+        dedupe_key: str | None = None,
     ) -> str:
         """Enqueue a task, spawn its worker, return task_id.
 
@@ -315,8 +316,17 @@ class TaskBarController:
         third download waits until one of the two active downloads finishes.
         """
         task_id = self.queue.enqueue(
-            lambda: None, name, task_type.value, indeterminate=indeterminate
+            lambda: None,
+            name,
+            task_type.value,
+            indeterminate=indeterminate,
+            dedupe_key=dedupe_key,
         )
+        if task_id in self._task_targets:
+            # The queue deduplicated and handed back the live task. It already
+            # has a target (running, or queued for a free slot); overwriting it
+            # would drop the original caller's on_success.
+            return task_id
         self._task_targets[task_id] = (target, on_success)
         self._try_start_next(task_type.value)
         return task_id
@@ -445,13 +455,29 @@ class TaskBarController:
         allow_unsupported: bool = False,
         on_success: Callable[[], None] | None = None,
     ) -> str:
-        """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk."""
+        """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk.
+
+        Re-requesting a download that is already queued or running returns that
+        task's id and starts nothing.
+        """
         return self.start_task(
             model.display_name,
             TaskType.DOWNLOAD,
             lambda reporter: _download_target(reporter, model, allow_unsupported=allow_unsupported),
             on_success=on_success,
+            dedupe_key=download_key(model),
         )
+
+    def pending_download(self, model: CatalogModel) -> Task | None:
+        """Return the queued-or-active download for *model*, for call sites that
+        want to say "already downloading" rather than "queued"."""
+        return self.queue.find_pending(TaskType.DOWNLOAD.value, download_key(model))
+
+
+def download_key(model: CatalogModel) -> str:
+    """Identity of a pull. The repo alone is too coarse: two quants of one repo
+    are different files and may legitimately download at the same time."""
+    return f"{model.hf_repo}::{model.gguf_filename}"
 
 
 def _download_target(

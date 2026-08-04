@@ -388,7 +388,12 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_downloads_two_active_one_queued() -> None:
-    """Capacity 2: submit 3, first two go ACTIVE, third stays QUEUED."""
+    """Capacity 2: submit 3 distinct models, first two go ACTIVE, third stays QUEUED.
+
+    The models have to differ. _make_model derives hf_repo from *display*, so
+    passing a slug positionally built the same model three times and this test
+    was really asserting that one download could be queued three over.
+    """
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
@@ -399,7 +404,7 @@ async def test_concurrent_downloads_two_active_one_queued() -> None:
                 time.sleep(0.01)
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
-            ids = [controller.start_download(_make_model(f"m{i}")) for i in range(3)]
+            ids = [controller.start_download(_make_model(display=f"Model {i}")) for i in range(3)]
             _wait_until(lambda: len(controller.queue.active_tasks) == 2)
 
             active_ids = {t.task_id for t in controller.queue.active_tasks}

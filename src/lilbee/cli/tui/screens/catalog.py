@@ -1911,6 +1911,9 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
+        if self.app.task_bar.pending_download(model) is not None:
+            self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
+            return
         try:
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename

@@ -61,6 +61,10 @@ class Task:
     name: str
     task_type: str
     fn: Callable[[], None]
+    # Identity of the work, when a second request for the same thing is a
+    # mistake rather than a second job. ``enqueue`` refuses to add a task whose
+    # key already has one pending. None opts out.
+    dedupe_key: str | None = None
     status: TaskStatus = TaskStatus.QUEUED
     progress: float = 0.0
     detail: str = ""
@@ -172,6 +176,21 @@ class TaskQueue:
         with self._lock:
             return self._tasks.get(task_id)
 
+    def find_pending(self, task_type: str, dedupe_key: str) -> Task | None:
+        """Return the queued-or-active task for this key, if there is one."""
+        with self._lock:
+            return self._find_pending_locked(task_type, dedupe_key)
+
+    def _find_pending_locked(self, task_type: str, dedupe_key: str) -> Task | None:
+        for task in self._tasks.values():
+            if (
+                task.task_type == task_type
+                and task.dedupe_key == dedupe_key
+                and task.status not in TERMINAL_STATUSES
+            ):
+                return task
+        return None
+
     def enqueue(
         self,
         fn: Callable[[], None],
@@ -179,13 +198,29 @@ class TaskQueue:
         task_type: str,
         *,
         indeterminate: bool = False,
+        dedupe_key: str | None = None,
     ) -> str:
-        """Add a task to the per-type queue. Returns a task_id."""
+        """Add a task to the per-type queue. Returns a task_id.
+
+        With a *dedupe_key* already queued or active, returns that task's id and
+        adds nothing: asking twice for one download is a double keypress, not a
+        request for two copies. The check lives here rather than at the call
+        sites so a new caller cannot reintroduce the duplicate by forgetting it.
+        """
         task_id = uuid.uuid4().hex[:8]
         task = Task(
-            task_id=task_id, name=name, task_type=task_type, fn=fn, indeterminate=indeterminate
+            task_id=task_id,
+            name=name,
+            task_type=task_type,
+            fn=fn,
+            indeterminate=indeterminate,
+            dedupe_key=dedupe_key,
         )
         with self._lock:
+            if dedupe_key is not None:
+                existing = self._find_pending_locked(task_type, dedupe_key)
+                if existing is not None:
+                    return existing.task_id
             self._tasks[task_id] = task
             self._queues.setdefault(task_type, []).append(task_id)
         self._notify()
