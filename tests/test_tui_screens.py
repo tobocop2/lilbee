@@ -838,10 +838,7 @@ async def test_settings_cycle_pane_handles_missing_tabs():
 
     screen = SettingsScreen.__new__(SettingsScreen)
     screen._pane_groups = {}
-    with (
-        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
-        patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")),
-    ):
+    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
         SettingsScreen.action_cycle_pane(screen, 1)
 
 
@@ -856,10 +853,7 @@ async def test_settings_cycle_pane_no_panes_short_circuits():
     screen._pane_groups = {}
     fake_tabs = MagicMock(spec=TabbedContent)
     fake_tabs.active = "settings-tab-models"
-    with (
-        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
-        patch.object(SettingsScreen, "query_one", return_value=fake_tabs),
-    ):
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
         SettingsScreen.action_cycle_pane(screen, 1)
 
 
@@ -881,10 +875,7 @@ async def test_settings_cycle_pane_unknown_active_starts_from_zero():
     }
     fake_tabs = MagicMock(spec=TabbedContent)
     fake_tabs.active = "not-in-pane-groups"
-    with (
-        patch.object(SettingsScreen, "app", new=MagicMock(focused=None)),
-        patch.object(SettingsScreen, "query_one", return_value=fake_tabs),
-    ):
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
         SettingsScreen.action_cycle_pane(screen, 1)
     # Fell through to index 0 + delta 1 -> second pane.
     assert fake_tabs.active == "settings-tab-ingest"

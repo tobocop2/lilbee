@@ -620,17 +620,11 @@ class SettingsScreen(Screen[None]):
         """Step the active settings tab by *delta*, wrapping around the strip.
 
         Shortcut for users who don't want to Tab through every field to
-        reach the next group. Mirrors CatalogScreen.action_cycle_tab,
-        including a focused-editor bail: the bindings are priority=True, so
-        without it typing < or > into a value field would switch tabs and
-        eat the character. SkipAction (not a bare return) hands the key on
-        to the focused editor.
+        reach the next group. Mirrors CatalogScreen.action_cycle_tab. A
+        focused editor is not a concern here: a focused Input/TextArea
+        consumes printable keys before even priority bindings see them
+        (verified empirically), so < and > always type into editors.
         """
-        from textual.actions import SkipAction
-        from textual.widgets import Input, TextArea
-
-        if isinstance(self.app.focused, (Input, TextArea)):
-            raise SkipAction()
         try:
             tabs = self.query_one("#settings-tabs", TabbedContent)
         except Exception:

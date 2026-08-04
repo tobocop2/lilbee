@@ -574,13 +574,10 @@ class LilbeeApp(App[None]):
         it as a literal character. Showing ``t Tasks`` there would lie.
         """
         # isinstance: a focused Input/TextArea consumes printable keys before
-        # non-priority screen/app bindings see them, so `t`/`m` type literals
-        # there. run_sync is a priority binding, so without this guard a
-        # capital S typed into any text field would silently start a document
-        # sync instead of inserting the character.
-        if action in ("open_tasks", "open_catalog", "run_sync") and isinstance(
-            self.focused, (Input, TextArea)
-        ):
+        # screen/app bindings see them (verified empirically: this holds for
+        # priority bindings too), so `t`/`m` type literals there and the guard
+        # exists purely to keep the footer honest.
+        if action in ("open_tasks", "open_catalog") and isinstance(self.focused, (Input, TextArea)):
             return False
         # None (not False): hide the Sessions binding from the footer entirely
         # when sessions are off, rather than show it greyed. There is nothing to
