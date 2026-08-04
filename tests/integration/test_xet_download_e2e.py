@@ -10,14 +10,18 @@ queue behaviours a user can trigger by accident:
   * asking twice for one model downloads it once
   * a cancelled download can be started again and finishes
 
-Needs network and roughly 1.1GB of disk. Run on a pod:
+Off by default. The other integration tests download a few megabytes; this
+one moves roughly 1.1GB, and `make test-integration` has no slow filter, so
+leaving it on would pull that on every cell of the CI matrix. Run it where the
+bandwidth is:
 
-    uv run pytest tests/integration/test_xet_download_e2e.py -v -m slow
+    LILBEE_E2E_DOWNLOADS=1 uv run pytest tests/integration/test_xet_download_e2e.py -v -m slow
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -32,7 +36,13 @@ from lilbee.cli.tui.task_queue import TERMINAL_STATUSES, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from tests._lilbee_app_test_host import LilbeeAppHost
 
-pytestmark = pytest.mark.slow
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        not os.environ.get("LILBEE_E2E_DOWNLOADS"),
+        reason="moves ~1.1GB; set LILBEE_E2E_DOWNLOADS=1 to run",
+    ),
+]
 
 
 def _entry(hf_repo: str, gguf: str, task: str, size_gb: float) -> CatalogModel:
