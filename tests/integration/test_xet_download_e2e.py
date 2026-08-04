@@ -38,6 +38,8 @@ from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = [
     pytest.mark.slow,
+    # Every test here pulls hundreds of MB, well past the project's 60s default.
+    pytest.mark.timeout(1800),
     pytest.mark.skipif(
         not os.environ.get("LILBEE_E2E_DOWNLOADS"),
         reason="moves ~1.1GB; set LILBEE_E2E_DOWNLOADS=1 to run",
@@ -184,7 +186,6 @@ async def _await_active(pilot: Pilot[None], controller: TaskBarController, task_
     raise AssertionError("download never started")
 
 
-@pytest.mark.timeout(1800)
 async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str]) -> None:
     """Two install presses on one model must not queue it twice, and must not
     transfer it twice: one task could still have opened two connections."""
@@ -202,7 +203,6 @@ async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str
         assert len(xet_calls) == 1, f"one model, {len(xet_calls)} transfers: {xet_calls}"
 
 
-@pytest.mark.timeout(1800)
 async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> None:
     """Cancelling must not poison the model: dedupe spans queued and active work
     only, so a terminal task has to leave the way clear for a retry."""

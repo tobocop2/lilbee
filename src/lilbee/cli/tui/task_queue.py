@@ -102,8 +102,7 @@ class TaskQueue:
         # sync/crawl/download/wiki; each has its own FIFO and own active slots.
         self._active_ids: dict[str, set[str]] = {}
         # Max concurrent active tasks per type. Defaults to 1 (single-active).
-        # Callers override per type (e.g. "download": 2 to allow two concurrent
-        # model downloads). Types absent from the map implicitly cap at 1.
+        # Callers may override per type; types absent from the map cap at 1.
         self._capacity: dict[str, int] = dict(capacity or {})
         self._on_change: list[Callable[[], None]] = []
         if on_change:

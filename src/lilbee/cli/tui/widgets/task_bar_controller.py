@@ -333,9 +333,8 @@ class TaskBarController:
         until the user presses capital ``C`` to clear; the bottom bar
         flashes the outcome once and then hides when idle.
 
-        Per-type capacity in ``TaskQueue`` (download=2, everything else=1)
-        controls concurrency: a second sync queues behind the first, but a
-        third download waits until one of the two active downloads finishes.
+        Per-type capacity in ``TaskQueue`` (1 for every type) controls
+        concurrency: a second task of the same type queues behind the first.
         """
         task_id = self.queue.enqueue(
             lambda: None,
