@@ -6651,6 +6651,29 @@ class TestModelGridHighlightHelpers:
         grid.set_rows([])
         assert grid.highlighted is None
 
+    def test_on_show_completes_a_pending_reveal(self) -> None:
+        """A highlight assigned while hidden reveals once the grid is shown."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        revealed: list[bool] = []
+        grid._reveal_highlight = lambda *_a, **_k: revealed.append(True)  # type: ignore[method-assign]
+        grid._reveal_pending = True
+        grid.on_show()
+        assert revealed == [True]
+        grid._reveal_pending = False
+        grid.on_show()
+        assert revealed == [True]
+
+    def test_reveal_highlight_without_cursor_clears_pending(self) -> None:
+        """on_resize/on_show can fire with no cursor; the pending flag resets."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._reveal_pending = True
+        grid._reveal_highlight()
+        assert grid._reveal_pending is False
+
 
 def _row_height_offset(grid_row: int) -> int:
     from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT
@@ -7139,6 +7162,65 @@ class TestCatalogFocusEdgeGuards:
         assert screen.load_more_called is True
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+    async def test_leave_from_a_grid_outside_the_pane_is_ignored(self) -> None:
+        """A Leave message from a grid that is not in the active pane (stale
+        handle, empty rail) moves nothing: no entry, no scroll, no fetch."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        pane_grid = ModelGrid([_vgrid_row("a")], id="mg-pane")
+        foreign_grid = ModelGrid([_vgrid_row("b")], id="mg-foreign")
+        entered: list[tuple[ModelGrid, bool]] = []
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
+            )()
+            _loading_more = False
+            load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [pane_grid]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
+
+            def _active_task_has_more(self) -> bool:
+                return True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+            def focus_next(self) -> None:
+                raise AssertionError("generic focus chain must never run")
+
+            def focus_previous(self) -> None:
+                raise AssertionError("generic focus chain must never run")
+
+        screen = _StubScreen()
+        CatalogScreen._on_grid_leave_down(screen, ModelGrid.LeaveDown(foreign_grid))  # type: ignore[arg-type]
+        CatalogScreen._on_grid_leave_up(screen, ModelGrid.LeaveUp(foreign_grid))  # type: ignore[arg-type]
+        assert entered == []
+        assert scroll_end_calls == []
+        assert screen.load_more_called is False
+
+    async def test_pane_grids_with_rows_returns_empty_when_container_unmounted(self) -> None:
+        """The active pane's container can be unmounted mid-teardown; the
+        helper reports no grids instead of raising."""
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _StubScreen:
+            @property
+            def _grid_container(self):
+                raise NoMatches("pane gone")
+
+        assert CatalogScreen._pane_grids_with_rows(_StubScreen()) == []  # type: ignore[arg-type]
 
 
 class TestAppTitleSingleSource:
