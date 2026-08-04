@@ -25,10 +25,12 @@ from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
     ModelVariant,
+    disk_shortfall,
     get_catalog,
     get_families,
     resolve_filename,
 )
+from lilbee.catalog.download import _BYTES_PER_GB
 from lilbee.catalog.models import estimate_min_ram_gb
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -1913,6 +1915,16 @@ class CatalogScreen(Screen[None]):
     def _install_model(self, model: CatalogModel) -> None:
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
+            return
+        # Refuse here rather than in the worker. The download would fail on its
+        # first instruction, and a task that fails instantly is already terminal
+        # by the next keypress, so dedupe cannot stop a second identical row.
+        # The catalog knows the size, so this costs no request.
+        shortfall = disk_shortfall(
+            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
+        )
+        if shortfall is not None:
+            self.notify(shortfall, severity="warning")
             return
         try:
             filename = resolve_filename(model)

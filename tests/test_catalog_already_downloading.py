@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import Static
@@ -11,6 +13,10 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import download_key
 from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+def _live(q: TaskQueue) -> int:
+    return len(q.active_tasks) + len(q.queued_tasks)
 
 
 def _model() -> CatalogModel:
@@ -84,3 +90,42 @@ async def test_install_of_an_unqueued_model_still_enqueues(
         screen._install_model(_model())
 
         assert enqueued == ["acme/already-GGUF"]
+
+
+async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two presses on an over-large model must leave the Task Center empty.
+
+    The worker-side check refuses on the download's first instruction, so the
+    task is already terminal by the next keypress and dedupe cannot stop a
+    second identical failed row. Refusing before enqueue is what keeps them out.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        big = dataclasses.replace(_model(), size_gb=24.2)
+
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            lambda *_a, **_kw: (
+                "Not enough disk space for acme/already-GGUF: needs 24.2 GB, 0.2 GB free."
+            ),
+        )
+
+        screen._install_model(big)
+        screen._install_model(big)
+
+        assert enqueued == []
+        assert _live(pilot.app.task_bar.queue) == 0
+        assert len(notices) == 2
+        assert all("Not enough disk space" in n for n in notices)

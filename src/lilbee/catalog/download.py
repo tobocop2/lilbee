@@ -66,6 +66,44 @@ def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
     return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
 
 
+def _free_bytes(path: Path) -> int | None:
+    """Free space on the volume that will hold *path*, which need not exist yet.
+
+    The models dir is absent until the first download creates it, and statvfs
+    raises on a missing path, so measure the nearest existing ancestor: it is
+    the same volume.
+    """
+    probe = path.resolve()
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
+    """Describe why *needed* bytes will not fit, or None when they will.
+
+    Callers that already know a size use this to refuse before starting any
+    work; ``_require_disk_space`` raises the same sentence from inside the
+    download so the two never drift.
+    """
+    if needed == _SIZE_UNKNOWN:
+        return None  # offline or unresolvable; nothing to compare against
+    free = _free_bytes(models_dir)
+    if free is None:
+        return None  # unmeasurable volume; let the download report the truth
+    available = free + _repo_partial_bytes(models_dir, hf_repo)
+    if needed <= available:
+        return None
+    return (
+        f"Not enough disk space for {hf_repo}: needs "
+        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
+    )
+
+
 def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
     """Refuse a download the disk cannot hold, naming the shortfall.
 
@@ -75,15 +113,9 @@ def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> N
     hf_xet raises OSError only for auth and not-found, so the message the user
     gets names neither the disk nor the file.
     """
-    if needed == _SIZE_UNKNOWN:
-        return  # offline or unresolvable; nothing to compare against
-    available = shutil.disk_usage(models_dir).free + _repo_partial_bytes(models_dir, entry.hf_repo)
-    if needed <= available:
-        return
-    raise RuntimeError(
-        f"Not enough disk space for {entry.hf_repo}: needs "
-        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
-    )
+    message = disk_shortfall(models_dir, entry.hf_repo, needed)
+    if message is not None:
+        raise RuntimeError(message)
 
 
 _LOW_DISK_FLOOR = 512 * 1024**2

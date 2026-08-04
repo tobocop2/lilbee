@@ -141,3 +141,27 @@ def test_unmeasurable_volume_keeps_the_original_error(
 
     with pytest.raises(RuntimeError, match="original failure"):
         dl._hf_download_or_translate(_entry(), config)
+
+
+def test_measures_the_volume_when_the_models_dir_does_not_exist_yet(tmp_path: Path) -> None:
+    """statvfs raises on a missing path, and the models dir is absent until the
+    first download creates it, so a pre-flight from the UI would have crashed."""
+    missing = tmp_path / "never" / "created" / "models"
+
+    assert dl._free_bytes(missing) is not None
+    assert dl.disk_shortfall(missing, "acme/big-GGUF", 1024) is None
+
+
+def test_an_unmeasurable_volume_declines_to_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no readable free-space figure anywhere up the tree, refusing would be
+    a guess; let the download run and report what actually happens."""
+
+    def _always_raise(_p: Any) -> Any:
+        raise OSError("no statvfs here")
+
+    monkeypatch.setattr(dl.shutil, "disk_usage", _always_raise)
+
+    assert dl._free_bytes(tmp_path) is None
+    assert dl.disk_shortfall(tmp_path, "acme/big-GGUF", 99 * _GB) is None
