@@ -7288,6 +7288,37 @@ class TestAppTitleSingleSource:
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
 
 
+class TestClampedOptionList:
+    async def test_zero_width_measurement_does_not_crash(self) -> None:
+        """A drawer plus a tiny terminal can measure the list at width 0;
+        found by the fuzz harness (seed 4: resize 20x24 + view burst)."""
+        from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+
+        class _App(LilbeeAppHost):
+            def compose(self):
+                yield ClampedOptionList("alpha", "beta")
+
+        app = _App()
+        async with app.run_test(size=(80, 24)):
+            ol = app.query_one(ClampedOptionList)
+            assert ol.get_content_height(ol.container_size, ol.container_size, 0) > 0
+
+    async def test_upstream_still_needs_the_clamp(self) -> None:
+        """Canary: plain OptionList still crashes at width 0 on the pinned
+        Textual. When this fails, upstream fixed it and the clamp can go."""
+        from textual.widgets import OptionList
+
+        class _App(LilbeeAppHost):
+            def compose(self):
+                yield OptionList("alpha", "beta")
+
+        app = _App()
+        async with app.run_test(size=(80, 24)):
+            ol = app.query_one(OptionList)
+            with pytest.raises(ValueError, match="range"):
+                ol.get_content_height(ol.container_size, ol.container_size, 0)
+
+
 class TestPathExists:
     def test_returns_false_when_path_resolution_raises(self) -> None:
         """A path that can't even be resolved reports as absent, not an error."""

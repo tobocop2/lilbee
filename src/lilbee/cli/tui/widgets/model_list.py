@@ -34,6 +34,7 @@ from lilbee.cli.tui.widgets.catalog_card_shared import (
     _spec_strip,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
+from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 from lilbee.modelhub.models import FEATURED_STAR
 from lilbee.runtime.hardware import FitChip
 
@@ -47,7 +48,7 @@ class ModelListSection(NamedTuple):
     rows: list[CatalogRow]
 
 
-class ModelList(OptionList):
+class ModelList(ClampedOptionList):
     """OptionList specialized for catalog rows, posting Selected on activate."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")

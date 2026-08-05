@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check engine-archs check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
@@ -30,6 +30,9 @@ imports-check:
 
 test-integration:
 	uv run pytest tests/integration/ -v
+
+fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
+	uv run python scripts/qa/tui_fuzz.py smoke
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 

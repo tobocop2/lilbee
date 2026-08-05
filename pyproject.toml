@@ -245,9 +245,10 @@ extend-immutable-calls = ["litestar.params.Body"]
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]
-# Surface-QA harnesses drive the CLI/TUI/HTTP surfaces like tests do; same ignores.
+# Surface-QA harnesses drive the CLI/TUI/HTTP surfaces like tests do; same ignores
+# (S311 for the same reason as tests: seeded fuzz walks must replay).
 "scripts/qa/**/*.py" = [
-    "S101", "S104", "S105", "S106", "S108", "S603", "S607",
+    "S101", "S104", "S105", "S106", "S108", "S311", "S603", "S607",
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]

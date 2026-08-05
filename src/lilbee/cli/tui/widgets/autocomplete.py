@@ -20,6 +20,7 @@ from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import COMMANDS, completion_names
+from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ class CompletionOverlay(Vertical):
         self._options: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield OptionList(id="completion-list")
+        yield ClampedOptionList(id="completion-list")
 
     def show_completions(self, options: list[str]) -> None:
         """Populate and show the overlay."""
