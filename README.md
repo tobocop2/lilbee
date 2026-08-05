@@ -300,6 +300,12 @@ One representative per architecture family, pulled with `lilbee model pull` and 
 - **They stay read-only.** lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use.
 - **On `pip` / `uv`,** this needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
 
+Both reels run chat *and* embedding on the other manager's models, picked out of the catalog's Library tab where each row names the server it runs on.
+
+![models served by Ollama, picked from the catalog, answering from an indexed manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.gif)
+
+![models served by LM Studio, picked from the catalog, answering from an indexed manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-lmstudio-document.gif)
+
 ### See when a model won't load before you download it
 
 Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a subset of architectures and brand-new ones take time to reach the pinned runtime. lilbee tags incompatible models in the catalog and refuses the download (with an override confirm), so you don't wait through a multi-GB pull only to hit "unsupported architecture" at load.
@@ -319,8 +325,6 @@ Either way, your files and the index stay on your computer. Only what you ask an
 
 When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router. This is automatic: ask a question and the model loads split across your cards, answering from your own indexed source.
 
-![a model too big for one card auto-split across the GPUs, answering from lilbee's own indexed source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.gif)
-
 You can also place it by hand. The placement editor pins each role to the cards you choose, previews the fit before anything loads, and applies it live. Ask for a layout that can't fit and it tells you the exact shortfall instead of failing at load time.
 
 ![the placement editor: a too-small layout refused with the exact shortfall, then spread across the cards and applied](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-manual-placement.gif)
@@ -334,6 +338,20 @@ You can also place it by hand. The placement editor pins each role to the cards 
 `Ctrl+P` opens the Textual command palette, `?` on an empty prompt (or `F1` anywhere) toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
 
 ![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
+
+Conversations are kept. Reopen an earlier one and it comes back with its history and citations intact.
+
+![resume an earlier conversation from the sessions drawer](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.gif)
+
+Tell it something about yourself and it remembers, across conversations rather than only within one.
+
+![remember a fact and a preference, then answer from them in a brand new chat](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.gif)
+
+Every setting is editable in the app, and a first run walks you through picking models.
+
+![walk every settings pane without leaving the terminal](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
+
+![the first-run wizard: pick a chat model and an embedding model, and go](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif)
 
 Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
@@ -569,6 +587,10 @@ Plus notebooks, bibliographies, iWork, and audio/video, among others. See the [u
 ## Wiki
 
 lilbee reads the documents you've indexed and writes a wiki about them: one page per concept or entity, not per document. A subject that recurs earns its own page, written and cited from the source that mentions it most and cross-linked with `[[wiki link]]`, with coverage across sources coming from synthesis pages. Every section is citation-verified against the source text before it publishes; lower-confidence pages wait in a `drafts/` queue for review.
+
+Pages are written on demand: open one that does not exist yet and lilbee writes it from the sources it has, then links it into the rest.
+
+![browse a cited wiki, then watch lilbee write a new page on demand](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/wiki-lazy.gif)
 
 See the [usage guide](docs/usage.md#wiki) for commands and configuration, and [how the wiki is validated](docs/benchmarks/wiki-validation.md) for the evidence behind it.
 
