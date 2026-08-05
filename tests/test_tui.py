@@ -17,7 +17,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
@@ -495,15 +495,20 @@ class TestCatalogScreenAsync:
             for _ in range(8):
                 await pilot.pause()
             # Open the filter via `/` (reveal + focus); a hidden input is
-            # never focused in production.
+            # never focused in production. The key press and the focus change
+            # are separate hops of the message bus (measured: `focus()` has not
+            # landed on the line after it returns, only after a pump), so one
+            # pause has to absorb both and loses the race under load.
             await pilot.press("slash")
-            await pilot.pause()
-            assert isinstance(catalog.focused, Input)
+            assert await pump_until(pilot, lambda: isinstance(catalog.focused, Input)), (
+                f"`/` never focused the filter; focus is on {catalog.focused}"
+            )
             catalog.action_go_back()
-            await pilot.pause()
-            # Still on the catalog screen; focus no longer on the Input.
+            assert await pump_until(pilot, lambda: not isinstance(catalog.focused, Input)), (
+                "Escape left focus on the filter input"
+            )
+            # Still on the catalog screen, and focus is off the Input.
             assert isinstance(app.screen, CatalogScreen)
-            assert not isinstance(catalog.focused, Input)
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_escape_from_filter_in_list_view_focuses_list(
