@@ -1051,9 +1051,21 @@ reason the defaults are the defaults.
 
 ## Optional extras
 
-lilbee works out of the box with its managed llama-server fleet for local
-inference. These optional extras add capabilities that require heavier
-dependencies:
+lilbee runs local inference on its managed llama-server fleet, which arrives
+with the `[engine]` extra. On a `pip` or `uv` install that extra is the one you
+need: without it there is no llama-server, and nothing can load a model. It is
+published on lilbee.sh rather than PyPI, so the index for your hardware is part
+of the command (see the install table in the README). The bundled builds
+(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap) already carry it.
+
+```bash
+# the engine, per hardware
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # NVIDIA
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/    # AMD
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/     # everything else
+```
+
+The rest add capabilities that require heavier dependencies:
 
 ```bash
 # pip
@@ -1079,7 +1091,7 @@ faster and dodges the Vulkan-loader crash that affects NVIDIA-on-Windows
 setups. Same `lilbee` command, links straight against your NVIDIA driver:
 
 ```bash
-pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/
 brew install tobocop2/lilbee/lilbee-cuda
 paru -S lilbee-cuda
 nix run github:tobocop2/lilbee#lilbee-cuda

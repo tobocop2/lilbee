@@ -9,15 +9,18 @@ from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-# Names the extra rather than a command. The engine is published per backend and
-# the right index depends on the machine, so a single one baked in here goes
-# stale and points somebody at the wrong build; the README's install table is
-# where that choice belongs.
+# Every index is spelled out rather than pointing at the README. This is read at
+# the moment the engine is needed, often on a remote box, and listing all three
+# is what keeps naming one from sending a machine to the wrong build.
 _INSTALL_HINT = (
-    "The bundled engine ships as the 'engine' extra: reinstall lilbee with it "
-    "using the index for your hardware (see the install table in the README), or "
-    "set LILBEE_LLAMA_SERVER_PATH to a llama-server binary (a llama.cpp release "
-    "download or `brew install llama.cpp`) and put llama-swap / gguf-parser on PATH."
+    "The engine is lilbee's 'engine' extra, published on lilbee.sh rather than "
+    "PyPI, so the index is part of the command:\n"
+    "  NVIDIA: pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/\n"
+    "  AMD:    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/\n"
+    "  Other:  pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/\n"
+    "A standalone binary from https://github.com/tobocop2/lilbee/releases/latest "
+    "bundles the engine instead. To bring your own, set LILBEE_LLAMA_SERVER_PATH to "
+    "a llama-server binary and put llama-swap / gguf-parser on PATH."
 )
 
 
