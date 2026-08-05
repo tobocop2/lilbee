@@ -114,8 +114,15 @@ _LOW_DISK_FLOOR = 512 * 1024**2
 Catches a volume that filled mid-transfer, which the pre-flight cannot see."""
 
 
-def _raise_if_disk_exhausted(entry: CatalogModel, config: DownloadConfig) -> None:
-    """Re-raise a failed download as a disk problem when the volume is full."""
+def _raise_if_disk_exhausted(
+    entry: CatalogModel, config: DownloadConfig, cause: BaseException
+) -> None:
+    """Re-raise a failed download as a disk problem when the volume is full.
+
+    Low free space is a heuristic, not a diagnosis, so *cause* is kept in the
+    message: a download that failed on auth while the disk happened to be nearly
+    full must not be reported as a disk problem alone.
+    """
     if config.cache_dir is None:
         return
     try:
@@ -125,7 +132,8 @@ def _raise_if_disk_exhausted(entry: CatalogModel, config: DownloadConfig) -> Non
     if free >= _LOW_DISK_FLOOR:
         return
     raise RuntimeError(
-        f"Ran out of disk space downloading {entry.hf_repo}: {free / _BYTES_PER_GB:.1f} GB free."
+        f"Ran out of disk space downloading {entry.hf_repo}: "
+        f"{free / _BYTES_PER_GB:.1f} GB free. {type(cause).__name__}: {cause}"
     ) from None
 
 
@@ -168,7 +176,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         if _XET_CANCELLED_MARKER in str(exc):
             # An aborted session surfaces as a bare RuntimeError.
             raise TaskCancelledError(str(exc)) from None
-        _raise_if_disk_exhausted(entry, config)
+        _raise_if_disk_exhausted(entry, config, exc)
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None

@@ -1916,14 +1916,6 @@ class CatalogScreen(Screen[None]):
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
-        # Refused before enqueue: a task that fails instantly is terminal, so
-        # dedupe would not stop a second row.
-        shortfall = disk_shortfall(
-            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
-        )
-        if shortfall is not None:
-            self.notify(shortfall, severity="warning")
-            return
         try:
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
@@ -1932,6 +1924,16 @@ class CatalogScreen(Screen[None]):
                 return
         except Exception:
             log.debug("Could not resolve filename", exc_info=True)
+
+        # After the already-installed check, which needs no space, and before
+        # the enqueue: a task that fails instantly is terminal, so dedupe would
+        # not stop a second row.
+        shortfall = disk_shortfall(
+            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
+        )
+        if shortfall is not None:
+            self.notify(shortfall, severity="warning")
+            return
 
         self._enqueue_download(model)
 

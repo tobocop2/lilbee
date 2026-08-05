@@ -4761,6 +4761,11 @@ async def test_catalog_install_new_model():
                     "lilbee.app.services.get_services",
                     return_value=MagicMock(model_manager=mock_mgr),
                 ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
+                ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
                 screen._install_model(m)
@@ -13178,6 +13183,11 @@ async def test_catalog_install_model_resolve_exception():
                 patch(
                     "lilbee.cli.tui.screens.catalog.resolve_filename",
                     side_effect=RuntimeError("fail"),
+                ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):

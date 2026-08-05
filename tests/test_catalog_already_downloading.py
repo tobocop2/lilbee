@@ -86,6 +86,10 @@ async def test_install_of_an_unqueued_model_still_enqueues(
         enqueued: list[str] = []
         monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
+        # Otherwise this asserts on the runner's free space, not on the guard.
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None
+        )
 
         screen._install_model(_model())
 
