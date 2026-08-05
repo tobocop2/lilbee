@@ -76,3 +76,44 @@ async def test_finishing_a_task_starts_exactly_one_successor(
 
     assert runs["B"] == 1, f"successor never started after {finish}: {dict(runs)}"
     assert all(count == 1 for count in runs.values()), f"task ran twice: {dict(runs)}"
+
+
+@pytest.mark.timeout(90)
+async def test_the_successor_waits_for_the_cancelled_worker_to_exit() -> None:
+    """Promoting on the cancel keypress overlaps the two transfers, and the xet
+    abort is session-wide, so the successor dies with the cancelled one. The
+    worker's own exit is what may advance the queue."""
+    started: list[str] = []
+    release = threading.Event()
+
+    def target(name: str):
+        def _run(reporter: object) -> None:
+            started.append(name)
+            release.wait(timeout=30)
+
+        return _run
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        first = controller.start_task("A", TaskType.DOWNLOAD, target("A"), dedupe_key="a")
+        controller.start_task("B", TaskType.DOWNLOAD, target("B"), dedupe_key="b")
+
+        for _ in range(60):
+            if started:
+                break
+            await pilot.pause()
+        assert started == ["A"]
+
+        controller.cancel_task(first)
+        for _ in range(40):
+            await pilot.pause()
+        assert started == ["A"], f"B started while A was still running: {started}"
+
+        release.set()
+        for _ in range(120):
+            if len(started) > 1:
+                break
+            await pilot.pause()
+
+    assert started == ["A", "B"], f"B never ran after A exited: {started}"
