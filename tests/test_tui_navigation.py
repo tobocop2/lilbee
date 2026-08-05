@@ -925,14 +925,18 @@ async def test_c_is_hidden_from_the_footer_while_an_input_has_focus():
 
 
 async def test_c_does_not_advertise_itself_on_chat():
-    """Chat is where `c` has nowhere to go, so it drops off that footer."""
+    """Chat is where `c` has nowhere to go, so it drops off that footer.
+
+    False, not None: Textual excludes a False binding from the row and renders
+    a None one greyed but present.
+    """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         await pilot.press("escape")
         await pilot.pause()
-        assert app.check_action("open_chat", ()) is None
+        assert app.check_action("open_chat", ()) is False
 
 
 async def test_catalog_source_filter_moved_off_c():
@@ -1156,3 +1160,32 @@ async def test_strip_arrows_leave_the_prompt_alone():
             await pilot.pause()
             assert app.screen.focused is chat_input, f"{key} moved focus off the prompt"
         assert chat_input.value == "abc"
+
+
+async def test_the_views_group_only_shows_keys_that_go_somewhere():
+    """A grouped key must drop out of the row when its action is unavailable.
+
+    Grouping hides the per-key labels, so the keys themselves are all the row
+    has left to be honest with: `c` must be absent on Chat (nowhere to jump)
+    and present everywhere else.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        def shown_keys() -> set[str]:
+            return {
+                binding.key
+                for _, binding, _, _ in app.screen.active_bindings.values()
+                if binding.show
+            }
+
+        assert "c" not in shown_keys(), "Chat advertises a jump to itself"
+        assert {"t", "m"} <= shown_keys()
+
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+        assert "c" in shown_keys(), "Catalog hides the jump back to Chat"

@@ -607,12 +607,12 @@ class LilbeeApp(App[None]):
             return False
         # Nothing to jump to when Chat is already the active view.
         if action == "open_chat" and self.active_view == msg.DEFAULT_VIEW:
-            return None
-        # None (not False): hide the Sessions binding from the footer entirely
-        # when sessions are off, rather than show it greyed. There is nothing to
-        # toggle, so it should not advertise itself.
+            return False
+        # False, not None: Textual drops a False binding from the row entirely
+        # and renders a None one greyed but present. With sessions off there is
+        # nothing to toggle, so the key should not take a footer cell at all.
         if action == "toggle_sessions" and not cfg.sessions_enabled:
-            return None
+            return False
         return super().check_action(action, parameters)
 
     def go_back(self) -> None:

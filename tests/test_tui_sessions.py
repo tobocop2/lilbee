@@ -102,16 +102,35 @@ async def test_sessions_on_by_default() -> None:
 
 
 async def test_disabled_hides_the_footer_binding(sessions, monkeypatch) -> None:
-    """check_action returns None so ctrl+o leaves the footer entirely."""
+    """With sessions off, ctrl+o leaves the footer row entirely.
+
+    Asserted on the row rather than on check_action's return value: the guard
+    used to return None, which reads as "hidden" but which Textual renders
+    greyed-and-present, so a return-value check passed while the footer still
+    advertised a toggle with nothing to toggle. Only False drops the cell.
+    """
     from lilbee.core.config import cfg
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
+
+        def shown_keys() -> set[str]:
+            return {
+                binding.key
+                for _, binding, _, _ in app.screen.active_bindings.values()
+                if binding.show
+            }
+
         monkeypatch.setattr(cfg, "sessions_enabled", True)
-        assert app.check_action("toggle_sessions", ()) is not None
+        app.screen.refresh_bindings()
+        await pilot.pause()
+        assert "ctrl+o" in shown_keys()
+
         monkeypatch.setattr(cfg, "sessions_enabled", False)
-        assert app.check_action("toggle_sessions", ()) is None
+        app.screen.refresh_bindings()
+        await pilot.pause()
+        assert "ctrl+o" not in shown_keys()
 
 
 async def test_disabled_shows_notice_on_toggle(sessions, monkeypatch) -> None:
