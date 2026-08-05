@@ -991,7 +991,7 @@ class TestModelBar:
                 await pilot.pause()
                 assert "-disabled" not in toggle.classes
 
-    async def test_chat_mode_toggle_left_selects_search(self) -> None:
+    async def test_chat_mode_toggle_set_mode_selects_search(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -1002,10 +1002,10 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_search()
+                assert toggle.set_mode("search") is True
                 assert cfg.chat_mode == "search"
 
-    async def test_chat_mode_toggle_right_selects_chat(self) -> None:
+    async def test_chat_mode_toggle_set_mode_selects_chat(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -1016,7 +1016,7 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_chat()
+                assert toggle.set_mode("chat") is True
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_select_chat_when_already_chat_is_noop(self) -> None:
@@ -1032,7 +1032,7 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 # already in chat mode; selecting chat returns False
-                assert toggle._set_mode("chat") is False
+                assert toggle.set_mode("chat") is False
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_select_search_no_op_when_disabled(self) -> None:
@@ -1046,7 +1046,7 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_search()
+                assert toggle.set_mode("search") is False
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_renders_two_pill_children(self) -> None:
@@ -1449,7 +1449,7 @@ class TestModelPickerButton:
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_pill_click_routes_per_id(self) -> None:
-        """Click on the search/chat pill calls ``_set_mode`` for that side only."""
+        """Click on the search/chat pill calls ``set_mode`` for that side only."""
         from textual import events
 
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -1462,13 +1462,13 @@ class TestModelPickerButton:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                with mock.patch.object(toggle, "set_mode") as set_mode:
                     search = toggle.query_one("#chat-mode-search", Static)
                     click = mock.MagicMock(spec=events.Click)
                     click.widget = search
                     toggle.on_click(click)
                     set_mode.assert_called_once_with("search")
-                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                with mock.patch.object(toggle, "set_mode") as set_mode:
                     chat = toggle.query_one("#chat-mode-chat", Static)
                     click = mock.MagicMock(spec=events.Click)
                     click.widget = chat

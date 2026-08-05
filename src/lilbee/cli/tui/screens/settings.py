@@ -111,20 +111,43 @@ class SettingsScreen(Screen[None]):
         "Ctrl+R resets the focused field, and q or Escape goes back."
     )
 
+    # Settings shows the most keys of any screen, so each pair collapses to a
+    # single labelled cell; ungrouped it was the one footer that overflowed a
+    # 120-column terminal.
+    _FIELD_GROUP = Binding.Group("Field", compact=True)
+    _TAB_GROUP = Binding.Group("Tabs", compact=True)
+    _RESET_GROUP = Binding.Group("Reset", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
         # Tab cycles editors inside the active pane and rolls over to the
         # next group tab when you Tab past the last editor (and the
         # previous group tab on shift+Tab past the first editor). Use
         # > / < to jump straight to the next / previous group tab.
-        Binding("tab", "next_field_or_pane", "Next field", show=True),
-        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True),
+        Binding("tab", "next_field_or_pane", "Next field", show=True, group=_FIELD_GROUP),
+        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True, group=_FIELD_GROUP),
         # Direct tab cycling, mirrored from CatalogScreen. priority=True
         # so the bindings win when an editor input has focus.
-        Binding("greater_than_sign", "cycle_pane(1)", "Next tab", show=True, priority=True),
-        Binding("less_than_sign", "cycle_pane(-1)", "Prev tab", show=True, priority=True),
-        Binding("ctrl+r", "reset_focused", "Reset field", show=False),
-        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
+        Binding(
+            "less_than_sign",
+            "cycle_pane(-1)",
+            "Prev tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
+        Binding(
+            "greater_than_sign",
+            "cycle_pane(1)",
+            "Next tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
+        # Pairing the two resets under one label costs less room than
+        # "Reset all" alone did, and it stops ^r being a hidden key.
+        Binding("ctrl+r", "reset_focused", "Reset field", show=True, group=_RESET_GROUP),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True, group=_RESET_GROUP),
         *BROWSE_LIST_BINDINGS,
     ]
 

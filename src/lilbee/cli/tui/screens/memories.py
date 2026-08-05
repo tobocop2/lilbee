@@ -41,10 +41,12 @@ class MemoriesScreen(Screen[None]):
     AUTO_FOCUS = "#memories-table"
     HELP = "Manage memories. j/k navigate, d delete, s toggle shared, / search, q back."
 
+    _ENTRY_GROUP = Binding.Group("Entry", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(escape_action="dismiss_or_back"),
-        Binding("d", "delete", "Delete", show=True),
-        Binding("s", "toggle_shared", "Shared", show=True),
+        Binding("d", "delete", "Delete", show=True, group=_ENTRY_GROUP),
+        Binding("s", "toggle_shared", "Shared", show=True, group=_ENTRY_GROUP),
         Binding("slash", "focus_search", "Search", show=True),
         *BROWSE_LIST_BINDINGS,
     ]

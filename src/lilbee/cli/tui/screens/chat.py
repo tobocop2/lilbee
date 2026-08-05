@@ -230,10 +230,17 @@ class ChatScreen(Screen[None]):
         "# Chat\n\n"
         "Ask questions about your knowledge base.\n\n"
         "Press **Escape** for normal mode (vim keys), "
-        "**i**/**a**/**o** to return to insert mode."
+        "**i**/**a**/**o** to return to insert mode.\n\n"
+        "**/** opens the slash-command line and **Tab** completes what you "
+        "type there; **F2** lists every command.\n\n"
+        "**F6** jumps to the model strip under the prompt. "
+        "**Left** / **Right** step between the Chat, Embed, Vision and Rerank "
+        "pickers, **Home** / **End** jump to either end, **Enter** opens the "
+        "focused picker, and **Escape** returns to the prompt."
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
+    _COMMANDS_GROUP = Binding.Group("Commands", compact=True)
 
     # Hot-path widget refs. ``getters.query_one`` is a typed class-level
     # descriptor that resolves via Textual's indexed DOM lookup on every
@@ -244,12 +251,26 @@ class ChatScreen(Screen[None]):
     _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # `/` opens the slash-command line (Tab completes it -- the
-        # adjacent `Tab Complete` hint spells that out). The label says
-        # "Slash commands" rather than the bare "Commands" so the footer
-        # tells the user what `/` actually does.
-        Binding("slash", "focus_commands", "Slash commands", show=True),
-        Binding("tab", "complete", "Complete", show=True, priority=True),
+        # `/` opens the slash-command line. The label says "Slash commands"
+        # rather than the bare "Commands" so the footer tells the user what
+        # `/` actually does; Tab completion is named in help instead.
+        Binding("slash", "focus_commands", "Slash commands", show=True, group=_COMMANDS_GROUP),
+        # F2 opens the searchable list of every slash command
+        # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
+        # Grouped with `/` (and kept adjacent, which is what Textual groups on)
+        # so both stay in the footer at half the width.
+        Binding(
+            "f2",
+            "show_command_catalog",
+            "All commands",
+            show=True,
+            priority=True,
+            group=_COMMANDS_GROUP,
+        ),
+        # Hidden: Tab only completes while the slash dropdown is open, and the
+        # rest of the time it walks the focus chain, so a permanent
+        # "tab Complete" cell overstated it. Named in help beside `/`.
+        Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
         # Ctrl+P stays bound to the app's command palette by default. The
         # chat screen only intercepts it WHEN the dropdown is visible, via
@@ -283,12 +304,13 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("s", "cycle_scope", "Scope", show=False),
-        # F2 opens the searchable list of every slash command
-        # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
-        # Labeled "All commands" so it reads distinctly from `/ Slash commands`.
-        Binding("f2", "show_command_catalog", "All commands", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
+        # A function key, not a letter: the four role pickers are worth
+        # reaching mid-sentence, and a focused input consumes printable keys
+        # before any binding fires. Tab reaches the bar too, but only from
+        # NORMAL mode and only after walking past the log.
+        Binding("f6", "focus_model_bar", "Model bar", show=True, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -447,6 +469,10 @@ class ChatScreen(Screen[None]):
         a prompt, so focus must not stay parked on the widget that opened it.
         """
         self._enter_insert_mode()
+
+    def action_focus_model_bar(self) -> None:
+        """F6: put the cursor on the model strip. Left / Right walk it from there."""
+        self.query_one("#model-bar", ModelBar).focus_strip()
 
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""
@@ -1963,10 +1989,10 @@ class ChatScreen(Screen[None]):
             if self._chat_input.value.strip() == "/":
                 self._set_input("")
             return
-        if isinstance(self.focused, (Select, ModelPickerButton)):
-            # Returning from a model picker should put us back in INSERT
-            # so the user can type their next prompt; routing through the
-            # helper makes sure can_focus is re-enabled.
+        if isinstance(self.focused, Select) or self._focus_in_model_bar():
+            # Leaving the model strip should put us back in INSERT so the
+            # user can type their next prompt; routing through the helper
+            # makes sure can_focus is re-enabled.
             self._enter_insert_mode()
             return
         self._insert_mode = False
@@ -2251,6 +2277,15 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
+
+    def _focus_in_model_bar(self) -> bool:
+        """True when focus is on any model-strip member.
+
+        Asked of the container rather than of each member class so a member
+        added later is covered without a second edit here.
+        """
+        focused = self.focused
+        return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

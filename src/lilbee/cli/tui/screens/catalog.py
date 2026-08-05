@@ -180,7 +180,7 @@ class CatalogScreen(Screen[None]):
         "- /: filter the active tab (Esc clears).\n"
         "- s: cycle sort (Name / Downloads / Size / Params).\n"
         "- v: toggle Grid vs List view on a task tab.\n"
-        "- c: cycle source chip [local | cloud | both] on a task tab.\n"
+        "- o: cycle source chip [local | cloud | both] on a task tab.\n"
         "- n: load more HF rows (or just keep scrolling).\n\n"
         "## Detail drawer\n"
         "- Ctrl+B: toggle the right-pane detail drawer.\n"
@@ -195,6 +195,7 @@ class CatalogScreen(Screen[None]):
 
     _ACTION_GROUP = Binding.Group("Actions", compact=True)
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
+    _TAB_GROUP = Binding.Group("Tabs", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
@@ -235,7 +236,11 @@ class CatalogScreen(Screen[None]):
         Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
         Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
-        Binding("c", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
+        # `o` for origin, not `c`: `c` is the app-wide jump to Chat. An app
+        # binding may only be shadowed by a screen key the footer explains,
+        # and this one is hidden, so it would have flipped the source filter
+        # with nothing on screen to say why.
+        Binding("o", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
         # Numeric tab shortcuts; 1-6 jump to the corresponding tab in
         # ALL_TAB_IDS order (Discover, Chat, Embed, Vision, Rerank, Library).
         # priority=True so they win against any focused-widget binding that
@@ -247,15 +252,28 @@ class CatalogScreen(Screen[None]):
         Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
         Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
         Binding("6", "select_tab(5)", "Library", show=False, priority=True),
-        # Tab cycling. Hidden from the footer: the catalog row overflows on
-        # narrow terminals and truncates the rightmost global binding
-        # mid-word (pinned by test_catalog_bindings_minimal); the numbered
-        # tab strip carries discoverability instead. ctrl+arrow conflicts
-        # with macOS desktop-space shortcuts, hence vim-style angle
-        # brackets. priority=True so the active ModelGrid's own focus
-        # cycling doesn't swallow them.
-        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=False, priority=True),
-        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=False, priority=True),
+        # Tab cycling, shown as a compact pair: stepping between Chat / Embed
+        # / Vision / Rerank is the catalog's most-used move and the numbered
+        # strip alone did not advertise it. ctrl+arrow conflicts with macOS
+        # desktop-space shortcuts, hence vim-style angle brackets.
+        # priority=True so the active ModelGrid's own focus cycling doesn't
+        # swallow them.
+        Binding(
+            "less_than_sign",
+            "cycle_tab(-1)",
+            "Prev tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
+        Binding(
+            "greater_than_sign",
+            "cycle_tab(1)",
+            "Next tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)

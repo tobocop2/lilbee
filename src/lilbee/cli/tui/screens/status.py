@@ -164,10 +164,18 @@ class StatusScreen(Screen[None]):
         "View configuration, documents, model architecture, and storage info."
     )
 
+    _SECTION_GROUP = Binding.Group("Section", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
-        Binding("tab", "app.focus_next", "Next section", show=True),
-        Binding("shift+tab", "app.focus_previous", "Prev section", show=True),
+        Binding("tab", "app.focus_next", "Next section", show=True, group=_SECTION_GROUP),
+        Binding(
+            "shift+tab",
+            "app.focus_previous",
+            "Prev section",
+            show=True,
+            group=_SECTION_GROUP,
+        ),
         *BROWSE_LIST_BINDINGS,
     ]
 

@@ -381,21 +381,17 @@ class ChatModePill(Static, can_focus=True):
         target = (
             ChatMode.SEARCH.value if self.id == _CHAT_MODE_SEARCH_PILL_ID else ChatMode.CHAT.value
         )
-        toggle._set_mode(target)
+        toggle.set_mode(target)
 
 
 class ChatModeToggle(Widget, can_focus=False):
     """Two-pill control toggling cfg.chat_mode between Search and Chat.
 
-    The toggle itself is not focusable; the inner pills are. Tab walks
-    Search then Chat, Enter / Space picks. The container keeps left /
-    right arrow handling so the legacy keyboard flow still works.
+    The toggle itself is not focusable; the inner pills are. Enter / Space
+    picks the focused pill. Left / Right belong to the enclosing ModelBar,
+    which steps across the whole strip, so they are not bound here: one pair
+    of arrows cannot both move along the bar and pick a mode.
     """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("left", "select_search", "Search mode", show=False),
-        Binding("right", "select_chat", "Chat mode", show=False),
-    ]
 
     def __init__(self) -> None:
         super().__init__(id=_CHAT_MODE_TOGGLE_ID)
@@ -462,7 +458,7 @@ class ChatModeToggle(Widget, can_focus=False):
             msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
         )
 
-    def _set_mode(self, target: str) -> bool:
+    def set_mode(self, target: str) -> bool:
         """Apply *target* if it differs from the current mode and Search is allowed."""
         if cfg.chat_mode == target:
             return False
@@ -477,7 +473,7 @@ class ChatModeToggle(Widget, can_focus=False):
         target = (
             ChatMode.CHAT.value if cfg.chat_mode == ChatMode.SEARCH.value else ChatMode.SEARCH.value
         )
-        return self._set_mode(target)
+        return self.set_mode(target)
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -487,21 +483,15 @@ class ChatModeToggle(Widget, can_focus=False):
         if widget is not None:
             wid = widget.id
             if wid == _CHAT_MODE_SEARCH_PILL_ID:
-                self._set_mode(ChatMode.SEARCH.value)
+                self.set_mode(ChatMode.SEARCH.value)
                 return
             if wid == _CHAT_MODE_CHAT_PILL_ID:
-                self._set_mode(ChatMode.CHAT.value)
+                self.set_mode(ChatMode.CHAT.value)
                 return
         self.toggle()
 
     def action_flip_mode(self) -> None:
         self.toggle()
-
-    def action_select_search(self) -> None:
-        self._set_mode(ChatMode.SEARCH.value)
-
-    def action_select_chat(self) -> None:
-        self._set_mode(ChatMode.CHAT.value)
 
 
 class RoleRow(Widget, can_focus=False):
@@ -557,16 +547,70 @@ class RoleRow(Widget, can_focus=False):
 
 
 class ModelBar(Widget, can_focus=False):
-    """Horizontal band of the four role pickers + the Search/Chat toggle, below the input."""
+    """Horizontal band of the four role pickers + the Search/Chat toggle, below the input.
+
+    The bar reads as one strip, so it walks like one: Left / Right step
+    between its members and Enter opens the focused member. The bindings live
+    here rather than on the members because key lookup walks the focused
+    widget's ancestors: one definition covers all six members, and it cannot
+    fire anywhere else, so the arrows stay free for the prompt's own cursor
+    movement without needing a guard.
+    """
 
     app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     _SCOPES: ClassVar[tuple[PickerScope, ...]] = ("chat", "embed", "vision", "rerank")
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("left", "step(-1)", "Prev role", show=False),
+        Binding("right", "step(1)", "Next role", show=False),
+        Binding("home", "step_end(-1)", "First role", show=False),
+        Binding("end", "step_end(1)", "Last role", show=False),
+    ]
+
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
         self._options_cache: dict[str, tuple[tuple[str, str], ...]] = {}
+
+    @property
+    def strip(self) -> list[Widget]:
+        """The bar's focusable members, left to right as rendered.
+
+        Ordered and filtered by the screen's focus chain rather than by a
+        hand-rolled visibility test: the narrow layout hides switched-off roles
+        on the RoleRow, so the button's own ``display`` still reads True and
+        Left / Right would step onto a member the user cannot see.
+        """
+        members = {*self.query(ModelPickerButton).results(), *self.query(ChatModePill).results()}
+        return [w for w in self.screen.focus_chain if w in members]
+
+    def focus_strip(self) -> None:
+        """Focus the first member. No-op while the bar is still composing."""
+        self._focus_at(0)
+
+    def _focus_at(self, index: int) -> None:
+        """Focus the member at *index*, clamped to the ends of the strip."""
+        members = self.strip
+        if members:
+            members[max(0, min(index, len(members) - 1))].focus()
+
+    def _focused_index(self) -> int | None:
+        """Position of the focused member, or None when focus is off the strip."""
+        members = self.strip
+        focused = self.screen.focused
+        return members.index(focused) if focused in members else None
+
+    def action_step(self, delta: int) -> None:
+        """Move focus one member along the strip; clamps at both ends."""
+        current = self._focused_index()
+        if current is not None:
+            self._focus_at(current + delta)
+
+    def action_step_end(self, direction: int) -> None:
+        """Home / End jump to the first or last member of the strip."""
+        if self._focused_index() is not None:
+            self._focus_at(0 if direction < 0 else len(self.strip) - 1)
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="model-bar-roles"):

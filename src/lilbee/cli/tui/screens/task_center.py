@@ -68,12 +68,17 @@ class TaskCenter(Screen[None]):
 
     app: LilbeeApp  # type: ignore[assignment]
 
+    _TASK_GROUP = Binding.Group("Tasks", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
         *BROWSE_LIST_BINDINGS,
-        Binding("r", "refresh_tasks", "Refresh", show=True),
-        Binding("c", "cancel_task", "Cancel", show=True),
-        Binding("C", "clear_history", "Clear done", show=True),
+        Binding("r", "refresh_tasks", "Refresh", show=True, group=_TASK_GROUP),
+        # `c` shadows the app-wide jump to Chat here. Allowed because the
+        # footer names it: Cancel is the reason you are on this screen, and
+        # [ ] / q still leave. Never shadow `c` with a hidden binding.
+        Binding("c", "cancel_task", "Cancel", show=True, group=_TASK_GROUP),
+        Binding("C", "clear_history", "Clear done", show=True, group=_TASK_GROUP),
     ]
 
     def compose(self) -> ComposeResult:

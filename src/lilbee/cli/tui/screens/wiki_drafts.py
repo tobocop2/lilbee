@@ -122,10 +122,12 @@ class WikiDraftsScreen(Screen[None]):
     AUTO_FOCUS = "#wiki-drafts-table"
     HELP = "Review pending wiki drafts. j/k navigate, a accept, r reject, / search, q back."
 
+    _REVIEW_GROUP = Binding.Group("Review", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(escape_action="dismiss_or_back"),
-        Binding("a", "accept", "Accept", show=True),
-        Binding("r", "reject", "Reject", show=True),
+        Binding("a", "accept", "Accept", show=True, group=_REVIEW_GROUP),
+        Binding("r", "reject", "Reject", show=True, group=_REVIEW_GROUP),
         Binding("slash", "focus_search", "Search", show=True),
         *BROWSE_LIST_BINDINGS,
     ]

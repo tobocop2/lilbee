@@ -120,27 +120,37 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
+    # Every screen carries these ten visible app bindings, so ungrouped they
+    # cost ~110 of the ~120 columns a normal terminal has and squeeze the
+    # screen's own keys off the row. Grouping is by purpose, not by modifier:
+    # a group renders its keys once behind a single label, which is what buys
+    # the room back. Textual groups CONSECUTIVE runs of shown bindings, so the
+    # members of each group must stay adjacent below.
+    _VIEWS_GROUP = Binding.Group("Views", compact=True)
     _NAV_GROUP = Binding.Group("Navigate")
+    _APP_GROUP = Binding.Group("App", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         # ``?`` is non-priority so a focused TextArea (chat input in INSERT
         # mode) can swallow it and type the literal character. F1 / Ctrl+H
         # remain priority routes that always open help, even mid-typing.
         Binding("question_mark", "push_help", "Help", show=False),
-        Binding("f1", "push_help", "Help", show=True, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
-        Binding("ctrl+t", "cycle_theme", "Theme", show=True),
-        Binding("t", "open_tasks", "Tasks", show=True),
         # Guarded like open_tasks in check_action: a focused text input
         # types the literal letter instead.
-        Binding("m", "open_catalog", "Models", show=True),
-        Binding("f4", "toggle_lilbee_path", "Path/Name", show=True),
-        # Non-priority so Chat's "focus_commands" and Catalog's
-        # "focus_search" still win on those screens. Fires only on
-        # screens that don't bind slash themselves, routing the user
-        # to Chat with the slash already typed.
-        Binding("slash", "global_slash_to_chat", "Command", show=False),
+        Binding("t", "open_tasks", "Tasks", show=True, group=_VIEWS_GROUP),
+        Binding("m", "open_catalog", "Models", show=True, group=_VIEWS_GROUP),
+        Binding("c", "open_chat", "Chat", show=True, group=_VIEWS_GROUP),
+        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True, group=_VIEWS_GROUP),
+        Binding(
+            "ctrl+o",
+            "toggle_sessions",
+            "Sessions",
+            show=True,
+            priority=True,
+            group=_VIEWS_GROUP,
+        ),
         # priority=True so a focused TextArea cannot swallow the bracket
         # under stress (multi-key send-keys etc.); type literal brackets
         # via Shift+[ / Shift+] which produce { / } and bypass these.
@@ -160,10 +170,20 @@ class LilbeeApp(App[None]):
             group=_NAV_GROUP,
             priority=True,
         ),
-        Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
+        Binding("f1", "push_help", "Help", show=True, priority=True, group=_APP_GROUP),
+        Binding("ctrl+t", "cycle_theme", "Theme", show=True, group=_APP_GROUP),
+        Binding("ctrl+c", "quit", "Quit", show=True, priority=True, group=_APP_GROUP),
+        # Hidden: a title-bar display toggle is not worth a permanent footer
+        # cell on all twelve screens. show=False only drops it from the footer
+        # row -- F1's key panel lists every non-system binding regardless -- so
+        # the key stays discoverable.
+        Binding("f4", "toggle_lilbee_path", "Path/Name", show=False),
+        # Non-priority so Chat's "focus_commands" and Catalog's
+        # "focus_search" still win on those screens. Fires only on
+        # screens that don't bind slash themselves, routing the user
+        # to Chat with the slash already typed.
+        Binding("slash", "global_slash_to_chat", "Command", show=False),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
-        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
-        Binding("ctrl+o", "toggle_sessions", "Sessions", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
@@ -571,7 +591,7 @@ class LilbeeApp(App[None]):
         raise SkipAction()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Hide ``t Tasks`` from the footer while a text input is focused.
+        """Hide the letter view-keys from the footer while a text input is focused.
 
         ``t`` is not a priority binding, so a focused ``Input`` / ``TextArea``
         (the chat prompt in INSERT mode, a catalog/settings search box) eats
@@ -581,8 +601,13 @@ class LilbeeApp(App[None]):
         # screen/app bindings see them (verified empirically: this holds for
         # priority bindings too), so `t`/`m` type literals there and the guard
         # exists purely to keep the footer honest.
-        if action in ("open_tasks", "open_catalog") and isinstance(self.focused, (Input, TextArea)):
+        if action in ("open_tasks", "open_catalog", "open_chat") and isinstance(
+            self.focused, (Input, TextArea)
+        ):
             return False
+        # Nothing to jump to when Chat is already the active view.
+        if action == "open_chat" and self.active_view == msg.DEFAULT_VIEW:
+            return None
         # None (not False): hide the Sessions binding from the footer entirely
         # when sessions are off, rather than show it greyed. There is nothing to
         # toggle, so it should not advertise itself.
@@ -601,6 +626,10 @@ class LilbeeApp(App[None]):
     def action_open_catalog(self) -> None:
         """Jump to the model catalog (m key)."""
         self.switch_view("Catalog")
+
+    def action_open_chat(self) -> None:
+        """Jump to Chat (c key), the counterpart to t / m for the busiest view."""
+        self.switch_view(msg.DEFAULT_VIEW)
 
     def action_toggle_fleet(self) -> None:
         """Toggle the Fleet drawer (ctrl+g): dock placement beside the current

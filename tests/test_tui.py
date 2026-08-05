@@ -1056,14 +1056,15 @@ class TestMinimalFooter:
             assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
-        """Catalog footer shows only the always-needed actions.
+        """The catalog footer carries its always-needed actions and no clutter.
 
-        Earlier the catalog row included Delete / Info / Next tab / Prev
-        tab so every action was visible at all times. That made the row
-        overflow on narrow terminals and truncate the rightmost global
-        binding mid-word (`^t Theme` -> `^t The`). Delete and Info are
-        still bound (and tab cycling still works on > / <); they're just
-        not in the always-on footer row. F1 / F2 surface them on demand.
+        This used to also assert a maximum entry count as a stand-in for "the
+        row does not overflow", which vetoed useful additions (the > / < tab
+        keys) while never measuring the thing it cared about. The width
+        invariant now lives in
+        test_tui_navigation.test_every_footer_fits_the_column_budget, which
+        renders the row and counts columns; Delete and Info stay hidden here
+        because F1 / F2 surface them on demand.
         """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -1071,10 +1072,10 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         assert any("Search" in d for d in visible)
         assert any("Grid/List" in d for d in visible)
+        assert any("Next tab" in d for d in visible)
+        assert any("Prev tab" in d for d in visible)
         assert not any("Delete" in d for d in visible)
         assert not any(d == "Info" for d in visible)
-        assert not any("tab" in d.lower() for d in visible)
-        assert len(visible) <= 4
 
     def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
         """D, Backspace, and the legacy X all delete an installed model.
@@ -1122,9 +1123,17 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         # Search binding was removed when the settings filter was dropped.
         assert not any("Search" in d for d in visible)
-        # 4 baseline (Back, Next field, Prev field, Reset all) + 2 visible
-        # tab-cycling bindings (Next tab / Prev tab) shared with Catalog.
-        assert len(visible) <= 6
+        # Settings shows the most keys of any screen. What keeps the row inside
+        # a terminal is Binding.Group collapsing each pair into one cell, not a
+        # cap on how many keys may be shown, so the budget is asserted on
+        # rendered columns in
+        # test_tui_navigation.test_every_footer_fits_the_column_budget.
+        for group in ("Field", "Tabs", "Reset"):
+            assert any(
+                b.group is not None and b.group.description == group
+                for b in SettingsScreen.BINDINGS
+                if isinstance(b, Binding)
+            ), f"{group} bindings must stay grouped or the row overflows"
 
 
 class TestNavBindings:
