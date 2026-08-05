@@ -46,7 +46,9 @@ def _discovery_client() -> httpx.Client:
     catalog re-runs discovery on tab activations and refreshes, which made
     ``ssl.create_default_context`` 16% of a real-terminal TUI py-spy session.
     One client builds it once and reuses connections between probes (same
-    pattern as the engine probes in ``fleet.swap_manager``).
+    pattern as the engine probes in ``fleet.swap_manager``). Unlike those
+    loopback-only probes, ``trust_env`` stays on: these base URLs are
+    user-configurable and a LAN server may sit behind a proxy.
     """
     return httpx.Client()
 
