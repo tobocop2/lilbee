@@ -13687,6 +13687,9 @@ async def test_catalog_search_submit_installs_first_visible_match():
                     break
                 await _pilot.pause()
             assert grids, "chat grid should mount at least one ModelGrid"
+            # Painting is done; from here a late worker landing repainting
+            # the grid would restore the full dataset over the trim below.
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             grid = grids[0]
             assert len(grid.rows) >= 2
             # ModelGrid filters at the dataset level: set_rows replaces
@@ -13925,13 +13928,15 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Shields go in before mounting: on_mount schedules
+            # call_after_refresh(self._refresh_grid), and a post-mount stub
+            # loses that race on slow hosts, letting a real repaint unmount
+            # the test's grid.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # Scheduled refreshes repaint the container on worker landings
-            # (_data_version keys); they would unmount the test's grid.
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
@@ -14283,12 +14288,12 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Same pre-mount repaint shield as the model_grid_branch test above.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # Same repaint shield as the model_grid_branch test above.
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 99
@@ -14366,11 +14371,12 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Same pre-mount repaint shield as the model_grid_branch test above.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
