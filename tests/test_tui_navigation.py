@@ -819,6 +819,12 @@ def test_settings_help_documents_the_shared_browse_keys():
     for token in ("j / k", "g / G"):
         assert token in help_text
 
+    # Both resets now hold a footer cell under one label, so help has to name
+    # both: the group label alone does not say which key does which.
+    assert {"ctrl+r", "ctrl+shift+r"} <= bound
+    assert "Ctrl+R resets the focused field" in help_text
+    assert "Ctrl+Shift+R resets every setting" in help_text
+
 
 # A footer wider than this scrolls its tail out of view on a normal terminal,
 # which is how `^t Theme` once rendered as `^t The`. Measured on the rendered
