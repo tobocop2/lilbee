@@ -246,12 +246,15 @@ class CatalogScreen(Screen[None]):
         Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
         Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
         Binding("6", "select_tab(5)", "Library", show=False, priority=True),
-        # Tab cycling. Shown in the footer to match Settings' identical
-        # pair. ctrl+arrow conflicts with macOS desktop-space shortcuts,
-        # hence vim-style angle brackets. priority=True so the active
-        # ModelGrid's own focus cycling doesn't swallow them.
-        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=True, priority=True),
-        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=True, priority=True),
+        # Tab cycling. Hidden from the footer: the catalog row overflows on
+        # narrow terminals and truncates the rightmost global binding
+        # mid-word (pinned by test_catalog_bindings_minimal); the numbered
+        # tab strip carries discoverability instead. ctrl+arrow conflicts
+        # with macOS desktop-space shortcuts, hence vim-style angle
+        # brackets. priority=True so the active ModelGrid's own focus
+        # cycling doesn't swallow them.
+        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=False, priority=True),
+        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=False, priority=True),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)

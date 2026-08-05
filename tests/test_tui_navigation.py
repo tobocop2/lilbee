@@ -760,13 +760,22 @@ async def test_catalog_tab_strip_shows_digit_shortcuts():
         assert str(tabs.get_tab(TAB_LIBRARY).label).startswith("6 ")
 
 
-def test_catalog_and_settings_tab_cycle_bindings_are_footer_visible():
-    """The same < / > pair reads the same in both footers."""
+def test_catalog_and_settings_share_the_tab_cycle_keys():
+    """Both screens bind the same < / > pair to tab cycling. Footer
+    visibility deliberately differs: the catalog hides them (its row
+    overflows narrow terminals, pinned by test_catalog_bindings_minimal;
+    the numbered tab strip carries discoverability) while Settings has
+    the footer budget to show them."""
     from textual.binding import Binding
 
-    def visible(screen_cls, key: str) -> bool:
-        return any(isinstance(b, Binding) and b.key == key and b.show for b in screen_cls.BINDINGS)
+    def binding(screen_cls, key: str) -> Binding | None:
+        return next(
+            (b for b in screen_cls.BINDINGS if isinstance(b, Binding) and b.key == key), None
+        )
 
     for key in ("greater_than_sign", "less_than_sign"):
-        assert visible(CatalogScreen, key)
-        assert visible(SettingsScreen, key)
+        catalog = binding(CatalogScreen, key)
+        settings = binding(SettingsScreen, key)
+        assert catalog is not None and settings is not None
+        assert catalog.show is False
+        assert settings.show is True
