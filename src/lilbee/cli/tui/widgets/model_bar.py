@@ -33,7 +33,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
-from lilbee.retrieval.embedder import is_model_available
+from lilbee.retrieval.embedder import is_model_available, is_model_installed
 
 log = logging.getLogger(__name__)
 
@@ -42,22 +42,6 @@ _MMPROJ_MARKER = "mmproj"
 # Routing-name -> display-label map derived from PROVIDER_KEYS. Any new
 # entry added there lights up the warning without further changes here.
 _CLOUD_PROVIDER_LABELS: dict[str, str] = {name: label for name, _, _, label in PROVIDER_KEYS}
-
-
-def _is_installed(ref: str) -> bool:
-    """True if *ref* resolves to a model file on this machine.
-
-    Uses the same resolver the availability check uses for local refs, so the
-    verdict is unchanged; the point is that it takes no provider and therefore
-    never builds the services container.
-    """
-    from lilbee.providers.engine_params import resolve_model_path
-
-    try:
-        resolve_model_path(ref)
-    except Exception:
-        return False
-    return True
 
 
 def _cloud_provider_label(chat_model: str) -> str | None:
@@ -299,7 +283,7 @@ class ModelPickerButton(Static, can_focus=True):
         # registry, never get_services(): a cold get_services() builds the whole
         # container and eager-starts the worker pool, and a repaint must not
         # spawn engines as a side effect.
-        missing = bool(ref) and not parse_model_ref(ref).is_remote and not _is_installed(ref)
+        missing = bool(ref) and not parse_model_ref(ref).is_remote and not is_model_installed(ref)
         self.set_class(missing, "-missing")
         if missing:
             label = msg.MODEL_BAR_NOT_INSTALLED.format(name=label)
@@ -455,7 +439,7 @@ class ChatModeToggle(Widget, can_focus=False):
         if services is not None:
             return is_model_available(cfg.embedding_model, services.provider)
         ref = cfg.embedding_model
-        return bool(ref) and (parse_model_ref(ref).is_remote or _is_installed(ref))
+        return bool(ref) and (parse_model_ref(ref).is_remote or is_model_installed(ref))
 
     def _refresh(self) -> None:
         ready = self._embedding_ready()

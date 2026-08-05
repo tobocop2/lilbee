@@ -30,7 +30,12 @@ def _remote_sees_model(ref: ProviderModelRef, provider: LLMProvider) -> bool:
     return any(base in m.lower().replace(" ", "-") for m in available)
 
 
-def _native_has_model(model: str) -> bool:
+def is_model_installed(model: str) -> bool:
+    """True if *model* resolves to a file on this machine.
+
+    Provider-free by design: paint paths need an installed check that cannot
+    build the services container (a cold build eager-starts the worker pool).
+    """
     from lilbee.providers.engine_params import resolve_model_path
 
     try:
@@ -53,7 +58,7 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
         return True
     if ref.is_remote:
         return False
-    return _native_has_model(model)
+    return is_model_installed(model)
 
 
 class Embedder:
