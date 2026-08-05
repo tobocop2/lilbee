@@ -21,7 +21,7 @@ import drive  # noqa: E402
 
 NAME = "tui-add"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Background Tasks", "towing a trailer", "Sources:")
+MUST_STRINGS = ("Background Tasks", "jump starting", "Sources:")
 BEATS = (
     ("the add typed", r"/add "),
     ("ingest running", r"add\s+active|Syncing|\d+%"),
@@ -34,7 +34,7 @@ SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/add"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
-QUESTION = "what does the manual say about towing a trailer?"
+QUESTION = "what does the manual say about jump starting a dead battery?"
 
 # Gemma 4 E4B: a different family from the Qwen reels, and fast enough that the answer
 # does not dominate a reel whose subject is the ingest.

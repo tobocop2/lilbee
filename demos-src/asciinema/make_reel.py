@@ -83,7 +83,9 @@ def build(name: str, *, record: bool = True,
     # a 6s limit at 6.4-7.3s with no threshold that fixed it. Raising the compressor's
     # margin twice did not close the gap because the inputs genuinely differ. Deseaming
     # first costs frames that later get dropped, and buys both stages the same pixels.
-    seam_info = deseam.repair_gif(full.with_suffix(".gif"))
+    seam_info = deseam.repair_gif(full.with_suffix(".gif"),
+                                  window=(marks.get("boot_end", 0.0),
+                                          marks.get("payload_end")))
     print("deseamed " + str(seam_info))
     # Spans this reel declares untouchable: recorded at real speed, holds intact.
     #

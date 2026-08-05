@@ -77,8 +77,16 @@ def repair(frame: np.ndarray) -> tuple[np.ndarray, int]:
     return out, fixed
 
 
-def repair_gif(path: pathlib.Path) -> dict:
+def repair_gif(path: pathlib.Path,
+               window: tuple[float, float | None] | None = None) -> dict:
     """Repair every frame of a gif in place, preserving frame durations.
+
+    ``window`` limits repair to frames inside [lo, hi] seconds. Frames outside are kept
+    untouched rather than dropped, so every frame time stays exactly where it was and
+    anything downstream that maps marks onto frames is unaffected. This exists because
+    repair moved ahead of the trim -- so the compressor and the gate see the same pixels
+    -- which meant repairing the whole recording including the head and tail the trim
+    then discards. One reel spent over ten minutes there and its render timed out.
 
     Reports the seam rate before and after. The rate is the check that matters, and it is
     only meaningful as a ratio: the detector counts any dimmer-or-brighter pixel between
@@ -92,8 +100,15 @@ def repair_gif(path: pathlib.Path) -> dict:
     for f in ImageSequence.Iterator(im):
         frames.append(np.asarray(f.convert("RGB")))
         durs.append(f.info.get("duration", 40))
-    fixed, total = [], 0
-    for a in frames:
+    lo, hi = (window or (0.0, None))
+    fixed, total, clock, skipped = [], 0, 0.0, 0
+    for a, d in zip(frames, durs):
+        t_s = clock / 1000.0
+        clock += d
+        if t_s < lo or (hi is not None and t_s > hi):
+            fixed.append(Image.fromarray(a))
+            skipped += 1
+            continue
         out, n = repair(a)
         total += n
         fixed.append(Image.fromarray(out))
@@ -101,5 +116,5 @@ def repair_gif(path: pathlib.Path) -> dict:
     fixed[0].save(path, save_all=True, append_images=fixed[1:],
                   duration=durs, loop=0, optimize=True, disposal=1)
     after = seams.measure(path)["rate"]
-    return {"frames": len(fixed), "pixels_repaired": total,
+    return {"skipped_outside_window": skipped, "frames": len(fixed), "pixels_repaired": total,
             "seam_rate_before": round(before, 5), "seam_rate_after": round(after, 5)}

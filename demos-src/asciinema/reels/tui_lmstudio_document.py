@@ -42,7 +42,10 @@ SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/lmstudio"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
-QUESTION = "what does the manual say about coolant capacity?"
+# Prose, not a specification table. Capacities are printed sideways in this
+# manual and extract as scrambled text (bb-depek), so a table question would
+# fail for a reason that has nothing to do with the model being demonstrated.
+QUESTION = "how do I change a flat tire?"
 
 # Both models served by LM Studio's OpenAI-compatible endpoint, not by lilbee's own engine. The reel is
 # about where the chat model lives, and swapping the embedder as well would only make
