@@ -181,19 +181,19 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
-Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here the trailer is too heavy for the car: lilbee says so, gives the weight it *is* rated for, and cites the page it read that on. The panel on the right is the GPU doing it, on this machine.
+Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here it reads the towing section out of a car manual and answers with the page it came from, so you can check it. The panel on the right is the GPU doing it, on this machine.
 
-![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
+![ask what the manual says about towing a trailer; lilbee answers from the indexed PDF and cites the page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
 ### Launch your coding agent on local models
 
 `lilbee launch opencode` and `lilbee launch hermes` set up lilbee's local models in your agent in one command. lilbee registers itself as a provider and an MCP server in the agent's own config, leaves your existing setup intact, warms a model, and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
-These reels show each agent, launched on a local model, doing real work on lilbee's own source. opencode adds a `lilbee launch status` subcommand, runs it, and writes a test that passes; hermes does the same with `lilbee launch list`.
+One model serves as many agents as you want to run. These reels show four working at once against a single local model, each on its own task: finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with `lilbee_search`.
 
-![opencode, launched on a local lilbee model, adds a launch-status subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+![four agents at once on Qwen3 Coder 30B A3B, each fixing, refactoring or searching through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.gif)
 
-![hermes, launched on a local lilbee model, adds a launch-list subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
+![four agents at once on MiniMax M2.7, writing Python functions through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.gif)
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
