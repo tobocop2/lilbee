@@ -14,7 +14,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, shown_footer_keys
 from tests.conftest import make_mock_services
 
 
@@ -115,22 +115,15 @@ async def test_disabled_hides_the_footer_binding(sessions, monkeypatch) -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
 
-        def shown_keys() -> set[str]:
-            return {
-                binding.key
-                for _, binding, _, _ in app.screen.active_bindings.values()
-                if binding.show
-            }
-
         monkeypatch.setattr(cfg, "sessions_enabled", True)
         app.screen.refresh_bindings()
         await pilot.pause()
-        assert "ctrl+o" in shown_keys()
+        assert "ctrl+o" in shown_footer_keys(app)
 
         monkeypatch.setattr(cfg, "sessions_enabled", False)
         app.screen.refresh_bindings()
         await pilot.pause()
-        assert "ctrl+o" not in shown_keys()
+        assert "ctrl+o" not in shown_footer_keys(app)
 
 
 async def test_disabled_shows_notice_on_toggle(sessions, monkeypatch) -> None:

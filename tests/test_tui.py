@@ -1041,10 +1041,14 @@ class TestMinimalFooter:
         # word belongs to /models, the model catalog).
         assert any(d == "All commands" for d in visible)
         assert not any(d == "Catalog" for d in visible)
-        # Footer shows the small discoverable set: slash commands, Tab
-        # completion, the dual-purpose Esc dispatch, Models, F2 all-commands.
-        # Hidden helpers (history, scope cycle, other F-keys) stay show=False.
-        assert len(visible) <= 6
+        # F6 reaches the model strip, which is otherwise only Tab-and-guess.
+        assert any(d == "Model bar" for d in visible)
+        # No entry-count cap here: it read as "the row does not overflow" while
+        # measuring nothing, and vetoed useful keys. That budget is asserted on
+        # rendered columns in
+        # test_tui_navigation.test_every_footer_fits_the_column_budget.
+        # Hidden helpers (history, scope cycle, Tab completion) stay show=False.
+        assert not any(d == "Complete" for d in visible)
 
     def test_catalog_numeric_tab_bindings(self) -> None:
         """1-6 jump to the corresponding tab in the 6-tab catalog shell.
@@ -1119,7 +1123,14 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(StatusScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert len(visible) <= 3
+        # Section stepping is grouped into one footer cell rather than capped at
+        # a count; the column budget is asserted in
+        # test_tui_navigation.test_every_footer_fits_the_column_budget.
+        assert any(
+            b.group is not None and b.group.description == "Section"
+            for b in StatusScreen.BINDINGS
+            if isinstance(b, Binding)
+        )
 
     def test_settings_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen

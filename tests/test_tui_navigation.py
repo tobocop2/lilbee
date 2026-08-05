@@ -23,7 +23,7 @@ from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat, pump_until
+from tests._lilbee_app_test_host import await_chat, pump_until, shown_footer_keys
 
 
 @pytest.fixture(autouse=True)
@@ -1194,19 +1194,12 @@ async def test_the_views_group_only_shows_keys_that_go_somewhere():
         await pilot.press("escape")
         await pilot.pause()
 
-        def shown_keys() -> set[str]:
-            return {
-                binding.key
-                for _, binding, _, _ in app.screen.active_bindings.values()
-                if binding.show
-            }
-
-        assert "c" not in shown_keys(), "Chat advertises a jump to itself"
-        assert {"t", "m"} <= shown_keys()
+        assert "c" not in shown_footer_keys(app), "Chat advertises a jump to itself"
+        assert {"t", "m"} <= shown_footer_keys(app)
 
         await pilot.press("m")
         await _wait_for_screen(app, pilot, CatalogScreen)
-        assert "c" in shown_keys(), "Catalog hides the jump back to Chat"
+        assert "c" in shown_footer_keys(app), "Catalog hides the jump back to Chat"
 
 
 async def test_c_still_cancels_on_tasks_instead_of_leaving():
