@@ -210,11 +210,16 @@ class TaskBarController:
         return task.task_type if task else None
 
     def _advance_all(self, task_type: str | None) -> None:
-        """Try to advance the freed type first, then any other idle type."""
+        """Start the freed type's next task, then any other idle type's.
+
+        Promotion has to spawn the worker. A task advanced without one sits
+        ACTIVE with no thread behind it, which renders as a live row that never
+        progresses.
+        """
         if task_type:
-            self.queue.advance(task_type)
-        while self.queue.advance() is not None:
-            pass
+            self._try_start_next(task_type)
+        while (task := self.queue.advance()) is not None:
+            self._spawn_task_worker(task.task_id)
 
     def downloading_label_for(self, ref: str) -> str | None:
         """Return the task name if *ref*'s download is queued or active, else None.
