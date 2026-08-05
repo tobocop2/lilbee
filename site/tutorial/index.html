@@ -147,7 +147,6 @@
           <li><a href="#command-surface">Command surface</a></li>
           <li class="toc-group"><a href="#tui-ask">Ask your library</a></li>
           <li><a href="#chat">Chat with cited answers</a></li>
-          <li><a href="#tow-limits">A straight answer, with the page</a></li>
           <li><a href="#sessions">Leave, come back, keep going</a></li>
           <li><a href="#add">Add files</a></li>
           <li><a href="#crawl">Crawl a URL</a></li>
@@ -237,17 +236,6 @@
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4" type="video/mp4">
             <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4">chat with cited answers (MP4)</a>
-          </video>
-        </div>
-      </section>
-
-      <section class="tutorial-section" id="tow-limits">
-        <h4><a href="#tow-limits">Get a straight answer, with the page it came from</a></h4>
-        <p>A customer wants to tow a 3,500 lb boat trailer. The Crown Vic can't, and lilbee says so: it gives the weight the car <em>is</em> rated for, the combined limit, what to check before towing, and the page it read each of those on. The fleet panel on the right is the GPU answering, on this machine.</p>
-        <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.mp4">towing limits, cited (MP4)</a>
           </video>
         </div>
       </section>
@@ -444,24 +432,24 @@
         </div>
       </section>
 
-      <section class="tutorial-section" id="launch-opencode">
-        <h4><a href="#launch-opencode">Launch: opencode on a local model</a></h4>
-        <p><code>lilbee launch opencode</code> wires lilbee's local models into opencode in one command and opens it pointed at one, with no API keys or provider setup. Here it adds a <code>lilbee launch status</code> subcommand to lilbee's own source, runs it, and writes a test that passes.</p>
+      <section class="tutorial-section" id="agents-qwen3-coder">
+        <h4><a href="#agents-qwen3-coder">Four agents on one local model</a></h4>
+        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder 30B A3B: finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with <code>lilbee_search</code>.</p>
         <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4">launch: opencode (MP4)</a>
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4">four agents on Qwen3 Coder (MP4)</a>
           </video>
         </div>
       </section>
 
-      <section class="tutorial-section" id="launch-hermes">
-        <h4><a href="#launch-hermes">Launch: hermes on a local model</a></h4>
-        <p><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
+      <section class="tutorial-section" id="agents-minimax">
+        <h4><a href="#agents-minimax">The same, on MiniMax M2.7</a></h4>
+        <p>The same four-up shape on a different local model, each pane writing a small Python function through lilbee.</p>
         <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4">launch: hermes (MP4)</a>
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4">four agents on MiniMax M2.7 (MP4)</a>
           </video>
         </div>
       </section>
