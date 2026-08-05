@@ -779,3 +779,14 @@ def test_catalog_and_settings_share_the_tab_cycle_keys():
         assert catalog is not None and settings is not None
         assert catalog.show is False
         assert settings.show is True
+
+
+def test_catalog_help_documents_every_visible_and_hidden_tab_key():
+    """Keys kept out of the footer must still be findable in F1 help.
+
+    < / > are deliberately show=False (the catalog row overflows narrow
+    terminals), so the help text is their only advertisement.
+    """
+    help_text = CatalogScreen.HELP
+    assert "< / >" in help_text
+    assert "1-6" in help_text
