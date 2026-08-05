@@ -168,7 +168,7 @@ class TestTaskBarUnit:
 
 
 class TestRemoteClassification:
-    @mock.patch("httpx.get")
+    @mock.patch("lilbee.modelhub.model_manager.discovery._http_get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import classify_remote_models
         from lilbee.providers.local_servers import OLLAMA
@@ -793,7 +793,7 @@ class TestThemes:
 
 
 class TestDetectRemoteEmbeddings:
-    @mock.patch("httpx.get")
+    @mock.patch("lilbee.modelhub.model_manager.discovery._http_get")
     def test_detects_bert_family(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
@@ -810,7 +810,10 @@ class TestDetectRemoteEmbeddings:
         result = detect_remote_embedding_models()
         assert result == ["nomic-embed-text:latest"]
 
-    @mock.patch("httpx.get", side_effect=Exception("connection refused"))
+    @mock.patch(
+        "lilbee.modelhub.model_manager.discovery._http_get",
+        side_effect=Exception("connection refused"),
+    )
     def test_returns_empty_on_error(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
