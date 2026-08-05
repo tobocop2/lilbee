@@ -140,6 +140,19 @@ def _gguf_names(models_dir: Path) -> set[str]:
     return {p.name for p in models_dir.rglob("*.gguf")}
 
 
+def _repo_gguf_count(models_dir: Path, hf_repo: str) -> int:
+    """GGUFs landed for *hf_repo*, identified by repo rather than filename.
+
+    The requested quant is not the one that necessarily arrives: pick_best_gguf
+    resolves to the best available, so asserting on the filename asserts a
+    choice the catalog is free to make.
+    """
+    from huggingface_hub.file_download import repo_folder_name
+
+    root = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    return len(list(root.rglob("*.gguf"))) if root.is_dir() else 0
+
+
 @pytest.mark.parametrize("entry", ROLES)
 def test_every_role_downloads_over_xet(
     entry: CatalogModel, models_dir: Path, xet_calls: list[str]
@@ -282,8 +295,6 @@ async def test_a_queue_survives_cancelling_the_download_that_is_running(
         assert again not in (first, second, third)
         assert await _await_terminal(pilot, controller, again) is TaskStatus.DONE
 
-        names = _gguf_names(models_dir)
         for entry in (CHAT, EMBED, RERANK):
-            stem = entry.gguf_filename.removesuffix(".gguf")
-            assert any(stem in n for n in names), f"{entry.hf_repo} missing from {sorted(names)}"
+            assert _repo_gguf_count(models_dir, entry.hf_repo), f"{entry.hf_repo} produced no GGUF"
         assert xet_calls, "transfers did not go over xet"
