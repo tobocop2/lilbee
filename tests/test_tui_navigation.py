@@ -785,8 +785,32 @@ def test_catalog_help_documents_every_visible_and_hidden_tab_key():
     """Keys kept out of the footer must still be findable in F1 help.
 
     < / > are deliberately show=False (the catalog row overflows narrow
-    terminals), so the help text is their only advertisement.
+    terminals), so the help text is their only advertisement. Asserted in
+    both directions: help that mentions a key no longer bound is as wrong
+    as a binding no help mentions.
     """
+    from textual.binding import Binding
+
     help_text = CatalogScreen.HELP
+    bound = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
+
     assert "< / >" in help_text
+    assert {"less_than_sign", "greater_than_sign"} <= bound
     assert "1-6" in help_text
+    assert {str(n) for n in range(1, 7)} <= bound
+
+
+def test_settings_help_documents_the_shared_browse_keys():
+    """Settings adopted the shared j/k/g/G fragment, so its help must say so.
+
+    Both directions, like the catalog check: the keys must be bound and the
+    help must name them.
+    """
+    from textual.binding import Binding
+
+    help_text = SettingsScreen.HELP
+    bound = {b.key for b in SettingsScreen.BINDINGS if isinstance(b, Binding)}
+
+    assert {"j", "k", "g", "G"} <= bound
+    for token in ("j / k", "g / G"):
+        assert token in help_text

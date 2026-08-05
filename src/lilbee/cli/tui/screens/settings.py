@@ -107,6 +107,7 @@ class SettingsScreen(Screen[None]):
     HELP = (
         "Browse and edit configuration.\n\n"
         "Tab / Shift+Tab move between fields, > and < jump between groups, "
+        "j / k scroll and g / G jump to the top / bottom, "
         "Ctrl+R resets the focused field, and q or Escape goes back."
     )
 
