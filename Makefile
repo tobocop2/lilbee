@@ -35,3 +35,17 @@ demo-publish:  ## Copy rendered GIFs/PNGs into demos/ (served path) + commit
 		git commit -m "demos: refresh rendered reel"; \
 		echo "==> committed on gh-pages. push with: git push origin gh-pages"; \
 	fi
+
+# asciinema pipeline. Reels listed here render from demos-src/asciinema/reels/<name>.py
+# instead of a .tape; see demos-src/asciinema/README.md.
+REELS := tui-palette tui-settings tui-catalog tui-unsupported what_is_lilbee \
+         first-start later-start cold-start tui-crawl tui-crawl-site
+
+reels:  ## Record + gate every migrated reel (needs a working lilbee on PATH)
+	@for reel in $(REELS); do \
+		echo "==> $$reel"; \
+		( cd demos-src/asciinema && python3 make_reel.py "$$reel" ) || exit 1; \
+	done
+
+reels-publish:  ## Copy reels with a clean scorecard into demos/
+	@cd demos-src/asciinema && python3 publish.py ../..

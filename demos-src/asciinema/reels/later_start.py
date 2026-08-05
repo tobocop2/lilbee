@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""later-start: every launch after the first.
+
+Same binary, same data, same question as first-start and cold-start -- the only variable
+is that the unpack cache is already there. The reel carries on into a question and a
+cited answer, because the README's point is not just that it opens quickly but that you
+are working immediately.
+"""
+from __future__ import annotations
+
+import pathlib
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import drive  # noqa: E402
+import lite  # noqa: E402
+
+NAME = "later-start"
+COLS, ROWS = 128, 41
+MUST_STRINGS = ("personal encyclopedia", "what is lilbee in one sentence", "README.md")
+BEATS = (
+    ("chat reached", r"personal encyclopedia"),
+    ("question asked", r"what is lilbee"),
+    ("cited answer", r"README\.md"),
+)
+
+# Nothing may still be generating when the reel stops.
+TAIL_FORBID = ("Cancel stream",)
+
+# The launch itself is never compressed and its pauses are never clamped. These reels
+# exist so a viewer can see how long starting lilbee actually takes -- cold-start and
+# later-start sit side by side in the README for exactly that comparison -- and a
+# timelapse over the startup answers the question the reel was recorded to ask. The
+# answer afterwards is fair game and still compresses.
+PROTECT_WINDOWS = ("launch",)
+
+
+QUESTION = "what is lilbee in one sentence?"
+
+# The README carries a "Beta software" callout, and retrieval sometimes ranks it above the
+# tagline, which turns a one-sentence answer about what lilbee does into one about its
+# release status. Forbidden rather than hoped for: a take that surfaces it fails the gate
+# and gets recorded again.
+FORBID_STRINGS = ("beta", "Beta")
+
+
+def record(cast: pathlib.Path) -> dict:
+    root = lite.ensure()
+    if not lite.UNPACK_CACHE.exists():
+        # A "later" start with no cache is a first start wearing the wrong label.
+        raise SystemExit("unpack cache missing; run first-start (or launch once) before this")
+
+    s = drive.Session("reel-laterstart", COLS, ROWS, cast)
+    timings: dict[str, float] = {}
+    t0 = time.monotonic()
+    s.start(lite.BINARY, env={"LILBEE_DATA": str(root)})
+    try:
+        s.mark("boot_end")
+        s.mark("launch_start")
+        timings["to_chat"] = s.wait_for(r"personal encyclopedia|Slash commands", timeout=120)
+        # Launch is over the moment chat is usable; everything after this may compress.
+        s.mark("launch_end")
+        time.sleep(1.6)
+
+        # Placement stays open through the answer: it shows which card the model is on
+        # while it is generating, which is the part of the story a chat pane alone
+        # cannot tell.
+        s.key("C-g", after=1.0)
+        s.wait_for(r"Placement", timeout=25)
+        time.sleep(1.4)
+        s.ask(QUESTION, rate=0.045)
+        s.mark("gen_start")
+        timings["answer"] = s.await_answer()
+        s.mark("gen_end")
+        time.sleep(2.0)
+
+        # Scroll back through the exchange. This is the reel's only sustained driver
+        # motion that happens after the app has stopped doing startup work; the question
+        # is typed while the engine is still loading, which renders too slowly and with
+        # too few frames to measure anything from.
+        s.esc()
+        time.sleep(0.4)
+        s.key(*(["k"] * 14), after=0.045)
+        time.sleep(0.8)
+        s.key(*(["j"] * 14), after=0.045)
+        time.sleep(1.6)
+
+        timings["total"] = time.monotonic() - t0
+        s.mark("payload_end")
+        time.sleep(1.0)
+    finally:
+        s.kill()
+    timings["marks"] = dict(s.marks)
+    timings["motion_spans"] = list(s.motion_spans)
+    return timings
+
+
+if __name__ == "__main__":
+    print(record(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/later-start.cast")))
