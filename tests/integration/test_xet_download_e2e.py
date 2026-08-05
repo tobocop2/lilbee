@@ -236,7 +236,7 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
         # is swallowed and the transfer finishes behind a cancelled row.
         settled = _bytes_in_flight(models_dir)
         await asyncio.sleep(5)
-        assert _bytes_in_flight(models_dir) == settled, "cancelled download kept transferring"
+        assert _bytes_in_flight(models_dir) <= settled, "cancelled download kept transferring"
 
         second = controller.start_download(CHAT)
         assert second != first, "the cancelled task was handed back instead of a new one"
@@ -266,9 +266,11 @@ async def test_a_queue_survives_cancelling_the_download_that_is_running(
         assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
 
         # Scoped to the cancelled repo: the promoted download is writing too.
+        # Must not grow. A cancel that discards its partial drops to zero, which
+        # is also a stop.
         settled = _bytes_in_flight(models_dir, CHAT.hf_repo)
         await asyncio.sleep(5)
-        assert _bytes_in_flight(models_dir, CHAT.hf_repo) == settled, (
+        assert _bytes_in_flight(models_dir, CHAT.hf_repo) <= settled, (
             "cancelled model kept transferring"
         )
 
