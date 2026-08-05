@@ -28,6 +28,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Label
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.task_row import TaskRow
 
@@ -68,13 +69,11 @@ class TaskCenter(Screen[None]):
     app: LilbeeApp  # type: ignore[assignment]
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
+        *browse_back_bindings(),
+        *BROWSE_LIST_BINDINGS,
         Binding("r", "refresh_tasks", "Refresh", show=True),
         Binding("c", "cancel_task", "Cancel", show=True),
         Binding("C", "clear_history", "Clear done", show=True),
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -181,6 +180,16 @@ class TaskCenter(Screen[None]):
 
     def action_cursor_up(self) -> None:
         self.focus_previous()
+
+    def action_jump_top(self) -> None:
+        rows = list(self.query(TaskRow))
+        if rows:
+            rows[0].focus()
+
+    def action_jump_bottom(self) -> None:
+        rows = list(self.query(TaskRow))
+        if rows:
+            rows[-1].focus()
 
     def _all_tasks(self) -> list[Task]:
         """Tasks in display order: active first, then queued, then history."""

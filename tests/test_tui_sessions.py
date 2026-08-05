@@ -558,3 +558,66 @@ async def test_resuming_an_obsidian_session_keeps_its_origin(sessions) -> None:
             surface=SessionOrigin.TUI,
         )
         assert sessions.get(sid).meta.message_count == 1
+
+
+async def test_sessions_tab_vocabulary_walks_the_list(sessions):
+    """j/k/g/G drive the sessions list from the full-screen tab."""
+    from textual.widgets import ListView
+
+    for n in range(3):
+        _seed(sessions, f"s{n}")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        lv = app.screen.query_one("#sessions-list", ListView)
+        lv.focus()
+        await pilot.pause()
+        await pilot.press("G")
+        await pilot.pause()
+        assert lv.index == len(lv) - 1
+        await pilot.press("g")
+        await pilot.pause()
+        assert lv.index == 0
+        await pilot.press("j")
+        await pilot.pause()
+        assert lv.index == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert lv.index == 0
+
+
+async def test_sessions_escape_returns_to_previous_view(sessions):
+    """Escape leaves Sessions with the same semantics as q: back, not Chat."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    _seed(sessions, "one")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Settings")
+        await pilot.pause()
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        await pilot.press("escape")
+        for _ in range(10):
+            await pilot.pause()
+            if isinstance(app.screen, SettingsScreen):
+                break
+        assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_sessions_jump_on_empty_list_is_safe(sessions):
+    """g/G on an empty sessions list must not raise."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        panel = app.screen.query_one(SessionListPanel)
+        panel.jump_to(0)
+        panel.jump_to(-1)

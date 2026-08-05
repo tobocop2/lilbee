@@ -741,3 +741,32 @@ async def test_settings_editor_accepts_angle_brackets():
         await pilot.pause()
         assert editor.value == f"{before}<>", "angle brackets must type literally"
         assert tabs.active == active_before, "panes must not cycle mid-typing"
+
+
+async def test_catalog_tab_strip_shows_digit_shortcuts():
+    """Tab labels carry the 1-6 numerals so the digit keys are discoverable."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, TAB_DISCOVER, TAB_LIBRARY
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Catalog")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
+        tabs = app.screen.query_one("#catalog-tabs", TabbedContent)
+        assert str(tabs.get_tab(TAB_DISCOVER).label).startswith("1 ")
+        assert str(tabs.get_tab(TAB_CHAT).label).startswith("2 ")
+        assert str(tabs.get_tab(TAB_LIBRARY).label).startswith("6 ")
+
+
+def test_catalog_and_settings_tab_cycle_bindings_are_footer_visible():
+    """The same < / > pair reads the same in both footers."""
+    from textual.binding import Binding
+
+    def visible(screen_cls, key: str) -> bool:
+        return any(isinstance(b, Binding) and b.key == key and b.show for b in screen_cls.BINDINGS)
+
+    for key in ("greater_than_sign", "less_than_sign"):
+        assert visible(CatalogScreen, key)
+        assert visible(SettingsScreen, key)

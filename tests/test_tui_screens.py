@@ -706,10 +706,10 @@ def test_settings_screen_has_expected_handlers_and_actions() -> None:
         "_parse_value",
         "_refresh_help",
         "action_go_back",
-        "action_scroll_down",
-        "action_scroll_up",
-        "action_scroll_home",
-        "action_scroll_end",
+        "action_cursor_down",
+        "action_cursor_up",
+        "action_jump_top",
+        "action_jump_bottom",
     )
     missing = [name for name in expected if not callable(getattr(SettingsScreen, name, None))]
     assert not missing, f"SettingsScreen missing expected methods: {missing}"
@@ -6949,8 +6949,8 @@ async def test_settings_key_g_G():
     """g/G scroll settings via action methods."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen.action_scroll_end()
-        app.screen.action_scroll_home()
+        app.screen.action_jump_bottom()
+        app.screen.action_jump_top()
         # Scroll actions delegate to settings-scroll widget
         scroll = app.screen.query_one("#settings-scroll")
         assert scroll is not None

@@ -21,6 +21,7 @@ from textual.widgets import DataTable, Input, Static
 
 from lilbee.app.memory import forget, list_memories, memory_enabled, set_memory_shared
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 
 if TYPE_CHECKING:
     from lilbee.data.store import MemoryRow
@@ -41,15 +42,11 @@ class MemoriesScreen(Screen[None]):
     HELP = "Manage memories. j/k navigate, d delete, s toggle shared, / search, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "dismiss_or_back", "Back", show=False),
+        *browse_back_bindings(escape_action="dismiss_or_back"),
         Binding("d", "delete", "Delete", show=True),
         Binding("s", "toggle_shared", "Shared", show=True),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def __init__(self) -> None:

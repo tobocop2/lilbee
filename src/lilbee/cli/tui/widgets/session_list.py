@@ -185,6 +185,14 @@ class SessionListPanel(Vertical):
     def action_cursor_up(self) -> None:
         self.query_one("#sessions-list", ListView).action_cursor_up()
 
+    def jump_to(self, index: int) -> None:
+        """Move the list cursor to *index* (negative counts from the end)."""
+        lv = self.query_one("#sessions-list", ListView)
+        count = len(lv)
+        if not count:
+            return
+        lv.index = count - 1 if index < 0 else min(index, count - 1)
+
     def action_new_chat(self) -> None:
         self.post_message(self.NewChat())
 

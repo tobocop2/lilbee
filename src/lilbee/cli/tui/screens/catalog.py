@@ -246,14 +246,12 @@ class CatalogScreen(Screen[None]):
         Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
         Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
         Binding("6", "select_tab(5)", "Library", show=False, priority=True),
-        # Tab cycling. Hidden from the footer so the catalog row of
-        # bindings doesn't truncate the rightmost item mid-word; the tab
-        # strip at the top already shows the available tabs, and F1 / F2
-        # surface the shortcuts. ctrl+arrow conflicts with macOS desktop-
-        # space shortcuts, hence vim-style angle brackets. priority=True
-        # so the active ModelGrid's own focus cycling doesn't swallow them.
-        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=False, priority=True),
-        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=False, priority=True),
+        # Tab cycling. Shown in the footer to match Settings' identical
+        # pair. ctrl+arrow conflicts with macOS desktop-space shortcuts,
+        # hence vim-style angle brackets. priority=True so the active
+        # ModelGrid's own focus cycling doesn't swallow them.
+        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=True, priority=True),
+        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=True, priority=True),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -419,29 +417,29 @@ class CatalogScreen(Screen[None]):
                 Container(id="catalog-tabs-wrap"),
                 TabbedContent(id="catalog-tabs"),
             ):
-                with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
+                with TabPane(f"1 {msg.CATALOG_TAB_DISCOVER}", id=TAB_DISCOVER):
                     yield DiscoverRails(id="discover-rails")
-                with TabPane(msg.CATALOG_TAB_CHAT, id=TAB_CHAT):
+                with TabPane(f"2 {msg.CATALOG_TAB_CHAT}", id=TAB_CHAT):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_CHAT}", classes="catalog-grid-pane"
                     )
                     yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_CHAT}")
-                with TabPane(msg.CATALOG_TAB_EMBED, id=TAB_EMBED):
+                with TabPane(f"3 {msg.CATALOG_TAB_EMBED}", id=TAB_EMBED):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_EMBED}", classes="catalog-grid-pane"
                     )
                     yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_EMBED}")
-                with TabPane(msg.CATALOG_TAB_VISION, id=TAB_VISION):
+                with TabPane(f"4 {msg.CATALOG_TAB_VISION}", id=TAB_VISION):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_VISION}", classes="catalog-grid-pane"
                     )
                     yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_VISION}")
-                with TabPane(msg.CATALOG_TAB_RERANK, id=TAB_RERANK):
+                with TabPane(f"5 {msg.CATALOG_TAB_RERANK}", id=TAB_RERANK):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_RERANK}", classes="catalog-grid-pane"
                     )
                     yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_RERANK}")
-                with TabPane(msg.CATALOG_TAB_LIBRARY, id=TAB_LIBRARY):
+                with TabPane(f"6 {msg.CATALOG_TAB_LIBRARY}", id=TAB_LIBRARY):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_LIBRARY}", classes="catalog-grid-pane"
                     )

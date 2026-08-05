@@ -9,6 +9,7 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.browse_bindings import browse_back_bindings
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
 
@@ -24,8 +25,7 @@ class FleetScreen(Screen[None]):
     HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
+        *browse_back_bindings(),
         # priority so they fire even when a button/editor child has focus.
         Binding("ctrl+r", "preview", "Preview", show=True, priority=True),
         Binding("ctrl+s", "apply", "Apply", show=True, priority=True),

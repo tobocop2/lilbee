@@ -28,6 +28,7 @@ from textual.widgets import (
 from lilbee.app.settings import reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
@@ -110,8 +111,7 @@ class SettingsScreen(Screen[None]):
     )
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
+        *browse_back_bindings(),
         # Tab cycles editors inside the active pane and rolls over to the
         # next group tab when you Tab past the last editor (and the
         # previous group tab on shift+Tab past the first editor). Use
@@ -124,10 +124,7 @@ class SettingsScreen(Screen[None]):
         Binding("less_than_sign", "cycle_pane(-1)", "Prev tab", show=True, priority=True),
         Binding("ctrl+r", "reset_focused", "Reset field", show=False),
         Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
-        Binding("j", "scroll_down", "Down", show=False),
-        Binding("k", "scroll_up", "Up", show=False),
-        Binding("g", "scroll_home", "Top", show=False),
-        Binding("G", "scroll_end", "End", show=False),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def __init__(self) -> None:
@@ -592,19 +589,19 @@ class SettingsScreen(Screen[None]):
         except Exception:
             return None
 
-    def action_scroll_down(self) -> None:
+    def action_cursor_down(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_down()
 
-    def action_scroll_up(self) -> None:
+    def action_cursor_up(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_up()
 
-    def action_scroll_home(self) -> None:
+    def action_jump_top(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_home()
 
-    def action_scroll_end(self) -> None:
+    def action_jump_bottom(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_end()
 
