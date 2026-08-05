@@ -40,6 +40,11 @@ RoleRow ModelPickerButton:focus {
     text-style: bold;
 }
 
+RoleRow ModelPickerButton.-missing {
+    color: $warning;
+    text-style: italic;
+}
+
 ModelBar.-narrow RoleRow.-off {
     display: none;
 }

@@ -278,6 +278,19 @@ class ModelPickerButton(Static, can_focus=True):
         # called "(none)".
         ref = getattr(cfg, self._key)
         label = (display_label_for_ref(ref) or ref) if ref else msg.MODEL_BAR_DISABLED
+        # Cloud refs resolve through the SDK at call time; "installed" only
+        # applies to models expected on this machine.
+        missing = (
+            bool(ref)
+            and not parse_model_ref(ref).is_api
+            and not (is_model_available(ref, get_services().provider))
+        )
+        self.set_class(missing, "-missing")
+        if missing:
+            label = msg.MODEL_BAR_NOT_INSTALLED.format(name=label)
+        self.tooltip = (
+            msg.MODEL_BAR_NOT_INSTALLED_TOOLTIP if missing else _SCOPE_TO_TOOLTIP[self._scope]
+        )
         self.update(label)
 
     def repaint(self) -> None:

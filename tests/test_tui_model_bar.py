@@ -250,6 +250,53 @@ async def test_bar_optional_row_lights_up_when_config_changes(monkeypatch) -> No
         assert vision.has_class("-active")
 
 
+async def test_bar_flags_a_configured_but_never_installed_model(monkeypatch) -> None:
+    """The chat row says the model is not installed instead of posing as active."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "org/Ghost-GGUF/ghost-Q4_K_M.gguf")
+    app = _BarTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+            btn.repaint()
+            await pilot.pause()
+            assert btn.has_class("-missing")
+            assert "not installed" in str(btn.render())
+            assert "not installed" in str(btn.tooltip)
+
+
+async def test_bar_installed_model_is_not_flagged(monkeypatch) -> None:
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "org/Real-GGUF/real-Q4_K_M.gguf")
+    app = _BarTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+            btn.repaint()
+            await pilot.pause()
+            assert not btn.has_class("-missing")
+            assert "not installed" not in str(btn.render())
+
+
+async def test_bar_cloud_model_is_never_flagged_as_not_installed(monkeypatch) -> None:
+    """Cloud refs resolve through the SDK at call time; 'installed' does not apply."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "openai/gpt-4o-mini")
+    app = _BarTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+            btn.repaint()
+            await pilot.pause()
+            assert not btn.has_class("-missing")
+
+
 async def test_bar_vision_picker_has_no_disable_row(monkeypatch) -> None:
     """The bar's picker no longer offers a pickable '(none)' / disable pseudo-model."""
     from lilbee.cli.tui import messages as msg
