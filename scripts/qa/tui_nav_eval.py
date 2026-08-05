@@ -517,6 +517,32 @@ async def scenario_re_add_noop(tmp: Path) -> Result:
     )
 
 
+async def scenario_confirm_tab_to_no(tmp: Path) -> Result:
+    """Tab to the No button then Enter must cancel the confirm dialog, not
+    blanket-confirm from the screen-level enter binding."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    with _isolated_env(tmp):
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _await_chat(app, pilot)
+            await pilot.pause()
+            results: list[bool] = []
+            app.push_screen(ConfirmDialog("Delete?", "Really delete?"), results.append)
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.press("enter")
+            answered = await _pump_until(pilot, lambda: bool(results), timeout_s=5.0)
+            outcome = results[0] if results else None
+    return Result(
+        "confirm-tab-no",
+        "Tab to No then Enter cancels the confirm dialog",
+        answered and outcome is False,
+        f"dialog returned {outcome} after tab+enter",
+    )
+
+
 SCENARIOS = [
     scenario_cursor_survives_refresh,
     scenario_discover_arrows,
@@ -527,6 +553,7 @@ SCENARIOS = [
     scenario_stale_pill_repaint,
     scenario_not_installed_named,
     scenario_re_add_noop,
+    scenario_confirm_tab_to_no,
 ]
 
 

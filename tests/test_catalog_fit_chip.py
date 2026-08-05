@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.cli.tui.widgets.model_grid import _FIT_LEVEL_BACKGROUND, _fit_pill
+from lilbee.cli.tui.widgets.catalog_card_shared import _FIT_LEVEL_BACKGROUND, _render_fit_pill
 from lilbee.runtime.hardware import FitChip, FitLevel
 
 
@@ -20,7 +20,7 @@ def test_wont_run_chip_uses_error_background() -> None:
 
 def test_fits_pill_renders_positive_headroom() -> None:
     chip = FitChip(level=FitLevel.FITS, headroom_gb=8.3)
-    pill_content = _fit_pill(chip)
+    pill_content = _render_fit_pill(chip)
     assert "fits +8.3 GB" in pill_content.plain
 
 
@@ -29,11 +29,11 @@ def test_tight_pill_clamps_headroom_at_zero_for_display() -> None:
     headroom math may produce -0.0 from float arithmetic but the chip
     still reads as nonnegative."""
     chip = FitChip(level=FitLevel.TIGHT, headroom_gb=0.0)
-    pill_content = _fit_pill(chip)
+    pill_content = _render_fit_pill(chip)
     assert "tight +0.0 GB" in pill_content.plain
 
 
 def test_wont_run_pill_shows_negative_headroom() -> None:
     chip = FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0)
-    pill_content = _fit_pill(chip)
+    pill_content = _render_fit_pill(chip)
     assert "won't run, short by 2.0 GB" in pill_content.plain

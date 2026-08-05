@@ -23,23 +23,16 @@ from textual.widget import Widget
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
-    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
     LocalCatalogRow,
-    SizeVariant,
 )
 from lilbee.cli.tui.widgets.catalog_card_shared import (
-    _FIT_LEVEL_BACKGROUND,
-    _build_local_status,
-    _build_specs,
     _key_status_pill,
-    _render_fit_pill,
+    _local_card_lines,
     _truncate_name,
 )
-from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
-from lilbee.runtime.hardware import FitChip, FitLevel
 
 _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 
@@ -491,83 +484,9 @@ def _pad_line(content: Content, width: int) -> Content:
 def _local_lines(
     row: LocalCatalogRow, *, selected: bool, body_width: int = _DEFAULT_BODY_WIDTH
 ) -> list[Content]:
-    from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.widgets.model_card import _compat_pill
-
-    bg = TASK_COLORS.get(row.task, "$primary")
-    name = Content.styled(_truncate_name(row.name), "bold")
-    # Two pill rows so wide secondary chips (fit + 'unsupported') don't push
-    # the card border out of alignment on narrow grid columns.
-    primary_pills: list[Content] = []
-    if row.featured:
-        primary_pills.append(pill("pick", "$warning", "$text"))
-    primary_pills.append(pill(row.task, bg, "$text"))
-    # Drop the 'native' backend pill on cards to free horizontal space; the
-    # backend is implied for local models. Remote backends (ollama, etc.)
-    # still surface their pill since that's a meaningful distinction.
-    if row.backend and row.backend != NATIVE_BACKEND:
-        primary_pills.append(pill(row.backend, "$accent", "$text"))
-    primary_line = Content(" ").join(primary_pills)
-
-    secondary_pills: list[Content] = []
-    if row.fit is not None:
-        # Card uses the compact 'fits' / 'tight' / "won't run" label only;
-        # the headroom GB lives in the detail drawer where the wider pane
-        # can render it without competing for card width.
-        secondary_pills.append(_fit_pill_compact(row.fit))
-    compat_chip = _compat_pill(row.compat)
-    if compat_chip is not None:
-        secondary_pills.append(compat_chip)
-    secondary_line = Content(" ").join(secondary_pills) if secondary_pills else Content("")
-
-    # Family card with multiple quants: replace the simple specs line
-    # with an inline chip strip so the user sees every available size
-    # at a glance without expanding into the drawer.
-    if len(row.size_variants) > 1:
-        specs = _build_size_variant_strip(row.size_variants, body_width)
-    else:
-        specs = _build_specs(row.params, row.quant, row.size)
-    status = _build_local_status(row)
-    lines: list[Content] = [name, primary_line, secondary_line, specs]
-    lines.append(status if status is not None else Content(""))
-    if selected:
-        hint = msg.INSTALLED_CARD_HINT if row.installed else msg.SETUP_CARD_HINT
-        lines.append(Content.styled(hint, "$text-muted 40% italic"))
-    else:
-        lines.append(Content(""))
-    return lines
-
-
-def _build_size_variant_strip(variants: list[SizeVariant], width: int) -> Content:
-    """Inline chip strip showing the quants of a family-aggregated card.
-
-    Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
-    available sizes at a glance. A family that varies by parameter count
-    rather than quant would render identical chips, so colliding quants
-    fall back to the full per-variant label. Per-variant fit colors aren't
-    applied here; the drawer (right pane) carries the full fit-per-size
-    detail when a card is highlighted.
-
-    Duplicate labels collapse, then chips that do not fit *width* are dropped
-    and counted as ``+N``: a family can hold more variants than a card column
-    has room for, and the long fallback labels reach that limit quickly.
-    """
-    quants = [v.quant if v.quant != "--" else v.label for v in variants]
-    labels = quants if len(set(quants)) == len(quants) else [v.label for v in variants]
-    # Two repos in one family can share a parameter count and quant, which
-    # renders the same chip twice and reads as a bug.
-    labels = list(dict.fromkeys(labels))
-    sep = f" {MIDDLE_DOT} "
-    shown = len(labels)
-    while shown > 1:
-        text = sep.join(labels[:shown])
-        hidden = len(labels) - shown
-        if hidden:
-            text = f"{text}  +{hidden}"
-        if len(text) <= width:
-            return Content.styled(text, "$text-muted")
-        shown -= 1
-    return Content.styled(labels[0][:width] if labels else "", "$text-muted")
+    """Grid presentation of the shared card slots: every slot paints a line."""
+    slots = _local_card_lines(row, selected=selected, body_width=body_width)
+    return [line if line is not None else Content("") for line in slots]
 
 
 def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
@@ -581,20 +500,5 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     return [name, pill_line, Content(""), info, Content(""), Content("")]
 
 
-_FIT_LEVEL_LABEL_COMPACT: dict[FitLevel, str] = {
-    FitLevel.FITS: "fits",
-    FitLevel.TIGHT: "tight",
-    FitLevel.WONT_RUN: "won't run",
-}
-
-# The verbose drawer fit pill is the shared renderer.
-_fit_pill = _render_fit_pill
-
-
-def _fit_pill_compact(fit: FitChip) -> Content:
-    """Card-side compact fit chip: just ``fits`` / ``tight`` / ``won't run``."""
-    return pill(_FIT_LEVEL_LABEL_COMPACT[fit.level], _FIT_LEVEL_BACKGROUND[fit.level], "$text")
-
-
-# _key_status_pill / _build_specs / _build_local_status live in
-# catalog_card_shared and are re-imported above.
+# _local_card_lines / _key_status_pill / _truncate_name and the fit / compat
+# chips live in catalog_card_shared.

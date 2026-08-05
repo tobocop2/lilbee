@@ -2538,7 +2538,7 @@ class TestSlashSuggester:
             "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
         ):
             assert s._get_model_names() == []
-        with patch("lilbee.cli.tui.widgets.suggester.get_services", side_effect=RuntimeError):
+        with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
             assert s._get_document_names() == []
 
     async def test_slash_prefix_suggests_command(self) -> None:
@@ -2580,7 +2580,7 @@ class TestSlashSuggester:
         """``/delete`` completes against indexed source filenames."""
         from types import SimpleNamespace
 
-        from lilbee.cli.tui.widgets import suggester as suggester_mod
+        from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         fake = SimpleNamespace(
@@ -2588,7 +2588,7 @@ class TestSlashSuggester:
                 get_sources=lambda: [{"filename": "notes.md"}, {"source": "todo.txt"}]
             )
         )
-        monkeypatch.setattr(suggester_mod, "get_services", lambda: fake)
+        monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
 
         s = SlashSuggester(use_cache=False)
         assert s._get_document_names() == ["notes.md", "todo.txt"]
@@ -2671,7 +2671,7 @@ class TestSlashSuggester:
 
         s = SlashSuggester(use_cache=False)
         with mock.patch(
-            "lilbee.cli.tui.widgets.suggester.get_services", side_effect=Exception("err")
+            "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
         ):
             assert s._get_document_names() == []
 
@@ -3131,6 +3131,21 @@ class TestCompletionOverlay:
             overlay = app.query_one(CompletionOverlay)
             overlay.show_completions([])
             assert not overlay.is_visible
+
+    async def test_get_current_without_a_list_cursor_is_none(self) -> None:
+        """The OptionList cursor is the source of truth; no cursor, no current."""
+        from textual.widgets import OptionList
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _OverlayApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            overlay.show_completions(["/help", "/model"])
+            await pilot.pause()
+            overlay.query_one("#completion-list", OptionList).highlighted = None
+            assert overlay.get_current() is None
 
     async def test_cycle_next(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -4593,26 +4608,26 @@ class TestModelCardSelected:
         return LocalCatalogRow(**defaults)
 
     def test_build_status_with_downloads(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         row = self._make_row(downloads="1K", sort_downloads=1000)
         assert _build_status(row) is not None
 
     def test_build_status_installed(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         result = _build_status(self._make_row(installed=True))
         assert result is not None
         assert "installed" in str(result).lower()
 
     def test_build_status_downloads_positive(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         row = self._make_row(downloads="5K", sort_downloads=5000)
         assert _build_status(row) is not None
 
     def test_build_status_none(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         assert _build_status(self._make_row()) is None
 
@@ -4817,13 +4832,13 @@ class TestCollectNativeModelsError:
 
 class TestModelCardBuildHelpers:
     def test_build_specs_all_empty(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         result = _build_specs("--", "--", "--")
         assert str(result) == "--"
 
     def test_build_specs_all_blank(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         result = _build_specs("", "", "")
         assert str(result) == "--"
@@ -4831,7 +4846,7 @@ class TestModelCardBuildHelpers:
     def test_build_status_not_installed_zero_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -4859,7 +4874,7 @@ class TestModelCardBuildHelpers:
 
     def test_key_status_pill_missing_key(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import KeyStatus
-        from lilbee.cli.tui.widgets.model_card import _key_status_pill
+        from lilbee.cli.tui.widgets.catalog_card_shared import _key_status_pill
 
         ready = _key_status_pill(KeyStatus.READY)
         missing = _key_status_pill(KeyStatus.MISSING_KEY)
@@ -5521,7 +5536,7 @@ class TestModelCardBuildStatusDownloads:
     def test_build_status_with_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -5604,7 +5619,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_yes_pill_click(self) -> None:
+    async def test_yes_button_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5621,7 +5636,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_no_pill_click(self) -> None:
+    async def test_no_button_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5634,6 +5649,25 @@ class TestConfirmDialog:
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.click("#confirm-no")
+            await pilot.pause()
+
+        assert results == [False]
+
+    async def test_tab_to_no_then_enter_cancels(self) -> None:
+        """Enter presses the focused No button instead of blanket-confirming."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.press("enter")
             await pilot.pause()
 
         assert results == [False]
@@ -6783,7 +6817,7 @@ class TestModelGridCardRendering:
         assert "↓ 12K" in rendered
 
     def test_local_row_pads_short_specs_with_double_dash(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         # All-default-row specs produce the placeholder.
         assert str(_build_specs("--", "--", "--")) == "--"
@@ -7163,6 +7197,30 @@ class TestCatalogFocusEdgeGuards:
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
 
+    async def test_grid_select_leave_falls_back_to_focus_chain(self) -> None:
+        """Setup-wizard GridSelect Leave events use the generic focus chain,
+        not the ModelGrid-only pane walk."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect()
+
+        class _StubScreen:
+            focus_next_called = False
+            focus_previous_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def focus_previous(self) -> None:
+                self.focus_previous_called = True
+
+        screen = _StubScreen()
+        CatalogScreen._on_grid_leave_down(screen, GridSelect.LeaveDown(grid))  # type: ignore[arg-type]
+        assert screen.focus_next_called is True
+        CatalogScreen._on_grid_leave_up(screen, GridSelect.LeaveUp(grid))  # type: ignore[arg-type]
+        assert screen.focus_previous_called is True
+
     async def test_leave_from_a_grid_outside_the_pane_is_ignored(self) -> None:
         """A Leave message from a grid that is not in the active pane (stale
         handle, empty rail) moves nothing: no entry, no scroll, no fetch."""
@@ -7277,7 +7335,7 @@ class TestModelBarScanRaces:
 def test_size_variant_strip_disambiguates_same_quant_families():
     """Chips fall back to full labels when every variant shares one quant."""
     from lilbee.cli.tui.screens.catalog_utils import SizeVariant
-    from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+    from lilbee.cli.tui.widgets.catalog_card_shared import _build_size_variant_strip
 
     same_quant = [
         SizeVariant(label="0.6B Q8_0", quant="Q8_0", size_gb=0.7, ref="r/a"),

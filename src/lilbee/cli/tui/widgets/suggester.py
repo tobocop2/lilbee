@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import logging
-
 from textual.suggester import Suggester
 
-from lilbee.app.services import get_services
-from lilbee.app.settings import _is_settable
-from lilbee.app.settings_map import SETTINGS_MAP
-from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
-
-log = logging.getLogger(__name__)
+from lilbee.cli.tui.widgets.autocomplete import (
+    _fetch_document_names,
+    _model_options,
+    _setting_options,
+    _theme_options,
+)
 
 _SLASH_COMMANDS = completion_names()
 
@@ -61,27 +59,16 @@ class SlashSuggester(Suggester):
                 return full[: len(full) - len(partial)] + opt
         return None
 
+    # Option sources are shared with the completion overlay (autocomplete);
+    # these stay as methods so callers and tests can override per-suggester.
     def _get_model_names(self) -> list[str]:
-        try:
-            from lilbee.modelhub.models import list_installed_models
-
-            return list_installed_models()
-        except Exception:
-            log.debug("Failed to list models for suggester", exc_info=True)
-            return []
+        return _model_options()
 
     def _get_setting_names(self) -> list[str]:
-        # Only settable keys, in map order: a non-writable entry (e.g. wiki_dir)
-        # would be offered then refused by /set.
-        return [k for k in SETTINGS_MAP if _is_settable(k)]
+        return _setting_options()
 
     def _get_document_names(self) -> list[str]:
-        try:
-            sources = get_services().store.get_sources()
-            return [s.get("filename", s.get("source", "")) for s in sources]
-        except Exception:
-            log.debug("Failed to list documents for suggester", exc_info=True)
-            return []
+        return _fetch_document_names()
 
     def _get_theme_names(self) -> list[str]:
-        return list(DARK_THEMES)
+        return _theme_options()

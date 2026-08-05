@@ -7,7 +7,8 @@ import pytest
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.messages import COMPAT_PILL_UNKNOWN, COMPAT_PILL_UNSUPPORTED
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-from lilbee.cli.tui.widgets.model_card import _compat_pill, _render_local
+from lilbee.cli.tui.widgets.catalog_card_shared import _compat_pill
+from lilbee.cli.tui.widgets.model_card import _render_local
 
 
 def _row(compat: ModelCompat) -> LocalCatalogRow:
@@ -223,7 +224,7 @@ class TestSizeVariantStripFitsTheCard:
         ]
 
     def test_it_never_exceeds_the_width_it_is_given(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_size_variant_strip
 
         for count in (2, 5, 12):
             for width in (20, 27, 40):
@@ -231,7 +232,7 @@ class TestSizeVariantStripFitsTheCard:
                 assert strip.cell_length <= width, f"{count} variants at width {width}"
 
     def test_dropped_chips_are_counted(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_size_variant_strip
 
         strip = _build_size_variant_strip(self._variants(5), 27)
         assert "+" in strip.plain
@@ -239,7 +240,7 @@ class TestSizeVariantStripFitsTheCard:
     def test_duplicate_labels_collapse(self) -> None:
         """Two repos in one family can share param count and quant."""
         from lilbee.cli.tui.screens.catalog_utils import SizeVariant
-        from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_size_variant_strip
 
         dupes = [
             SizeVariant(label="27B Q4_K_M", quant="Q4_K_M", size_gb=15.7, ref="a/1"),

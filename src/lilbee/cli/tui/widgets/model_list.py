@@ -27,9 +27,15 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
 )
+from lilbee.cli.tui.widgets.catalog_card_shared import (
+    _FIT_LEVEL_BACKGROUND,
+    _FIT_LEVEL_LABEL_COMPACT,
+    _compat_label,
+    _spec_strip,
+)
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 from lilbee.modelhub.models import FEATURED_STAR
-from lilbee.runtime.hardware import FitChip, FitLevel
+from lilbee.runtime.hardware import FitChip
 
 _CSS_FILE = Path(__file__).parent / "model_list.tcss"
 
@@ -168,22 +174,17 @@ def _fit_tag(fit: FitChip | None) -> list[Content]:
     """List-style fit indicator (italic colored text), matching the grid card chip set."""
     if fit is None:
         return []
-    if fit.level is FitLevel.FITS:
-        return [Content.styled("    fits", "$success italic")]
-    if fit.level is FitLevel.TIGHT:
-        return [Content.styled("    tight", "$warning italic")]
-    return [Content.styled("    won't run", "$error italic")]
+    label = _FIT_LEVEL_LABEL_COMPACT[fit.level]
+    return [Content.styled(f"    {label}", f"{_FIT_LEVEL_BACKGROUND[fit.level]} italic")]
 
 
 def _compat_tag(compat: ModelCompat) -> list[Content]:
     """List-style compat indicator. Empty for SUPPORTED to keep the row visually quiet."""
-    from lilbee.cli.tui import messages as msg
-
-    if compat is ModelCompat.SUPPORTED:
+    label = _compat_label(compat)
+    if label is None:
         return []
-    if compat is ModelCompat.UNSUPPORTED:
-        return [Content.styled(f"    {msg.COMPAT_PILL_UNSUPPORTED}", "$warning italic")]
-    return [Content.styled(f"    {msg.COMPAT_PILL_UNKNOWN}", "$text-muted italic")]
+    color = "$warning" if compat is ModelCompat.UNSUPPORTED else "$text-muted"
+    return [Content.styled(f"    {label}", f"{color} italic")]
 
 
 def _render_local_meta(row: LocalCatalogRow) -> list[Content]:
@@ -202,14 +203,9 @@ def _local_meta_strip(row: LocalCatalogRow) -> list[str]:
     rest: list[str] = []
     if row.backend and row.backend != NATIVE_BACKEND:
         rest.append(row.backend)
-    specs = _format_specs(row)
+    specs = _spec_strip(row.params, row.quant, row.size)
     if specs:
         rest.append(specs)
     if row.downloads and row.downloads != "--":
         rest.append(f"↓ {row.downloads}")
     return rest
-
-
-def _format_specs(row: LocalCatalogRow) -> str:
-    parts = [p for p in (row.params, row.quant, row.size) if p and p != "--"]
-    return f" {MIDDLE_DOT} ".join(parts)
