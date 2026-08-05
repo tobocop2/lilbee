@@ -60,9 +60,11 @@ async def test_taskbar_multiple_active_shows_count_plural() -> None:
     app = _Harness()
     async with app.run_test() as pilot:
         await pilot.pause()
-        for i in range(2):
-            app.task_bar.queue.enqueue(lambda: None, f"m{i}", TaskType.DOWNLOAD.value)
-            app.task_bar.queue.advance(TaskType.DOWNLOAD.value)
+        # One of each: capacity is per type, so two downloads would leave one
+        # queued and the label singular.
+        for task_type in (TaskType.DOWNLOAD, TaskType.SYNC):
+            app.task_bar.queue.enqueue(lambda: None, f"m{task_type.value}", task_type.value)
+            app.task_bar.queue.advance(task_type.value)
         bar = app.query_one(TaskBar)
         bar._refresh_display()
         text = _label_text(bar)
