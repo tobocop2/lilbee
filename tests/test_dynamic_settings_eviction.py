@@ -12,7 +12,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 
 class _RecordingProvider:
@@ -403,9 +403,10 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
 
 async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup):
     """Adding an API key republishes on provider_availability_changed_signal."""
-    app = LilbeeApp()
+    # Light host: the fan-out is wired on the app itself, so observing it needs
+    # no startup gate (whose wait wedged loaded Windows runners).
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
-        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)
@@ -423,9 +424,9 @@ async def test_provider_availability_signal_fires_for_each_provider_key(_patch_c
     """The whitelist covers every provider key declared on the Config."""
     from lilbee.core.config.keys import PROVIDER_API_KEYS
 
-    app = LilbeeApp()
+    # Light host for the same reason as the sibling above.
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
-        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)

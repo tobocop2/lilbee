@@ -197,6 +197,11 @@ class LilbeeApp(App[None]):
     _test_skip_auto_init: ClassVar[bool] = False
 
     async def on_mount(self) -> None:
+        # The app's own signal graph is part of being a working app, not
+        # "heavyweight auto-init": wiring it before the test-skip guard lets a
+        # test observe app-level signals without booting the startup gate, whose
+        # wait is a timing window that wedges loaded CI runners.
+        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         if self._test_skip_auto_init:
             return
         # Paint the gate before any other work so the terminal is never blank
@@ -217,7 +222,6 @@ class LilbeeApp(App[None]):
         self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
         self._sync_theme_index_to_current()
 
-        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self._wire_worker_pool_notifications()
         # Chat's import graph is the TUI's heaviest; loading it here would hold
         # the first frame back for seconds on a cold disk, leaving the terminal

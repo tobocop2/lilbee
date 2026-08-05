@@ -82,10 +82,12 @@ async def _wait_for_wizard_cards(app: LilbeeApp, pilot) -> SetupWizard:
 @pytest.mark.asyncio
 async def test_enter_on_non_installed_chat_card_submits_download() -> None:
     """Enter on a non-installed card submits to TaskBarController.start_download."""
-    app = LilbeeApp()
+    app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            wizard = await _wait_for_wizard_cards(app, pilot)
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             assert chat_cards
             first = chat_cards[0]
@@ -150,11 +152,13 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
 async def test_enter_on_installed_card_does_not_submit_download() -> None:
     """Installed cards save config but skip start_download (nothing to fetch)."""
 
-    app = LilbeeApp()
+    app = _PlainApp()
     installed_chat = [PICKS_CHAT[0].ref]
     with _patch_setup_scan(chat=installed_chat), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            wizard = await _wait_for_wizard_cards(app, pilot)
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
             installed_cards = [c for c in wizard.query(ModelCard) if c.row.installed]
             assert installed_cards
             chosen = installed_cards[0]
