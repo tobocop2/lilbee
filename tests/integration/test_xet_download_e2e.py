@@ -120,17 +120,22 @@ def xet_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
+def _repo_root(models_dir: Path, hf_repo: str) -> Path:
+    """Cache folder holding *hf_repo*, whether or not it exists yet."""
+    from huggingface_hub.file_download import repo_folder_name
+
+    return models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+
+
 def _bytes_in_flight(models_dir: Path, hf_repo: str | None = None) -> int:
     """Bytes sitting in partial blobs, which only grow while a transfer runs.
 
     Scoped to one repo when *hf_repo* is given, so a cancelled model can be
     measured while the next queued download is writing.
     """
-    from huggingface_hub.file_download import repo_folder_name
-
     root = models_dir
     if hf_repo is not None:
-        root = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+        root = _repo_root(models_dir, hf_repo)
         if not root.is_dir():
             return 0
     return sum(p.stat().st_size for p in root.rglob("*.incomplete"))
@@ -147,9 +152,7 @@ def _repo_gguf_count(models_dir: Path, hf_repo: str) -> int:
     resolves to the best available, so asserting on the filename asserts a
     choice the catalog is free to make.
     """
-    from huggingface_hub.file_download import repo_folder_name
-
-    root = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    root = _repo_root(models_dir, hf_repo)
     return len(list(root.rglob("*.gguf"))) if root.is_dir() else 0
 
 
