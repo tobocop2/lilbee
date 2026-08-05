@@ -549,12 +549,12 @@ class RoleRow(Widget, can_focus=False):
 class ModelBar(Widget, can_focus=False):
     """Horizontal band of the four role pickers + the Search/Chat toggle, below the input.
 
-    The bar reads as one strip, so it walks like one: Left / Right step
-    between its members and Enter opens the focused member. The bindings live
-    here rather than on the members because key lookup walks the focused
-    widget's ancestors: one definition covers all six members, and it cannot
-    fire anywhere else, so the arrows stay free for the prompt's own cursor
-    movement without needing a guard.
+    The bar reads as one strip, so it walks like one: Left / Right step between
+    its members, and Enter acts on the focused one (opening a picker, or picking
+    a chat mode). The bindings live here rather than on the members because key
+    lookup walks the focused widget's ancestors: one definition covers every
+    member, and it cannot fire anywhere else, so the arrows stay free for the
+    prompt's own cursor movement without needing a guard.
     """
 
     app: LilbeeApp  # type: ignore[assignment]

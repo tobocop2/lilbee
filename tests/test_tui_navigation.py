@@ -858,10 +858,15 @@ async def test_every_footer_fits_the_column_budget():
 
         for view in ("Chat", "Catalog", "Status", "Settings", "Tasks", "Fleet", "Sessions"):
             app.switch_view(view)
-            await pump_until(pilot, lambda v=view: app.active_view == v)
-            # The footer composes its keys on a later refresh than the switch,
-            # so wait for a laid-out row rather than measuring zeroes.
-            await pump_until(pilot, lambda: _footer_columns(app)[0] > 0)
+            assert await pump_until(pilot, lambda v=view: app.active_view == v), (
+                f"never landed on {view}"
+            )
+            # The footer composes its keys on a later refresh than the switch.
+            # Asserted, not merely awaited: an un-laid-out row measures zero,
+            # and zero would sail under the budget while proving nothing.
+            assert await pump_until(pilot, lambda: _footer_columns(app)[0] > 0), (
+                f"{view} footer never laid out"
+            )
             width, cells = _footer_columns(app)
             assert width <= _FOOTER_COLUMN_BUDGET, f"{view} footer is {width} cols: {cells}"
 
@@ -1104,11 +1109,18 @@ async def test_the_strip_skips_a_role_the_narrow_layout_hides():
         await await_chat(app, pilot)
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         bar = app.screen.query_one("#model-bar", ModelBar)
-        await pump_until(pilot, lambda: len(bar.strip) == 6)
+        # Assert the setup, don't just wait for it: pump_until returns a bool,
+        # so an unmet precondition would leave the check below passing on a
+        # strip that never had a vision picker to skip in the first place.
+        assert await pump_until(pilot, lambda: len(bar.strip) == 6), (
+            f"strip never reached six members: {[w.id for w in bar.strip]}"
+        )
 
         # Vision is off in this config, so the narrow class drops its row.
         bar.add_class("-narrow")
-        await pump_until(pilot, lambda: "model-pick-vision" not in {w.id for w in bar.strip})
+        assert await pump_until(
+            pilot, lambda: "model-pick-vision" not in {w.id for w in bar.strip}
+        ), "the narrow layout never dropped the vision row"
 
         await _focus_strip(app, pilot)
         seen = [app.screen.focused.id]
@@ -1195,3 +1207,67 @@ async def test_the_views_group_only_shows_keys_that_go_somewhere():
         await pilot.press("m")
         await _wait_for_screen(app, pilot, CatalogScreen)
         assert "c" in shown_keys(), "Catalog hides the jump back to Chat"
+
+
+async def test_c_still_cancels_on_tasks_instead_of_leaving():
+    """Tasks deliberately shadows the app-wide `c`, so pin that it does.
+
+    The pre-existing e2e coverage for this key asserts `app.screen.is_current`,
+    which stays true even if `c` had navigated to Chat, so nothing caught the
+    shadow either way. Cancel is why you are on this screen; the shadow is
+    allowed only because the footer names it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("t")
+        await _wait_for_screen(app, pilot, TaskCenter)
+        with mock.patch.object(app.screen, "action_cancel_task") as cancel:
+            await pilot.press("c")
+            await pilot.pause()
+            assert cancel.called, "c stopped cancelling on Tasks"
+        assert isinstance(app.screen, TaskCenter), "c left the Tasks screen"
+
+
+async def test_enter_on_a_mode_pill_switches_chat_mode():
+    """Enter on a focused pill is now the only keyboard route to the mode.
+
+    Removing the toggle's own Left / Right, so one pair of arrows walks the
+    whole strip, made this the single key path, and the help text promises it.
+    The pre-existing coverage calls `action_select()` directly, which bypasses
+    key resolution and focus routing, so nothing pressed a key to prove it.
+    """
+    app = LilbeeApp()
+    with mock.patch(
+        "lilbee.cli.tui.widgets.model_bar.is_model_available",
+        return_value=True,
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+            cfg.chat_mode = "chat"
+
+            await _focus_strip(app, pilot)
+            await pump_until(pilot, lambda: app.screen.focused is not None)
+            while app.screen.focused.id != "chat-mode-search":
+                await pilot.press("right")
+                await pilot.pause()
+
+            # pump_until returns a bool and deliberately does not assert, so
+            # the assertion has to be the caller's.
+            await pilot.press("enter")
+            assert await pump_until(pilot, lambda: cfg.chat_mode == "search"), (
+                f"Enter on the Search pill left the mode at {cfg.chat_mode!r}"
+            )
+
+            await pilot.press("right")
+            await pilot.pause()
+            assert app.screen.focused.id == "chat-mode-chat"
+            await pilot.press("enter")
+            assert await pump_until(pilot, lambda: cfg.chat_mode == "chat"), (
+                f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
+            )

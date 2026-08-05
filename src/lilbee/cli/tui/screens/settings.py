@@ -113,8 +113,9 @@ class SettingsScreen(Screen[None]):
     )
 
     # Settings shows the most keys of any screen, so each pair collapses to a
-    # single labelled cell; ungrouped it was the one footer that overflowed a
-    # 120-column terminal.
+    # single labelled cell. Grouping the app row alone was not enough here:
+    # this was the widest footer in the app at 200 columns, and the only one
+    # still over 120 once the shared row shrank.
     _FIELD_GROUP = Binding.Group("Field", compact=True)
     _TAB_GROUP = Binding.Group("Tabs", compact=True)
     _RESET_GROUP = Binding.Group("Reset", compact=True)
