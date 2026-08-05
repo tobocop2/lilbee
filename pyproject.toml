@@ -162,6 +162,7 @@ markers = [
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
     "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
+    "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
 ]
 
 [tool.coverage.run]

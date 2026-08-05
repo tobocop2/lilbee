@@ -311,6 +311,8 @@ class TestEstimateSizeGb:
 
 
 class TestFetchHfModels:
+    pytestmark = pytest.mark.real_hf_client
+
     def _mock_hf_response(self) -> list[dict]:
         return [
             {
@@ -1347,6 +1349,7 @@ class TestSortModels:
 
 
 class TestHfCacheEviction:
+    pytestmark = pytest.mark.real_hf_client
     """Tests for HfClient.fetch_models cache eviction and size cap."""
 
     def test_expired_entries_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1843,6 +1846,7 @@ class TestResolveMmprojFilename:
 
 
 class TestHfModelsSearchFilter:
+    pytestmark = pytest.mark.real_hf_client
     """HF API uses search=GGUF to find GGUF repos."""
 
     def test_returns_all_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1871,6 +1875,7 @@ class TestHfSearchValue:
 
 
 class TestFetchHfModelsSearchForwarding:
+    pytestmark = pytest.mark.real_hf_client
     """User search text reaches HF as one space-joined ``search=`` value."""
 
     def test_search_value_sent_as_single_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
