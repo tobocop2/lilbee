@@ -17,6 +17,15 @@ Output:
 Anything over the per-step budget is flagged with a >>>SLOW<<< marker
 so a reader skimming the report sees the regressions immediately.
 
+Step times are RELATIVE numbers, not user-perceived latency: every
+``pilot.press``/``pilot.pause`` includes Textual's ``wait_for_idle``
+sleep (~20 ms quantization per settle), which dominates cheap steps.
+A 2026-08 pyinstrument pass measured real app CPU at single-digit ms
+per keypress while the pilot step read 140 ms. Budgets catch
+regressions against this harness's own baseline; to attribute real
+cost, profile the step body (pyinstrument) instead of trusting the
+wall-clock number.
+
 Usage::
 
     uv run python scripts/qa/profile_tui.py            # text report
@@ -245,7 +254,7 @@ async def run_profile() -> ProfileReport:  # noqa: C901, PLR0915 -- linear scree
             search.value = ""
             await pilot.pause()
             # Defocus search so v reaches the screen binding.
-            scroll = app.screen.query_one("#catalog-grid")
+            scroll = app.screen.query_one("#grid-chat")
             scroll.focus()
             await pilot.pause()
             await pilot.press("v")
@@ -317,7 +326,7 @@ async def run_profile() -> ProfileReport:  # noqa: C901, PLR0915 -- linear scree
         await profiler.step("stress: type+clear long catalog filter", stress_long_filter)
 
         async def stress_toggle_storm() -> None:
-            scroll = app.screen.query_one("#catalog-grid")
+            scroll = app.screen.query_one("#grid-chat")
             scroll.focus()
             await pilot.pause()
             for _ in range(8):  # 4 round trips
@@ -328,7 +337,7 @@ async def run_profile() -> ProfileReport:  # noqa: C901, PLR0915 -- linear scree
 
         async def stress_list_pagedown() -> None:
             # Make sure we're in list view, then scroll heavy.
-            scroll_id = "#catalog-list" if not app.screen._grid_view else "#catalog-grid"
+            scroll_id = "#list-chat" if not app.screen._grid_view else "#grid-chat"
             scroll = app.screen.query_one(scroll_id)
             scroll.focus()
             await pilot.pause()
