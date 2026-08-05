@@ -193,7 +193,7 @@ class TaskBarController:
             and task.task_type == TaskType.DOWNLOAD.value
             and task.status is TaskStatus.ACTIVE
         )
-        had_worker = task_id in self._task_targets
+        started = task_id in self._task_targets
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
         if was_running_download:
@@ -201,11 +201,13 @@ class TaskBarController:
             from lilbee.catalog.download import abort_active_download
 
             abort_active_download()
-        if not had_worker:
-            # A row that never started has no worker whose exit would advance
-            # the queue. A running one does, and promoting it here would start
-            # the successor while the cancelled transfer is still winding down,
-            # where the session-wide abort would take both.
+        if not started:
+            # Rows put straight on the queue have no worker whose exit advances
+            # it, so the cancel must. A started row either has a worker that
+            # finalizes, or is queued and holds no slot worth freeing.
+            # Advancing an active one here would run its successor while the
+            # cancelled transfer is still winding down, and the session-wide
+            # abort would take both.
             self._advance_all(task_type)
 
     def _after_done_hooks(self, task_type: str | None) -> None:

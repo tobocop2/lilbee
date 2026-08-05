@@ -117,3 +117,41 @@ async def test_the_successor_waits_for_the_cancelled_worker_to_exit() -> None:
             await pilot.pause()
 
     assert started == ["A", "B"], f"B never ran after A exited: {started}"
+
+
+@pytest.mark.timeout(90)
+async def test_cancelling_a_queued_row_leaves_the_queue_draining() -> None:
+    """A queued row holds no slot, so cancelling it advances nothing, and the
+    rows behind it must still run once the active one finishes."""
+    started: list[str] = []
+    release = threading.Event()
+
+    def target(name: str):
+        def _run(reporter: object) -> None:
+            started.append(name)
+            release.wait(timeout=30)
+
+        return _run
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        controller.start_task("A", TaskType.DOWNLOAD, target("A"), dedupe_key="a")
+        second = controller.start_task("B", TaskType.DOWNLOAD, target("B"), dedupe_key="b")
+        controller.start_task("C", TaskType.DOWNLOAD, target("C"), dedupe_key="c")
+
+        for _ in range(60):
+            if started:
+                break
+            await pilot.pause()
+        assert started == ["A"]
+
+        controller.cancel_task(second)  # queued, never ran
+        release.set()
+
+        for _ in range(160):
+            if len(started) > 1:
+                break
+            await pilot.pause()
+
+    assert started == ["A", "C"], f"queue did not drain past the cancelled row: {started}"
