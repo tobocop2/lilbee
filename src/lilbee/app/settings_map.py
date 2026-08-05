@@ -378,10 +378,11 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Let Xet use more connections and larger in-flight buffers when "
-            "downloading models. Faster on a fast connection, but the buffer "
-            "ceilings are sized for servers, so leave it off on a machine that "
-            "is tight on memory. Requires a restart to take effect."
+            "Warning: Hugging Face states this mode uses all available bandwidth "
+            "and CPU cores, and it raises Xet's in-flight buffer ceilings well "
+            "past their defaults. Faster model downloads on a fast connection, "
+            "at the cost of everything else running on the machine. Leave it off "
+            "unless the machine can spare that. Requires a restart to take effect."
         ),
     ),
     "gpu_devices": SettingDef(
