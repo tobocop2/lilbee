@@ -373,6 +373,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "precedence over the offload-everything setting; smaller N stays faster."
         ),
     ),
+    "xet_high_performance": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Let Xet use more connections and larger in-flight buffers when "
+            "downloading models. Faster on a fast connection, but the buffer "
+            "ceilings are sized for servers, so leave it off on a machine that "
+            "is tight on memory. Requires a restart to take effect."
+        ),
+    ),
     "gpu_devices": SettingDef(
         str,
         nullable=True,
