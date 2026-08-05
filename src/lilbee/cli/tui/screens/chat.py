@@ -233,10 +233,10 @@ class ChatScreen(Screen[None]):
         "**i**/**a**/**o** to return to insert mode.\n\n"
         "**/** opens the slash-command line and **Tab** completes what you "
         "type there; **F2** lists every command.\n\n"
-        "**F6** jumps to the model strip under the prompt. "
-        "**Left** / **Right** step between the Chat, Embed, Vision and Rerank "
-        "pickers, **Home** / **End** jump to either end, **Enter** opens the "
-        "focused picker, and **Escape** returns to the prompt."
+        "**F6** jumps to the model strip under the prompt. **Left** / **Right** "
+        "walk all six cells (the Chat, Embed, Vision and Rerank pickers, then "
+        "the Search and Chat mode pills), **Home** / **End** jump to either "
+        "end, **Enter** opens or picks the focused cell, **Escape** goes back."
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
