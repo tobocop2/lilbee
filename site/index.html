@@ -248,8 +248,10 @@
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">launch: opencode</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">launch: hermes</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">agents: qwen3 coder</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">agents: minimax</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-memory" aria-controls="tutorial-pane-memory" aria-selected="false" tabindex="-1">memory</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-wiki" aria-controls="tutorial-pane-wiki" aria-selected="false" tabindex="-1">wiki</button>
             </div>
           </div>
         </div>
@@ -382,17 +384,32 @@
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption"><code>lilbee launch opencode</code> opens opencode on a local model with lilbee configured. It adds a <code>lilbee launch status</code> subcommand to lilbee's own source, runs it, and writes a test that passes.</p>
+          <p class="tutorial-caption">Four agents at once against a single local model (Qwen3 Coder 30B A3B): finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with <code>lilbee_search</code>.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption"><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
+          <p class="tutorial-caption">The same four-up shape on MiniMax M2.7, each pane writing a small Python function through lilbee.</p>
         </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-memory" aria-labelledby="tutorial-tab-memory" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Tell lilbee a fact and a preference, then ask in a brand new conversation. The answer comes from memory, not from the transcript.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-wiki" aria-labelledby="tutorial-tab-wiki" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/wiki-lazy.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Browse a cited encyclopedia built from your own documents, then open a page that does not exist yet and watch lilbee write it on demand.</p>
+        </div>
+
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpuauto" aria-labelledby="tutorial-tab-gpuauto" hidden>
           <div class="tutorial-clip">
