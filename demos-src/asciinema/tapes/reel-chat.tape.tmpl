@@ -1,0 +1,45 @@
+# Canonical chat reel — proven on the trial pod (reel-chat3.mp4: 20.5s, no frame
+# drops, completed cited answer). Placeholders: __OUTPUT__ __BOOT__ __QUESTION__
+# Choreography rationale (see [[reel-trial-findings]]):
+#  - Relative Output path (VHS 0.10 rejects unquoted absolute paths).
+#  - Escape after boot dismisses the model-picker wizard into the Chat view,
+#    which leaves the Ask box in NORMAL mode; Type "i" enters insert first, else
+#    the leading keystrokes are eaten (e.g. "What's" -> "t's", the 'a' triggers
+#    append). Both done while Hidden so the mode-switch never shows.
+#  - Ask, then Hide through the cold engine-load + generation, then Show the
+#    finished answer: capture happens on an idle machine, so no frame drops and
+#    the reel never ends on a spinner.
+#  - Ends on the fleet drawer (Ctrl+g). The old Escape+G scroll is removed: "G"
+#    landed in the search box as literal text; the answer already fits on screen.
+Set Shell "bash"
+Set FontFamily "JetBrains Mono, Symbols Nerd Font Mono, Noto Color Emoji"
+Set FontSize 28
+Set Width 1400
+Set Height 900
+Set Padding 40
+Set LetterSpacing 2
+Set Theme "rose-pine-moon"
+Set WindowBar Colorful
+Set TypingSpeed 35ms
+Set Framerate 25
+Output __OUTPUT__
+Hide
+Type "__BOOT__"
+Enter
+Sleep 95s
+Escape
+Sleep 1500ms
+Type "i"
+Sleep 800ms
+Show
+Sleep 1800ms
+Type "__QUESTION__"
+Sleep 700ms
+Enter
+Sleep 3s
+Hide
+Sleep 85s
+Show
+Sleep 7s
+Ctrl+g
+Sleep 3s

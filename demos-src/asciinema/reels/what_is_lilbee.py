@@ -68,17 +68,15 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(ROOT)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=120)
+        timings["boot"] = s.await_chat(timeout=120)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.6)
         s.mark("boot_end")
 
         # 1. Add the README, typed slowly enough that the path completion is readable.
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text(f"/add {DOC}", rate=0.055)
         time.sleep(1.6)
         s.key("Enter", after=1.0)
@@ -91,6 +89,11 @@ def record(cast: pathlib.Path) -> dict:
         # row or the idle state rather than waiting out a row that will never appear.
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
+        # Deliberately not await_task here, unlike the crawl and PDF reels. One README
+        # indexes faster than the Task Center opens, so requiring the row to appear first
+        # would wait for something that has already gone. The premature-match risk that
+        # helper exists for is covered on this reel by the citation: an answer that cites
+        # README.md cannot have come from an empty index, and that is a gated must-string.
         timings["ingest"] = s.wait_for(r"add\s+(done|complete)|all caught up", timeout=600)
         time.sleep(1.6)
 

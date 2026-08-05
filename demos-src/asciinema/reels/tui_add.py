@@ -61,16 +61,15 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(ROOT)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=180)
+        timings["boot"] = s.await_chat(timeout=180)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.6)
         s.mark("boot_end")
 
         # 1. The add, typed deliberately so the path is readable.
-        s.key("i", after=0.5)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text(f"/add {incoming}", rate=0.055)
         time.sleep(1.2)
         s.key("Enter", after=1.0)
@@ -81,7 +80,7 @@ def record(cast: pathlib.Path) -> dict:
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
         s.mark("ingest_start")
-        timings["ingest"] = s.wait_for(r"add\s+(done|complete)|all caught up", timeout=1800)
+        timings["ingest"] = s.await_task("add", finish=1800)
         s.mark("ingest_end")
         time.sleep(2.0)
 

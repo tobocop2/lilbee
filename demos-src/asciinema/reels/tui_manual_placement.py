@@ -8,8 +8,14 @@ shows a row per role and a column per GPU, with -/+ for replicas, and the reel m
 and embedding onto different cards, previews the plan, and applies it.
 
 Bindings come from the screen's own footer: ctrl+r previews, ctrl+s applies, ctrl+x
-returns to automatic placement. The reel ends back on Auto so it does not leave the
-viewer thinking manual placement is something you have to do.
+returns to automatic placement.
+
+Ends by asking the split model a question with the drawer still open. Without that the
+reel was a config screen someone moved around in and then left -- reported as not
+understandable at all, and fairly: splitting a model across two cards only means anything
+if something then runs on it. The answer arriving while both CUDA rows carry weight is
+the point of the whole screen. Auto is restored after, so the reel does not leave anyone
+thinking manual placement is something you have to do.
 """
 from __future__ import annotations
 
@@ -22,25 +28,43 @@ import drive  # noqa: E402
 
 NAME = "tui-manual-placement"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Placement", "Preview", "Apply", "replicas")
+MUST_STRINGS = ("Placement", "Preview", "Apply", "replicas", "70B")
 BEATS = (
     ("both cards listed", r"CUDA0"),
     ("second card listed", r"CUDA1"),
     ("the grid of roles", r"replicas"),
     ("a plan previewed", r"Preview"),
+    ("asked the split model a multi-step question", r"short trips"),
+    ("it answered while split", r"Sources:"),
     ("back to automatic", r"Auto"),
 )
+
+TAIL_FORBID = ("Cancel stream",)
 # The 35 GB load across two cards is minutes of a static screen; compress it.
-SPEED_WINDOWS = ("load",)
+SPEED_WINDOWS = ("load", "gen")
+PROTECT_WINDOWS = ("answer",)
 # The placement drawer coalesces repaints: nine rounds of Tab-and-toggle produce six
 # measurable frames, and Tab alone produces none. There is no animation here to be choppy,
 # which is the only thing the frame-rate floor exists to catch, so this reel declares the
 # screen static rather than leaving the row permanently unmeasured. Content is covered by
-# BEATS instead: both cards, the model split across them, preview, apply, back to auto.
+# BEATS instead: both cards, the model split across them, preview, apply, an answer
+# generated while split, and back to auto.
 STATIC_BY_DESIGN = True
 
+# PREREQUISITE: the Crown Vic manual must already be indexed into this root before the
+# reel runs. This reel deliberately does not ingest -- the sibling self-index reel does,
+# and ingesting with a 70B resident is what killed two takes there -- so the question at
+# the end has nothing to retrieve unless the pod setup indexed the manual first.
 ROOT = "/workspace/reelroot"
 CHAT_MODEL = "bartowski/Llama-3.3-70B-Instruct-GGUF/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+# A question sized to the model, which is the point of putting a 70B on two cards. It
+# cannot be answered by retrieving one chunk: it needs the maintenance schedule and the
+# severe-service conditions read together, then a judgement about which applies. A 4B
+# reliably answers half of it. Deliberately prose rather than a specification table --
+# sideways pages still extract as scrambled text, so a table question would fail for a
+# reason that has nothing to do with the model (bb-depek).
+QUESTION = ("my car is driven mostly on short trips in cold weather -- which maintenance "
+            "schedule does the manual say applies to me, and what does it change?")
 
 
 def record(cast: pathlib.Path) -> dict:
@@ -57,10 +81,10 @@ def record(cast: pathlib.Path) -> dict:
             time.sleep(1.0)
         except drive.Timeout:
             pass
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=300)
+        timings["boot"] = s.await_chat(timeout=300)
         time.sleep(1.5)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=30)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=30)
         time.sleep(0.6)
         s.mark("boot_end")
         s.esc(2)
@@ -101,8 +125,21 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(4.0)
         s.key("C-s", after=1.5)
         time.sleep(4.5)
+        # 4. The payoff: ask it something with the drawer still open, so the answer
+        # streams next to the two rows carrying the weights.
+        s.ask(QUESTION, rate=0.045)
+        s.mark("gen_start")
+        timings["answer"] = s.await_answer()
+        s.mark("gen_end")
+        # Held at real speed: a 70B reasoning across two sections is what the two cards
+        # are for, and hurrying past the answer wastes the demonstration.
+        s.mark("answer_start")
+        time.sleep(8.0)
+        s.mark("answer_end")
+
+        # 5. Back to automatic, after the demonstration rather than before it.
         s.key("C-x", after=1.5)
-        time.sleep(4.0)
+        time.sleep(3.5)
 
         timings["total"] = time.monotonic() - t0
         s.mark("payload_end")

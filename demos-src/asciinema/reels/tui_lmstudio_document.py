@@ -21,10 +21,15 @@ import drive  # noqa: E402
 
 NAME = "tui-lmstudio-document"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("lm_studio", "Background Tasks", "Sources:")
+# The catalog renders the provider as "lm studio": lowercase, a space, not the
+# ref prefix lm_studio and not the display constant "LM Studio". Waiting on
+# either of those timed out against a row that was on screen the whole time.
+PROVIDER_PILL = r"(?i)lm studio"
+
+MUST_STRINGS = ("lm studio", "Background Tasks", "Sources:")
 BEATS = (
     ("catalog open", r"Discover"),
-    ("provider pill on the served model", r"lm_studio|LM Studio"),
+    ("provider pill on the served model", PROVIDER_PILL),
     ("ingest finished", r"add\s+(done|complete)|all caught up"),
     ("cited answer", r"Sources:"),
 )
@@ -34,17 +39,16 @@ TAIL_FORBID = ("Cancel stream",)
 # so it is compressed like the generation window and labelled the same way.
 SPEED_WINDOWS = ("ingest", "gen")
 # The pill that proves the model is served rather than run by lilbee.
-PROVIDER_PILL = r"lm_studio|LM Studio"
 
 ROOT = pathlib.Path.home() / ".cache/lilbee-reel/lmstudio"
 DOC = pathlib.Path.home() / "Downloads/cv-manual.pdf"
 QUESTION = "what does the manual say about coolant capacity?"
 
-# Served by LM Studio's OpenAI-compatible endpoint, not by lilbee's own engine. The embedder stays local: the reel is
+# Both models served by LM Studio's OpenAI-compatible endpoint, not by lilbee's own engine. The reel is
 # about where the chat model lives, and swapping the embedder as well would only make
 # the ingest slower without saying anything new.
 CONFIG = """chat_model = "lm_studio/qwen/qwen3-4b-2507"
-embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+embedding_model = "lm_studio/text-embedding-nomic-embed-text-v1.5"
 theme = "rose-pine"
 top_k = 8
 """
@@ -66,10 +70,10 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(ROOT)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=180)
+        timings["boot"] = s.await_chat(timeout=180)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.6)
         s.mark("boot_end")
 
@@ -77,28 +81,42 @@ def record(cast: pathlib.Path) -> dict:
         # only chat entry is the one LM Studio is serving. Held long enough to read, in
         # both densities, because "the model is not lilbee's own" is the entire point of
         # the reel and a glance at a card does not carry it.
-        s.key("i", after=0.5)
-        s.key("C-u", after=0.3)
+        # Reach the model the way a person would: the catalog's Library tab is the
+        # installed set, and each row names the provider that serves it. Scrolling
+        # Discover looking for a pill was reported as weird twice; picking the row out of
+        # Library carries the provenance without narration, because the provider owns the
+        # entry being selected.
+        s.insert()
         s.type_text("/models", rate=0.05)
         time.sleep(0.6)
         s.key("Enter", after=1.0)
         s.wait_for(r"Discover", timeout=40)
-        time.sleep(1.6)
-        s.key(*(["j"] * 16), after=0.045)
-        s.wait_for(PROVIDER_PILL, timeout=25)
-        time.sleep(4.0)
+        time.sleep(1.2)
+        s.key("6", after=0.8)                    # Library: what is installed
+        s.wait_for(r"Library", timeout=25)
+        time.sleep(1.4)
+        # List view: the provider is a column here rather than a pill on a card.
         s.key("v", after=0.8)
-        time.sleep(3.5)
-        s.key(*(["j"] * 10), after=0.045)
+        time.sleep(2.4)
+        # Wait for the provider row before moving, not after. Its two models are the last
+        # entries in Library and are already on screen when the tab opens; scrolling first
+        # carried the viewport past them, so the wait timed out on a row that had been
+        # visible and then left.
+        s.wait_for(PROVIDER_PILL, timeout=30)
         time.sleep(3.0)
+        s.key("Tab", after=0.7)
+        s.key(*(["j"] * 8), after=0.06)
+        time.sleep(4.5)
+        s.key(*(["j"] * 4), after=0.06)
+        time.sleep(3.5)
         s.key("v", after=0.8)
-        time.sleep(1.6)
+        time.sleep(1.4)
+
         s.goto("Chat", forward=False, limit=8, marker=r"Slash commands")
         time.sleep(0.8)
 
         # 2. The manual, added on camera.
-        s.key("i", after=0.5)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text(f"/add {incoming}", rate=0.05)
         time.sleep(1.0)
         s.key("Enter", after=1.0)
@@ -107,7 +125,7 @@ def record(cast: pathlib.Path) -> dict:
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
         s.mark("ingest_start")
-        timings["ingest"] = s.wait_for(r"add\s+(done|complete)|all caught up", timeout=1200)
+        timings["ingest"] = s.await_task("add", finish=1200)
         s.mark("ingest_end")
         time.sleep(1.8)
 

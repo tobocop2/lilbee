@@ -87,6 +87,11 @@ def preflight() -> None:
 def to_v2_themed(cast: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
     """v3 -> v2, then stamp the theme into the header."""
     tmp = out.with_suffix(".v2.cast")
+    # asciinema convert refuses to write over an existing file, so a leftover from an
+    # earlier take fails the whole reel on its second run -- and only for v3 recordings,
+    # since the v2 path copies over it happily. That asymmetry is why this surfaced on
+    # one reel rather than all of them.
+    tmp.unlink(missing_ok=True)
     header = json.loads(cast.read_text().splitlines()[0])
     if header.get("version") == 2:
         shutil.copy(cast, tmp)

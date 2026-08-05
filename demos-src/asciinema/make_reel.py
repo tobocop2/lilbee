@@ -31,7 +31,8 @@ import gates  # noqa: E402
 import seams  # noqa: E402
 
 
-def build(name: str, *, record: bool = True) -> tuple[str, bool]:
+def build(name: str, *, record: bool = True,
+          record_only: bool = False) -> tuple[str, bool]:
     mod = importlib.import_module(f"reels.{name.replace('-', '_')}")
     cast = OUT / f"{name}.cast"
     marks_path = OUT / f"{name}.marks.json"
@@ -50,6 +51,13 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
         timings["build"] = provenance
         marks_path.write_text(json.dumps(timings, indent=2))
         print(f"recorded {cast} in {timings['wall']:.0f}s")
+        if record_only:
+            # Phase boundary. Everything below is a deterministic function of the cast
+            # and the marks, so it can run for several reels at once; recording cannot,
+            # because the frame rate being measured is the application's own repaint
+            # cadence and contention would change the reading. Recording is 26% of the
+            # wall time and rendering is 74%, so splitting here is where the speed is.
+            return name, True
     timings = json.loads(marks_path.read_text())
     marks = timings.get("marks", {})
 
@@ -65,17 +73,46 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
         lo, hi = marks.get(f"{base}_start"), marks.get(f"{base}_end")
         if lo is not None and hi is not None:
             speedup.append((lo, hi, getattr(mod, "SPEED_FACTOR", 6)))
+    # Close agg's cell-boundary seams before anything else looks at the file. This is a
+    # renderer repair, not a content edit: the terminal drew a solid bar and agg split it.
+    #
+    # Ahead of the trim, which is what the comment always claimed and the order did not.
+    # Repairing seams erases small pixel differences, so a compressor working on the
+    # unrepaired frames scores transitions the gate will not: waits it measured as two
+    # short stretches arrive at the gate welded into one long one, and four reels failed
+    # a 6s limit at 6.4-7.3s with no threshold that fixed it. Raising the compressor's
+    # margin twice did not close the gap because the inputs genuinely differ. Deseaming
+    # first costs frames that later get dropped, and buys both stages the same pixels.
+    seam_info = deseam.repair_gif(full.with_suffix(".gif"))
+    print("deseamed " + str(seam_info))
+    # Spans this reel declares untouchable: recorded at real speed, holds intact.
+    #
+    # Driver motion joins them automatically. Typing and scrolls are the only stretches
+    # motion_fps can score, and a cold-started app repaints slowly enough that the
+    # compressor classified a scroll as a slow section and thinned it -- leaving 11 frames
+    # against a floor of 12, so the row went untested and the reel could never pass.
+    # Compressing the thing being measured is self-defeating: the driver's cadence is
+    # deliberate, and a burst typed at 45ms is content, not a wait.
+    protect = []
+    for base in getattr(mod, "PROTECT_WINDOWS", ()):
+        lo, hi = marks.get(f"{base}_start"), marks.get(f"{base}_end")
+        if lo is not None and hi is not None:
+            protect.append((lo, hi))
     info = frametrim.trim_gif(full.with_suffix(".gif"), gif,
                               start=marks.get("boot_end", 0.0),
                               end=marks.get("payload_end"),
+                              protect=protect or None,
+                              motion=[(lo, hi) for lo, hi in timings.get("motion_spans", [])],
                               speedup=speedup or None)
     print("trimmed " + str({k: v for k, v in info.items() if k != "kept_starts"}))
+    # Verify the written file rather than trusting the in-memory pass: saving quantises
+    # to a 256-colour palette, which can merge waits the compressor handled separately.
+    again = frametrim.compress_waits(gif, limit=gates.MAX_WAIT_S,
+                                     protect=info.get("protected"))
+    if again.get("windows"):
+        print("recompressed " + str(again))
     for stale in (full.with_suffix(".gif"), full.with_suffix(".mp4"), full.with_suffix(".png")):
         stale.unlink(missing_ok=True)
-    # Close agg's cell-boundary seams before anything else looks at the file. This is a
-    # renderer repair, not a content edit: the terminal drew a solid bar and agg split it.
-    seam_info = deseam.repair_gif(gif)
-    print("deseamed " + str(seam_info))
     # Keep what the renderer produced, before anything optimises it, so the shipped file
     # can be compared against it rather than trusted.
     reference = OUT / f"{name}.reference.gif"
@@ -99,10 +136,12 @@ def build(name: str, *, record: bool = True) -> tuple[str, bool]:
     motion_idx = {i for i, t in enumerate(starts)
                   if any(lo <= t <= hi for lo, hi in spans)}
     rows += gates.render_gate(gif, motion_idx=motion_idx or None,
-                              static_by_design=getattr(mod, "STATIC_BY_DESIGN", False))
+                              static_by_design=getattr(mod, "STATIC_BY_DESIGN", False),
+                              cold_by_design=getattr(mod, "COLD_BY_DESIGN", False))
     rows.append(gates.artifact_gate(gif, reference))
     rows.append(gates.seam_gate(gif))
     rows.append(gates.dwell_gate(gif))
+    rows += gates.pacing_gate(gif, protect=info.get('protected'))
     reference.unlink(missing_ok=True)
     # A strip across the reel, not its last frame. Reviewing the ending is what let a
     # sessions reel with one conversation, a palette reel whose add did nothing and a
@@ -196,8 +235,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("name")
     ap.add_argument("--no-record", action="store_true")
+    ap.add_argument("--record-only", action="store_true")
     a = ap.parse_args()
-    _, ok = build(a.name, record=not a.no_record)
+    _, ok = build(a.name, record=not a.no_record, record_only=a.record_only)
     raise SystemExit(0 if ok else 1)
 
 

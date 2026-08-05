@@ -73,10 +73,10 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(STAGE)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=90)
+        timings["boot"] = s.await_chat(timeout=90)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.5)
         s.mark("boot_end")
         s.esc(2)

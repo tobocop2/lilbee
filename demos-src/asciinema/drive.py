@@ -65,6 +65,10 @@ class Session:
     motion_spans: list[tuple[float, float]] = dataclasses.field(default_factory=list,
                                                                 init=False)
     started_at: float = dataclasses.field(default=0.0, init=False)
+    # Tracked, because the chip that shows it is not always on screen: the placement
+    # drawer takes the room the tab strip renders it in. The driver sends every key, so
+    # it follows the mode itself and reconciles against the chip whenever one is visible.
+    _mode: str = dataclasses.field(default="INSERT", init=False)
 
     def __post_init__(self) -> None:
         # Resolved after start(): base-index and pane-base-index are user config and are
@@ -110,7 +114,13 @@ class Session:
         return _tmux("capture-pane", "-p", "-t", self.target, check=False)
 
     def wait_for(self, pattern: str, timeout: float = 60.0, *, absent: bool = False) -> float:
-        """Block until `pattern` appears (or disappears). Returns seconds waited."""
+        """Block until `pattern` appears (or disappears). Returns seconds waited.
+
+        A note for anyone waiting on the chat screen: "personal encyclopedia" is the
+        empty-state hint and is gone the moment a data root has any history, so it says
+        "this is a fresh chat", not "chat is up". Reels that reuse a staged root failed
+        on it after their first take. "Slash commands" is in the footer either way.
+        """
         rx = re.compile(pattern)
         start = time.monotonic()
         while time.monotonic() - start < timeout:
@@ -122,17 +132,86 @@ class Session:
         raise Timeout(f"{pattern!r} did not {state} within {timeout}s\n--- screen ---\n"
                       f"{self.screen()}")
 
-    def ask(self, question: str, *, rate: float = 0.045, dwell: float = 0.9) -> None:
-        """Put the chat input in insert mode, type a question, and confirm it arrived.
+    CHAT_MARKER = r"personal encyclopedia|Slash commands"
 
-        Does not wait for the INSERT chip. With the placement drawer open the header is
-        narrowed and the chip is pushed off it, so waiting on the chip fails on a reel
-        where the input is working perfectly well. What matters is whether the characters
-        landed in the input, so that is what gets checked -- and if they did not, they
-        went to the app as key bindings, which is worth failing the take over.
+    def await_chat(self, timeout: float = 180.0) -> float:
+        """Wait for the chat screen, dismissing the first-run wizard if it comes up first.
+
+        A fresh data root opens on "Welcome to lilbee", which is a model picker, not chat.
+        Only the placement reel handled it; everywhere else the boot wait sat looking for
+        a chat marker that was never going to arrive until someone pressed Escape, and
+        the reel died reporting a missing marker rather than the wizard it was staring at.
+
+        Waits on either, so a root that skips the wizard costs nothing.
         """
-        self.key("i", after=0.6)
-        self.key("C-u", after=0.35)
+        start = time.monotonic()
+        rx = re.compile(rf"{self.CHAT_MARKER}|Welcome to lilbee")
+        while time.monotonic() - start < timeout:
+            screen = self.screen()
+            if re.search(self.CHAT_MARKER, screen):
+                return time.monotonic() - start
+            if "Welcome to lilbee" in screen:
+                self.esc()
+                time.sleep(1.2)
+            elif not rx.search(screen):
+                time.sleep(POLL_INTERVAL)
+                continue
+            time.sleep(POLL_INTERVAL)
+        raise Timeout(f"chat never appeared within {timeout}s\n--- screen ---\n{self.screen()}")
+
+    def observed_mode(self) -> str | None:
+        """NORMAL or INSERT as the tab strip currently reports it, if it is showing."""
+        m = re.search(r"\b(INSERT|NORMAL)\b", self.screen())
+        return m.group(1) if m else None
+
+    def insert(self, *, clear: bool = True, timeout: float = 8.0) -> None:
+        """Enter insert mode, whatever mode we are in now, without typing an ``i``.
+
+        ``i`` is a mode switch only from NORMAL. The app inserts it as a character when
+        already in INSERT (chat.on_key), and lilbee starts in INSERT -- which is where
+        the stray ``i``, typed and then wiped by the following C-u, came from on every
+        reel that asked a question. From NORMAL with focus inside a drawer the app
+        swallows it instead and never switches at all, so pressing and hoping leaves the
+        reel typing its question into key bindings.
+
+        Neither case is detectable after the fact, so the mode is established before the
+        keypress rather than corrected after it.
+        """
+        seen = self.observed_mode()
+        if seen:
+            self._mode = seen
+        if self._mode != "INSERT":
+            self.key("i", after=0.5)
+            if seen:
+                # A chip was on screen a moment ago, so one is expected after the switch.
+                # Not arriving means the key went somewhere else -- focus inside a drawer,
+                # where the app swallows i -- and typing a question into key bindings is
+                # worth failing the take over.
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    if self.observed_mode() == "INSERT":
+                        break
+                    time.sleep(POLL_INTERVAL)
+                else:
+                    raise Timeout(
+                        "'i' did not reach insert mode within "
+                        f"{timeout}s -- focus is most likely inside a drawer, where the "
+                        f"app swallows it\n--- screen ---\n{self.screen()}")
+            else:
+                # No chip to confirm against: the placement drawer takes the space the
+                # tab strip renders it in, which is a normal state for these reels rather
+                # than a fault. Requiring one here failed five takes whose input was
+                # working. Callers verify by effect instead -- ask() checks the question
+                # reached the input, and the slash-command sites wait on what the command
+                # opens -- so a swallowed keypress still surfaces, one step later.
+                time.sleep(0.4)
+            self._mode = "INSERT"
+        if clear:
+            self.key("C-u", after=0.3)
+
+    def ask(self, question: str, *, rate: float = 0.045, dwell: float = 0.9) -> None:
+        """Put the chat input in insert mode, type a question, and confirm it arrived."""
+        self.insert()
         self.type_text(question, rate=rate)
         time.sleep(dwell)
         probe = re.escape(question[:24])
@@ -157,6 +236,27 @@ class Session:
         self.wait_for(r"Sources:", timeout=timeout)
         self.wait_for(r"Cancel stream", absent=True,
                       timeout=max(5.0, timeout - (time.monotonic() - start)))
+        return time.monotonic() - start
+
+    def await_task(self, kind: str = "add|crawl", *, appear: float = 90.0,
+                   finish: float = 1800.0) -> float:
+        """Wait for a background task to show up, and only then for it to finish.
+
+        "all caught up" is what the Task Center displays when it holds *nothing*, so
+        accepting it as a completion signal matches the moment before the task has been
+        registered rather than the moment after it finished. A crawl reel read it 88
+        seconds in, concluded the crawl was done, asked its question against an empty
+        index and got an answer with no citation -- the same shape as waiting on a phrase
+        from the expected answer and matching the question instead.
+
+        Requiring the task to appear first makes the empty state unmatchable at the point
+        where it would lie. After it has appeared, an emptied list genuinely does mean
+        finished, so it stays a valid signal for the second wait.
+        """
+        start = time.monotonic()
+        self.wait_for(rf"\b({kind})\b", timeout=appear)
+        left = max(5.0, finish - (time.monotonic() - start))
+        self.wait_for(rf"({kind})\s+(done|complete)|all caught up", timeout=left)
         return time.monotonic() - start
 
     def wait_settled(self, quiet: float = 1.0, timeout: float = 120.0) -> float:
@@ -194,6 +294,10 @@ class Session:
         for _ in range(times):
             _tmux("send-keys", "-t", self.target, "Escape")
             time.sleep(ESC_FLOOR)
+        # Escape out of the chat input is what leaves insert mode. It also dismisses
+        # modals, where it does not, but insert() reconciles against the chip whenever
+        # one is on screen, so guessing NORMAL here is self-correcting.
+        self._mode = "NORMAL"
 
     def type_text(self, text: str, *, rate: float = DEFAULT_TYPE_RATE,
                   enter: bool = False, dwell: float = 0.0) -> None:

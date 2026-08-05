@@ -79,13 +79,11 @@ def record(cast: pathlib.Path) -> dict:
 
         # 3. Out of the wizard and into chat, with the picks lilbee made from what it found.
         s.esc()
-        timings["chat"] = s.wait_for(r"personal encyclopedia", timeout=60)
+        timings["chat"] = s.wait_for(r"personal encyclopedia|Slash commands", timeout=60)
         time.sleep(2.0)
 
         # 4. The first useful thing: add a document.
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text(f"/add {incoming}", rate=0.045)
         time.sleep(0.6)
         s.key("Enter", after=1.0)

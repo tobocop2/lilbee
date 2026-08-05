@@ -36,6 +36,13 @@ BEATS = (
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 
+# The launch itself is never compressed and its pauses are never clamped. These reels
+# exist so a viewer can see how long starting lilbee actually takes -- cold-start and
+# later-start sit side by side in the README for exactly that comparison -- and a
+# timelapse over the startup answers the question the reel was recorded to ask. The
+# answer afterwards is fair game and still compresses.
+PROTECT_WINDOWS = ("launch",)
+
 
 QUESTION = "what is lilbee in one sentence?"
 
@@ -55,7 +62,10 @@ def record(cast: pathlib.Path) -> dict:
     s.start(lite.BINARY, env={"LILBEE_DATA": str(root)})
     try:
         s.mark("boot_end")
-        timings["to_chat"] = s.wait_for(r"personal encyclopedia", timeout=300)
+        s.mark("launch_start")
+        timings["to_chat"] = s.wait_for(r"personal encyclopedia|Slash commands", timeout=300)
+        # Launch is over the moment chat is usable; everything after this may compress.
+        s.mark("launch_end")
         # Let the process settle before typing. Straight after a cold unpack the app
         # is still warming and repaints at about 10fps, so a question typed the
         # instant the screen appears renders choppy -- honestly, but choppy. A
@@ -80,9 +90,9 @@ def record(cast: pathlib.Path) -> dict:
         # too few frames to measure anything from.
         s.esc()
         time.sleep(0.4)
-        s.key(*(["k"] * 14), after=0.045)
+        s.key(*(["k"] * 22), after=0.045)
         time.sleep(0.8)
-        s.key(*(["j"] * 14), after=0.045)
+        s.key(*(["j"] * 22), after=0.045)
         time.sleep(1.6)
 
         timings["total"] = time.monotonic() - t0

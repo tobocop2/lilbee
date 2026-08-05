@@ -71,17 +71,15 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(root)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=120)
+        timings["boot"] = s.await_chat(timeout=120)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.6)
         s.mark("boot_end")
 
         # 1. Open the modal. The URL field takes focus on its own.
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text("/crawl", rate=0.05)
         time.sleep(0.6)
         s.key("Enter", after=1.0)
@@ -116,8 +114,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(0.3)
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
-        timings["crawl"] = s.wait_for(r"(crawl|add)\s+(done|complete)|all caught up",
-                                      timeout=900)
+        timings["crawl"] = s.await_task("crawl|add", finish=900)
         time.sleep(2.0)
 
         # 5. Ask something only that page can answer.

@@ -56,16 +56,14 @@ def record(cast: pathlib.Path) -> dict:
     t0 = time.monotonic()
     s.start("lilbee", env={"LILBEE_DATA": str(root)})
     try:
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=120)
+        timings["boot"] = s.await_chat(timeout=120)
         time.sleep(1.2)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=20)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=20)
         time.sleep(0.6)
         s.mark("boot_end")
 
-        s.key("i", after=0.5)
-        s.wait_for(r"INSERT", timeout=10)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text("/crawl", rate=0.05)
         time.sleep(0.6)
         s.key("Enter", after=1.0)
@@ -99,8 +97,7 @@ def record(cast: pathlib.Path) -> dict:
         s.key("t", after=0.8)
         s.wait_for(r"Background Tasks", timeout=30)
         s.mark("crawl_start")
-        timings["crawl"] = s.wait_for(r"(crawl|add)\s+(done|complete)|all caught up",
-                                      timeout=2400)
+        timings["crawl"] = s.await_task("crawl|add", finish=2400)
         s.mark("crawl_end")
         time.sleep(2.2)
 

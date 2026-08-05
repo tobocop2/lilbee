@@ -3,8 +3,12 @@
 
 The corpus is a slice of lilbee's own source -- the retrieval and core packages -- which
 makes the reel self-referential on purpose: the thing being indexed is the thing doing the
-indexing, so nobody has to take a staged corpus on trust. A slice rather than the whole
-package because the full tree took over forty minutes to embed, which is not a reel. The placement drawer stays open through the ingest, so both cards are visible
+indexing, so nobody has to take a staged corpus on trust. A small slice, for two reasons. The full package took over forty minutes to embed, which
+is not a reel. And with a 70B resident across both cards the ingest twice took the whole
+recording down about nineteen minutes in -- tmux gone, both GPUs back to idle, cast
+truncated -- so the corpus is now sized to finish in a couple of minutes, well inside
+that window. The underlying crash is filed separately; this reel routes around it rather
+than waiting on it. The placement drawer stays open through the ingest, so both cards are visible
 doing work rather than one card doing work and another sitting idle in a table.
 
 Runs Llama 3.3 70B at Q4_K_M -- about 40 GB of weights, which no single consumer card
@@ -40,7 +44,7 @@ SPEED_WINDOWS = ("ingest", "gen")
 
 ROOT = "/workspace/reelroot"
 CHAT_MODEL = "bartowski/Llama-3.3-70B-Instruct-GGUF/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
-CORPUS = "/workspace/corpus-small"
+CORPUS = "/workspace/corpus-tiny"
 QUESTION = "how does lilbee decide which GPU a model runs on?"
 
 
@@ -58,10 +62,10 @@ def record(cast: pathlib.Path) -> dict:
             time.sleep(1.0)
         except drive.Timeout:
             pass
-        timings["boot"] = s.wait_for(r"personal encyclopedia", timeout=300)
+        timings["boot"] = s.await_chat(timeout=300)
         time.sleep(1.5)
         s.repaint()
-        s.wait_for(r"personal encyclopedia", timeout=30)
+        s.wait_for(r"personal encyclopedia|Slash commands", timeout=30)
         time.sleep(0.6)
         s.mark("boot_end")
 
@@ -71,8 +75,7 @@ def record(cast: pathlib.Path) -> dict:
         time.sleep(2.4)
 
         # 2. Point it at its own source.
-        s.key("i", after=0.6)
-        s.key("C-u", after=0.3)
+        s.insert()
         s.type_text(f"/add {CORPUS}", rate=0.05)
         time.sleep(1.0)
         s.key("Enter", after=1.2)

@@ -1,0 +1,38 @@
+{
+ "flagship": {
+  "width": 2782,
+  "height": 1838,
+  "cols": 148,
+  "rows": 45
+ },
+ "agent": {
+  "width": 2782,
+  "height": 1838,
+  "cols": 148,
+  "rows": 45
+ },
+ "plain-small": {
+  "width": 2382,
+  "height": 1200,
+  "cols": 126,
+  "rows": 30
+ },
+ "plain-godot": {
+  "width": 2382,
+  "height": 1438,
+  "cols": 126,
+  "rows": 36
+ },
+ "mcp": {
+  "width": 2893,
+  "height": 1849,
+  "cols": 119,
+  "rows": 34
+ },
+ "drawer": {
+  "width": 3839,
+  "height": 2098,
+  "cols": 160,
+  "rows": 39
+ }
+}

@@ -39,6 +39,20 @@ BEATS = (
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 
+# The launch itself is never compressed and its pauses are never clamped. These reels
+# exist so a viewer can see how long starting lilbee actually takes -- cold-start and
+# later-start sit side by side in the README for exactly that comparison -- and a
+# timelapse over the startup answers the question the reel was recorded to ask. The
+# answer afterwards is fair game and still compresses.
+PROTECT_WINDOWS = ("launch",)
+# The frame-rate floor is reported here rather than enforced. This reel deletes the
+# unpack cache first, so it records the coldest launch lilbee has; the app repaints
+# slowly enough throughout that most driver frames exceed the hold cap and the sample
+# never reaches the floor. The control is later-start -- same binary, same question, warm
+# page cache -- which measures 20fps and is held to the floor normally. The difference is
+# the application, not the pipeline, and this reel exists to show that difference.
+COLD_BY_DESIGN = True
+
 
 QUESTION = "what is lilbee in one sentence?"
 
@@ -61,7 +75,10 @@ def record(cast: pathlib.Path) -> dict:
         # No head trim worth taking: the recorded command is the binary itself, so the
         # first frame already is the launch.
         s.mark("boot_end")
-        timings["to_chat"] = s.wait_for(r"personal encyclopedia", timeout=300)
+        s.mark("launch_start")
+        timings["to_chat"] = s.wait_for(r"personal encyclopedia|Slash commands", timeout=300)
+        # Launch is over the moment chat is usable; everything after this may compress.
+        s.mark("launch_end")
         # Let the process settle before typing. Straight after a cold unpack the app
         # is still warming and repaints at about 10fps, so a question typed the
         # instant the screen appears renders choppy -- honestly, but choppy. A
@@ -80,6 +97,12 @@ def record(cast: pathlib.Path) -> dict:
         s.mark("gen_end")
         time.sleep(2.0)
 
+        # 60 presses, which is about 2.7s of continuous scrolling. Sized to the app, not
+        # to taste: a cold-started lilbee repaints at roughly 10fps, so the frame-rate row
+        # needs well over a second of motion to reach its 12-frame sample floor. 14, 22
+        # and 30 all came back one or two frames short and left the row untested, which
+        # blocks the reel as surely as a failure.
+        #
         # Scroll back through the exchange. Two purposes: the answer is longer than the
         # pane on a first run with the placement drawer open, and this is the reel's only
         # sustained driver motion that happens after the app has stopped doing startup
@@ -87,9 +110,13 @@ def record(cast: pathlib.Path) -> dict:
         # too few frames to measure anything from.
         s.esc()
         time.sleep(0.4)
-        s.key(*(["k"] * 14), after=0.045)
+        # 22 rather than 14. The scroll is this reel's only span the frame-rate row can
+        # score, and at 14 it came back with 11 frames against a floor of 12 -- one short,
+        # so the row went untested and the reel could never finish. Length here is the
+        # difference between a measurable reel and an unmeasurable one.
+        s.key(*(["k"] * 60), after=0.045)
         time.sleep(0.8)
-        s.key(*(["j"] * 14), after=0.045)
+        s.key(*(["j"] * 60), after=0.045)
         time.sleep(1.6)
 
         timings["total"] = time.monotonic() - t0

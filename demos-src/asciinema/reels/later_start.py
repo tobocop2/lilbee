@@ -28,6 +28,13 @@ BEATS = (
 # Nothing may still be generating when the reel stops.
 TAIL_FORBID = ("Cancel stream",)
 
+# The launch itself is never compressed and its pauses are never clamped. These reels
+# exist so a viewer can see how long starting lilbee actually takes -- cold-start and
+# later-start sit side by side in the README for exactly that comparison -- and a
+# timelapse over the startup answers the question the reel was recorded to ask. The
+# answer afterwards is fair game and still compresses.
+PROTECT_WINDOWS = ("launch",)
+
 
 QUESTION = "what is lilbee in one sentence?"
 
@@ -50,7 +57,10 @@ def record(cast: pathlib.Path) -> dict:
     s.start(lite.BINARY, env={"LILBEE_DATA": str(root)})
     try:
         s.mark("boot_end")
-        timings["to_chat"] = s.wait_for(r"personal encyclopedia", timeout=120)
+        s.mark("launch_start")
+        timings["to_chat"] = s.wait_for(r"personal encyclopedia|Slash commands", timeout=120)
+        # Launch is over the moment chat is usable; everything after this may compress.
+        s.mark("launch_end")
         time.sleep(1.6)
 
         # Placement stays open through the answer: it shows which card the model is on

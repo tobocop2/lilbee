@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Render every finished reel to one browsable page: gif, scorecard, and the A/B.
+"""Render every finished reel to one browsable page: poster, scorecard, click to play.
 
 Fills in as reels land. Anything in out/ with a gif is listed; a reel with a failing or
 untested scorecard row is shown as NOT DONE with the row that blocked it, so the page is
 a production board rather than a highlight reel.
+
+Posters rather than gifs by default. Twenty-two reels is over fifty megabytes of animation
+and a browser decodes every visible gif continuously, which is a real load on the machine
+doing the reviewing. Each card shows its still frame and swaps in the animation when
+clicked, so one reel plays at a time and the page opens instantly.
 """
 from __future__ import annotations
 
@@ -13,7 +18,25 @@ import pathlib
 KIT = pathlib.Path(__file__).resolve().parent
 OUT = KIT / "out"
 PAGE = OUT / "reels.html"
-GHP = pathlib.Path("/tmp/ghp/demos")
+
+SCRIPT = """
+<script>
+// One at a time: swapping a card back to its still frame stops the browser decoding it.
+document.addEventListener('click', function (e) {
+  var img = e.target.closest('.reelimg');
+  if (!img) return;
+  var playing = img.src.indexOf(img.dataset.gif) !== -1;
+  document.querySelectorAll('.reelimg').forEach(function (o) {
+    o.src = o.dataset.still;
+    o.classList.remove('playing');
+  });
+  if (!playing) {
+    img.src = img.dataset.gif;
+    img.classList.add('playing');
+  }
+});
+</script>
+"""
 
 CSS = """
 :root{--ink:#e0def4;--bg:#191724;--panel:#1f1d2e;--line:#2a2837;--muted:#908caa;
@@ -32,7 +55,8 @@ h1{font-size:30px;margin:0 0 4px;letter-spacing:-.02em}
 .tag{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
      padding:3px 9px;border-radius:20px}
 .ok{background:var(--foam);color:#10202a}.no{background:var(--gold);color:#2a1d00}
-img{max-width:100%;border-radius:6px;display:block;border:1px solid var(--line)}
+img{max-width:100%;border-radius:6px;display:block;border:1px solid var(--line);cursor:pointer}
+img.playing{border-color:var(--foam)}
 .cols{display:grid;grid-template-columns:1fr;gap:16px}
 @media(min-width:900px){.cols.ab{grid-template-columns:1fr 1fr}}
 .cap{color:var(--muted);font-size:12px;margin:6px 0 0;font-family:var(--mono)}
@@ -80,20 +104,14 @@ def build() -> pathlib.Path:
         body = [f'<div class="reel"><div class="hd"><span class="nm">{html.escape(name)}</span>'
                 f'<span class="tag {tag[0]}">{tag[1]}</span>'
                 f'<span class="cap">{blocked}</span></div>']
-        # Copy the live asset next to the page: a file:// reference from an http-less
-        # page is blocked by the browser, so the comparison silently renders empty.
-        live_src = GHP / f"{name}.gif"
-        live = OUT / f"live-{name}.gif"
-        if live_src.exists() and not live.exists():
-            import shutil; shutil.copy(live_src, live)
-        if live.exists():
-            body.append('<div class="cols ab">'
-                        f'<div><img src="{gif.name}"><p class="cap">new pipeline (asciinema + agg)</p></div>'
-                        f'<div><img src="{live.name}"><p class="cap">live on gh-pages (VHS)</p></div>'
-                        '</div>')
-        else:
-            body.append(f'<div class="cols"><div><img src="{gif.name}">'
-                        '<p class="cap">new pipeline (no live asset to compare)</p></div></div>')
+        poster = OUT / f"{name}.png"
+        still = poster.name if poster.exists() else gif.name
+        size_mb = gif.stat().st_size / 1e6
+        body.append(
+            f'<div class="cols"><div>'
+            f'<img class="reelimg" src="{still}" data-gif="{gif.name}" data-still="{still}" '
+            f'alt="{html.escape(name)}">'
+            f'<p class="cap">click to play &middot; {size_mb:.1f}MB</p></div></div>')
         if rows:
             trs = "".join(
                 f'<tr><td class="{ {"PASS":"p","FAIL":"f","----":"u"}[m] }">{m}</td>'
@@ -108,9 +126,8 @@ def build() -> pathlib.Path:
         "<!doctype html><html><head><meta charset='utf-8'><title>lilbee reels</title>"
         f"<style>{CSS}</style></head><body><div class='wrap'>"
         "<h1>lilbee demo reels</h1>"
-        f"<p class='sub'>{len(gifs)} rendered &middot; each shown against its live "
-        "counterpart where one exists, with the scorecard that decides whether it ships"
-        "</p>" + inner + "</div></body></html>")
+        f"<p class='sub'>{len(gifs)} reels &middot; click a still to play it &middot; "
+        "each with the scorecard that decides whether it ships</p>" + inner + SCRIPT + "</div></body></html>")
     return PAGE
 
 
