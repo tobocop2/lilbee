@@ -133,3 +133,84 @@ def test_an_unrelated_runtime_error_still_fails(
 
     with pytest.raises(RuntimeError, match="something genuinely broken"):
         dl._hf_download_or_translate(_entry(), config)
+
+
+async def test_a_cancel_that_lands_before_the_transfer_starts_still_aborts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The UI-thread abort fires once and can precede the transfer registering
+    with the session, where it does nothing. The progress callback only runs
+    while a transfer is live, so aborting there cannot miss."""
+    from lilbee.cli.tui.task_queue import TaskType
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    aborted: list[str] = []
+    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+
+    app = LilbeeAppHost()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        task_id = controller.queue.enqueue(lambda: None, "Downloading x", TaskType.DOWNLOAD.value)
+        controller.queue.advance(TaskType.DOWNLOAD.value)
+        reporter = ProgressReporter(controller, task_id)
+
+        # Cancel straight through the queue: this is the state the UI-thread
+        # abort leaves behind when it fires before the transfer exists.
+        controller.queue.cancel(task_id)
+        assert aborted == []
+
+        # The transfer starts anyway and reports progress.
+        with pytest.raises(TaskCancelledError):
+            reporter.update(10.0, "x")
+
+    assert aborted == ["abort"], "a live transfer reporting progress did not abort"
+
+
+async def test_a_cancelled_download_aborts_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated aborts would land on whichever transfer the queue promoted next."""
+    from lilbee.cli.tui.task_queue import TaskType
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    aborted: list[str] = []
+    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+
+    app = LilbeeAppHost()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        task_id = controller.queue.enqueue(lambda: None, "Downloading x", TaskType.DOWNLOAD.value)
+        controller.queue.advance(TaskType.DOWNLOAD.value)
+        reporter = ProgressReporter(controller, task_id)
+        controller.queue.cancel(task_id)
+
+        for _ in range(3):
+            with pytest.raises(TaskCancelledError):
+                reporter.update(10.0, "x")
+
+    assert aborted == ["abort"]
+
+
+async def test_a_cancelled_sync_task_does_not_abort_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The abort is session-wide, so a non-download task must never fire it."""
+    from lilbee.cli.tui.task_queue import TaskType
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    aborted: list[str] = []
+    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+
+    app = LilbeeAppHost()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        task_id = controller.queue.enqueue(lambda: None, "Syncing", TaskType.SYNC.value)
+        controller.queue.advance(TaskType.SYNC.value)
+        reporter = ProgressReporter(controller, task_id)
+        controller.queue.cancel(task_id)
+
+        with pytest.raises(TaskCancelledError):
+            reporter.update(10.0, "x")
+
+    assert aborted == []

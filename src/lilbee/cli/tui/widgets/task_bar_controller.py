@@ -49,20 +49,31 @@ class ProgressReporter:
     def __init__(self, controller: TaskBarController, task_id: str) -> None:
         self._controller = controller
         self._task_id = task_id
+        self._aborted = False
 
     @property
     def task_id(self) -> str:
         return self._task_id
 
-    @property
-    def cancelled(self) -> bool:
-        task = self._controller.queue.get_task(self._task_id)
-        return task is not None and task.status == TaskStatus.CANCELLED
-
     def check_cancelled(self) -> None:
-        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
-        if self.cancelled:
-            raise TaskCancelledError
+        """Raise ``TaskCancelledError`` if the task was cancelled from the UI.
+
+        A cancelled download aborts the transfer here as well as in
+        ``cancel_task``. This runs inside the progress callback, so a transfer
+        is live by construction, whereas an abort fired from the UI thread can
+        land before the transfer registers with the session and do nothing.
+        """
+        task = self._controller.queue.get_task(self._task_id)
+        if task is None or task.status is not TaskStatus.CANCELLED:
+            return
+        if task.task_type == TaskType.DOWNLOAD.value and not self._aborted:
+            # Once per task: a later abort would fall on whichever transfer the
+            # queue has since promoted.
+            self._aborted = True
+            from lilbee.catalog.download import abort_active_download
+
+            abort_active_download()
+        raise TaskCancelledError
 
     def update(
         self, progress: float, detail: str = "", *, indeterminate: bool | None = None
