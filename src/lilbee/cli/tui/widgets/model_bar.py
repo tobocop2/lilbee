@@ -20,7 +20,7 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Static
 
-from lilbee.app.services import get_services, reset_services
+from lilbee.app.services import peek_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
@@ -42,6 +42,22 @@ _MMPROJ_MARKER = "mmproj"
 # Routing-name -> display-label map derived from PROVIDER_KEYS. Any new
 # entry added there lights up the warning without further changes here.
 _CLOUD_PROVIDER_LABELS: dict[str, str] = {name: label for name, _, _, label in PROVIDER_KEYS}
+
+
+def _is_installed(ref: str) -> bool:
+    """True if *ref* resolves to a model file on this machine.
+
+    Uses the same resolver the availability check uses for local refs, so the
+    verdict is unchanged; the point is that it takes no provider and therefore
+    never builds the services container.
+    """
+    from lilbee.providers.engine_params import resolve_model_path
+
+    try:
+        resolve_model_path(ref)
+    except Exception:
+        return False
+    return True
 
 
 def _cloud_provider_label(chat_model: str) -> str | None:
@@ -278,13 +294,12 @@ class ModelPickerButton(Static, can_focus=True):
         # called "(none)".
         ref = getattr(cfg, self._key)
         label = (display_label_for_ref(ref) or ref) if ref else msg.MODEL_BAR_DISABLED
-        # Cloud refs resolve through the SDK at call time; "installed" only
-        # applies to models expected on this machine.
-        missing = (
-            bool(ref)
-            and not parse_model_ref(ref).is_api
-            and not (is_model_available(ref, get_services().provider))
-        )
+        # Only local models can be "not installed": remote refs (ollama, cloud
+        # APIs) resolve through their backend at call time. Checked against the
+        # registry, never get_services(): a cold get_services() builds the whole
+        # container and eager-starts the worker pool, and a repaint must not
+        # spawn engines as a side effect.
+        missing = bool(ref) and not parse_model_ref(ref).is_remote and not _is_installed(ref)
         self.set_class(missing, "-missing")
         if missing:
             label = msg.MODEL_BAR_NOT_INSTALLED.format(name=label)
@@ -430,7 +445,17 @@ class ChatModeToggle(Widget, can_focus=False):
             self._refresh()
 
     def _embedding_ready(self) -> bool:
-        return is_model_available(cfg.embedding_model, get_services().provider)
+        """Whether Search is usable. Paint path, so it must not build services.
+
+        With a live container the provider answers authoritatively (it can see
+        remote-backend models); before one exists, fall back to the registry so
+        a repaint never triggers a container build and its engine spawns.
+        """
+        services = peek_services()
+        if services is not None:
+            return is_model_available(cfg.embedding_model, services.provider)
+        ref = cfg.embedding_model
+        return bool(ref) and (parse_model_ref(ref).is_remote or _is_installed(ref))
 
     def _refresh(self) -> None:
         ready = self._embedding_ready()
