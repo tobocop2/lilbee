@@ -169,11 +169,20 @@ async def test_enter_on_installed_card_does_not_submit_download() -> None:
 
 @pytest.mark.asyncio
 async def test_enter_does_not_resubmit_same_model_twice() -> None:
-    """Re-selecting the same card doesn't double-enqueue the download."""
-    app = LilbeeApp()
+    """Re-selecting the same card doesn't double-enqueue the download.
+
+    Uses the light host (like ``test_enter_records_selection_and_submits_download``)
+    rather than a real ``LilbeeApp``: waiting out the real startup gate is a
+    timing window, and on a loaded xdist runner it exceeded the suite's 60 s
+    pytest-timeout, killing the test before ``_wait_for_wizard_cards`` could
+    report anything -- and with it the only cover for the resubmit guard.
+    """
+    app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            wizard = await _wait_for_wizard_cards(app, pilot)
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
