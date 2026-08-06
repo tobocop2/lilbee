@@ -78,7 +78,7 @@ def _linux_gpu_vendor_ids() -> Iterator[int]:
 def _read_sysfs_hex(path: Path) -> int | None:
     """The ``0x``-prefixed integer in a sysfs attribute, ``None`` when unreadable."""
     try:
-        return int(path.read_text().strip(), 16)
+        return int(path.read_text(encoding="utf-8").strip(), 16)
     except (OSError, ValueError):
         return None
 

@@ -39,7 +39,7 @@ def _cgroup_cpu_quota(root: Path = _CGROUP_ROOT) -> float | None:
     per caller, so it is left to them.
     """
     try:
-        v2 = (root / "cpu.max").read_text().split()
+        v2 = (root / "cpu.max").read_text(encoding="utf-8").split()
     except OSError:
         v2 = []
     if v2:
@@ -51,8 +51,8 @@ def _cgroup_cpu_quota(root: Path = _CGROUP_ROOT) -> float | None:
             return None
         return quota / period if period > 0 else None
     try:
-        quota = int((root / "cpu" / "cpu.cfs_quota_us").read_text())
-        period = int((root / "cpu" / "cpu.cfs_period_us").read_text())
+        quota = int((root / "cpu" / "cpu.cfs_quota_us").read_text(encoding="utf-8"))
+        period = int((root / "cpu" / "cpu.cfs_period_us").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if quota <= 0 or period <= 0:

@@ -84,6 +84,8 @@ def _mcp_extra_requirements(interpreter: str) -> list[str]:
             [interpreter, "-c", _EXTRA_REQS_SNIPPET],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         reqs = json.loads(result.stdout or "[]")
@@ -130,6 +132,8 @@ def ensure_hermes_http_mcp(
             [interpreter, "-m", "pip", "install", *_mcp_extra_requirements(interpreter)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except OSError as exc:

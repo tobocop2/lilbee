@@ -608,7 +608,7 @@ class ModelRegistry:
         tmp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
-                dir=path.parent, suffix=".tmp", mode="w", delete=False
+                dir=path.parent, suffix=".tmp", mode="w", encoding="utf-8", delete=False
             ) as tmp:
                 tmp_path = tmp.name
                 tmp.write(data)
@@ -622,9 +622,10 @@ class ModelRegistry:
         if not path.exists():
             return None
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             return ModelManifest(**data)
-        except (json.JSONDecodeError, TypeError, KeyError):
+        # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
 

@@ -111,3 +111,177 @@ class TestCheckCodeSmells:
     def test_clean_line_yields_nothing(self):
         added = [("src/x.py", 1, "    return result.content")]
         assert list(csr._check_code_smells(added)) == []
+
+
+class TestUnspecifiedEncoding:
+    """Text file I/O must name its encoding, or it decodes as the locale's.
+
+    The bug is invisible on macOS and Linux (UTF-8 locales) and raises
+    UnicodeDecodeError on Windows, so only one CI cell in nine ever goes red.
+    """
+
+    def _findings(self, tmp_path: Path, source: str) -> list[str]:
+        target = tmp_path / "sample.py"
+        target.write_text(source, encoding="utf-8")
+        return list(csr._check_unspecified_encoding([target]))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("Path('a').read_text()", id="read_text"),
+            pytest.param("Path('a').write_text('x')", id="write_text"),
+            pytest.param("Path('a').open()", id="path_open"),
+            pytest.param("open('a')", id="builtin_open"),
+            pytest.param("open('a', 'w')", id="builtin_open_text_mode"),
+            pytest.param("tempfile.NamedTemporaryFile(mode='w')", id="named_temporary_file"),
+        ],
+    )
+    def test_flags_text_io_without_encoding(self, tmp_path: Path, source: str) -> None:
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("Path('a').read_text(encoding='utf-8')", id="read_text_encoded"),
+            pytest.param("open('a', encoding='utf-8')", id="open_encoded"),
+            pytest.param("Path('a').read_bytes()", id="read_bytes"),
+            pytest.param("Path('a').write_bytes(b'x')", id="write_bytes"),
+            pytest.param("open('a', 'rb')", id="binary_positional"),
+            pytest.param("open('a', mode='wb')", id="binary_keyword"),
+            pytest.param("tempfile.NamedTemporaryFile(mode='wb')", id="temp_binary"),
+            pytest.param("socket.open()", id="unrelated_open_receiver"),
+        ],
+    )
+    def test_leaves_encoded_and_binary_io_alone(self, tmp_path: Path, source: str) -> None:
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    def test_reports_path_and_line(self, tmp_path: Path) -> None:
+        findings = self._findings(tmp_path, "x = 1\ny = Path('a').read_text()\n")
+        assert len(findings) == 1
+        assert ":2:" in findings[0]
+        assert "encoding" in findings[0]
+
+    def test_a_syntactically_invalid_file_is_skipped_not_crashed(self, tmp_path: Path) -> None:
+        # The checker runs over the whole tree in make lint; one unparsable file
+        # must not take the entire gate down with a SyntaxError.
+        assert self._findings(tmp_path, "def broken(:\n") == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("os.open(os.devnull, os.O_WRONLY)", id="os_open_fd"),
+            pytest.param("webbrowser.open('https://example.com')", id="webbrowser_open"),
+            pytest.param("zf.open(name)", id="zipfile_member"),
+        ],
+    )
+    def test_leaves_open_homonyms_alone(self, tmp_path: Path, source: str) -> None:
+        """These take no encoding at all, so flagging them is unresolvable."""
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("log_path.open('a')", id="path_variable_text_append"),
+            pytest.param("fault_path.open('w')", id="path_variable_text_write"),
+        ],
+    )
+    def test_flags_a_path_variable_opened_in_a_text_mode(self, tmp_path: Path, source: str) -> None:
+        """The mode string is what identifies a file open on an unresolved name."""
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+
+class TestDiffScopedEncodingCheck:
+    """The check runs on added lines, so it must survive paths that are gone.
+
+    A branch that adds a file and then deletes it still has added lines in the
+    diff while the path no longer exists on disk, and make lint must not die on
+    it. ``scripts/`` is outside the coverage gate's scope, so nothing else would
+    catch a regression here.
+    """
+
+    @pytest.mark.parametrize(
+        "rel_path",
+        [
+            pytest.param("src/lilbee/deleted_on_this_branch.py", id="path_removed"),
+            pytest.param("src", id="path_is_a_directory"),
+        ],
+    )
+    def test_an_unreadable_path_yields_nothing_instead_of_raising(self, rel_path: str) -> None:
+        assert list(csr._check_new_unspecified_encoding([(rel_path, 1, "x")])) == []
+
+    def test_it_reports_only_the_lines_the_branch_added(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two offences in the file, one of them added: only that one is reported."""
+        monkeypatch.setattr(csr, "REPO_ROOT", tmp_path)
+        (tmp_path / "sample.py").write_text(
+            "Path('a').read_text()\nPath('b').read_text()\n", encoding="utf-8"
+        )
+
+        findings = list(csr._check_new_unspecified_encoding([("sample.py", 2, "x")]))
+
+        assert len(findings) == 1
+        assert ":2:" in findings[0]
+
+
+class TestSubprocessTextPipes:
+    """subprocess decodes its pipes with the locale's encoding in text mode.
+
+    Same defect as read_text: a GPU tool or probe script printing a non-ASCII
+    device name or path fails to decode before any of our code sees it.
+    """
+
+    def _findings(self, tmp_path: Path, source: str) -> list[str]:
+        target = tmp_path / "sample.py"
+        target.write_text(source, encoding="utf-8")
+        return list(csr._check_unspecified_encoding([target]))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("subprocess.run(cmd, text=True)", id="run_text"),
+            pytest.param("subprocess.run(cmd, universal_newlines=True)", id="run_universal"),
+            pytest.param("subprocess.Popen(cmd, text=True)", id="popen"),
+            pytest.param("subprocess.check_output(cmd, text=True)", id="check_output"),
+        ],
+    )
+    def test_flags_text_pipes_without_encoding(self, tmp_path: Path, source: str) -> None:
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("subprocess.run(cmd, text=True, encoding='utf-8')", id="encoded"),
+            pytest.param("subprocess.run(cmd, capture_output=True)", id="bytes_pipes"),
+            pytest.param("subprocess.run(cmd)", id="no_pipes"),
+            pytest.param("subprocess.run(cmd, text=False)", id="text_disabled"),
+            pytest.param("chunk(raw, heading_context=True)", id="unrelated_true_kwarg"),
+        ],
+    )
+    def test_leaves_byte_pipes_and_encoded_calls_alone(self, tmp_path: Path, source: str) -> None:
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("scheduler.run(job, text=True)", id="unrelated_run_method"),
+            pytest.param("harness.call(step, text=True)", id="unrelated_call_method"),
+            pytest.param("run(job, text=True)", id="bare_generic_run"),
+        ],
+    )
+    def test_leaves_same_named_methods_on_other_objects_alone(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        """run and call are generic; flagging an API with no encoding= is unresolvable."""
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("Popen(cmd, text=True)", id="bare_popen"),
+            pytest.param("check_output(cmd, text=True)", id="bare_check_output"),
+        ],
+    )
+    def test_flags_distinctive_names_without_a_receiver(self, tmp_path: Path, source: str) -> None:
+        """Popen and check_output mean subprocess wherever they appear."""
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"

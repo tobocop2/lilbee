@@ -50,6 +50,10 @@ def run_bounded(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
         "text": True,
+        # A probe writes its pipe in its own encoding; a GPU device name that is
+        # not locale-decodable must not raise out of a sampling call.
+        "encoding": "utf-8",
+        "errors": "replace",
         "env": env,
         "start_new_session": os.name == "posix",
     }

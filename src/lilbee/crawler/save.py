@@ -103,7 +103,7 @@ def load_crawl_metadata() -> dict[str, CrawlMeta]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         # A corrupt sidecar means every known URL looks new and gets re-crawled;
         # surface why rather than silently discarding the whole mapping.
         log.warning("Discarding unreadable crawl metadata sidecar %s: %s", path, exc)
