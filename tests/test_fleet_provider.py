@@ -141,6 +141,19 @@ def _install_engine(
     return swap
 
 
+@pytest.fixture
+def engine_installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Plant a llama-server the conftest engine seal cannot hide.
+
+    An empty pool means something different with and without an engine, so a test
+    about the server state has to say which one it is standing in.
+    """
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cfg, "llama_server_path", str(binary))
+    return binary
+
+
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
     """A provider with a fake swap already up and a client pool per role (no real start)."""
     p = FleetProvider()
@@ -216,7 +229,7 @@ def test_chat_routes_to_chat_server() -> None:
     client.chat_result.assert_called_once()
 
 
-def test_chat_without_server_raises() -> None:
+def test_chat_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})  # no chat client, no in-process fallback
@@ -571,11 +584,41 @@ def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> 
     assert captured[WorkerRole.RERANK] is None
 
 
-def test_embed_without_server_raises() -> None:
+def test_embed_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})
-    with pytest.raises(ProviderError, match="No embed model server is running"):
+    with pytest.raises(ProviderError, match="Make sure the embed model is installed"):
+        p.embed(["a"])
+
+
+def test_missing_engine_is_reported_as_a_missing_engine() -> None:
+    """With no engine anywhere, the message must not send the reader to model config.
+
+    Nothing is wrong with the model here, so a message about installing and
+    configuring one costs the reader the whole search before they find the engine.
+    """
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError) as caught:
+        p.embed(["a"])
+
+    message = str(caught.value)
+    assert "llama-server" in message
+    assert "lilbee[engine]" in message
+    assert "Make sure the embed model is installed" not in message
+
+
+def test_unusable_configured_engine_path_is_reported_as_the_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LILBEE_LLAMA_SERVER_PATH pointing nowhere is an engine problem too."""
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "llama_server_path", str(tmp_path / "gone"))
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError, match="LILBEE_LLAMA_SERVER_PATH is not a file"):
         p.embed(["a"])
 
 
@@ -587,7 +630,7 @@ def test_rerank_routes_to_engine() -> None:
     client.rerank.assert_called_once_with("q", ["a", "b"])
 
 
-def test_rerank_without_server_raises() -> None:
+def test_rerank_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})
@@ -1737,15 +1780,34 @@ def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> No
     assert seen == [WarmPhase.STARTING]
 
 
-def test_warm_up_blocking_clears_stamp_when_chat_absent_for_other_reasons(monkeypatch) -> None:
-    """No chat instance placed for a non-install reason (a remote-routed chat has
-    no local server to warm): the early STARTING stamp is dropped so the warm line
-    cannot spin forever, and no spurious failure is stamped."""
+def test_warm_up_blocking_clears_stamp_when_chat_routes_remote(monkeypatch) -> None:
+    """A remote-routed chat has no local server to warm: the early STARTING stamp is
+    dropped so the warm line cannot spin forever, and no spurious failure is stamped.
+    An engine is missing here too (the conftest seal), which is not this chat's
+    problem and must not be stamped on its warm."""
+    monkeypatch.setattr(cfg, "chat_model", "ollama/llama3.2:1b")
     p = FleetProvider()
     monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
     p._warm_up_blocking()
     assert p.warm_progress() is None
+
+
+def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypatch) -> None:
+    """A local chat model with no engine to run it: the warm ends in a terminal ERROR
+    naming the engine and the install command. Waiting cannot fix a missing engine, so
+    a 'not ready, send again' bounce would loop for the rest of the session."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert "llama-server binary not found" in (snap.error or "")
+    assert "lilbee[engine]" in (snap.error or "")
 
 
 def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> None:
@@ -2275,7 +2337,7 @@ class TestChatWithTools:
         client.chat_tools.assert_called_once()
         assert client.chat_tools.call_args.kwargs["tool_choice"] == "auto"
 
-    def test_without_server_raises(self) -> None:
+    def test_without_server_raises(self, engine_installed: Path) -> None:
         from lilbee.providers.base import ProviderError
 
         p = _provider_with_clients({})
@@ -2955,7 +3017,7 @@ def test_require_clients_reprobes_dead_swap(monkeypatch) -> None:
     assert len(clients) == 1
 
 
-def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
+def test_require_clients_no_reprobe_when_swap_none(monkeypatch, engine_installed: Path) -> None:
     """Empty pool + no swap at all (unconfigured role) still raises, no rebuild."""
     from lilbee.providers.base import ProviderError
 
@@ -2973,7 +3035,7 @@ def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
     assert rebuilt["called"] is False
 
 
-def test_require_clients_no_reprobe_when_swap_live(monkeypatch) -> None:
+def test_require_clients_no_reprobe_when_swap_live(monkeypatch, engine_installed: Path) -> None:
     """Empty pool + live swap (real misconfiguration) still raises, no rebuild."""
     from unittest import mock
 

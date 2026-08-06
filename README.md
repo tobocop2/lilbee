@@ -68,11 +68,11 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [Tutorial reel](https://lilbee.sh/tutorial) (long-form videos)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
+- [First start](#first-start)
 - [What you can do with it](#what-you-can-do-with-it)
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
-- [First start](#first-start)
 - [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
@@ -172,6 +172,36 @@ Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not jus
 </details>
 
 Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
+
+## First start
+
+The very first launch does one-time work: a bundled build unpacks itself behind
+a progress bar, and the model loads before your first answer, shown live inside
+the answer bubble. Every launch after that opens straight to chat in a couple
+of seconds.
+
+<table>
+  <tr>
+    <th align="center">Very first launch</th>
+    <th align="center">Every launch after</th>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380"></td>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380"></td>
+  </tr>
+</table>
+
+Measured with a small chat model (Qwen3 0.6B):
+
+| | Very first launch | Every launch after |
+|---|---|---|
+| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
+| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
+| Answers after that | model speed | model speed |
+
+Bigger models load longer; the bubble shows real progress while weights are read.
+How the engine lifecycle works, and how to keep it warm so relaunches skip the
+load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
 
 ## What you can do with it
 
@@ -381,17 +411,15 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 
 **Two routes, and the difference matters:**
 
-- **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Uses the Python and tooling you already have, picks the fastest CPU code path for your machine at runtime, and upgrades like any other package. Recommended if you have Python.
-- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
+- **A self-contained bundle** (start here): the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap / Scoop builds that wrap it. It carries its own Python runtime, `llama.cpp`, the model engine, and the optional extras, so there is nothing else to install and nothing to assemble. The trade-off is one large download and a small cold-start cost the first time it self-extracts.
+- **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14), in [its own section below](#developer-install-pip-and-uv). This is the developer route: it installs lilbee as a library in an environment you manage, and the model engine is a separate extra from a separate index that you have to ask for. Take it if you are working on lilbee or importing it into your own code.
 
-Have a discrete GPU? The default Vulkan build already uses it. There are faster vendor builds too: [NVIDIA (CUDA)](#on-nvidia-hardware) and [AMD (ROCm)](#on-amd-hardware).
+Have a discrete GPU? The bundled builds and the Vulkan engine already use it. There are faster vendor builds too: [NVIDIA (CUDA)](#on-nvidia-hardware) and [AMD (ROCm)](#on-amd-hardware).
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
 | How                   | Command                                                                                  | Notes                                                                                                                                                                                                                 |
 | --------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**               | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`             | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. The `engine` extra is the bundled llama-server, published on lilbee.sh rather than PyPI, which is why the index is needed. Faster vendor builds: [CUDA](#on-nvidia-hardware), [ROCm](#on-amd-hardware). |
-| **uv**                | `uv tool install --prerelease=allow lilbee`                                              | Same wheel as pip; fetches a Python for you if you need one.                                                                                                                                                          |
 | **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you.                                                                                                                                  |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
 | **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. `:cuda` and `:rocm` tags carry the vendor builds.                                                                 |
@@ -400,7 +428,6 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **Snap**              | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap && sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; rerun the same command to upgrade. |
 | **Scoop**             | `scoop bucket add lilbee https://github.com/tobocop2/lilbee && scoop install lilbee` | Windows x86_64. Installs the CUDA build on machines with a recent NVIDIA driver, otherwise the CPU build. `scoop update lilbee` upgrades. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it).                       |
-| **From source**       | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`  | For hacking on it. Needs `git` and `uv`.                                                                                                                                                                              |
 
 ### On NVIDIA hardware
 
@@ -411,13 +438,13 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 
 |              | Command                                                                                                                                                                      |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                                                        |
-| **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/cu125/`                                                                                       |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda`                                                                                                                                   |
 | **AUR**      | `paru -S lilbee-cuda`                                                                                                                                                        |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-cuda`                                                                                                                                 |
 | **Scoop**    | `scoop install lilbee` (auto-picks the CUDA build when an NVIDIA driver is present)                                                                                          |
 | **Binary**   | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
+| **pip** (devs) | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                                             |
+| **uv** (devs)  | `uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                            |
 
 Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
@@ -432,13 +459,13 @@ The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn'
 
 |              | Command                                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/`                                                 |
-| **uv**       | `uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/`                                |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-rocm`                                                                           |
 | **AUR**      | `paru -S lilbee-rocm`                                                                                                |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-rocm`                                                                         |
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
 | **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
+| **pip** (devs) | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/`                                      |
+| **uv** (devs)  | `uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/`                     |
 
 Same `lilbee` command after install. Linux only. Cards: MI100, MI200, MI300, MI350, RDNA2, RDNA3, RDNA3.5 APUs and RDNA4. ROCm 7 ships no GEMM kernels for the MI50, so it needs the Vulkan build. Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
 
@@ -462,7 +489,6 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 
 |              | Command                                                                                                                                                                                  |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**      | `pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/`                                                                          |
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-compat`                                                                                                                                            |
 | **AUR**      | `paru -S lilbee-compat`                                                                                                                                                                 |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-compat`                                                                                                                                          |
@@ -470,6 +496,9 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.compat`                                                                                                                               |
 | **Snap**     | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64.snap && sudo snap install ./lilbee-compat-linux-x86_64.snap --dangerous --classic`    |
 | **Binary**   | [`lilbee-compat-linux-x86_64`](https://github.com/tobocop2/lilbee/releases/latest), [`lilbee-compat-windows-x86_64.exe`](https://github.com/tobocop2/lilbee/releases/latest), or [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) (pre-AVX2 Intel Macs, e.g. the 2013 Mac Pro) |
+| **pip** (devs) | `pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/` — no engine: there is no compat engine wheel, so use a bundled build above or bring your own `llama-server` |
+
+Use a bundled build here if you can. The compat index carries the patched lancedb only, so the `pip` row installs lilbee without an engine and every model call will fail until you point `LILBEE_LLAMA_SERVER_PATH` at a `llama-server` that runs on your CPU.
 
 Same `lilbee` command after install. The crash is from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2-compiled wheels; this build swaps in a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at runtime. A 👍 or comment on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
@@ -481,45 +510,56 @@ The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most deskto
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all three. lilbee works without them either way.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[engine]`  | The bundled `llama-server` that runs your models. Published on lilbee.sh rather than PyPI, so it needs the `--extra-index-url` for your hardware; without it nothing can load a model. |
 | `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline.                                                       |
 | `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active.                |
 | `[graph]`   | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
 
-## First start
+### Developer install: pip and uv
 
-The very first launch does one-time work: the executable unpacks itself behind
-a progress bar, and the model loads before your first answer, shown live inside
-the answer bubble. Every launch after that opens straight to chat in a couple
-of seconds.
+For working on lilbee, or importing it as a library into an environment you
+manage. Everything below needs the `[engine]` extra and its index; the bundled
+builds above do not.
 
-<table>
-  <tr>
-    <th align="center">Very first launch</th>
-    <th align="center">Every launch after</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380"></td>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380"></td>
-  </tr>
-</table>
+<details>
+<summary><strong>pip / uv install commands, and the engine index per hardware</strong></summary>
 
-Measured with a small chat model (Qwen3 0.6B):
+| How             | Command                                                                                       | Notes                                                                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **pip**         | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`                  | Python 3.11 to 3.14. Runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)). Swap the index for your hardware, below. |
+| **uv**          | `uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/` | Same wheels as pip; fetches a Python for you if you need one.                                                                                              |
+| **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`        | Needs `git` and `uv`. `uv sync` resolves the in-repo engine package, but CI is what fills its `bin/`, so a checkout has no engine binaries: install the `[engine]` extra from the index below, or point `LILBEE_LLAMA_SERVER_PATH` at your own `llama-server`. |
 
-| | Very first launch | Every launch after |
-|---|---|---|
-| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
-| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
-| Answers after that | model speed | model speed |
+**The engine.** `llama-server` runs every model, and it ships as the `[engine]`
+extra rather than as part of lilbee. It is **not on PyPI**: the CUDA and ROCm
+wheels run 444 MiB to 863 MiB each, several times
+[PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
+so every backend is published from lilbee's own
+[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
+is what `--extra-index-url` is for, and the index you pick is the build you get:
+`cpu` is compiled with every GPU backend off, `metal` publishes only a macOS
+arm64 wheel, `vulkan` only Linux and Windows ones.
 
-Bigger models load longer; the bubble shows real progress while weights are read.
-How the engine lifecycle works, and how to keep it warm so relaunches skip the
-load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
+| Hardware          | Index    | Command                                                                                     |
+| ----------------- | -------- | --------------------------------------------------------------------------------------------- |
+| **NVIDIA (CUDA)** | `cu125`  | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`              |
+| **AMD (ROCm)**    | `rocm`   | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/`               |
+| **Apple silicon** | `metal`  | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/`              |
+| **Other GPUs**    | `vulkan` | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/`             |
+| **No GPU**        | `cpu`    | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/`                |
+
+Leave the extra off and lilbee still installs and starts. The first thing that
+needs a model then fails with an error naming the engine and repeating the
+command for your hardware, so it is recoverable rather than mysterious, but it
+is a step you have to take.
+
+</details>
 
 ## Agent integration
 
