@@ -1348,3 +1348,31 @@ async def test_spinner_tick_updates_the_loading_more_hint() -> None:
         await pilot.pause()
 
         assert "loading more models" in str(hint.render()).lower()
+
+
+async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
+    """A refresh that lands after `/` must leave the cursor in the filter.
+
+    `_mount_remaining_grid_sections` runs from call_after_refresh and used to
+    gate only on "is a grid focused", which is False while the Input owns the
+    cursor, so a mount arriving after the user pressed `/` pulled focus onto
+    the first grid. Driven directly rather than through a key race: the steal
+    is a property of the callback, so it should be reachable by construction.
+    """
+    from textual.widgets import Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._grid_view = True
+        screen.action_focus_search()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), "setup: filter should hold focus"
+
+        screen._mount_remaining_grid_sections(
+            screen._grid_container, [], hf_count=0, focus_anchor=None
+        )
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), (
+            f"a deferred grid mount stole the filter focus; now on {screen.focused}"
+        )

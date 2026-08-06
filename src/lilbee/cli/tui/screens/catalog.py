@@ -1421,6 +1421,13 @@ class CatalogScreen(Screen[None]):
         # section + highlighted index instead of jumping to the top.
         if not self._grid_view or self._focused_grid() is not None:
             return
+        # ...but "no grid has focus" is not "nothing has focus". This runs from
+        # call_after_refresh, so the user may have pressed `/` since the mount
+        # was scheduled; _focused_grid() is None while the filter Input owns the
+        # cursor, so the check above would let a repaint yank it out of the
+        # field they just opened. Same invariant _initial_focus_first_grid keeps.
+        if self._search_focused:
+            return
         if self._restore_focused_section(focus_anchor):
             return
         self._focus_first_grid()
