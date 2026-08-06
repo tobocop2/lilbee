@@ -9,9 +9,14 @@ engine binaries:
   servers),
 - `gguf-parser` (UMA-aware VRAM estimator used by the placement planner).
 
-This is lilbee's core engine dependency. `pip install lilbee` resolves the
-matching per-platform wheel from the index; CI fills `lilbee_engine/bin/` with
-the three binaries and retags the wheel to the platform before publishing.
+This is lilbee's core engine dependency, shipped as the `engine` extra:
+`pip install 'lilbee[engine]' --extra-index-url https://lilbee.sh/<backend>/`
+resolves the matching per-platform wheel. It is not on PyPI, since the CUDA and
+ROCm wheels run several times PyPI's default 100 MiB per-file limit, so all
+backends are published from lilbee's own PEP 503 index. CI fills `lilbee_engine/bin/` with the three
+binaries and retags the wheel to the platform before publishing; a source
+checkout has an empty `bin/` and resolves via `PATH` or
+`LILBEE_LLAMA_SERVER_PATH` instead.
 
 `lilbee.providers.fleet.binary` resolves each tool via
 `lilbee_engine.get_llama_server_path()` / `get_llama_swap_path()` /
