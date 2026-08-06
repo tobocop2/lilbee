@@ -69,9 +69,9 @@ _SPLIT_CHAT_SLOTS = 1
 # (single) / fit_split_ctx (split) toward the cards' real headroom, with each
 # sequence capped at the working-context target. A split may then serve several
 # such sequences, so the served total can exceed the single-window reserve; the
-# per-device headroom test in fit_split_ctx is what bounds it. When even the
-# forced split leaves the fit at its floor, plan_launches refuses the launch
-# (_unusable_chat_ctx_reason) rather than serve a window no prompt can fit.
+# per-device headroom test in fit_split_ctx is what bounds it. A fit still at
+# its floor after the forced split is refused by plan_launches
+# (_unusable_chat_ctx_reason).
 _MIN_USABLE_CHAT_CTX = 8192
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
@@ -2469,9 +2469,8 @@ class FleetPlan:
     # ref), so the warm path can fail a not-installed chat with a named reason
     # instead of spinning the warm line forever.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
-    # Launches refused because their fitted window cannot hold a grounded prompt
-    # (role -> user-facing reason with the numbers), so the warm path and the
-    # request path name the cause instead of failing every query at the window.
+    # Launches refused for a window below the minimum grounded prompt
+    # (role -> user-facing reason with the numbers).
     skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
 
 
@@ -2519,8 +2518,8 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
     if launch.role is not WorkerRole.CHAT or cfg.num_ctx is not None:
         return None
     needed = engine_params.min_usable_chat_ctx()
-    # A window the user's own knobs cap below the minimum is an explicit choice,
-    # not a collapse; serve what was asked (the num_ctx pin bypasses above).
+    # User knobs capping the window below the minimum are honored (the num_ctx
+    # pin bypasses above).
     asked = min(cfg.chat_n_ctx_target, cfg.num_ctx_max or cfg.chat_n_ctx_target)
     if asked < needed:
         return None

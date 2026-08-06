@@ -708,9 +708,8 @@ class _EngineDemand(NamedTuple):
     pairs: set[tuple[WorkerRole, str]]
     # Per-slot chat tokens this process needs; 0 demands nothing.
     chat_ctx: int
-    # Launches the demand plan refused for an unusable window (role -> reason).
-    # Carried out so the reason is recorded even when the ladder never reaches
-    # _plan_and_spawn (nothing else to serve) or binds an existing engine.
+    # Launches the demand plan refused for an unusable window (role -> reason);
+    # recorded even when the ladder binds an engine or never builds one.
     skipped_unusable_ctx: dict[WorkerRole, str]
 
 
@@ -895,9 +894,8 @@ class FleetProvider:
         # installed (role -> ref). The warm finalizer reads it to fail a not-installed
         # chat with a named reason instead of clearing to a silent "not ready" retry.
         self._skipped_not_installed: dict[WorkerRole, str] = {}
-        # Launches the last plan refused because their fitted window cannot hold a
-        # grounded prompt (role -> reason). The warm finalizer and _require_clients
-        # read it to name the cause with the numbers.
+        # Launches the last plan refused for an unusable window (role -> reason);
+        # read by the warm finalizer and _require_clients.
         self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
@@ -958,9 +956,8 @@ class FleetProvider:
         """
         pin = engine_pin()
         demand = _placeable_demand()
-        # Recorded from the demand plan, not only _plan_and_spawn: a refused
-        # chat with nothing else to serve never builds, and a bind reuses
-        # another process's engine, yet both must still name the reason.
+        # Recorded from the demand plan too: a chat-only refusal never reaches
+        # _plan_and_spawn, and a bind skips it.
         self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
@@ -1281,8 +1278,7 @@ class FleetProvider:
             with self._lock:
                 clients = self._clients.get(role)
         if not clients:
-            # A launch the plan refused for an unusable window has a recorded
-            # reason with the numbers; surface that over the generic line.
+            # A refused launch's recorded reason wins over the generic line.
             reason = self._skipped_unusable_ctx.get(role)
             if reason is not None:
                 raise ProviderError(reason, provider=_PROVIDER_NAME)
@@ -2348,9 +2344,7 @@ class FleetProvider:
                         raise
                     log.debug("Engine binary unavailable; reload left the fleet as-is")
                     return
-                # A reload's plan can change what got skipped (a model swap onto a
-                # window the fit refuses, or off one); keep the named reasons in
-                # step so the warm and request paths report the current plan.
+                # Keep the skip reasons in step with the fresh plan.
                 self._skipped_not_installed = dict(plan.skipped_not_installed)
                 self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
                 new = _launches_by_group(plan)

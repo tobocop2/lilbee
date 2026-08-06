@@ -33,10 +33,8 @@ T_co = TypeVar("T_co", covariant=True)
 GENERATION_RESERVE_TOKENS = 1024
 CONTEXT_WINDOW_MARGIN_TOKENS = 128
 
-# Chars-per-token assumed when BUDGETING context. Deliberately harsher than
-# the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
-# per token, and budgeting at 4 let a document whose real cost exceeded the
-# window pass untrimmed, hard-failing the request.
+# Chars-per-token assumed when BUDGETING context, deliberately harsher than the
+# display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars per token.
 BUDGET_CHARS_PER_TOKEN = 3
 
 
