@@ -567,10 +567,10 @@ class Config(BaseSettings):
     # the last lilbee process exits, leaving the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Raises xet's download concurrency (64 -> 124) and its in-flight buffer
-    # ceilings (2GB -> 16GB, 8GB -> 64GB). Off by default: those ceilings are
-    # sized for servers, not a laptop also holding a model in memory.
-    xet_high_performance: bool = ConfigField(default=False, writable=True)
+    # Hugging Face's high-performance transfer mode: more connections and much
+    # larger in-flight buffers. Off by default, those ceilings suit a server
+    # rather than a laptop also holding a model in memory.
+    fast_model_downloads: bool = ConfigField(default=False, writable=True)
 
     # Idle minutes before the engine unloads its weights (llama-swap ttl), in
     # every mode: even a persistent engine naps when unused. 0 keeps weights

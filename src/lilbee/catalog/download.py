@@ -153,7 +153,7 @@ def abort_active_download() -> None:
 _XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
 
 
-def _apply_xet_performance_mode() -> None:
+def _apply_fast_download_mode() -> None:
     """Publish the high-performance setting to xet before it builds a session.
 
     hf_xet reads it from the environment in Rust and caches it when the session
@@ -163,7 +163,7 @@ def _apply_xet_performance_mode() -> None:
     # _models_dir documents (config -> model_ref -> catalog -> here).
     from lilbee.core.config.model import cfg
 
-    if cfg.xet_high_performance:
+    if cfg.fast_model_downloads:
         os.environ[_XET_HIGH_PERFORMANCE_ENV] = "1"
     else:
         os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
@@ -174,7 +174,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
-    _apply_xet_performance_mode()
+    _apply_fast_download_mode()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:

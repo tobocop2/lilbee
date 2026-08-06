@@ -373,16 +373,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "precedence over the offload-everything setting; smaller N stays faster."
         ),
     ),
-    "xet_high_performance": SettingDef(
+    "fast_model_downloads": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text=(
             "Warning: Hugging Face states this mode uses all available bandwidth "
-            "and CPU cores, and it raises Xet's in-flight buffer ceilings well "
-            "past their defaults. Faster model downloads on a fast connection, "
-            "at the cost of everything else running on the machine. Leave it off "
-            "unless the machine can spare that. Requires a restart to take effect."
+            "and CPU cores, and buffers far more of the download in memory. "
+            "Faster on a fast connection, at the cost of everything else running "
+            "on the machine. Leave it off unless the machine can spare that. "
+            "Requires a restart to take effect."
         ),
     ),
     "gpu_devices": SettingDef(

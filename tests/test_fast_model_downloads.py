@@ -1,4 +1,4 @@
-"""The high-performance toggle reaches xet, which only reads the environment.
+"""The fast-downloads toggle reaches hf_xet, which only reads the environment.
 
 huggingface_hub exposes `HF_XET_HIGH_PERFORMANCE` as a constant it never acts
 on; hf_xet reads the variable itself in its Rust layer. Setting the constant
@@ -25,9 +25,9 @@ def test_the_setting_publishes_the_variable_xet_reads(
     from lilbee.core.config.model import cfg
 
     monkeypatch.delenv(dl._XET_HIGH_PERFORMANCE_ENV, raising=False)
-    monkeypatch.setattr(cfg, "xet_high_performance", enabled)
+    monkeypatch.setattr(cfg, "fast_model_downloads", enabled)
 
-    dl._apply_xet_performance_mode()
+    dl._apply_fast_download_mode()
 
     assert os.environ.get(dl._XET_HIGH_PERFORMANCE_ENV) == expected
 
@@ -37,9 +37,9 @@ def test_turning_it_off_clears_an_inherited_variable(monkeypatch: pytest.MonkeyP
     from lilbee.core.config.model import cfg
 
     monkeypatch.setenv(dl._XET_HIGH_PERFORMANCE_ENV, "1")
-    monkeypatch.setattr(cfg, "xet_high_performance", False)
+    monkeypatch.setattr(cfg, "fast_model_downloads", False)
 
-    dl._apply_xet_performance_mode()
+    dl._apply_fast_download_mode()
 
     assert dl._XET_HIGH_PERFORMANCE_ENV not in os.environ
 
@@ -55,7 +55,7 @@ def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.Mo
     """Xet caches its config when the session is built, so this has to run
     before the transfer, not after."""
     calls: list[str] = []
-    monkeypatch.setattr(dl, "_apply_xet_performance_mode", lambda: calls.append("applied"))
+    monkeypatch.setattr(dl, "_apply_fast_download_mode", lambda: calls.append("applied"))
 
     def _fake_download(**_kw: object) -> str:
         calls.append("downloaded")
