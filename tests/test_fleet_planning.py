@@ -1371,6 +1371,96 @@ class TestBuildFleetWiring:
         plan = planning_mod.plan_all_launches()
         assert plan.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
+    def test_plan_all_launches_drops_a_chat_launch_with_an_unusable_window(
+        self, monkeypatch, caplog
+    ) -> None:
+        # A chat window the fit collapsed to the floor cannot hold any grounded
+        # prompt; serving it defers the failure to query time, so the launch is
+        # dropped and the reason recorded with the numbers.
+        import logging
+
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "org/repo/chat.gguf"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
+            ),
+        )
+        collapsed = InstanceLaunch(
+            role=WorkerRole.CHAT, argv=[], env_overrides={}, model="org/repo/chat.gguf", ctx=512
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: collapsed)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            plan = planning_mod.plan_all_launches()
+
+        assert plan.launches == ()
+        reason = plan.skipped_unusable_ctx[WorkerRole.CHAT]
+        assert "512" in reason
+        assert str(min_usable_chat_ctx()) in reason
+        assert "org/repo/chat.gguf" in reason
+        assert reason in caplog.text
+
+    def test_plan_all_launches_serves_a_pinned_chat_window_unchecked(self, monkeypatch) -> None:
+        # An explicit num_ctx pin is the user's override (and the documented
+        # escape hatch), so a small pinned window is served as asked.
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "org/repo/chat.gguf"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
+            ),
+        )
+        pinned = InstanceLaunch(
+            role=WorkerRole.CHAT, argv=[], env_overrides={}, model="org/repo/chat.gguf", ctx=1024
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: pinned)
+        monkeypatch.setattr(cfg, "num_ctx", 1024)
+
+        plan = planning_mod.plan_all_launches()
+        assert plan.launches == (pinned,)
+        assert plan.skipped_unusable_ctx == {}
+
     def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
         # Co-tenancy changes how the box behaves (one model resident at a time), so it
         # is stated in the log rather than being inferred from a silent plan.
@@ -2268,6 +2358,47 @@ class TestSizingBudgetComesFromTheDevice:
         self._capture(monkeypatch, [igpu], host_ram=64 * _GB)
         assert planning_mod._unified_memory_budget([igpu]) == 8 * _GB
         assert planning_mod._unified_admission_budget([igpu]) == 8 * _GB
+
+
+class TestUnusableChatCtxReason:
+    """A chat window below the minimum grounded prompt is refused, not served."""
+
+    @staticmethod
+    def _launch(role: WorkerRole, ctx: int):
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        return InstanceLaunch(role=role, argv=[], env_overrides={}, model="org/m.gguf", ctx=ctx)
+
+    def test_collapsed_window_names_the_numbers(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        reason = planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512))
+        assert reason is not None
+        assert "512" in reason
+        assert str(min_usable_chat_ctx()) in reason
+
+    def test_usable_window_passes(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 8192)) is None
+
+    def test_num_ctx_pin_bypasses_the_check(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", 512)
+        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512)) is None
+
+    def test_sub_minimum_target_is_an_explicit_choice(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 1024)) is None
+
+    def test_sub_minimum_num_ctx_max_is_an_explicit_choice(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(cfg, "num_ctx_max", 1024)
+        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512)) is None
+
+    def test_non_chat_roles_are_ignored(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.EMBED, 512)) is None
 
 
 class TestPlacementFindingsLog:

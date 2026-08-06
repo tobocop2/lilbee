@@ -19,8 +19,11 @@ if TYPE_CHECKING:
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
 from lilbee.providers.base import (
+    CONTEXT_WINDOW_MARGIN_TOKENS,
+    GENERATION_RESERVE_TOKENS,
     ProviderError,
     ProviderErrorKind,
+    estimate_budget_tokens,
     normalize_generation_options,
 )
 from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
@@ -179,6 +182,23 @@ def resolve_chat_ctx(
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
         return min(training_ctx, cfg.chat_n_ctx_target)
+
+
+# Tokens the minimum grounded prompt allows for the question plus the context
+# template's framing, beyond the system prompt and one retrieved source.
+_GROUNDED_QUESTION_TOKENS = 128
+
+
+def min_usable_chat_ctx() -> int:
+    """Smallest chat window that serves one grounded answer: the system prompt,
+    one retrieved source, the question, and the generation reserve plus margin."""
+    return (
+        estimate_budget_tokens(cfg.rag_system_prompt)
+        + cfg.chunk_size
+        + _GROUNDED_QUESTION_TOKENS
+        + GENERATION_RESERVE_TOKENS
+        + CONTEXT_WINDOW_MARGIN_TOKENS
+    )
 
 
 def resolve_n_gpu_layers(*, embedding: bool) -> int:

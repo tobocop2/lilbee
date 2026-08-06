@@ -68,7 +68,9 @@ _SPLIT_CHAT_SLOTS = 1
 # (single) / fit_split_ctx (split) toward the cards' real headroom, with each
 # sequence capped at the working-context target. A split may then serve several
 # such sequences, so the served total can exceed the single-window reserve; the
-# per-device headroom test in fit_split_ctx is what bounds it.
+# per-device headroom test in fit_split_ctx is what bounds it. When even the
+# forced split leaves the fit at its floor, plan_launches refuses the launch
+# (_unusable_chat_ctx_reason) rather than serve a window no prompt can fit.
 _MIN_USABLE_CHAT_CTX = 8192
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
@@ -2489,6 +2491,10 @@ class FleetPlan:
     # ref), so the warm path can fail a not-installed chat with a named reason
     # instead of spinning the warm line forever.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
+    # Launches refused because their fitted window cannot hold a grounded prompt
+    # (role -> user-facing reason with the numbers), so the warm path and the
+    # request path name the cause instead of failing every query at the window.
+    skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
 
 
 def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
@@ -2523,6 +2529,37 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
         )
 
 
+def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
+    """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
+
+    ``None`` for non-chat roles, for a window that holds the minimum grounded
+    prompt, and for user knobs that ask for a smaller one (a ``num_ctx`` pin,
+    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``).
+    """
+    from lilbee.core.config import cfg
+
+    # circular: fleet.planning -> engine_params -> app.services
+    from lilbee.providers.engine_params import min_usable_chat_ctx
+
+    if launch.role is not WorkerRole.CHAT or cfg.num_ctx is not None:
+        return None
+    needed = min_usable_chat_ctx()
+    # A window the user's own knobs cap below the minimum is an explicit choice,
+    # not a collapse; serve what was asked (the num_ctx pin bypasses above).
+    asked = min(cfg.chat_n_ctx_target, cfg.num_ctx_max or cfg.chat_n_ctx_target)
+    if asked < needed:
+        return None
+    if launch.ctx >= needed:
+        return None
+    return (
+        f"The chat model {launch.model} loads, but the memory left after its weights "
+        f"backs only a {launch.ctx}-token context, and a grounded answer needs about "
+        f"{needed} tokens (system prompt, a retrieved source, the question, and room "
+        "for the answer), so it will not be served. Use a smaller model or a smaller "
+        "quant, or set num_ctx to force a larger window."
+    )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -2553,22 +2590,30 @@ def plan_launches(
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
+    launches: list[InstanceLaunch] = []
+    skipped_unusable_ctx: dict[WorkerRole, str] = {}
+    for plan in placement.instances:
+        launch = _launch_for(
+            plan,
+            model_refs[plan.role],
+            binary,
+            by_index,
+            unified_budget=unified_budget,
+            chat_reservation=reservation,
+            reserved_by_device=reserved_by_device,
+            est_vram_bytes=charged.get(plan.role, 0),
+        )
+        reason = _unusable_chat_ctx_reason(launch)
+        if reason is not None:
+            skipped_unusable_ctx[launch.role] = reason
+            log.warning(reason)
+            continue
+        launches.append(launch)
     return FleetPlan(
-        launches=tuple(
-            _launch_for(
-                plan,
-                model_refs[plan.role],
-                binary,
-                by_index,
-                unified_budget=unified_budget,
-                chat_reservation=reservation,
-                reserved_by_device=reserved_by_device,
-                est_vram_bytes=charged.get(plan.role, 0),
-            )
-            for plan in placement.instances
-        ),
+        launches=tuple(launches),
         co_tenants=placement.co_tenants,
         skipped_not_installed=skipped_not_installed,
+        skipped_unusable_ctx=skipped_unusable_ctx,
     )
 
 

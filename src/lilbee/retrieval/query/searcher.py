@@ -29,6 +29,7 @@ from lilbee.providers.base import (
     LLMProvider,
     ProviderError,
     ProviderErrorKind,
+    estimate_budget_tokens,
     prompt_token_budget,
 )
 from lilbee.retrieval.embedder import Embedder
@@ -186,11 +187,6 @@ SEARCH_NEEDS_EMBEDDER = (
     "Add one, or switch to chat mode for an ungrounded reply."
 )
 
-# Chars-per-token assumed when BUDGETING context. Deliberately harsher than
-# the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
-# per token, and budgeting at 4 let a document whose real cost exceeded the
-# window pass untrimmed, hard-failing the request.
-_BUDGET_CHARS_PER_TOKEN = 3
 # Association answers list at most this many groups before summarizing.
 _ASSOCIATION_LINES = 15
 # One retry after a provider context-overflow, refitting to this fraction of
@@ -1004,11 +1000,6 @@ class Searcher:
         messages.append({"role": "user", "content": prompt})
         return RagContext(results, messages, base_results)
 
-    @staticmethod
-    def _budget_tokens(text: str) -> int:
-        """Conservative token cost for budgeting (see _BUDGET_CHARS_PER_TOKEN)."""
-        return max(1, len(text) // _BUDGET_CHARS_PER_TOKEN)
-
     def _context_budget(
         self,
         system: str,
@@ -1031,9 +1022,9 @@ class Searcher:
         # already removes the generation reserve and the engine's margin, so the
         # sources get what is left after the rest of the prompt.
         non_source = (
-            self._budget_tokens(system)
-            + self._budget_tokens(question)
-            + sum(self._budget_tokens(m["content"]) for m in history or [])
+            estimate_budget_tokens(system)
+            + estimate_budget_tokens(question)
+            + sum(estimate_budget_tokens(m["content"]) for m in history or [])
             + _CONTEXT_TEMPLATE_TOKENS
         )
         return int((prompt_token_budget(ctx) - non_source) * scale)
@@ -1054,7 +1045,7 @@ class Searcher:
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
-            cost = self._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
+            cost = estimate_budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
             if kept and used + cost > budget:
                 break
             kept.append(r)
@@ -1083,7 +1074,7 @@ class Searcher:
         # and cover text the filter dropped from the results.
         exclude = is_structural_chunk if self._config.filter_structural_chunks else None
         return expand_neighbors(
-            results, self._store, radius, leftover, self._budget_tokens, exclude=exclude
+            results, self._store, radius, leftover, estimate_budget_tokens, exclude=exclude
         )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:

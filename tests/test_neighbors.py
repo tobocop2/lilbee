@@ -7,7 +7,7 @@ from lilbee.retrieval.query.neighbors import expand_neighbors, merge_adjacent_te
 
 
 def _cost(text: str) -> int:
-    """Mirror Searcher._budget_tokens (3 chars per token, floor 1)."""
+    """Mirror estimate_budget_tokens (3 chars per token, floor 1)."""
     return max(1, len(text) // 3)
 
 

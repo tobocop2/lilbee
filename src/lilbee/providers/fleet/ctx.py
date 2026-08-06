@@ -50,7 +50,8 @@ def fit_split_ctx(
     placement reserves KV for one full window, while a split whose cards hold
     several may serve up to ``_CHAT_SLOTS`` of them. What keeps that honest is
     the per-device check below against real free bytes, not the placement
-    reserve. Falls to the floor when even the floor overflows.
+    reserve. Falls to the floor when even the floor overflows; plan_launches
+    refuses a chat launch left at a window below the minimum grounded prompt.
     """
     headrooms = [
         int(free * usable_vram_fraction()) - _MAIN_GPU_SKEW_RESERVE_BYTES
