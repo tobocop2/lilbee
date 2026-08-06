@@ -66,7 +66,7 @@ from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
 from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -526,9 +526,14 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select / picker button handle Enter itself; i/a/o
-            # mean nothing to those widgets, so they always return to INSERT.
-            if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
+            # Let a focused Select, or anything on the model strip, handle Enter
+            # itself; i/a/o mean nothing to those widgets, so they always return
+            # to INSERT. Asked of the bar rather than of a list of widget types:
+            # the mode pills were missing from that list and Enter on a pill
+            # dropped to INSERT instead of switching the mode.
+            if event.key == "enter" and (
+                isinstance(self.focused, Select) or self._focus_in_model_bar()
+            ):
                 return
             if self._focus_in_drawer():
                 return

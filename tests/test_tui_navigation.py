@@ -1390,3 +1390,32 @@ async def test_the_strip_keys_leave_an_open_drawer_alone():
         await pilot.press("h")
         await pilot.pause()
         assert app.screen.focused is before
+
+
+async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
+    """Walking to a pill must be able to act, not only to arrive.
+
+    NORMAL mode's Enter handler drops back to INSERT for any focus target that
+    does not handle Enter itself, and it named two widget types that did not
+    include the mode pills. Nothing could reach a pill from NORMAL mode before
+    h / l, so pressing Enter there switched to INSERT and left the mode alone.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        cfg.chat_mode = "search"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # h enters at the far end of the strip, which is the Chat pill.
+        await pilot.press("h")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"h never reached the Chat pill, landed on {app.screen.focused!r}"
+
+        await pilot.press("enter")
+        assert await pump_until(pilot, lambda: cfg.chat_mode == "chat"), (
+            f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
+        )
+        assert not app.screen._insert_mode, "Enter fell through to INSERT instead of the pill"
