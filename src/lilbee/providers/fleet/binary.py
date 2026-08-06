@@ -10,14 +10,18 @@ from pathlib import Path
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 # Every index is spelled out rather than pointing at the README. This is read at
-# the moment the engine is needed, often on a remote box, and listing all three
-# is what keeps naming one from sending a machine to the wrong build.
+# the moment the engine is needed, often on a remote box. One index per hardware
+# because the builds are not interchangeable: cpu is built with every GPU backend
+# off, metal only ships a macOS arm64 wheel, and vulkan only Linux/Windows ones,
+# so naming a single "default" hands somebody an engine that ignores their GPU.
 _INSTALL_HINT = (
     "The engine is lilbee's 'engine' extra, published on lilbee.sh rather than "
     "PyPI, so the index is part of the command:\n"
-    "  NVIDIA: pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/\n"
-    "  AMD:    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/\n"
-    "  Other:  pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/\n"
+    "  NVIDIA (CUDA): pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/\n"
+    "  AMD (ROCm):    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/\n"
+    "  Apple silicon: pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/\n"
+    "  Other GPUs:    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/\n"
+    "  No GPU:        pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/\n"
     "A standalone binary from https://github.com/tobocop2/lilbee/releases/latest "
     "bundles the engine instead. To bring your own, set LILBEE_LLAMA_SERVER_PATH to "
     "a llama-server binary and put llama-swap / gguf-parser on PATH."

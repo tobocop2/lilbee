@@ -1058,11 +1058,16 @@ published on lilbee.sh rather than PyPI, so the index for your hardware is part
 of the command (see the install table in the README). The bundled builds
 (standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap) already carry it.
 
+The builds are not interchangeable, so pick the index for your hardware: `cpu` is
+built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
+`vulkan` only Linux and Windows ones.
+
 ```bash
-# the engine, per hardware
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # NVIDIA
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/    # AMD
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/     # everything else
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/    # NVIDIA (CUDA)
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/    # Apple silicon
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
 ```
 
 The rest add capabilities that require heavier dependencies:
