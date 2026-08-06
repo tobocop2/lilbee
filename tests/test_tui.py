@@ -495,10 +495,12 @@ class TestCatalogScreenAsync:
             for _ in range(8):
                 await pilot.pause()
             # Open the filter via `/` (reveal + focus); a hidden input is
-            # never focused in production. The key press and the focus change
-            # are separate hops of the message bus (measured: `focus()` has not
-            # landed on the line after it returns, only after a pump), so one
-            # pause has to absorb both and loses the race under load.
+            # never focused in production. pump_until rather than one pause
+            # because focus spans two hops of the bus, but be aware that is
+            # NOT sufficient here: action_focus_search does focus the Input and
+            # then a catalog widget still mounting takes it back, which no
+            # amount of waiting recovers. See the bead on the filter-focus
+            # steal; this test is a known flake while that stands.
             await pilot.press("slash")
             assert await pump_until(pilot, lambda: isinstance(catalog.focused, Input)), (
                 f"`/` never focused the filter; focus is on {catalog.focused}"
