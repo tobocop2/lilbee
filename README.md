@@ -68,11 +68,11 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [Tutorial reel](https://lilbee.sh/tutorial) (long-form videos)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
+- [First start](#first-start)
 - [What you can do with it](#what-you-can-do-with-it)
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
-- [First start](#first-start)
 - [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
@@ -172,6 +172,36 @@ Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not jus
 </details>
 
 Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
+
+## First start
+
+The very first launch does one-time work: a bundled build unpacks itself behind
+a progress bar, and the model loads before your first answer, shown live inside
+the answer bubble. Every launch after that opens straight to chat in a couple
+of seconds.
+
+<table>
+  <tr>
+    <th align="center">Very first launch</th>
+    <th align="center">Every launch after</th>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380"></td>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380"></td>
+  </tr>
+</table>
+
+Measured with a small chat model (Qwen3 0.6B):
+
+| | Very first launch | Every launch after |
+|---|---|---|
+| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
+| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
+| Answers after that | model speed | model speed |
+
+Bigger models load longer; the bubble shows real progress while weights are read.
+How the engine lifecycle works, and how to keep it warm so relaunches skip the
+load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
 
 ## What you can do with it
 
@@ -530,36 +560,6 @@ command for your hardware, so it is recoverable rather than mysterious, but it
 is a step you have to take.
 
 </details>
-
-## First start
-
-The very first launch does one-time work: the executable unpacks itself behind
-a progress bar, and the model loads before your first answer, shown live inside
-the answer bubble. Every launch after that opens straight to chat in a couple
-of seconds.
-
-<table>
-  <tr>
-    <th align="center">Very first launch</th>
-    <th align="center">Every launch after</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380"></td>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380"></td>
-  </tr>
-</table>
-
-Measured with a small chat model (Qwen3 0.6B):
-
-| | Very first launch | Every launch after |
-|---|---|---|
-| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
-| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
-| Answers after that | model speed | model speed |
-
-Bigger models load longer; the bubble shows real progress while weights are read.
-How the engine lifecycle works, and how to keep it warm so relaunches skip the
-load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
 
 ## Agent integration
 
