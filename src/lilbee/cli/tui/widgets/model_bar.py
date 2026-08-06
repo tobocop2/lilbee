@@ -565,6 +565,10 @@ class ModelBar(Widget, can_focus=False):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("left", "step(-1)", "Prev role", show=False),
         Binding("right", "step(1)", "Next role", show=False),
+        # h / l alongside the arrows: the strip is horizontal, so j / k would
+        # mean nothing here and stay with the transcript's vim scrolling.
+        Binding("h", "step(-1)", "Prev role", show=False),
+        Binding("l", "step(1)", "Next role", show=False),
         Binding("home", "step_end(-1)", "First role", show=False),
         Binding("end", "step_end(1)", "Last role", show=False),
     ]
@@ -588,6 +592,10 @@ class ModelBar(Widget, can_focus=False):
     def focus_strip(self) -> None:
         """Focus the first member. No-op while the bar is still composing."""
         self._focus_at(0)
+
+    def focus_strip_from(self, direction: int) -> None:
+        """Enter the strip from one side: walking right lands on the first role."""
+        self._focus_at(0 if direction > 0 else len(self.strip) - 1)
 
     def _focus_at(self, index: int) -> None:
         """Focus the member at *index*, clamped to the ends of the strip."""

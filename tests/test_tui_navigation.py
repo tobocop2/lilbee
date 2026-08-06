@@ -1264,3 +1264,122 @@ async def test_enter_on_a_mode_pill_switches_chat_mode():
             assert await pump_until(pilot, lambda: cfg.chat_mode == "chat"), (
                 f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
             )
+
+
+async def test_l_walks_into_the_model_strip_from_normal_mode():
+    """NORMAL mode reaches the strip sideways, without knowing about F6.
+
+    Escape parks the cursor on the transcript, where the arrows belong to its
+    own horizontal scrolling; h / l are free there and read as "move along the
+    row" to anyone who already uses j / k to scroll it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("l")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), f"l from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+
+async def test_h_enters_the_strip_at_its_far_end():
+    """Walking left into the strip lands on the last role, not the first.
+
+    Entering from the side the key points at keeps one more press from being
+    needed to get where the direction already said.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("h")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"h from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+
+async def test_h_and_l_step_between_roles_once_inside_the_strip():
+    """Inside the strip the bar's own h / l win, so the keys keep one meaning.
+
+    Entered from NORMAL mode rather than via F6: F6 leaves the screen in INSERT,
+    where a printable key is routed back into the prompt as typing before any
+    binding sees it, so h / l are NORMAL-mode keys end to end.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("l")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), "never entered the strip"
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-embed"
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+        # Clamps at the near end instead of wrapping to the mode pills.
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+
+
+async def test_typing_h_and_l_in_insert_mode_reaches_the_prompt():
+    """The strip keys must not eat two letters out of every prompt.
+
+    A canary on Textual rather than a guard on these bindings: the focused
+    prompt keeps printable keys, and it goes on keeping them when the strip
+    keys are made ``priority=True`` and when the mode guard below is removed,
+    both measured. It stays because binding plain letters is the one real risk
+    here, and a Textual upgrade is what would break it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+
+        await pilot.press("h", "e", "l", "l", "o")
+        await pilot.pause()
+        assert screen._chat_input.value == "hello"
+        assert screen._chat_input.has_focus
+
+
+async def test_the_strip_keys_leave_an_open_drawer_alone():
+    """Focus inside a drawer keeps h / l, and the guard must gate the KEY, not
+    just the footer.
+
+    ``check_action`` returning False has to stop the binding from firing at all;
+    a guard that only greys a footer cell would let h yank the cursor out of the
+    drawer. The drawer's pills do not consume letters, so this reaches dispatch.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        for _ in range(12):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.screen._focus_in_drawer():
+                break
+        assert app.screen._focus_in_drawer(), (
+            f"never tabbed into the fleet drawer, landed on {app.screen.focused!r}"
+        )
+
+        before = app.screen.focused
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused is before

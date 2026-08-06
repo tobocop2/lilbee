@@ -311,6 +311,11 @@ class ChatScreen(Screen[None]):
         # before any binding fires. Tab reaches the bar too, but only from
         # NORMAL mode and only after walking past the log.
         Binding("f6", "focus_model_bar", "Model bar", show=True, priority=True),
+        # NORMAL mode walks sideways into the role strip. h / l only: the
+        # transcript owns j / k, and Left / Right never reach here because the
+        # focused VerticalScroll binds them to horizontal scrolling.
+        Binding("h", "enter_model_strip(-1)", "Prev role", show=False),
+        Binding("l", "enter_model_strip(1)", "Next role", show=False),
     ]
 
     def __init__(self) -> None:
@@ -473,6 +478,14 @@ class ChatScreen(Screen[None]):
     def action_focus_model_bar(self) -> None:
         """F6: put the cursor on the model strip. Left / Right walk it from there."""
         self.query_one("#model-bar", ModelBar).focus_strip()
+
+    def action_enter_model_strip(self, direction: int) -> None:
+        """h / l from NORMAL mode: step into the strip from the matching side.
+
+        Only reached while focus is outside the bar. Once a role holds the
+        cursor the bar's own h / l bindings win, being nearer the focus.
+        """
+        self.query_one("#model-bar", ModelBar).focus_strip_from(direction)
 
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""
@@ -1971,6 +1984,13 @@ class ChatScreen(Screen[None]):
         """
         if action == "cancel_stream":
             return self.streaming and self._insert_mode
+        if action == "enter_model_strip":
+            # NORMAL mode parks the cursor on the transcript, and that is the
+            # only place these letters are free. Stated as where they DO apply,
+            # so a drawer, a dialog or any later focus target keeps its own
+            # letters without having to be named here.
+            focused = self.focused
+            return focused is not None and focused.id == "chat-log"
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
