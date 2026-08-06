@@ -404,7 +404,7 @@ No external services either way; lilbee downloads and runs models locally. Optio
 
 ### The engine, if you install with pip or uv
 
-Everything that runs a model goes through `llama-server`, which lilbee ships as the `[engine]` extra. It is **not on PyPI**: the CUDA and ROCm wheels are 440 MB to 860 MB each, well past PyPI's 100 MB per-file limit, so every backend is published from lilbee's own [PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh` instead. That is what the `--extra-index-url` in the `pip` and `uv` rows is for, and the index you pick is the build you get:
+Everything that runs a model goes through `llama-server`, which lilbee ships as the `[engine]` extra. It is **not on PyPI**: the CUDA and ROCm wheels run 444 MiB to 863 MiB each, several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit), so every backend is published from lilbee's own [PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh` instead. That is what the `--extra-index-url` in the `pip` and `uv` rows is for, and the index you pick is the build you get:
 
 ```bash
 pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/    # NVIDIA (CUDA)
