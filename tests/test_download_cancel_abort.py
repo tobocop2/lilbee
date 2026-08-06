@@ -44,13 +44,6 @@ def test_abort_calls_through_to_the_xet_session(monkeypatch: pytest.MonkeyPatch)
     assert called == ["abort"]
 
 
-def test_abort_is_a_no_op_without_xet(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only the xet path needs it; HTTP cancels by raising through the callback."""
-    monkeypatch.setitem(sys.modules, "huggingface_hub.utils._xet", None)
-
-    dl.abort_active_download()  # must not raise
-
-
 def test_an_aborted_transfer_reads_as_cancelled_not_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -79,7 +72,10 @@ async def test_cancelling_a_running_download_aborts_the_transfer(
     from tests._lilbee_app_test_host import LilbeeAppHost
 
     aborted: list[str] = []
-    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+    monkeypatch.setattr(
+        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
+        lambda: aborted.append("abort"),
+    )
 
     app = LilbeeAppHost()
     async with app.run_test():
@@ -106,7 +102,10 @@ async def test_cancelling_a_queued_download_leaves_the_running_one_alone(
     from tests._lilbee_app_test_host import LilbeeAppHost
 
     aborted: list[str] = []
-    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+    monkeypatch.setattr(
+        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
+        lambda: aborted.append("abort"),
+    )
 
     app = LilbeeAppHost()
     async with app.run_test():
@@ -146,7 +145,10 @@ async def test_a_cancel_that_lands_before_the_transfer_starts_still_aborts(
     from tests._lilbee_app_test_host import LilbeeAppHost
 
     aborted: list[str] = []
-    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+    monkeypatch.setattr(
+        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
+        lambda: aborted.append("abort"),
+    )
 
     app = LilbeeAppHost()
     async with app.run_test():
@@ -174,7 +176,10 @@ async def test_a_cancelled_download_aborts_only_once(monkeypatch: pytest.MonkeyP
     from tests._lilbee_app_test_host import LilbeeAppHost
 
     aborted: list[str] = []
-    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+    monkeypatch.setattr(
+        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
+        lambda: aborted.append("abort"),
+    )
 
     app = LilbeeAppHost()
     async with app.run_test():
@@ -200,7 +205,10 @@ async def test_a_cancelled_sync_task_does_not_abort_downloads(
     from tests._lilbee_app_test_host import LilbeeAppHost
 
     aborted: list[str] = []
-    monkeypatch.setattr(dl, "abort_active_download", lambda: aborted.append("abort"))
+    monkeypatch.setattr(
+        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
+        lambda: aborted.append("abort"),
+    )
 
     app = LilbeeAppHost()
     async with app.run_test():

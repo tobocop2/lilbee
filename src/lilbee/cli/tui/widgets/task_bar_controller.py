@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from textual.app import App
 
+from lilbee.catalog.download import abort_active_download
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus, TaskType
@@ -70,8 +71,6 @@ class ProgressReporter:
             # Once per task: a later abort would fall on whichever transfer the
             # queue has since promoted.
             self._aborted = True
-            from lilbee.catalog.download import abort_active_download
-
             abort_active_download()
         raise TaskCancelledError
 
@@ -198,8 +197,6 @@ class TaskBarController:
         self.queue.cancel(task_id)
         if was_running_download:
             # Session-wide abort: only for the running transfer.
-            from lilbee.catalog.download import abort_active_download
-
             abort_active_download()
         if not started:
             # Rows put straight on the queue have no worker whose exit advances
@@ -507,8 +504,7 @@ class TaskBarController:
         )
 
     def pending_download(self, model: CatalogModel) -> Task | None:
-        """Return the queued-or-active download for *model*, for call sites that
-        want to say "already downloading" rather than "queued"."""
+        """Return the queued-or-active download for *model*, if there is one."""
         return self.queue.find_pending(TaskType.DOWNLOAD.value, download_key(model))
 
 

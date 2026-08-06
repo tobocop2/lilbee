@@ -146,10 +146,8 @@ def abort_active_download() -> None:
 
     Aborts at session granularity; hf_xet exposes nothing finer.
     """
-    try:
-        from huggingface_hub.utils._xet import abort_xet_session
-    except ImportError:
-        return  # xet unavailable; the HTTP path cancels on its own
+    from huggingface_hub.utils._xet import abort_xet_session
+
     abort_xet_session()
 
 
@@ -163,6 +161,8 @@ def _apply_xet_performance_mode() -> None:
     offers nothing to set it with. The session is built once per process and
     caches its config, which is why changing the setting needs a restart.
     """
+    # circular: catalog.download -> core.config via cfg, the same cycle
+    # _models_dir documents (config -> model_ref -> catalog -> here).
     from lilbee.core.config.model import cfg
 
     if cfg.xet_high_performance:
