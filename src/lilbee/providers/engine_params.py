@@ -12,8 +12,6 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lilbee.app.services import get_services
-
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
@@ -111,6 +109,9 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     reaching for ``get_services()`` (callers running inside its construction).
     """
     if registry is None:
+        # call-time import: keeps the app-layer container off this module's import graph
+        from lilbee.app.services import get_services
+
         registry = get_services().registry
     try:
         return registry.resolve(model)
