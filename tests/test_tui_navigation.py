@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest import mock
 
 import pytest
+from rich.console import Console
 from textual.widgets import Footer, Input
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
@@ -1135,9 +1136,10 @@ async def test_footer_hidden_keys_still_reach_the_f1_key_panel():
     """show=False moves a key off the footer row; it must not hide it outright.
 
     Trimming the footer is only defensible because Textual's key panel filters
-    on `binding.system`, not on `show`. This is an upstream behaviour the
-    trimming leans on, so it is pinned here: if a Textual upgrade starts
-    honouring `show`, f4 and Tab become undiscoverable and this fails.
+    on `binding.system`, not on `show`. Asserted against what the panel actually
+    renders rather than by re-applying that filter here: `active_bindings` keeps
+    a `show=False` binding either way, so a re-implemented filter would still
+    pass on the day an upgrade starts honouring `show` and hides f4 for real.
     """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1145,14 +1147,19 @@ async def test_footer_hidden_keys_still_reach_the_f1_key_panel():
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         await pilot.press("escape")
         await pilot.pause()
+        await pilot.press("f1")
+        assert await pump_until(pilot, lambda: bool(app.screen.query("BindingsTable"))), (
+            "F1 never opened the key panel"
+        )
 
-        listed = {
-            binding.key
-            for _, binding, _, _ in app.screen.active_bindings.values()
-            if not binding.system
-        }
-        for key in ("f4", "tab"):
-            assert key in listed, f"{key} is hidden from the footer AND from help"
+        console = Console(width=200, no_color=True)
+        with console.capture() as capture:
+            console.print(app.screen.query_one("BindingsTable").render())
+        rendered = capture.get()
+        for key, description in (("f4", "Path/Name"), ("tab", "Complete")):
+            assert key in rendered and description in rendered, (
+                f"{key} is hidden from the footer AND from the key panel"
+            )
 
 
 async def test_strip_arrows_leave_the_prompt_alone():
