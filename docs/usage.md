@@ -1051,17 +1051,24 @@ reason the defaults are the defaults.
 
 ## Optional extras
 
-lilbee runs local inference on its managed llama-server fleet, which arrives
-with the `[engine]` extra. This section only applies to a `pip` or `uv` install,
-the developer route; the bundled builds (standalone binary, Homebrew, AUR, Nix,
-Docker, Flatpak, Snap, Scoop) carry the engine inside them and need none of it.
+Extras exist only on a `pip` or `uv` install. If you installed a bundled build
+(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all four
+are already inside it and none of this applies to you.
+
+`[engine]` is the `llama-server` that runs your models, and it is the one extra
+that is not really optional. `[graph]`, `[crawler]` and `[litellm]` add
+capabilities you can happily live without.
+
+<details>
+<summary><strong>pip / uv: installing the engine extra</strong></summary>
 
 `[engine]` is not on PyPI. The CUDA and ROCm wheels run 444 MiB to 863 MiB each,
 several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
 so every backend is published from lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That is what `--extra-index-url` is for. Install without it and
-lilbee still starts, but the first call that needs a model fails with an error
-naming the engine and repeating the command for your hardware.
+[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
+is what `--extra-index-url` is for. Install without it and lilbee still starts,
+but the first call that needs a model fails with an error naming the engine and
+repeating the command for your hardware.
 
 The builds are not interchangeable, so pick the index for your hardware: `cpu` is
 built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
@@ -1075,7 +1082,12 @@ pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/  
 pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
 ```
 
-The rest add capabilities that require heavier dependencies:
+</details>
+
+<details>
+<summary><strong>pip / uv: the graph, crawler and litellm extras</strong></summary>
+
+These pull heavier dependencies, so they are opt-in:
 
 ```bash
 # pip
@@ -1089,12 +1101,14 @@ uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
-Install multiple at once:
+Install several at once, engine included:
 
 ```bash
-pip install --pre 'lilbee[graph,crawler,litellm]'
-uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
+pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
+uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 ```
+
+</details>
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
 faster and dodges the Vulkan-loader crash that affects NVIDIA-on-Windows
