@@ -29,6 +29,10 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "en.wikipedia.org",
         "example.com",
         "github.com",
+        # lilbee's own package index, named in the engine-missing error message so
+        # the reader gets the install command for their hardware. A string in a
+        # message; nothing fetches it.
+        "lilbee.sh",
         # Agent-client documentation links cited from agent_configs/ module docstrings.
         "docs.litellm.ai",
         "opencode.ai",
