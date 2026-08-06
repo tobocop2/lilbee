@@ -42,7 +42,7 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
     elif spec.lstrip().startswith("{"):
         raw = spec  # inline JSON rather than a file path
     else:
-        raw = Path(spec).read_text()
+        raw = Path(spec).read_text(encoding="utf-8")
     return PlacementSpec.from_json(raw)
 
 
