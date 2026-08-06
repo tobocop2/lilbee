@@ -589,13 +589,23 @@ class ModelBar(Widget, can_focus=False):
         members = {*self.query(ModelPickerButton).results(), *self.query(ChatModePill).results()}
         return [w for w in self.screen.focus_chain if w in members]
 
-    def focus_strip(self) -> None:
-        """Focus the first member. No-op while the bar is still composing."""
-        self._focus_at(0)
+    def focus_strip(self, direction: int = 1) -> None:
+        """Enter the strip from outside it, travelling in *direction*.
 
-    def focus_strip_from(self, direction: int) -> None:
-        """Enter the strip from one side: walking right lands on the first role."""
-        self._focus_at(0 if direction > 0 else len(self.strip) - 1)
+        Walking rightwards enters at the first role, so the next step continues
+        the way the key pointed. No-op while the bar is still composing.
+        """
+        self._focus_end(first=direction > 0)
+
+    def _focus_end(self, *, first: bool) -> None:
+        """Focus the leftmost or rightmost member.
+
+        Named by which end it lands on rather than by a direction: entering the
+        strip and jumping to an end read the same sign oppositely, since walking
+        left *into* the strip lands on its last member while Home walks left
+        *within* it and lands on the first.
+        """
+        self._focus_at(0 if first else len(self.strip) - 1)
 
     def _focus_at(self, index: int) -> None:
         """Focus the member at *index*, clamped to the ends of the strip."""
@@ -618,7 +628,7 @@ class ModelBar(Widget, can_focus=False):
     def action_step_end(self, direction: int) -> None:
         """Home / End jump to the first or last member of the strip."""
         if self._focused_index() is not None:
-            self._focus_at(0 if direction < 0 else len(self.strip) - 1)
+            self._focus_end(first=direction < 0)
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="model-bar-roles"):

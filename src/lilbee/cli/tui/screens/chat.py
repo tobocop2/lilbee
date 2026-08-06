@@ -233,10 +233,12 @@ class ChatScreen(Screen[None]):
         "**i**/**a**/**o** to return to insert mode.\n\n"
         "**/** opens the slash-command line and **Tab** completes what you "
         "type there; **F2** lists every command.\n\n"
-        "**F6** jumps to the model strip under the prompt. **Left** / **Right** "
-        "walk all six cells (the Chat, Embed, Vision and Rerank pickers, then "
-        "the Search and Chat mode pills), **Home** / **End** jump to either "
-        "end, **Enter** opens or picks the focused cell, **Escape** goes back."
+        "**F6** jumps to the model strip under the prompt, and in normal mode "
+        "**h** / **l** or **Left** / **Right** step into it from either end. "
+        "**Left** / **Right** walk all six cells (the Chat, Embed, Vision and "
+        "Rerank pickers, then the Search and Chat mode pills), **h** / **l** do "
+        "the same, **Home** / **End** jump to either end, **Enter** opens or "
+        "picks the focused cell, **Escape** goes back."
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
@@ -311,11 +313,17 @@ class ChatScreen(Screen[None]):
         # before any binding fires. Tab reaches the bar too, but only from
         # NORMAL mode and only after walking past the log.
         Binding("f6", "focus_model_bar", "Model bar", show=True, priority=True),
-        # NORMAL mode walks sideways into the role strip. h / l only: the
-        # transcript owns j / k, and Left / Right never reach here because the
-        # focused VerticalScroll binds them to horizontal scrolling.
+        # NORMAL mode walks sideways into the role strip. h / l rather than the
+        # whole of hjkl: the transcript owns j / k for scrolling.
         Binding("h", "enter_model_strip(-1)", "Prev role", show=False),
         Binding("l", "enter_model_strip(1)", "Next role", show=False),
+        # The arrows reach here too. The focused transcript is a VerticalScroll
+        # and binds Left / Right to horizontal scrolling, but Widget's
+        # action_scroll_left raises SkipAction when there is nothing to scroll
+        # sideways, which resumes the key lookup and lands it here. A transcript
+        # wide enough to scroll keeps its own arrows; h / l are unconditional.
+        Binding("left", "enter_model_strip(-1)", "Prev role", show=False),
+        Binding("right", "enter_model_strip(1)", "Next role", show=False),
     ]
 
     def __init__(self) -> None:
@@ -480,12 +488,12 @@ class ChatScreen(Screen[None]):
         self.query_one("#model-bar", ModelBar).focus_strip()
 
     def action_enter_model_strip(self, direction: int) -> None:
-        """h / l from NORMAL mode: step into the strip from the matching side.
+        """h / l and the arrows from NORMAL mode: step in from the matching side.
 
         Only reached while focus is outside the bar. Once a role holds the
-        cursor the bar's own h / l bindings win, being nearer the focus.
+        cursor the bar's own keys win, being nearer the focus.
         """
-        self.query_one("#model-bar", ModelBar).focus_strip_from(direction)
+        self.query_one("#model-bar", ModelBar).focus_strip(direction)
 
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""

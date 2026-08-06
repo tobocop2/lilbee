@@ -1091,8 +1091,10 @@ async def test_chat_help_documents_the_strip_keys():
 
     assert "f6" in screen_keys
     assert "**F6**" in help_text
-    assert {"left", "right", "home", "end"} <= bar_keys
-    for token in ("**Left**", "**Right**", "**Home**", "**End**"):
+    assert {"left", "right", "home", "end", "h", "l"} <= bar_keys
+    # The keys that step in from outside the bar live on the screen, not the bar.
+    assert {"h", "l", "left", "right"} <= screen_keys
+    for token in ("**Left**", "**Right**", "**Home**", "**End**", "**h**", "**l**"):
         assert token in help_text
 
 
@@ -1165,10 +1167,10 @@ async def test_footer_hidden_keys_still_reach_the_f1_key_panel():
 async def test_strip_arrows_leave_the_prompt_alone():
     """The strip's arrows must not reach the prompt's own cursor movement.
 
-    Nothing guards them: key lookup only walks the focused widget's ancestors,
-    so a ModelBar binding cannot fire while the input has focus. That is the
-    property being pinned -- if the bindings ever move up to the screen, typing
-    Left in a half-written prompt would jump focus into the bar.
+    What protects the prompt is the focused input consuming these keys first,
+    not where the bindings live: the screen itself now binds Left / Right to
+    step into the strip from NORMAL mode, and typing Left in a half-written
+    prompt still has to move the cursor rather than jump focus into the bar.
     """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1276,9 +1278,8 @@ async def test_enter_on_a_mode_pill_switches_chat_mode():
 async def test_l_walks_into_the_model_strip_from_normal_mode():
     """NORMAL mode reaches the strip sideways, without knowing about F6.
 
-    Escape parks the cursor on the transcript, where the arrows belong to its
-    own horizontal scrolling; h / l are free there and read as "move along the
-    row" to anyone who already uses j / k to scroll it.
+    Escape parks the cursor on the transcript. h / l are free there, and read as
+    "move along the row" to anyone already scrolling it with j / k.
     """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1419,3 +1420,36 @@ async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
             f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
         )
         assert not app.screen._insert_mode, "Enter fell through to INSERT instead of the pill"
+
+
+async def test_the_arrows_also_step_into_the_strip_from_normal_mode():
+    """Left / Right are the discoverable route in; h / l are the vim one.
+
+    The transcript is a VerticalScroll and binds Left / Right to horizontal
+    scrolling, but Widget.action_scroll_left raises SkipAction when there is
+    nothing to scroll sideways, so key lookup resumes and reaches the screen.
+    Measured, not assumed: the first version of this work bound only h / l on
+    the belief that the arrows could never get here.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        assert getattr(app.screen.focused, "id", None) == "chat-log"
+
+        await pilot.press("right")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), f"Right from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+        # And the far end from the other side, after handing the cursor back.
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("left")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"Left from NORMAL mode left the cursor on {app.screen.focused!r}"
