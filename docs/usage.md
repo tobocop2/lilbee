@@ -1052,11 +1052,16 @@ reason the defaults are the defaults.
 ## Optional extras
 
 lilbee runs local inference on its managed llama-server fleet, which arrives
-with the `[engine]` extra. On a `pip` or `uv` install that extra is the one you
-need: without it there is no llama-server, and nothing can load a model. It is
-published on lilbee.sh rather than PyPI, so the index for your hardware is part
-of the command (see the install table in the README). The bundled builds
-(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap) already carry it.
+with the `[engine]` extra. This section only applies to a `pip` or `uv` install,
+the developer route; the bundled builds (standalone binary, Homebrew, AUR, Nix,
+Docker, Flatpak, Snap, Scoop) carry the engine inside them and need none of it.
+
+`[engine]` is not on PyPI. The CUDA and ROCm wheels are 440 MB to 860 MB each,
+well past PyPI's 100 MB per-file limit, so every backend is published from
+lilbee's own [PEP 503](https://peps.python.org/pep-0503/) package index at
+`lilbee.sh`. That is what `--extra-index-url` is for. Install without it and
+lilbee still starts, but the first call that needs a model fails with an error
+naming the engine and repeating the command for your hardware.
 
 The builds are not interchangeable, so pick the index for your hardware: `cpu` is
 built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
@@ -1096,10 +1101,10 @@ faster and dodges the Vulkan-loader crash that affects NVIDIA-on-Windows
 setups. Same `lilbee` command, links straight against your NVIDIA driver:
 
 ```bash
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/
 brew install tobocop2/lilbee/lilbee-cuda
 paru -S lilbee-cuda
 nix run github:tobocop2/lilbee#lilbee-cuda
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # devs
 ```
 
 The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
