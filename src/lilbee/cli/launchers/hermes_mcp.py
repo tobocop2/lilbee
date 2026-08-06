@@ -84,6 +84,10 @@ def _mcp_extra_requirements(interpreter: str) -> list[str]:
             [interpreter, "-c", _EXTRA_REQS_SNIPPET],
             capture_output=True,
             text=True,
+            # text=True decodes with the locale's encoding, so the JSON this
+            # prints would fail to decode on a non-UTF-8 console before it ever
+            # reaches json.loads.
+            encoding="utf-8",
             check=False,
         )
         reqs = json.loads(result.stdout or "[]")
@@ -130,6 +134,7 @@ def ensure_hermes_http_mcp(
             [interpreter, "-m", "pip", "install", *_mcp_extra_requirements(interpreter)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError as exc:

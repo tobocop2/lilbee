@@ -249,6 +249,7 @@ def _nvidia_device_totals() -> list[tuple[str, int]] | None:
             ["nvidia-smi", "--query-gpu=memory.total,uuid", "--format=csv,noheader,nounits"],  # noqa: S607
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
         )
         if result.returncode == 0:

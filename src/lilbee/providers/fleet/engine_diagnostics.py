@@ -24,6 +24,7 @@ def ldd_output(binary: Path, env: dict[str, str]) -> str | None:
             [ldd, str(binary)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=_LDD_TIMEOUT_S,
             env=env,
             check=False,

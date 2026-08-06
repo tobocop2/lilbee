@@ -222,3 +222,41 @@ class TestDiffScopedEncodingCheck:
 
         assert len(findings) == 1
         assert ":2:" in findings[0]
+
+
+class TestSubprocessTextPipes:
+    """subprocess decodes its pipes with the locale's encoding in text mode.
+
+    Same defect as read_text: a GPU tool or probe script printing a non-ASCII
+    device name or path fails to decode before any of our code sees it.
+    """
+
+    def _findings(self, tmp_path: Path, source: str) -> list[str]:
+        target = tmp_path / "sample.py"
+        target.write_text(source, encoding="utf-8")
+        return list(csr._check_unspecified_encoding([target]))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("subprocess.run(cmd, text=True)", id="run_text"),
+            pytest.param("subprocess.run(cmd, universal_newlines=True)", id="run_universal"),
+            pytest.param("subprocess.Popen(cmd, text=True)", id="popen"),
+            pytest.param("subprocess.check_output(cmd, text=True)", id="check_output"),
+        ],
+    )
+    def test_flags_text_pipes_without_encoding(self, tmp_path: Path, source: str) -> None:
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("subprocess.run(cmd, text=True, encoding='utf-8')", id="encoded"),
+            pytest.param("subprocess.run(cmd, capture_output=True)", id="bytes_pipes"),
+            pytest.param("subprocess.run(cmd)", id="no_pipes"),
+            pytest.param("subprocess.run(cmd, text=False)", id="text_disabled"),
+            pytest.param("chunk(raw, heading_context=True)", id="unrelated_true_kwarg"),
+        ],
+    )
+    def test_leaves_byte_pipes_and_encoded_calls_alone(self, tmp_path: Path, source: str) -> None:
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"

@@ -239,7 +239,10 @@ class SessionStore:
 
     @staticmethod
     def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
-        with path.open(encoding="utf-8") as fh:
+        # errors="replace": a crash mid-write can tear a multi-byte character, and
+        # that decodes here in the for-loop, outside the try below that exists
+        # to skip torn lines. Replacing makes it a JSON failure it can catch.
+        with path.open(encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line:

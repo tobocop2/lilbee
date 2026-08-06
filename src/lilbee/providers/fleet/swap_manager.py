@@ -537,6 +537,7 @@ def _ephemeral_range() -> tuple[int, int] | None:
             ["/usr/sbin/sysctl", "-n", "net.inet.ip.portrange.first", "net.inet.ip.portrange.last"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             check=False,
         )

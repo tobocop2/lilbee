@@ -85,6 +85,12 @@ ORIGINAL_FILE_RE = re.compile(r"\boriginal\s+[a-z_][a-z0-9_]*\.py\b", re.IGNOREC
 _ALWAYS_TEXT_CALLS = frozenset({"read_text", "write_text"})
 _TEXT_IO_CALLS = _ALWAYS_TEXT_CALLS | {"open", "NamedTemporaryFile"}
 
+# subprocess decodes its pipes with the locale's encoding too, whenever text
+# mode is asked for. Same defect, different call: the output of a GPU tool or a
+# probe script is decoded before any of this code sees it.
+_SUBPROCESS_CALLS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+_TEXT_MODE_KEYWORDS = frozenset({"text", "universal_newlines"})
+
 # A ``.open`` attribute call is only a file open when it says so. ``os.open``
 # returns a descriptor and ``webbrowser.open`` takes a URL; neither accepts an
 # encoding, so reporting them would be a finding nobody can resolve. Require
@@ -134,6 +140,20 @@ def _is_file_io(node: ast.Call, name: str) -> bool:
     return mode is not None and bool(_FILE_MODE_RE.match(mode))
 
 
+def _asks_for_text_pipes(node: ast.Call) -> bool:
+    """Whether *node* puts subprocess into text mode, which decodes its pipes.
+
+    Without a text-mode keyword the pipes stay bytes and there is nothing to
+    decode; ``capture_output`` alone does not change that.
+    """
+    return any(
+        keyword.arg in _TEXT_MODE_KEYWORDS
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for keyword in node.keywords
+    )
+
+
 def _opens_in_binary_mode(node: ast.Call, name: str) -> bool:
     """Whether *node* reads bytes, which have no encoding to declare.
 
@@ -167,9 +187,13 @@ def _unspecified_encoding_hits(path: Path) -> Iterator[tuple[int, str]]:
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node)
-        if name not in _TEXT_IO_CALLS:
+        if name not in _TEXT_IO_CALLS and name not in _SUBPROCESS_CALLS:
             continue
         if any(keyword.arg == "encoding" for keyword in node.keywords):
+            continue
+        if name in _SUBPROCESS_CALLS:
+            if _asks_for_text_pipes(node):
+                yield node.lineno, name
             continue
         if not _is_file_io(node, name) or _opens_in_binary_mode(node, name):
             continue
