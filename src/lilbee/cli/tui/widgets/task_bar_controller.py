@@ -59,10 +59,9 @@ class ProgressReporter:
     def check_cancelled(self) -> None:
         """Raise ``TaskCancelledError`` if the task was cancelled from the UI.
 
-        A cancelled download aborts the transfer here as well as in
-        ``cancel_task``. This runs inside the progress callback, so a transfer
-        is live by construction, whereas an abort fired from the UI thread can
-        land before the transfer registers with the session and do nothing.
+        A cancelled download aborts here too: the progress callback only runs
+        while a transfer is live, whereas ``cancel_task`` can fire before the
+        session exists.
         """
         task = self._controller.queue.get_task(self._task_id)
         if task is None or task.status is not TaskStatus.CANCELLED:

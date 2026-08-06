@@ -1,8 +1,6 @@
 """End-to-end acceptance for the xet download path, against real HuggingFace.
 
-Covers the four model roles a working install needs, including a vision model
-whose projector is a second file fetched by a different code path, and the two
-queue behaviours a user can trigger by accident:
+Covers:
 
   * every role downloads and lands on disk
   * a vision model brings its mmproj with it
@@ -11,10 +9,8 @@ queue behaviours a user can trigger by accident:
   * a cancelled download can be started again and finishes
   * cancelling the running download leaves the queue behind it intact
 
-Off by default. The other integration tests download a few megabytes; this
-one moves roughly 1.1GB, and `make test-integration` has no slow filter, so
-leaving it on would pull that on every cell of the CI matrix. Run it where the
-bandwidth is:
+Moves roughly 1.1GB, and `make test-integration` has no slow filter, so it is
+off unless asked for:
 
     LILBEE_E2E_DOWNLOADS=1 uv run pytest tests/integration/test_xet_download_e2e.py -v -m slow
 """

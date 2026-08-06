@@ -120,9 +120,8 @@ def _raise_if_disk_exhausted(
 ) -> None:
     """Re-raise a failed download as a disk problem when the volume is full.
 
-    Low free space is a heuristic, not a diagnosis, so *cause* is kept in the
-    message: a download that failed on auth while the disk happened to be nearly
-    full must not be reported as a disk problem alone.
+    Low free space is a heuristic, not a diagnosis, so *cause* stays in the
+    message.
     """
     if config.cache_dir is None:
         return
@@ -157,9 +156,8 @@ _XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
 def _apply_xet_performance_mode() -> None:
     """Publish the high-performance setting to xet before it builds a session.
 
-    hf_xet reads this from the environment in its Rust layer, so huggingface_hub
-    offers nothing to set it with. The session is built once per process and
-    caches its config, which is why changing the setting needs a restart.
+    hf_xet reads it from the environment in Rust and caches it when the session
+    is built, so a change lands on restart.
     """
     # circular: catalog.download -> core.config via cfg, the same cycle
     # _models_dir documents (config -> model_ref -> catalog -> here).

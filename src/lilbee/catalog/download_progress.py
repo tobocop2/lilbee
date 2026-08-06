@@ -91,12 +91,9 @@ class _CallbackProgressBar(_base_tqdm):
     raises ``ValueError`` when ``sys.stderr.fileno() == -1`` (Textual, Jupyter,
     pytest capture). A thread lock sidesteps that fd handling entirely.
 
-    huggingface_hub reports two byte streams. ``update`` carries bytes written to
-    disk; ``update_transfer`` carries bytes off the network. On the xet path the
-    disk stream only moves when a buffered block flushes (a handful of events for
-    a whole file), while the transfer stream moves continuously. On the HTTP path
-    both fire for the same chunk. Tracking them separately and reporting the
-    larger keeps xet smooth without double-counting HTTP.
+    ``update`` carries bytes written to disk, ``update_transfer`` bytes off the
+    network. Both fire for the same bytes on HTTP, so the two are tracked apart
+    and the larger reported rather than summed.
     """
 
     _lock = threading.RLock()
