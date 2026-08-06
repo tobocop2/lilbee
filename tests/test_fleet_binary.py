@@ -398,5 +398,8 @@ def test_install_hint_indexes_are_documented() -> None:
 
     root = Path(__file__).resolve().parents[1]
     for doc in ("README.md", "docs/usage.md"):
-        documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", (root / doc).read_text()))
+        # Explicit utf-8: both files carry non-cp1252 characters, so the locale
+        # default would decode-error on Windows.
+        text = (root / doc).read_text(encoding="utf-8")
+        documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", text))
         assert hint_indexes <= documented, f"{doc} is missing {hint_indexes - documented}"
