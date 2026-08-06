@@ -34,8 +34,8 @@ class ChatInput(TextArea):
     # even though the underlying TextArea is happy to type them. Empty
     # by default so printable characters (including ``?``) land as literal
     # text in the input; the user explicitly asked for help to NOT pop
-    # mid-typing. Help still opens via F1 / Ctrl+H, and ``?`` works as a
-    # binding any time the chat input does not have focus.
+    # mid-typing. ``?`` opens help from any screen where a text field does
+    # not have focus, and from an empty prompt via _on_key below.
     _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset()
 
     # Per-keystroke layout cost is dominated by ``height: auto`` reflow.

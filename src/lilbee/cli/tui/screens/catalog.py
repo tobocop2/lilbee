@@ -192,29 +192,25 @@ class CatalogScreen(Screen[None]):
         "## Other\n"
         "- q / Esc: back."
     )
-
-    _ACTION_GROUP = Binding.Group("Actions", compact=True)
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
     _TAB_GROUP = Binding.Group("Tabs", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
+        Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "", show=False),
-        # Surfaced outside _ACTION_GROUP so the "Grid/List" affordance prints
-        # in full in the footer instead of collapsing into the compact pill.
-        # Keep the label terse; the row of bindings runs out of space on
-        # narrow terminals and truncates the rightmost item mid-word
-        # (`^t Theme` -> `^t The`) when this one carried an `(faster)` tag.
-        Binding("v", "toggle_view", "Grid/List", show=True),
-        Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
-        # `d` / `i` are bound but hidden from the footer. The catalog row
-        # was overflowing on narrow terminals and truncating the rightmost
-        # global binding (`[ ] Navigate`) mid-word. Both stay discoverable
-        # via F2 (command palette) and F1 (help overlay).
+        # Help-panel only: the footer keeps the keys that move between views plus the
+        # one this screen is for, which is search. Switching grid for list is a
+        # preference, not a way around the catalog.
+        Binding("v", "toggle_view", "Grid/List", show=False),
+        Binding("slash", "focus_search", "Search", show=True),
+        # `d` / `i` are bound but help-panel only, like everything here that is not
+        # search: the footer carries the keys that move between views plus the
+        # one verb this screen is for. Both stay discoverable via F2 (command
+        # palette) and `?` (help overlay).
         Binding("d", "delete_model", "Delete", show=False),
         Binding("backspace", "delete_model", "Delete", show=False),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("i", "show_info", "Info", show=False, group=_ACTION_GROUP),
+        Binding("i", "show_info", "Info", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
         # Arrows move the card cursor too (auto-scrolls into view) so
@@ -230,17 +226,16 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
-        # Hidden from the footer so catalog still has <=5 visible bindings;
-        # the sort-label surfaces "press n for more" and "press s to sort"
-        # to the user instead.
-        Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
-        Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
-        Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
+        # Help-panel only; the sort-label surfaces "press n for more" and "press s to
+        # sort" on screen instead, which is better than a footer cell.
+        Binding("n", "load_more", "More", show=False),
+        Binding("s", "cycle_sort", "Sort", show=False),
+        Binding("ctrl+b", "toggle_drawer", "Detail", show=False),
         # `o` for origin, not `c`: `c` is the app-wide jump to Chat. An app
         # binding may only be shadowed by a screen key the footer explains,
         # and this one is hidden, so it would have flipped the source filter
         # with nothing on screen to say why.
-        Binding("o", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
+        Binding("o", "cycle_source", "Source", show=False),
         # Numeric tab shortcuts; 1-6 jump to the corresponding tab in
         # ALL_TAB_IDS order (Discover, Chat, Embed, Vision, Rerank, Library).
         # priority=True so they win against any focused-widget binding that

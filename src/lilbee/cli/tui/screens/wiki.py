@@ -110,15 +110,13 @@ class WikiScreen(Screen[None]):
         "/ searches, b generates pages from your documents (GPU-heavy)."
     )
 
-    _PAGES_GROUP = Binding.Group("Pages", compact=True)
-
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(escape_action="dismiss_or_back"),
         *BROWSE_LIST_BINDINGS,
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("D", "open_drafts", "Drafts", show=True, group=_PAGES_GROUP),
-        Binding("b", "wikify", "Wikify", show=True, group=_PAGES_GROUP),
-        Binding("W", "wipe", "Wipe", show=True, group=_PAGES_GROUP),
+        Binding("D", "open_drafts", "Drafts", show=False),
+        Binding("b", "wikify", "Wikify", show=True),
+        Binding("W", "wipe", "Wipe", show=False),
         Binding("h", "cursor_left", "Collapse", show=False),
         Binding("l", "cursor_right", "Expand", show=False),
     ]

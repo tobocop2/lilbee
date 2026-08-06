@@ -578,10 +578,16 @@ class TestQuestionMarkHelpAsync:
 
 
 class TestPlaceholderCopy:
-    def test_placeholder_advertises_three_discovery_keys(self) -> None:
+    def test_placeholder_advertises_the_discovery_keys(self) -> None:
+        """The placeholder shows over an EMPTY prompt, which is where ? works.
+
+        It used to advertise F1; that binding is gone, and a placeholder naming
+        a key that does nothing is worse than one key fewer.
+        """
         text = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
         assert "/" in text
-        assert "F1" in text
+        assert "?" in text
+        assert "F1" not in text
         assert "F2" in text
 
 
@@ -648,15 +654,25 @@ class TestAutoShowOverlayAsync:
 class TestDiscoveryBindingsAsync:
     """The keys that open the discovery surfaces must be visible and live."""
 
-    def test_f1_visible_in_app_bindings(self) -> None:
+    def test_question_mark_is_the_only_help_key(self) -> None:
+        """F1 and Ctrl+H are gone; `?` carries help on its own.
+
+        `?` is what modal TUIs bind, function keys get eaten by tmux and by
+        some terminals, and Ctrl+H is what many terminals send for Backspace,
+        which put a help binding one keystroke from every text field.
+        """
         from textual.binding import Binding
 
         from lilbee.cli.tui.app import LilbeeApp
 
-        f1 = next(b for b in LilbeeApp.BINDINGS if isinstance(b, Binding) and b.key == "f1")
-        assert f1.show is True
-        assert f1.priority is True
-        assert f1.action == "push_help"
+        keys = {b.key: b for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
+        assert "f1" not in keys
+        assert "ctrl+h" not in keys
+        help_key = keys["question_mark"]
+        assert help_key.show is True
+        assert help_key.action == "push_help"
+        # Non-priority on purpose: a focused text field must type the literal.
+        assert help_key.priority is False
 
     async def test_f2_opens_catalog(self, _mock_resolve, _mock_services) -> None:
         app = _ChatHostApp()
@@ -665,17 +681,28 @@ class TestDiscoveryBindingsAsync:
             await pilot.pause()
             assert isinstance(app.screen, SlashCommandCatalog)
 
-    async def test_f2_visible_in_chat_footer(self, _mock_resolve, _mock_services) -> None:
+    async def test_f2_stays_discoverable_off_the_chat_footer(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """F2 keeps working and keeps its label, now listed in help not the row.
+
+        It was surfaced in the footer alongside F1 when the dropdown work landed.
+        The row is now the keys that move between views plus the one verb each
+        screen is for, which on chat is `/`, and `/` already leads to the command
+        list. F2 stays bound, priority, and non-system so the help panel lists
+        it, which is where its discoverability now lives.
+        """
         from textual.binding import Binding
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         f2 = next(b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "f2")
-        assert f2.show is True
+        assert f2.show is False
+        assert f2.system is False, "a system binding would vanish from the help panel too"
         assert f2.priority is True
         assert f2.action == "show_command_catalog"
-        # F2 opens the slash-command list, not the model catalog -- the
-        # footer label must not say "Catalog" (that's `/models`).
+        # F2 opens the slash-command list, not the model catalog -- the label
+        # must not say "Catalog" (that's `/models`).
         assert f2.description == "All commands"
 
     def test_ctrl_n_is_priority_for_dropdown_navigation(self) -> None:

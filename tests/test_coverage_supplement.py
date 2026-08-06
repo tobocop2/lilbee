@@ -2106,6 +2106,12 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             mock.patch.object(screen, "_mount_grid_section"),
             mock.patch.object(screen, "_mount_grid_ctas"),
             mock.patch.object(screen, "_focused_grid", return_value=None),
+            # The restore branch sits downstream of the filter-focus guard, and
+            # that guard reads the `focused` reactive, which raises on an
+            # instance built with __new__. Stubbed so this test still reaches
+            # the branch it is about; the guard itself is covered by
+            # test_catalog_actions.test_deferred_grid_mount_does_not_steal_the_filter_focus.
+            mock.patch.object(CatalogScreen, "_search_focused", new=False),
             mock.patch.object(screen, "_restore_focused_section", return_value=True),
             mock.patch.object(screen, "_focus_first_grid") as focus_first,
         ):

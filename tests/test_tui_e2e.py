@@ -656,13 +656,15 @@ class TestScreenTransitions:
                     await pilot.pause()
                     assert app.active_view == view
 
-                    # Use f1 instead of ? because focused inputs still swallow
-                    # question_mark.
-                    await pilot.press("f1")
+                    # `?` is the only help key. It reaches help here even on
+                    # Chat, where the prompt has focus, because the prompt is
+                    # empty and ChatInput routes `?` to help in that state.
+                    await pilot.press("question_mark")
                     await pilot.pause()
                     assert app.screen.query("HelpPanel")
 
-                    await pilot.press("f1")
+                    # `?` toggles: action_push_help hides an open panel.
+                    await pilot.press("question_mark")
                     await pilot.pause()
                     assert not app.screen.query("HelpPanel")
 
@@ -3217,7 +3219,14 @@ class TestQuestionMarkBehavior:
                 "? must not open help while the user is mid-typing"
             )
 
-    async def test_f1_opens_help_even_with_chat_input_focused(self, _mock_resolve):
+    async def test_question_mark_opens_help_from_an_empty_focused_prompt(self, _mock_resolve):
+        """With the prompt focused and empty, `?` still reaches help.
+
+        This replaces a test that pressed F1, which used to be the one key that
+        worked mid-typing. F1 is gone: `?` is the only help key now, and the
+        surviving route from a focused prompt is ChatInput._on_key, which sends
+        `?` to help while the prompt is empty and types it once there is text.
+        """
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -3226,9 +3235,11 @@ class TestQuestionMarkBehavior:
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
             await pilot.pause()
-            await pilot.press("f1")
+            assert inp.value == ""
+            await pilot.press("question_mark")
             await pilot.pause()
-            assert app.screen.query("HelpPanel"), "F1 must always open the help panel"
+            assert app.screen.query("HelpPanel"), "? must open help from an empty prompt"
+            assert inp.value == "", "? typed itself instead of opening help"
 
 
 class TestSetupWizardGrid:

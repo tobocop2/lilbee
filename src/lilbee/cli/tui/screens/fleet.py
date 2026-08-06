@@ -24,14 +24,12 @@ class FleetScreen(Screen[None]):
     AUTO_FOCUS = ".dev-toggle"
     HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
 
-    _PLACEMENT_GROUP = Binding.Group("Placement", compact=True)
-
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
         # priority so they fire even when a button/editor child has focus.
-        Binding("ctrl+r", "preview", "Preview", show=True, priority=True, group=_PLACEMENT_GROUP),
-        Binding("ctrl+s", "apply", "Apply", show=True, priority=True, group=_PLACEMENT_GROUP),
-        Binding("ctrl+x", "clear", "Auto", show=True, priority=True, group=_PLACEMENT_GROUP),
+        Binding("ctrl+r", "preview", "Preview", show=False, priority=True),
+        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
+        Binding("ctrl+x", "clear", "Auto", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:

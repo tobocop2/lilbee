@@ -120,37 +120,37 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
-    # Every screen carries these ten visible app bindings, so ungrouped they
-    # cost ~110 of the ~120 columns a normal terminal has and squeeze the
-    # screen's own keys off the row. Grouping is by purpose, not by modifier:
-    # a group renders its keys once behind a single label, which is what buys
-    # the room back. Textual groups CONSECUTIVE runs of shown bindings, so the
-    # members of each group must stay adjacent below.
-    _VIEWS_GROUP = Binding.Group("Views", compact=True)
-    _NAV_GROUP = Binding.Group("Navigate")
-    _APP_GROUP = Binding.Group("App", compact=True)
+    # The app row is [ and ] to move between views, plus Help and Quit. Every
+    # other app key is help-panel only, which lists every non-system binding whatever
+    # its ``show``. A group may hold one action pressed in two directions, where
+    # a single label still tells the whole truth, and never keys that do
+    # different things: five destinations behind one "Views" label named none of
+    # them. Textual groups CONSECUTIVE runs of shown bindings, so a group's
+    # members stay adjacent.
+    _NAV_GROUP = Binding.Group("Views")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # ``?`` is non-priority so a focused TextArea (chat input in INSERT
-        # mode) can swallow it and type the literal character. F1 / Ctrl+H
-        # remain priority routes that always open help, even mid-typing.
-        Binding("question_mark", "push_help", "Help", show=False),
-        Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
+        # ``?`` is the only key for help. Non-priority on purpose: a focused
+        # text field consumes printable keys, which both types the literal
+        # character and takes the key out of the footer row, so no guard here is
+        # needed to keep the row honest. ChatInput additionally routes ``?`` on
+        # an EMPTY prompt to this action, so an untouched prompt still opens
+        # help. F1 is gone; one advertised key is enough.
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         # Guarded like open_tasks in check_action: a focused text input
         # types the literal letter instead.
-        Binding("t", "open_tasks", "Tasks", show=True, group=_VIEWS_GROUP),
-        Binding("m", "open_catalog", "Models", show=True, group=_VIEWS_GROUP),
-        Binding("c", "open_chat", "Chat", show=True, group=_VIEWS_GROUP),
-        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True, group=_VIEWS_GROUP),
-        Binding(
-            "ctrl+o",
-            "toggle_sessions",
-            "Sessions",
-            show=True,
-            priority=True,
-            group=_VIEWS_GROUP,
-        ),
+        # Help-panel only: the view tabs run across the top of every screen and are
+        # clickable, so a footer cell per destination is a second copy of
+        # something already on screen. [ and ] move between them.
+        Binding("c", "open_chat", "Chat", show=False),
+        Binding("m", "open_catalog", "Models", show=False),
+        Binding("t", "open_tasks", "Tasks", show=False),
+        # These two keep their cells: they open a drawer beside the current
+        # screen rather than navigating, so unlike the jumps above they do
+        # something the tab strip cannot, and nothing else on screen says so.
+        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
+        Binding("ctrl+o", "toggle_sessions", "Sessions", show=True, priority=True),
         # priority=True so a focused TextArea cannot swallow the bracket
         # under stress (multi-key send-keys etc.); type literal brackets
         # via Shift+[ / Shift+] which produce { / } and bypass these.
@@ -170,12 +170,13 @@ class LilbeeApp(App[None]):
             group=_NAV_GROUP,
             priority=True,
         ),
-        Binding("f1", "push_help", "Help", show=True, priority=True, group=_APP_GROUP),
-        Binding("ctrl+t", "cycle_theme", "Theme", show=True, group=_APP_GROUP),
-        Binding("ctrl+c", "quit", "Quit", show=True, priority=True, group=_APP_GROUP),
+        Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
+        # Off the row, like f4 below: cycling the theme is not something a user
+        # needs advertised on every screen, and the row is for getting around.
+        Binding("ctrl+t", "cycle_theme", "Theme", show=False),
         # Hidden: a title-bar display toggle is not worth a permanent footer
         # cell on all twelve screens. show=False only drops it from the footer
-        # row -- F1's key panel lists every non-system binding regardless -- so
+        # row -- the help panel lists every non-system binding regardless -- so
         # the key stays discoverable.
         Binding("f4", "toggle_lilbee_path", "Path/Name", show=False),
         # Non-priority so Chat's "focus_commands" and Catalog's
@@ -613,6 +614,15 @@ class LilbeeApp(App[None]):
         # nothing to toggle, so the key should not take a footer cell at all.
         if action == "toggle_sessions" and not cfg.sessions_enabled:
             return False
+        # Drop each drawer toggle only where pressing it would do nothing, which
+        # is the view that already shows the same panel full-screen. An OPEN
+        # DRAWER is not that case: the key closes it, and the drawer contains the
+        # very widget these predicates look for, so testing the panel alone
+        # disabled the key that closes the drawer.
+        if action == "toggle_fleet" and self._toggle_fleet_is_noop():
+            return False
+        if action == "toggle_sessions" and self._toggle_sessions_is_noop():
+            return False
         return super().check_action(action, parameters)
 
     def go_back(self) -> None:
@@ -631,6 +641,44 @@ class LilbeeApp(App[None]):
         """Jump to Chat (c key), the counterpart to t / m for the busiest view."""
         self.switch_view(msg.DEFAULT_VIEW)
 
+    def _shows_placement_full_screen(self) -> bool:
+        """True when this screen shows the placement editor, tab or drawer.
+
+        FleetDrawer composes a FleetBody, so this is also True while the drawer
+        is open. Callers that care about "nothing left to do" must rule the
+        drawer out first, as :meth:`_toggle_fleet_is_noop` does.
+        """
+        return bool(self.screen.query("FleetBody"))
+
+    def _shows_sessions_full_screen(self) -> bool:
+        """True when this screen shows the session list, tab or drawer.
+
+        SessionsDrawer composes a SessionListPanel, so the same caveat as
+        :meth:`_shows_placement_full_screen` applies.
+        """
+        return bool(self.screen.query("SessionListPanel"))
+
+    def _toggle_fleet_is_noop(self) -> bool:
+        """True when ctrl+g would do nothing, mirroring the action's own order.
+
+        The action closes an open drawer first and only then treats a
+        full-screen placement editor as a reason to stop, so a drawer that can
+        be closed is never a no-op.
+        """
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+        if self.screen.query(FleetDrawer):
+            return False
+        return self._shows_placement_full_screen()
+
+    def _toggle_sessions_is_noop(self) -> bool:
+        """True when ctrl+o would do nothing. See :meth:`_toggle_fleet_is_noop`."""
+        from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
+
+        if self.screen.query(SessionsDrawer):
+            return False
+        return self._shows_sessions_full_screen()
+
     def action_toggle_fleet(self) -> None:
         """Toggle the Fleet drawer (ctrl+g): dock placement beside the current
         screen, or close it if already open. No-op on the Fleet tab, which
@@ -641,7 +689,7 @@ class LilbeeApp(App[None]):
         if drawers:
             drawers.first().remove()
             return
-        if self.screen.query("FleetBody"):  # Fleet tab already shows placement
+        if self._shows_placement_full_screen():
             return
         self.screen.mount(FleetDrawer())
 
@@ -668,7 +716,7 @@ class LilbeeApp(App[None]):
         if drawers:
             drawers.first().remove()
             return
-        if self.screen.query("SessionListPanel"):  # Sessions tab already shows the list
+        if self._shows_sessions_full_screen():
             return
         self.screen.mount(SessionsDrawer())
 

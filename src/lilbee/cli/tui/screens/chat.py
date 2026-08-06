@@ -242,7 +242,6 @@ class ChatScreen(Screen[None]):
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
-    _COMMANDS_GROUP = Binding.Group("Commands", compact=True)
 
     # Hot-path widget refs. ``getters.query_one`` is a typed class-level
     # descriptor that resolves via Textual's indexed DOM lookup on every
@@ -253,21 +252,18 @@ class ChatScreen(Screen[None]):
     _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # `/` opens the slash-command line. The label says "Slash commands"
-        # rather than the bare "Commands" so the footer tells the user what
-        # `/` actually does; Tab completion is named in help instead.
-        Binding("slash", "focus_commands", "Slash commands", show=True, group=_COMMANDS_GROUP),
+        # `/` opens the slash-command line: the one thing this screen is for
+        # besides typing, so it keeps a footer cell.
+        Binding("slash", "focus_commands", "Commands", show=True),
         # F2 opens the searchable list of every slash command
         # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
-        # Grouped with `/` (and kept adjacent, which is what Textual groups on)
-        # so both stay in the footer at half the width.
+        # Help-panel only: `/` already leads there, and the full list is a lookup.
         Binding(
             "f2",
             "show_command_catalog",
             "All commands",
-            show=True,
+            show=False,
             priority=True,
-            group=_COMMANDS_GROUP,
         ),
         # Hidden: Tab only completes while the slash dropdown is open, and the
         # rest of the time it walks the focus chain, so a permanent
@@ -312,7 +308,7 @@ class ChatScreen(Screen[None]):
         # reaching mid-sentence, and a focused input consumes printable keys
         # before any binding fires. Tab reaches the bar too, but only from
         # NORMAL mode and only after walking past the log.
-        Binding("f6", "focus_model_bar", "Model bar", show=True, priority=True),
+        Binding("f6", "focus_model_bar", "Model bar", show=False, priority=True),
         # NORMAL mode walks sideways into the role strip. h / l rather than the
         # whole of hjkl: the transcript owns j / k for scrolling.
         Binding("h", "enter_model_strip(-1)", "Prev role", show=False),

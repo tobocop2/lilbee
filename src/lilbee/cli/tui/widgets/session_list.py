@@ -60,13 +60,11 @@ class SessionListPanel(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
-    _SESSION_GROUP = Binding.Group("Session", compact=True)
-
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+n", "new_chat", "New", show=True, priority=True, group=_SESSION_GROUP),
-        Binding("ctrl+r", "rename", "Rename", show=True, priority=True, group=_SESSION_GROUP),
-        Binding("ctrl+d", "delete", "Delete", show=True, priority=True, group=_SESSION_GROUP),
-        Binding("escape", "close", "Close", show=True, priority=True),
+        Binding("ctrl+n", "new_chat", "New", show=True, priority=True),
+        Binding("ctrl+r", "rename", "Rename", show=False, priority=True),
+        Binding("ctrl+d", "delete", "Delete", show=False, priority=True),
+        Binding("escape", "close", "Close", show=False, priority=True),
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
     ]

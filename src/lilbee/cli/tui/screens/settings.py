@@ -112,13 +112,10 @@ class SettingsScreen(Screen[None]):
         "setting, and q or Escape goes back."
     )
 
-    # Settings shows the most keys of any screen, so each pair collapses to a
-    # single labelled cell. Grouping the app row alone was not enough here:
-    # this was the widest footer in the app at 200 columns, and the only one
-    # still over 120 once the shared row shrank.
-    _FIELD_GROUP = Binding.Group("Field", compact=True)
+    # < and > are one action in two directions, so a single "Tabs" label still
+    # says what both keys do. Keys that do different things get their own cell
+    # or move to the help panel.
     _TAB_GROUP = Binding.Group("Tabs", compact=True)
-    _RESET_GROUP = Binding.Group("Reset", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
@@ -126,8 +123,8 @@ class SettingsScreen(Screen[None]):
         # next group tab when you Tab past the last editor (and the
         # previous group tab on shift+Tab past the first editor). Use
         # > / < to jump straight to the next / previous group tab.
-        Binding("tab", "next_field_or_pane", "Next field", show=True, group=_FIELD_GROUP),
-        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True, group=_FIELD_GROUP),
+        Binding("tab", "next_field_or_pane", "Next field", show=False),
+        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=False),
         # Direct tab cycling, mirrored from CatalogScreen. priority=True
         # so the bindings win when an editor input has focus.
         Binding(
@@ -146,10 +143,11 @@ class SettingsScreen(Screen[None]):
             priority=True,
             group=_TAB_GROUP,
         ),
-        # Pairing the two resets under one label costs less room than
-        # "Reset all" alone did, and it stops ^r being a hidden key.
-        Binding("ctrl+r", "reset_focused", "Reset field", show=True, group=_RESET_GROUP),
-        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True, group=_RESET_GROUP),
+        # Resetting the focused setting is what this screen is for, so it keeps
+        # a cell. Reset-all is a rarer, wider-reaching action and lives in help;
+        # the two are different actions, so they must not share one label.
+        Binding("ctrl+r", "reset_focused", "Reset", show=True),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=False),
         *BROWSE_LIST_BINDINGS,
     ]
 
