@@ -674,3 +674,71 @@ async def test_clicking_a_session_row_never_starts_a_text_selection(sessions, mo
             "MouseDown on a session row started a text selection, which is the "
             "path that crashes on an unparented row"
         )
+
+
+async def test_mouse_down_on_a_detached_session_row_does_not_crash(sessions, monkeypatch) -> None:
+    """End-to-end: the reported crash, driven through Textual's real event path.
+
+    The report was a MouseDown on a row's meta line raising AttributeError:
+    'NoneType' object has no attribute 'region', because Textual's selection
+    path takes content_widget.parent and dereferences container.region without a
+    None check. This builds that exact state: paint the rows so the compositor
+    maps clicks to them, unparent one, confirm it is still hit-testable, then
+    forward a real MouseDown at its screen coordinates.
+
+    The detachment is injected rather than raced. `_render_rows` clears the
+    ListView without awaiting the removal, so the real trigger is a click
+    arriving between the detach and the next repaint, which the pilot cannot
+    time; injecting it reproduces the same state the race produces. With
+    ALLOW_SELECT left on for row text this raises.
+    """
+    from textual import events
+
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", True)
+    _seed(sessions, "first session")
+    _seed(sessions, "second session")
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        rows = list(drawer.query(".session-row-meta").results())
+        assert rows, "the drawer rendered no session rows"
+        target = rows[0]
+        x = target.region.offset.x + 2
+        y = target.region.offset.y
+
+        # Unparent it while the painted frame still maps clicks to it, the way
+        # Textual's own _detach does. Restored before teardown: the DOM prune
+        # asserts on a live parent, so leaving it nulled fails the test for an
+        # unrelated reason and hides the result of the click.
+        original_parent = target._parent
+        target._parent = None
+        try:
+            assert target.parent is None, "the row is still attached; nothing to test"
+            hit, _offset = app.screen.get_widget_and_offset_at(x, y)
+            assert hit is target, "the compositor no longer maps that point to the row"
+
+            crash: Exception | None = None
+            try:
+                app.screen._forward_event(
+                    events.MouseDown(
+                        None,
+                        x=x,
+                        y=y,
+                        delta_x=0,
+                        delta_y=0,
+                        button=1,
+                        shift=False,
+                        meta=False,
+                        ctrl=False,
+                    )
+                )
+            except Exception as exc:
+                crash = exc
+        finally:
+            target._parent = original_parent
+
+        assert crash is None, f"MouseDown on a detached row still crashes: {crash!r}"
+        await pilot.pause()
