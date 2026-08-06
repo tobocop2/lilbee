@@ -151,7 +151,10 @@ def _is_subprocess_call(node: ast.Call) -> bool:
 
 
 def _asks_for_text_pipes(node: ast.Call) -> bool:
-    """Whether *node* asks subprocess for text pipes; without it they stay bytes."""
+    """Whether *node* asks subprocess for text pipes; without it they stay bytes.
+
+    Direct keywords only: a kwargs dict splatted with ``**`` hides the mode.
+    """
     return any(
         keyword.arg in _TEXT_MODE_KEYWORDS
         and isinstance(keyword.value, ast.Constant)
