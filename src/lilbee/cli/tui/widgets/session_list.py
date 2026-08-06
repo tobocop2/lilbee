@@ -30,6 +30,21 @@ if TYPE_CHECKING:
 _ROW_CSS = (Path(__file__).parent / "session_list.tcss").read_text(encoding="utf-8")
 
 
+class _RowText(Static):
+    """Row text that never starts a text selection.
+
+    Rows are rebuilt on every store mutation and every filter keystroke, and
+    Textual's selection path takes ``content_widget.parent`` and dereferences
+    ``container.region`` with no None check, so a click landing on a row that has
+    just been unparented crashed the app with AttributeError on
+    ``_MessagePump__parent``. Selecting text is not something a pick-list row
+    needs, and switching it off makes that path unreachable here instead of
+    relying on the removal winning the race against the click.
+    """
+
+    ALLOW_SELECT = False
+
+
 class SessionRow(ListItem):
     """One session: dot + title with a right-aligned age, and a meta line below."""
 
@@ -48,9 +63,9 @@ class SessionRow(ListItem):
             count=self.meta.message_count, model=self.meta.model_ref
         )
         with Horizontal(classes="session-row-head"):
-            yield Static(title, classes="session-row-title")
-            yield Static(Content(self.meta.updated_at[:10]), classes="session-row-time")
-        yield Static(Content.styled(meta_line, "$text-muted"), classes="session-row-meta")
+            yield _RowText(title, classes="session-row-title")
+            yield _RowText(Content(self.meta.updated_at[:10]), classes="session-row-time")
+        yield _RowText(Content.styled(meta_line, "$text-muted"), classes="session-row-meta")
 
 
 class SessionListPanel(Vertical):

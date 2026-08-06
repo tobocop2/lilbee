@@ -633,3 +633,44 @@ async def test_sessions_jump_on_empty_list_is_safe(sessions):
         panel = app.screen.query_one(SessionListPanel)
         panel.jump_to(0)
         panel.jump_to(-1)
+
+
+async def test_clicking_a_session_row_never_starts_a_text_selection(sessions, monkeypatch) -> None:
+    """A click on a row must not enter Textual's selection path.
+
+    That path takes ``content_widget.parent`` and dereferences
+    ``container.region`` without a None check, so a click landing on a row that
+    has just been unparented crashed the app: AttributeError on
+    `_MessagePump__parent`, reported from a live session. Rows are unparented on
+    every store mutation and every filter keystroke, because `_render_rows`
+    clears the ListView without awaiting the removal, so the window is open
+    often and cannot be closed by ordering alone.
+
+    Asserted on the entry condition rather than by racing a detach against a
+    click, which pilot cannot time: with selection off for row text the path is
+    unreachable regardless of when the click lands. Flip ALLOW_SELECT back to
+    True on _RowText and this fails.
+    """
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", True)
+    _seed(sessions, "first session")
+    _seed(sessions, "second session")
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        rows = list(drawer.query(".session-row-meta").results())
+        assert rows, "the drawer rendered no session rows to click"
+        assert app.screen._select_state is None
+
+        # mouse_down, not click: a full click is down-then-up, and MouseUp calls
+        # clear_selection(), so _select_state reads None afterwards either way.
+        # MouseDown is also the event in the reported traceback.
+        await pilot.mouse_down(rows[0])
+        await pilot.pause()
+
+        assert app.screen._select_state is None, (
+            "MouseDown on a session row started a text selection, which is the "
+            "path that crashes on an unparented row"
+        )
