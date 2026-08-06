@@ -113,14 +113,14 @@ def acquire_scope_lock(
     except FileLockTimeout:
         return None
     owner_path = scope_dir / _SCOPE_OWNER_NAME
-    owner_path.write_text(json.dumps({"data_dir": str(data_dir)}))
+    owner_path.write_text(json.dumps({"data_dir": str(data_dir)}), encoding="utf-8")
     return ScopeHold(lock, owner_path)
 
 
 def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
     """The scope's recorded owner, or None when absent or unreadable."""
     try:
-        payload = json.loads((scope_dir / _SCOPE_OWNER_NAME).read_text())
+        payload = json.loads((scope_dir / _SCOPE_OWNER_NAME).read_text(encoding="utf-8"))
         return ScopeOwner(data_dir=str(payload["data_dir"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None

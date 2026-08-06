@@ -1300,3 +1300,30 @@ class TestShardAccounting:
         total, shard_blobs = _shard_accounting(tmp_path / "m-00001-of-00003.gguf")
         assert total == 20  # only the two present shards
         assert len(shard_blobs) == 1  # only shard 3 (primary is shard 1)
+
+
+class TestManifestEncodingIsTotal:
+    """A manifest that is not valid UTF-8 reads as absent, not as a crash.
+
+    ``read_text(encoding="utf-8")`` raises UnicodeDecodeError, which is a
+    ValueError and NOT a JSONDecodeError, so it needs naming in the except or a
+    single unreadable manifest takes down the whole installed-model scan.
+    """
+
+    def test_a_manifest_holding_invalid_utf8_reads_as_none(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        path = registry._manifest_path("org/repo", "model.gguf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'{"hf_repo": "org/repo", "name": "\xff\xfe not utf-8"}')
+
+        assert registry._load_manifest_file(path) is None
+
+    def test_the_scan_survives_one_unreadable_manifest(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        path = registry._manifest_path("org/repo", "model.gguf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00binary garbage")
+
+        # The contract is "corrupt manifests read as absent", so listing must
+        # return rather than propagate the decode failure.
+        assert registry.list_installed() == []

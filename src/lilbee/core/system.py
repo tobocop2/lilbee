@@ -178,7 +178,7 @@ def cgroup_memory_limit() -> int | None:
     """
     for path in (_CGROUP_ROOT / "memory.max", _CGROUP_ROOT / "memory" / "memory.limit_in_bytes"):
         try:
-            raw = path.read_text().strip()
+            raw = path.read_text(encoding="utf-8").strip()
         except OSError:
             continue
         if raw == "max":
@@ -197,7 +197,7 @@ def cgroup_memory_used() -> int | None:
         _CGROUP_ROOT / "memory" / "memory.usage_in_bytes",
     ):
         try:
-            return int(path.read_text().strip())
+            return int(path.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             continue
     return None

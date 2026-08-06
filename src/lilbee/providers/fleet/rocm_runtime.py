@@ -47,7 +47,7 @@ def _amd_gpu_present() -> bool:
         return False
     for vendor in Path("/sys/class/drm").glob("card*/device/vendor"):
         try:
-            if vendor.read_text().strip().lower() == _AMD_PCI_VENDOR_ID:
+            if vendor.read_text(encoding="utf-8").strip().lower() == _AMD_PCI_VENDOR_ID:
                 return True
         except OSError:
             continue
@@ -81,7 +81,7 @@ def _host_amd_gfx_targets() -> set[str]:
     targets: set[str] = set()
     for props in Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties"):
         try:
-            text = props.read_text()
+            text = props.read_text(encoding="utf-8")
         except OSError:
             continue
         for line in text.splitlines():

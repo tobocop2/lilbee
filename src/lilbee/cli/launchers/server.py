@@ -80,7 +80,7 @@ def _session_token() -> str | None:
     """The bearer token from server.json, or None if it is not readable yet."""
     try:
         data = json.loads(server_json_path().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
     token = data.get("token")
     return token if isinstance(token, str) and token else None
