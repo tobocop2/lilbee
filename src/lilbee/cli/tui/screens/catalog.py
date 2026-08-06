@@ -576,10 +576,10 @@ class CatalogScreen(Screen[None]):
         with contextlib.suppress(Exception):
             grids = self._pane_grids_with_rows()
             if grids:
-                grids[0].focus()
+                self.set_focus(grids[0])
                 return
         with contextlib.suppress(Exception):
-            self._grid_container.query(GridSelect).first().focus()
+            self.set_focus(self._grid_container.query(GridSelect).first())
 
     def _initial_focus_first_grid(self) -> None:
         """on_mount initial focus: skip if a later refresh-tick has already
@@ -682,9 +682,15 @@ class CatalogScreen(Screen[None]):
             self.query_one(GridListToggle).set_grid(self._grid_view)
 
     def action_focus_search(self) -> None:
-        """Reveal and focus the filter input. Bound to / key."""
+        """Reveal and focus the filter input. Bound to / key.
+
+        ``set_focus`` rather than ``Input.focus()``: Widget.focus() only queues
+        the move via ``call_later``, so two pending focus callbacks resolve in
+        queue order and whichever lands last wins. Setting it on the screen
+        lands now, which keeps `/` from losing to a focus queued beside it.
+        """
         self._search_input.remove_class(_HIDDEN_CLASS)
-        self._search_input.focus()
+        self.set_focus(self._search_input)
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
 
@@ -2205,7 +2211,12 @@ class CatalogScreen(Screen[None]):
             return
         clamped = max(0, min(index, count - 1))
         self._list_widget.highlighted = clamped
-        self._list_widget.focus()
+        # Same invariant as _mount_remaining_grid_sections: this is reached from
+        # call_after_refresh, so it can run after the user has opened the filter
+        # with `/`, and taking the cursor back would strand them mid-keystroke.
+        if self._search_focused:
+            return
+        self.set_focus(self._list_widget)
 
     def _focused_list_index(self) -> int | None:
         """Index of the highlighted list row, or None when nothing is highlighted."""

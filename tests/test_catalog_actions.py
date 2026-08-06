@@ -1376,3 +1376,43 @@ async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
         assert isinstance(screen.focused, Input), (
             f"a deferred grid mount stole the filter focus; now on {screen.focused}"
         )
+
+
+async def test_focus_search_wins_against_an_already_queued_focus() -> None:
+    """A mount-path list focus landing after `/` must leave the filter alone.
+
+    _focus_list_item runs from call_after_refresh, so it can be scheduled
+    before the user presses `/` and still execute afterwards, taking the cursor
+    out of the field they just opened. Driven directly rather than through a
+    mount race so the path is reached by construction.
+    """
+    from textual.widgets import Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._grid_view = False
+        await pilot.pause()
+
+        # The real sequence: `/` focuses the filter, then a mount-path callback
+        # that was already scheduled lands and tries to focus the list.
+        # _focus_list_item no-ops on an empty list, so give it a row to focus:
+        # without this the assertion below cannot fail.
+        from lilbee.cli.tui.widgets.model_list import ModelListSection
+
+        screen._list_widget.set_rows(
+            [ModelListSection(heading=None, rows=[_row("focus-race-row")])]
+        )
+        await pilot.pause()
+        assert screen._list_widget.option_count, "setup: the list needs a focusable row"
+
+        screen.action_focus_search()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), "setup: `/` should focus the filter"
+        screen._focus_list_item(0)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert isinstance(screen.focused, Input), (
+            f"a focus queued before `/` outlived it; cursor ended on {screen.focused}"
+        )
