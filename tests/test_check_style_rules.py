@@ -260,3 +260,28 @@ class TestSubprocessTextPipes:
     )
     def test_leaves_byte_pipes_and_encoded_calls_alone(self, tmp_path: Path, source: str) -> None:
         assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("scheduler.run(job, text=True)", id="unrelated_run_method"),
+            pytest.param("harness.call(step, text=True)", id="unrelated_call_method"),
+            pytest.param("run(job, text=True)", id="bare_generic_run"),
+        ],
+    )
+    def test_leaves_same_named_methods_on_other_objects_alone(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        """run and call are generic; flagging an API with no encoding= is unresolvable."""
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("Popen(cmd, text=True)", id="bare_popen"),
+            pytest.param("check_output(cmd, text=True)", id="bare_check_output"),
+        ],
+    )
+    def test_flags_distinctive_names_without_a_receiver(self, tmp_path: Path, source: str) -> None:
+        """Popen and check_output mean subprocess wherever they appear."""
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"

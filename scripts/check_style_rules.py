@@ -85,10 +85,10 @@ ORIGINAL_FILE_RE = re.compile(r"\boriginal\s+[a-z_][a-z0-9_]*\.py\b", re.IGNOREC
 _ALWAYS_TEXT_CALLS = frozenset({"read_text", "write_text"})
 _TEXT_IO_CALLS = _ALWAYS_TEXT_CALLS | {"open", "NamedTemporaryFile"}
 
-# subprocess decodes its pipes with the locale's encoding too, whenever text
-# mode is asked for. Same defect, different call: the output of a GPU tool or a
-# probe script is decoded before any of this code sees it.
+# subprocess decodes its pipes with the locale's encoding in text mode.
 _SUBPROCESS_CALLS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+# Names that mean subprocess wherever they appear, so they need no receiver.
+_DISTINCTIVE_SUBPROCESS_CALLS = frozenset({"Popen", "check_output", "check_call"})
 _TEXT_MODE_KEYWORDS = frozenset({"text", "universal_newlines"})
 
 # A ``.open`` attribute call is only a file open when it says so. ``os.open``
@@ -127,9 +127,8 @@ def _mode_argument(node: ast.Call, name: str) -> str | None:
 def _is_file_io(node: ast.Call, name: str) -> bool:
     """Whether *node* is text file I/O this rule governs.
 
-    Everything but a bare ``.open`` attribute is unambiguous by name. For that
-    one, a ``Path(...)`` receiver or a mode-shaped first argument separates a
-    file open from ``os.open`` and ``webbrowser.open``.
+    A bare ``.open`` needs a ``Path(...)`` receiver or a mode-shaped first
+    argument; ``os.open`` and ``webbrowser.open`` accept no encoding.
     """
     if name != "open" or isinstance(node.func, ast.Name):
         return True
@@ -140,12 +139,19 @@ def _is_file_io(node: ast.Call, name: str) -> bool:
     return mode is not None and bool(_FILE_MODE_RE.match(mode))
 
 
-def _asks_for_text_pipes(node: ast.Call) -> bool:
-    """Whether *node* puts subprocess into text mode, which decodes its pipes.
+def _is_subprocess_call(node: ast.Call) -> bool:
+    """Whether *node* is subprocess's own call, not a same-named method elsewhere.
 
-    Without a text-mode keyword the pipes stay bytes and there is nothing to
-    decode; ``capture_output`` alone does not change that.
+    ``run`` and ``call`` are generic, so they need the receiver; ``Popen`` and
+    ``check_output`` are not.
     """
+    if isinstance(node.func, ast.Attribute):
+        return isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+    return isinstance(node.func, ast.Name) and node.func.id in _DISTINCTIVE_SUBPROCESS_CALLS
+
+
+def _asks_for_text_pipes(node: ast.Call) -> bool:
+    """Whether *node* asks subprocess for text pipes; without it they stay bytes."""
     return any(
         keyword.arg in _TEXT_MODE_KEYWORDS
         and isinstance(keyword.value, ast.Constant)
@@ -157,8 +163,8 @@ def _asks_for_text_pipes(node: ast.Call) -> bool:
 def _opens_in_binary_mode(node: ast.Call, name: str) -> bool:
     """Whether *node* reads bytes, which have no encoding to declare.
 
-    ``NamedTemporaryFile`` defaults to ``w+b``, so it is binary until a text
-    mode says otherwise; ``open`` defaults to ``r``, so it is the reverse.
+    ``NamedTemporaryFile`` defaults to ``w+b`` and ``open`` to ``r``, so the
+    absent-mode default is opposite between them.
     """
     if name in _ALWAYS_TEXT_CALLS:
         return False
@@ -169,15 +175,10 @@ def _opens_in_binary_mode(node: ast.Call, name: str) -> bool:
 
 
 def _unspecified_encoding_hits(path: Path) -> Iterator[tuple[int, str]]:
-    """Yield ``(line, call name)`` for text file I/O that names no encoding.
+    """Yield ``(line, call name)`` for text I/O in *path* that names no encoding.
 
-    Without ``encoding=`` Python decodes with the locale's, so a file holding
-    anything outside cp1252 raises ``UnicodeDecodeError`` on Windows while
-    passing everywhere else. Ruff expresses this as PLW1514, but only under
-    preview mode, which turns on 900 unrelated findings across the tree.
-
-    An unparsable file yields nothing rather than raising: this runs over many
-    files, and a syntax error is already every other tool's finding.
+    An unparsable file yields nothing; a syntax error is already every other
+    tool's finding.
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -192,7 +193,7 @@ def _unspecified_encoding_hits(path: Path) -> Iterator[tuple[int, str]]:
         if any(keyword.arg == "encoding" for keyword in node.keywords):
             continue
         if name in _SUBPROCESS_CALLS:
-            if _asks_for_text_pipes(node):
+            if _is_subprocess_call(node) and _asks_for_text_pipes(node):
                 yield node.lineno, name
             continue
         if not _is_file_io(node, name) or _opens_in_binary_mode(node, name):
@@ -215,13 +216,7 @@ def _check_unspecified_encoding(paths: Iterable[Path]) -> Iterator[str]:
 
 
 def _check_new_unspecified_encoding(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
-    """Yield findings only where this branch added the offending line.
-
-    Whole-tree enforcement would mean touching 700-odd call sites, nearly all of
-    them ``tmp_path`` writes in tests that cannot fail. Diff scoping stops the
-    bug arriving without demanding that cleanup first, matching how the
-    code-smell check above is scoped.
-    """
+    """Yield findings only where this branch added the offending line."""
     added_lines: dict[str, set[int]] = {}
     for rel_path, lineno, _text in added:
         added_lines.setdefault(rel_path, set()).add(lineno)

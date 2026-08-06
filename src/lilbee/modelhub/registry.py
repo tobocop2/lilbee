@@ -624,9 +624,7 @@ class ModelRegistry:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return ModelManifest(**data)
-        # UnicodeDecodeError is a ValueError but not a JSONDecodeError, so a
-        # manifest holding bytes that are not UTF-8 needs naming separately to
-        # stay "corrupt manifests read as absent" rather than crashing the scan.
+        # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
         except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None

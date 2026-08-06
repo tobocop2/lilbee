@@ -538,6 +538,7 @@ def _ephemeral_range() -> tuple[int, int] | None:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )
