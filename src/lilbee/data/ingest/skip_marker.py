@@ -34,7 +34,7 @@ def _load_str_map(path: Path) -> dict[str, str]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
         return {}
     if not isinstance(raw, dict):

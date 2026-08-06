@@ -517,7 +517,7 @@ def init(path: str = "") -> dict[str, Any]:
     if not root.is_dir():
         (root / "documents").mkdir(parents=True)
         (root / "data").mkdir(parents=True)
-        (root / ".gitignore").write_text("data/\n")
+        (root / ".gitignore").write_text("data/\n", encoding="utf-8")
         created = True
 
     # Switch MCP session to this project's KB. Overlay any persisted

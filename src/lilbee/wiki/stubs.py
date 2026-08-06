@@ -142,7 +142,7 @@ def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         log.warning("Wiki stub index unreadable", exc_info=True)
         return None
     if not isinstance(payload, dict) or payload.get("version") != _INDEX_VERSION:
