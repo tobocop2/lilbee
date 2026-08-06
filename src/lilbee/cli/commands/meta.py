@@ -101,7 +101,7 @@ def init() -> None:
     data = root / "data"
     docs.mkdir(parents=True)
     data.mkdir(parents=True)
-    (root / ".gitignore").write_text("data/\n")
+    (root / ".gitignore").write_text("data/\n", encoding="utf-8")
 
     if cfg.json_mode:
         json_output({"command": "init", "path": str(root), "created": True})

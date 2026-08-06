@@ -58,7 +58,7 @@ class _FaultLog:
         log_dir.mkdir(parents=True, exist_ok=True)
         fault_path = log_dir / _FAULT_LOG_FILE_NAME
         if self._handle is None or self._handle.closed:
-            self._handle = fault_path.open("a")
+            self._handle = fault_path.open("a", encoding="utf-8")
             faulthandler.enable(file=self._handle)
         return fault_path
 

@@ -160,7 +160,7 @@ def _atomic_write(path: Path, text: str) -> None:
     from a live writer's file in flight -- see ``_clean_stale_tmp_files``.
     """
     tmp_path = path.with_name(f"{_STATE_TMP_PREFIX}{path.name}{_STATE_TMP_SUFFIX}")
-    tmp_path.write_text(text)
+    tmp_path.write_text(text, encoding="utf-8")
     os.replace(tmp_path, path)
 
 
@@ -517,7 +517,7 @@ _PROC_PORT_RANGE = Path("/proc/sys/net/ipv4/ip_local_port_range")
 def _port_range_from(path: Path) -> tuple[int, int] | None:
     """The two integers in *path*, or ``None`` when it is absent or unreadable."""
     try:
-        low, high = path.read_text().split()[:2]
+        low, high = path.read_text(encoding="utf-8").split()[:2]
         return int(low), int(high)
     except (OSError, ValueError):
         return None
@@ -916,7 +916,7 @@ def _hard_stop_proc(proc: psutil.Process) -> None:
 def _load_state(path: Path) -> SwapState | None:
     """Parse a state file into a :class:`SwapState`; ``None`` when absent/corrupt."""
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []

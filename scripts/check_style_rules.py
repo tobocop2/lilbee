@@ -34,6 +34,7 @@ are found.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -76,6 +77,134 @@ STALE_SINGLE_FILE_RE = re.compile(
 # "the original X.py" / "original foo.py" phrasing is historical narrative
 # pointing at a file that no longer exists in its single-file form.
 ORIGINAL_FILE_RE = re.compile(r"\boriginal\s+[a-z_][a-z0-9_]*\.py\b", re.IGNORECASE)
+
+
+# Names that always denote text file I/O, whatever they are called on:
+# ``Path.read_text`` / ``Path.write_text`` take no mode, and the builtin
+# ``open`` and ``NamedTemporaryFile`` are files by definition.
+_ALWAYS_TEXT_CALLS = frozenset({"read_text", "write_text"})
+_TEXT_IO_CALLS = _ALWAYS_TEXT_CALLS | {"open", "NamedTemporaryFile"}
+
+# A ``.open`` attribute call is only a file open when it says so. ``os.open``
+# returns a descriptor and ``webbrowser.open`` takes a URL; neither accepts an
+# encoding, so reporting them would be a finding nobody can resolve. Require
+# either a literal ``Path(...)`` receiver or a first argument that is a real
+# mode string, which is what tells a file open from its homonyms.
+_FILE_MODE_RE = re.compile(r"^[rwxa][bt+]*$")
+# ``open``'s mode is its second positional argument; the rest are keyword-only.
+_OPEN_MODE_POSITION = 1
+
+
+def _call_name(node: ast.Call) -> str | None:
+    """The bare function name of *node*, ignoring whatever it is called on."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _mode_argument(node: ast.Call, name: str) -> str | None:
+    """The literal mode *node* opens with, or None when it names none."""
+    for keyword in node.keywords:
+        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
+            return str(keyword.value.value)
+    position = _OPEN_MODE_POSITION if name == "open" and isinstance(node.func, ast.Name) else 0
+    if name == "open" and len(node.args) > position:
+        first = node.args[position]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+    return None
+
+
+def _is_file_io(node: ast.Call, name: str) -> bool:
+    """Whether *node* is text file I/O this rule governs.
+
+    Everything but a bare ``.open`` attribute is unambiguous by name. For that
+    one, a ``Path(...)`` receiver or a mode-shaped first argument separates a
+    file open from ``os.open`` and ``webbrowser.open``.
+    """
+    if name != "open" or isinstance(node.func, ast.Name):
+        return True
+    receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+    if isinstance(receiver, ast.Call) and _call_name(receiver) == "Path":
+        return True
+    mode = _mode_argument(node, name)
+    return mode is not None and bool(_FILE_MODE_RE.match(mode))
+
+
+def _opens_in_binary_mode(node: ast.Call, name: str) -> bool:
+    """Whether *node* reads bytes, which have no encoding to declare.
+
+    ``NamedTemporaryFile`` defaults to ``w+b``, so it is binary until a text
+    mode says otherwise; ``open`` defaults to ``r``, so it is the reverse.
+    """
+    if name in _ALWAYS_TEXT_CALLS:
+        return False
+    mode = _mode_argument(node, name)
+    if mode is None:
+        return name == "NamedTemporaryFile"
+    return "b" in mode
+
+
+def _unspecified_encoding_hits(path: Path) -> Iterator[tuple[int, str]]:
+    """Yield ``(line, call name)`` for text file I/O that names no encoding.
+
+    Without ``encoding=`` Python decodes with the locale's, so a file holding
+    anything outside cp1252 raises ``UnicodeDecodeError`` on Windows while
+    passing everywhere else. Ruff expresses this as PLW1514, but only under
+    preview mode, which turns on 900 unrelated findings across the tree.
+
+    An unparsable file yields nothing rather than raising: this runs over many
+    files, and a syntax error is already every other tool's finding.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name not in _TEXT_IO_CALLS:
+            continue
+        if any(keyword.arg == "encoding" for keyword in node.keywords):
+            continue
+        if not _is_file_io(node, name) or _opens_in_binary_mode(node, name):
+            continue
+        yield node.lineno, name
+
+
+def _encoding_finding(path: Path | str, lineno: int, name: str) -> str:
+    return (
+        f"{path}:{lineno}: {name}() without encoding= decodes as the locale's "
+        "(pass encoding='utf-8', or open in binary mode)"
+    )
+
+
+def _check_unspecified_encoding(paths: Iterable[Path]) -> Iterator[str]:
+    """Yield findings for every text file I/O call in *paths* naming no encoding."""
+    for path in paths:
+        for lineno, name in _unspecified_encoding_hits(path):
+            yield _encoding_finding(path, lineno, name)
+
+
+def _check_new_unspecified_encoding(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
+    """Yield findings only where this branch added the offending line.
+
+    Whole-tree enforcement would mean touching 700-odd call sites, nearly all of
+    them ``tmp_path`` writes in tests that cannot fail. Diff scoping stops the
+    bug arriving without demanding that cleanup first, matching how the
+    code-smell check above is scoped.
+    """
+    added_lines: dict[str, set[int]] = {}
+    for rel_path, lineno, _text in added:
+        added_lines.setdefault(rel_path, set()).add(lineno)
+    for rel_path, linenos in sorted(added_lines.items()):
+        for lineno, name in _unspecified_encoding_hits(REPO_ROOT / rel_path):
+            if lineno in linenos:
+                yield _encoding_finding(rel_path, lineno, name)
 
 
 def _iter_python_files(*roots: Path) -> Iterator[Path]:
@@ -216,8 +345,13 @@ def _smell_base_ref() -> str | None:
 
 def _git_diff_src(base: str) -> str:
     """Return ``git diff --unified=0`` of ``src/`` against the base sha."""
+    return _git_diff(base, "src")
+
+
+def _git_diff(base: str, *paths: str) -> str:
+    """Return ``git diff --unified=0`` of *paths* against the base sha."""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", base, "--", "src"],
+        ["git", "diff", "--unified=0", base, "--", *paths],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -280,6 +414,9 @@ def main() -> int:
     base = _smell_base_ref()
     if base is not None:
         findings.extend(_check_code_smells(_parse_added_lines(_git_diff_src(base))))
+        findings.extend(
+            _check_new_unspecified_encoding(_parse_added_lines(_git_diff(base, "src", "tests")))
+        )
 
     for finding in findings:
         print(finding)

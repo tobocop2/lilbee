@@ -92,7 +92,7 @@ def _client_engine_ns(pid: Path, driver: str) -> list[tuple[str, int]]:
         return pairs
     for entry in entries:
         try:
-            text = entry.read_text()
+            text = entry.read_text(encoding="utf-8")
         except OSError:
             continue
         if not _driver_matches(text, driver):
