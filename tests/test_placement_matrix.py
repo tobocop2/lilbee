@@ -10,6 +10,7 @@ on a pod.
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
 from tools.qa.placement_matrix import observe, oracles
@@ -434,3 +435,32 @@ class TestMergedResultsCannotBeMisread:
         payload["measured_something_new"] = True
         with pytest.raises(ValueError, match="unknown fields"):
             Observation.from_json(payload)
+
+
+class TestTheEngineIsAskedToReportWhatItAllocated:
+    """The per-device report only exists at the verbosity lilbee asks for, so a
+    harness that spawns without it reads every load as an unparseable log."""
+
+    def test_the_harness_uses_lilbees_own_log_environment(self) -> None:
+        from lilbee.providers.fleet.readback import (
+            ENV_ARG_LOG_VERBOSITY,
+            ENV_LOG_VERBOSITY,
+            LOAD_REPORT_VERBOSITY,
+            engine_log_env,
+        )
+
+        env = engine_log_env(Path("/tmp/matrix"), "cell")
+        assert env[ENV_LOG_VERBOSITY] == LOAD_REPORT_VERBOSITY
+        assert env[ENV_ARG_LOG_VERBOSITY] == LOAD_REPORT_VERBOSITY
+        source = Path(observe.__file__).read_text()
+        assert "engine_log_env(log_dir, model_id)" in source
+        assert "engine_log_path(log_dir, model_id)" in source
+
+    def test_host_buffers_are_excluded_by_lilbees_own_predicate(self) -> None:
+        # The engine labels host-pinned memory CUDA_Host, which a "CPU"/"HOST"
+        # prefix test misses, so the estimate check demanded a charge for it.
+        from lilbee.providers.fleet.readback import _is_host_device
+
+        assert _is_host_device("CUDA_Host")
+        assert not _is_host_device("CUDA0")
+        assert "_is_host_device(label)" in Path(observe.__file__).read_text()

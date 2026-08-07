@@ -190,13 +190,26 @@ class ServeResult:
 
 
 def _serve_and_measure(
-    argv: list[str], env: dict[str, str], ctx: int, log_path: Path
+    argv: list[str], env: dict[str, str], ctx: int, log_dir: Path, model_id: str
 ) -> ServeResult:
-    """Load the launch, fill its window repeatedly, and read back per-device use."""
-    from lilbee.providers.fleet.readback import parse_device_buffers
+    """Load the launch, fill its window repeatedly, and read back per-device use.
 
+    The engine's log environment comes from lilbee's own ``engine_log_env``, and
+    the report is read from the file it names. Spawning without it prints no
+    per-device buffers at all (the default verbosity omits them), which would
+    make every cell look like an engine whose log format had changed.
+    """
+    from lilbee.providers.fleet.readback import (
+        _is_host_device,
+        engine_log_env,
+        engine_log_path,
+        parse_device_buffers,
+    )
+
+    env = {**env, **engine_log_env(log_dir, model_id)}
+    report_path = engine_log_path(log_dir, model_id)
     was_idle = _wait_for_idle_vram()
-    with log_path.open("wb") as log:
+    with (log_dir / f"{model_id}.stdout.log").open("wb") as log:
         proc = subprocess.Popen(
             [*argv, "--port", str(_PORT)], stdout=log, stderr=subprocess.STDOUT, env=env
         )
@@ -204,12 +217,13 @@ def _serve_and_measure(
             if not _await_health(proc):
                 return ServeResult(loaded=False, vram_was_idle=was_idle)
             time.sleep(5)
+            report = report_path.read_text(errors="replace") if report_path.exists() else ""
+            # lilbee's own predicate, not a prefix guess: the engine labels
+            # host-pinned memory CUDA_Host, which no "CPU"/"HOST" test catches.
             actual = {
                 label: size
-                for label, size in parse_device_buffers(
-                    log_path.read_text(errors="replace")
-                ).items()
-                if not label.upper().startswith(("CPU", "HOST"))
+                for label, size in parse_device_buffers(report).items()
+                if not _is_host_device(label)
             }
             sustained, generated, prompted = _sustains_full_window(ctx)
             return ServeResult(
@@ -310,10 +324,7 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
     )
     if decision.planned:
         served = _serve_and_measure(
-            list(decision.argv),
-            {**env, **decision.env},
-            decision.ctx,
-            workdir / f"{cell.id}.engine.log",
+            list(decision.argv), {**env, **decision.env}, decision.ctx, workdir, cell.id
         )
         return replace(
             observed,
@@ -330,10 +341,7 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
     if not forced.planned:
         return replace(observed, forced_planned=False)
     served = _serve_and_measure(
-        list(forced.argv),
-        {**env, **forced.env},
-        forced.ctx,
-        workdir / f"{cell.id}.forced.log",
+        list(forced.argv), {**env, **forced.env}, forced.ctx, workdir, f"{cell.id}.forced"
     )
     return replace(
         observed,
