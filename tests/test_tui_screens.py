@@ -3410,7 +3410,9 @@ async def test_apply_model_change_queues_the_switch_while_streaming():
 async def test_queued_switch_toast_names_the_model_and_says_it_waits():
     """The queued switch is announced, so a person knows it was accepted and when
     it lands, rather than facing an answer that ignored their click."""
+    from lilbee.catalog.formatting import display_label_for_ref
     from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3422,8 +3424,9 @@ async def test_queued_switch_toast_names_the_model_and_says_it_waits():
         ):
             screen.apply_model_change()
         assert mock_notify.call_count == 1
-        assert mock_notify.call_args.args[0].startswith("Switching to ")
-        assert mock_notify.call_args.args[0] != msg.MODEL_SWAP_APPLYING
+        sent = mock_notify.call_args.args[0]
+        assert sent == msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
+        assert sent != msg.MODEL_SWAP_APPLYING
 
 
 async def test_queued_switch_runs_when_the_stream_ends():
@@ -3445,17 +3448,20 @@ async def test_queued_switch_runs_when_the_user_cancels_the_stream():
     """A cancelled answer still lands the queued switch: the user asked for the new
     model, and cancelling the turn is not a withdrawal of that."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         screen._active_assistant = None
+        await pilot.press("i")
         screen.streaming = True
         with (
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services"),
         ):
             screen.apply_model_change()
-            screen.action_cancel_stream()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
             mock_worker.assert_called_once()
+        assert screen.streaming is False
 
 
 async def test_two_queued_switches_swap_once_onto_the_latest_model():

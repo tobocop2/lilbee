@@ -346,10 +346,10 @@ class ModelPickerButton(Static, can_focus=True):
     def _commit_after_change(self) -> None:
         """Repaint the label, then run the chat-screen side effect for chat swaps.
 
-        ``apply_model_pick`` already persisted the ref and (for non-chat
-        scopes) reloaded the worker. Chat swaps cancel the in-flight stream
-        and reset services here so the new chat model takes over cleanly. Works
-        regardless of which container the button is mounted in.
+        ``apply_model_pick`` already persisted the ref and (for non-chat scopes)
+        reloaded the worker. Chat swaps hand off to the chat screen, which defers
+        the reload while an answer is streaming. Works regardless of which
+        container the button is mounted in.
         """
         self._refresh()
         if self._scope != "chat":

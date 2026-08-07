@@ -3550,8 +3550,9 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
 
-    async def test_model_switch_during_streaming_cancels(self, _mock_resolve, _mock_services):
-        """apply_model_change cancels any in-flight stream. Regression for the model-swap path."""
+    async def test_model_switch_during_streaming_is_queued(self, _mock_resolve, _mock_services):
+        """A switch asked for mid-answer leaves the answer streaming and defers the
+        fleet restart until the stream ends."""
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
@@ -3561,9 +3562,14 @@ class TestChatStreaming:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert app.screen.streaming
-                app.screen.apply_model_change()
-                await pilot.pause()
-                assert app.screen.streaming is False
+                with mock.patch.object(app.screen, "_reload_chat_model_worker") as mock_worker:
+                    app.screen.apply_model_change()
+                    await pilot.pause()
+                    assert app.screen.streaming is True
+                    mock_worker.assert_not_called()
+                    app.screen._set_streaming(False)
+                    await pilot.pause()
+                    mock_worker.assert_called_once()
 
     async def test_exit_streaming_does_not_auto_send(self, _mock_resolve, _mock_services):
         """Stream exit does not auto-fire a follow-up prompt.

@@ -355,8 +355,7 @@ class ChatScreen(Screen[None]):
         # overwrites, reset clears). Never clear it in _finalize_stream: the
         # input unblocks first, so the clear races the next turn's question.
         self._active_question: UserMessage | None = None
-        # A model switch asked for mid-answer, applied when the stream ends so
-        # the fleet restart never tears down the server feeding a live answer.
+        # A model switch asked for mid-answer, applied once the stream ends.
         self._model_switch_queued: bool = False
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
@@ -725,9 +724,7 @@ class ChatScreen(Screen[None]):
         self.remove_class("streaming")
         self.refresh_bindings()
         if self._model_switch_queued:
-            # Clear before applying: apply_model_change can re-enter through the
-            # swap-in-progress branch, and a stale flag would swap a second time
-            # at the next stream end.
+            # Cleared before the call: apply_model_change can re-enter here.
             self._model_switch_queued = False
             self.apply_model_change()
 
@@ -2073,10 +2070,10 @@ class ChatScreen(Screen[None]):
         restart and serializes overlapping reloads, so the worker can start at
         once without waiting for other workers.
 
-        A switch requested mid-answer is queued rather than applied: restarting
-        the chat server under a live stream would kill the answer being read.
-        The queued switch runs when the stream ends, by any route -- finished,
-        cancelled, or cleared -- because they all leave the streaming state.
+        A switch requested mid-answer is queued, not applied: restarting the chat
+        server under a live stream kills the answer being read. The queued switch
+        runs on leaving the streaming state, so it covers a finished, cancelled
+        and cleared answer alike.
         """
         if self.swapping_model:
             # A swap is already loading; a second one (rapid /model, or the model
@@ -2089,7 +2086,7 @@ class ChatScreen(Screen[None]):
             from lilbee.catalog.formatting import display_label_for_ref
 
             # cfg already holds the new ref, so a second queued switch needs no
-            # extra state: the swap that runs at stream end reads the latest cfg.
+            # extra state.
             self._model_switch_queued = True
             self.app.notify(
                 msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
