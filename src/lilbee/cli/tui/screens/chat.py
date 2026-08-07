@@ -40,6 +40,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
+from lilbee.cli.tui.command_registry import runs_while_streaming
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -621,10 +622,10 @@ class ChatScreen(Screen[None]):
 
     def _ready_to_submit(self, text: str) -> bool:
         """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
-        if self._reject_submit_when_busy() or self._dismiss_overlay_on_submit() or not text:
+        if self._reject_submit_when_busy(text) or self._dismiss_overlay_on_submit() or not text:
             return False
-        if text.startswith("/"):
-            cmd = text.split()[0].lower()
+        cmd = self._slash_name(text)
+        if cmd:
             if cmd not in self._command_handlers:
                 # Keep the draft so a typo (or a stale leading slash) can be
                 # fixed in place instead of retyped.
@@ -643,12 +644,14 @@ class ChatScreen(Screen[None]):
             return False
         return True
 
-    def _reject_submit_when_busy(self) -> bool:
+    def _reject_submit_when_busy(self, text: str = "") -> bool:
         """Toast and reject a submit while a swap is loading or a stream is in flight.
 
-        Returns True when the prompt was rejected so the caller stops. The swap
+        Returns True when the submit was rejected so the caller stops. The swap
         check comes first: a prompt sent mid-swap would race a half-torn-down
-        fleet, so the user is asked to wait rather than cancel.
+        fleet, so the user is asked to wait rather than cancel. Commands the
+        registry marks ``allowed_while_streaming`` pass the streaming check, so
+        /cancel and /model stay reachable during the turn they act on.
         """
         if self.swapping_model:
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
@@ -656,12 +659,17 @@ class ChatScreen(Screen[None]):
         if self.reloading_placement:
             self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
             return True
-        if self.streaming:
+        if self.streaming and not runs_while_streaming(self._slash_name(text)):
             # Only one chat message may be in flight at a time; surface a toast
             # so the prompt is visibly rejected, not silently dropped.
             self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
             return True
         return False
+
+    @staticmethod
+    def _slash_name(text: str) -> str:
+        """The command word of a slash submit, or "" when *text* is not one."""
+        return text.split()[0].lower() if text.startswith("/") else ""
 
     def _pending_required_model_download(self) -> str | None:
         """Return the in-flight download's name if it's for the configured chat or embedding model.

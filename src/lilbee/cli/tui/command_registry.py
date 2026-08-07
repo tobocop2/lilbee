@@ -18,6 +18,10 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     args_hint: str = ""
     help_text: str = ""
+    # Reachable from the command bar while an answer is streaming. Off by
+    # default: a command that touches the index, the fleet or the transcript
+    # would race the live turn.
+    allowed_while_streaming: bool = False
 
 
 COMMANDS: tuple[SlashCommand, ...] = (
@@ -27,6 +31,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=(),
         args_hint="[name]",
         help_text="Switch chat model (no arg opens the catalog)",
+        # The chat screen queues a mid-answer switch, so this never cuts a turn.
+        allowed_while_streaming=True,
     ),
     SlashCommand(
         "/add",
@@ -127,7 +133,14 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("/help", "_cmd_help", aliases=("/h",), help_text="Show the slash-command catalog"),
     SlashCommand("/version", "_cmd_version", help_text="Show the lilbee version"),
-    SlashCommand("/cancel", "_cmd_cancel", help_text="Cancel any in-flight operations"),
+    SlashCommand(
+        "/cancel",
+        "_cmd_cancel",
+        help_text="Cancel any in-flight operations",
+        # Cancelling the live turn is the whole point; gating it on not
+        # streaming left it dead exactly when it is wanted.
+        allowed_while_streaming=True,
+    ),
     SlashCommand("/clear", "_cmd_clear", help_text="Clear the conversation"),
     SlashCommand("/sessions", "_cmd_sessions", help_text="Open the sessions drawer"),
     SlashCommand("/quit", "_cmd_quit", aliases=("/q", "/exit"), help_text="Exit lilbee"),
@@ -150,6 +163,18 @@ def get_command(name: str) -> SlashCommand:
         if cmd.name == name:
             return cmd
     raise KeyError(name)
+
+
+def runs_while_streaming(name: str) -> bool:
+    """Whether *name* (command or alias) may be submitted mid-answer.
+
+    Unknown names are False so the streaming gate keeps rejecting them; the
+    unknown-command toast is the caller's job.
+    """
+    for cmd in COMMANDS:
+        if name == cmd.name or name in cmd.aliases:
+            return cmd.allowed_while_streaming
+    return False
 
 
 def completion_names() -> tuple[str, ...]:
