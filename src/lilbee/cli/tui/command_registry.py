@@ -137,8 +137,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "/cancel",
         "_cmd_cancel",
         help_text="Cancel any in-flight operations",
-        # Cancelling the live turn is the whole point; gating it on not
-        # streaming left it dead exactly when it is wanted.
+        # Stopping the live turn is the point, so it must reach a live stream.
         allowed_while_streaming=True,
     ),
     SlashCommand("/clear", "_cmd_clear", help_text="Clear the conversation"),
