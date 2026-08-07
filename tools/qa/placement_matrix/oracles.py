@@ -8,10 +8,15 @@ checked against fabricated observations in tests/test_placement_matrix.py.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 _GB = 1024**3
+# Bumped whenever a field changes meaning. Results are merged across pods and
+# possibly across commits, and a stale file read with today's defaults would
+# report a field nobody measured (an unmeasured idle box reads as idle).
+SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -40,14 +45,36 @@ class Observation:
     forced_sustained: bool | None = None
     min_usable_ctx: int = 0
     skipped: str | None = None
+    error: str | None = None
+    """The cell raised instead of producing a verdict; never silently dropped."""
+    forced_planned: bool | None = None
+    """Refused cells only: whether a num_ctx pin even produced a launch to try."""
+    vram_was_idle: bool = True
+    """False when another process still held VRAM at launch, which taints the load."""
+    generated_tokens: int = 0
+    prompt_tokens: int = 0
 
-    def to_json(self) -> dict[str, object]:
-        return asdict(self)
+    def to_json(self) -> dict[str, Any]:
+        return {"schema": SCHEMA_VERSION, **asdict(self)}
 
     @classmethod
-    def from_json(cls, payload: dict[str, object]) -> Observation:
-        fields = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in payload.items() if k in fields})  # type: ignore[arg-type]
+    def from_json(cls, payload: Mapping[str, Any]) -> Observation:
+        """Parse one recorded cell, refusing anything this harness cannot read.
+
+        Strict in both directions: a result from another schema, or one carrying a
+        field this version does not know, is an error rather than a set of
+        defaults that would look like measurements.
+        """
+        schema = payload.get("schema")
+        if schema != SCHEMA_VERSION:
+            raise ValueError(
+                f"result was written by schema {schema!r}, this harness reads {SCHEMA_VERSION}"
+            )
+        known = set(cls.__dataclass_fields__)
+        unknown = set(payload) - known - {"schema"}
+        if unknown:
+            raise ValueError(f"result carries unknown fields {sorted(unknown)}")
+        return cls(**{k: v for k, v in payload.items() if k in known})
 
 
 @dataclass(frozen=True)
@@ -66,7 +93,13 @@ _UNDER_ESTIMATE_TOLERANCE = 512 * 1024 * 1024
 
 
 def judge(observation: Observation) -> list[Failure]:
-    """Every invariant violated by one cell."""
+    """Every invariant violated by one cell.
+
+    An errored cell is a failure, not an absence: a run whose cells all raised
+    would otherwise merge into a report with nothing to complain about.
+    """
+    if observation.error:
+        return [Failure("cell-errored", observation.cell_id, observation.error)]
     if observation.skipped:
         return []
     checks = (
@@ -74,10 +107,44 @@ def judge(observation: Observation) -> list[Failure]:
         _served_plans_sustain,
         _refusals_are_real,
         _estimates_bracket_reality,
+        _readback_was_readable,
         _oversize_models_spill,
         _tight_groups_let_the_engine_fit,
+        _the_load_was_measured_alone,
     )
     return [failure for check in checks for failure in check(observation)]
+
+
+def _readback_was_readable(o: Observation) -> list[Failure]:
+    """A load with no per-device report leaves the estimate check with nothing.
+
+    Silent, it is indistinguishable from an accurate estimate, which is how a
+    parser that stopped matching the engine's log format becomes invisible.
+    """
+    if o.loaded and o.est_by_device and not o.actual_by_device:
+        return [
+            Failure(
+                "readback-missing",
+                o.cell_id,
+                "the engine reported no per-device memory where lilbee reads it, so "
+                "the estimate could not be checked at all",
+            )
+        ]
+    return []
+
+
+def _the_load_was_measured_alone(o: Observation) -> list[Failure]:
+    """A load racing another tenant measures that tenant, not the plan."""
+    if o.loaded and not o.vram_was_idle:
+        return [
+            Failure(
+                "load-measured-alone",
+                o.cell_id,
+                "another process still held VRAM at launch, so this cell's memory "
+                "numbers describe a contended box",
+            )
+        ]
+    return []
 
 
 def _served_plans_load(o: Observation) -> list[Failure]:
@@ -106,7 +173,18 @@ def _refusals_are_real(o: Observation) -> list[Failure]:
     This is the general form of the 70B-on-2x4090 bug: the fit said 512 tokens
     while a pinned 4096 loaded and answered.
     """
-    if o.planned or o.refusal is None or o.forced_loaded is None:
+    if o.planned or o.refusal is None:
+        return []
+    if o.forced_planned is False:
+        return [
+            Failure(
+                "refusal-is-testable",
+                o.cell_id,
+                "a num_ctx pin produced no launch either, so the refusal could not be "
+                "contradicted and this cell proves nothing",
+            )
+        ]
+    if o.forced_loaded is None:
         return []
     if o.forced_loaded and o.forced_sustained:
         return [

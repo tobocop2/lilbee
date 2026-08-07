@@ -146,6 +146,30 @@ def build_matrix(
     return Matrix(cells=tuple(cells))
 
 
+def pair_by_room(left: Cell, right: Cell) -> tuple[Cell, Cell, str] | None:
+    """``(tighter, roomier, knob)`` for a pair, or ``None`` if they are not comparable.
+
+    Ordered by the knob's own value rather than by the order the pair arrived in:
+    a monotonic check reads "the roomier side must not serve less", so getting the
+    direction from something incidental would invert the assertion silently.
+    """
+    if left.cards != right.cards:
+        return _ordered(left, right, left.cards < right.cards, "cards")
+    if left.usable_fraction != right.usable_fraction:
+        return _ordered(left, right, left.usable_fraction < right.usable_fraction, "usable VRAM")
+    if left.ballast_gib != right.ballast_gib:
+        # A resident tenant is VRAM the chat model does not get, so more ballast
+        # is the tighter side.
+        return _ordered(left, right, sum(left.ballast_gib) > sum(right.ballast_gib), "free VRAM")
+    if left.ctx_target != right.ctx_target:
+        return _ordered(left, right, left.ctx_target < right.ctx_target, "target context")
+    return None
+
+
+def _ordered(left: Cell, right: Cell, left_is_tighter: bool, knob: str) -> tuple[Cell, Cell, str]:
+    return (left, right, knob) if left_is_tighter else (right, left, knob)
+
+
 def iter_pairs(cells: Sequence[Cell]) -> Iterator[tuple[Cell, Cell]]:
     """Cells differing in exactly one knob, which is what a metamorphic check needs."""
     for left in cells:

@@ -13,11 +13,56 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 from tools.qa.placement_matrix.cells import Cell
 from tools.qa.placement_matrix.oracles import Observation
+
+
+@dataclass(frozen=True)
+class PlanDecision:
+    """What the planner decided for one cell, parsed rather than read loosely.
+
+    Every field is required or explicitly defaulted here, so a key the planner
+    stopped emitting raises instead of arriving as a plausible zero.
+    """
+
+    planned: bool
+    total_free_bytes: int
+    min_usable_ctx: int
+    refusal: str | None = None
+    ctx: int = 0
+    slots: int = 0
+    argv: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+    est_by_device: dict[str, int] = field(default_factory=dict)
+    weights_bytes: int = 0
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> PlanDecision:
+        planned = bool(payload["planned"])
+        decision = cls(
+            planned=planned,
+            total_free_bytes=int(payload["total_free_bytes"]),
+            min_usable_ctx=int(payload["min_usable_ctx"]),
+            refusal=payload["refusal"],
+        )
+        if not planned:
+            return decision
+        return replace(
+            decision,
+            ctx=int(payload["ctx"]),
+            slots=int(payload["slots"]),
+            argv=tuple(str(a) for a in payload["argv"]),
+            env={str(k): str(v) for k, v in payload["env"].items()},
+            est_by_device={str(k): int(v) for k, v in payload["est_by_device"].items()},
+            weights_bytes=int(payload["weights_bytes"]),
+        )
+
 
 _GB = 1024**3
 _PORT = 8412
@@ -29,6 +74,8 @@ _GENERATION_TOKENS = 256
 # per repeat, which is only used to size a prompt near the window.
 _TOKENS_PER_FILLER = 10.1
 _FILLER = "The quick brown fox jumps over the lazy dog. "
+# A round has to occupy most of the window, or it is not evidence the window works.
+_MIN_WINDOW_FILL = 0.8
 
 _PLAN_SCRIPT = """
 import json, sys
@@ -63,7 +110,7 @@ print("<<<PLAN>>>" + json.dumps(out))
 """
 
 
-def _plan(cell: Cell, env: dict[str, str], *, force_ctx: int | None = None) -> dict[str, object]:
+def _plan(cell: Cell, env: dict[str, str], *, force_ctx: int | None = None) -> PlanDecision:
     """The planner's decision for this cell, from a clean child process."""
     result = subprocess.run(
         [
@@ -87,7 +134,7 @@ def _plan(cell: Cell, env: dict[str, str], *, force_ctx: int | None = None) -> d
         raise RuntimeError(
             f"planner produced no decision: {result.stdout[-2000:]}{result.stderr[-2000:]}"
         )
-    return json.loads(result.stdout[marker + len("<<<PLAN>>>") :])
+    return PlanDecision.from_payload(json.loads(result.stdout[marker + len("<<<PLAN>>>") :]))
 
 
 def _smi(field: str) -> list[str]:
@@ -114,34 +161,48 @@ def _smi_used_bytes() -> list[int]:
     return [int(v) * 1024 * 1024 for v in _smi("memory.used") if v.isdigit()]
 
 
-def _wait_for_idle_vram(limit_bytes: int = 512 * 1024 * 1024, timeout_s: int = 180) -> None:
-    """Block until nothing else holds VRAM, so a load is measured alone."""
+def _wait_for_idle_vram(limit_bytes: int = 512 * 1024 * 1024, timeout_s: int = 180) -> bool:
+    """Block until nothing else holds VRAM; False if it never went idle.
+
+    Reported rather than swallowed: a load that raced another tenant produced
+    memory numbers describing that tenant, and a silent proceed makes those
+    numbers indistinguishable from a clean measurement.
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         used = _smi_used_bytes()
         if not used or max(used) < limit_bytes:
-            return
+            return True
         time.sleep(3)
+    return False
+
+
+@dataclass(frozen=True)
+class ServeResult:
+    """What one launch did once it was up."""
+
+    loaded: bool
+    sustained: bool = False
+    actual_by_device: dict[str, int] = field(default_factory=dict)
+    vram_was_idle: bool = True
+    generated_tokens: int = 0
+    prompt_tokens: int = 0
 
 
 def _serve_and_measure(
     argv: list[str], env: dict[str, str], ctx: int, log_path: Path
-) -> tuple[bool, bool, dict[str, int]]:
-    """Load the launch, fill its window repeatedly, and read back per-device use.
-
-    Returns ``(loaded, sustained, actual_by_device)``.
-    """
+) -> ServeResult:
+    """Load the launch, fill its window repeatedly, and read back per-device use."""
     from lilbee.providers.fleet.readback import parse_device_buffers
 
-    _wait_for_idle_vram()
+    was_idle = _wait_for_idle_vram()
     with log_path.open("wb") as log:
         proc = subprocess.Popen(
             [*argv, "--port", str(_PORT)], stdout=log, stderr=subprocess.STDOUT, env=env
         )
         try:
-            loaded = _await_health(proc)
-            if not loaded:
-                return False, False, {}
+            if not _await_health(proc):
+                return ServeResult(loaded=False, vram_was_idle=was_idle)
             time.sleep(5)
             actual = {
                 label: size
@@ -150,7 +211,15 @@ def _serve_and_measure(
                 ).items()
                 if not label.upper().startswith(("CPU", "HOST"))
             }
-            return True, _sustains_full_window(ctx), actual
+            sustained, generated, prompted = _sustains_full_window(ctx)
+            return ServeResult(
+                loaded=True,
+                sustained=sustained,
+                actual_by_device=actual,
+                vram_was_idle=was_idle,
+                generated_tokens=generated,
+                prompt_tokens=prompted,
+            )
         finally:
             proc.terminate()
             try:
@@ -171,9 +240,13 @@ def _await_health(proc: subprocess.Popen[bytes]) -> bool:
     return False
 
 
-def _sustains_full_window(ctx: int) -> bool:
-    """Consecutive requests that fill the served window, which is where a
-    load-time fit that was too generous shows up."""
+def _sustains_full_window(ctx: int) -> tuple[bool, int, int]:
+    """Consecutive requests that fill the served window.
+
+    Returns ``(sustained, generated_tokens, prompt_tokens)``. A 200 with an empty
+    completion, or a prompt the server quietly truncated, is not a served window,
+    so the token counts are checked rather than the status code alone.
+    """
     gen = min(_GENERATION_TOKENS, max(64, ctx // 4))
     repeats = max(1, int((ctx - gen - 80) / _TOKENS_PER_FILLER))
     body = {
@@ -182,15 +255,22 @@ def _sustains_full_window(ctx: int) -> bool:
         "temperature": 0.0,
         "ignore_eos": True,
     }
+    generated = prompted = 0
     for _ in range(_ROUNDS):
         try:
             response = httpx.post(f"{_BASE_URL}/v1/chat/completions", json=body, timeout=1800)
             if response.status_code != httpx.codes.OK:
-                return False
-            response.json()
+                return False, generated, prompted
+            usage = response.json().get("usage") or {}
         except (httpx.HTTPError, ValueError):
-            return False
-    return True
+            return False, generated, prompted
+        generated = int(usage.get("completion_tokens", 0))
+        prompted = int(usage.get("prompt_tokens", 0))
+        # The point of the round is that the window was really occupied: a
+        # truncated prompt or a one-token answer is a pass the harness must not give.
+        if generated < gen or prompted + generated < ctx * _MIN_WINDOW_FILL:
+            return False, generated, prompted
+    return True, generated, prompted
 
 
 def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
@@ -204,9 +284,9 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
         planned=False,
     )
     if cell.cards > available_cards:
-        return _replace(base, skipped=f"needs {cell.cards} cards, host has {available_cards}")
+        return replace(base, skipped=f"needs {cell.cards} cards, host has {available_cards}")
     if any(cell.ballast_gib):
-        return _replace(base, skipped="ballast tenants are not supported on this host")
+        return replace(base, skipped="ballast tenants are not supported on this host")
 
     env = {
         **os.environ,
@@ -214,42 +294,51 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
     }
     decision = _plan(cell, env)
-    argv: tuple[str, ...] = tuple(decision.get("argv") or ())
-    observed = _replace(
+    observed = replace(
         base,
-        total_free_bytes=int(decision.get("total_free_bytes", 0)),  # type: ignore[arg-type]
-        weights_bytes=int(decision.get("weights_bytes", 0)),  # type: ignore[arg-type]
-        planned=bool(decision.get("planned")),
-        refusal=decision.get("refusal"),
-        ctx=int(decision.get("ctx", 0)),  # type: ignore[arg-type]
-        slots=int(decision.get("slots", 0)),  # type: ignore[arg-type]
-        argv=argv,
-        est_by_device=dict(decision.get("est_by_device") or {}),
-        min_usable_ctx=int(decision.get("min_usable_ctx", 0)),  # type: ignore[arg-type]
+        total_free_bytes=decision.total_free_bytes,
+        weights_bytes=decision.weights_bytes,
+        planned=decision.planned,
+        refusal=decision.refusal,
+        ctx=decision.ctx,
+        slots=decision.slots,
+        argv=decision.argv,
+        est_by_device=decision.est_by_device,
+        min_usable_ctx=decision.min_usable_ctx,
         # Only the tight placement leaves a multi-card group without a ratio.
-        tight=cell.cards > 1 and "--tensor-split" not in argv,
+        tight=cell.cards > 1 and "--tensor-split" not in decision.argv,
     )
-    launch_env = {**env, **dict(decision.get("env") or {})}
-    if observed.planned:
-        loaded, sustained, actual = _serve_and_measure(
-            list(observed.argv), launch_env, observed.ctx, workdir / f"{cell.id}.engine.log"
+    if decision.planned:
+        served = _serve_and_measure(
+            list(decision.argv),
+            {**env, **decision.env},
+            decision.ctx,
+            workdir / f"{cell.id}.engine.log",
         )
-        return _replace(observed, loaded=loaded, sustained=sustained, actual_by_device=actual)
+        return replace(
+            observed,
+            loaded=served.loaded,
+            sustained=served.sustained,
+            actual_by_device=served.actual_by_device,
+            vram_was_idle=served.vram_was_idle,
+            generated_tokens=served.generated_tokens,
+            prompt_tokens=served.prompt_tokens,
+        )
 
     # Refused: the claim is that no usable window exists. Force one and find out.
-    forced = _plan(cell, env, force_ctx=observed.min_usable_ctx)
-    if not forced.get("planned"):
-        return _replace(observed, forced_loaded=False, forced_sustained=False)
-    loaded, sustained, _actual = _serve_and_measure(
-        list(forced["argv"]),  # type: ignore[arg-type]
-        {**env, **dict(forced.get("env", {}))},  # type: ignore[arg-type]
-        int(forced["ctx"]),  # type: ignore[arg-type]
+    forced = _plan(cell, env, force_ctx=decision.min_usable_ctx)
+    if not forced.planned:
+        return replace(observed, forced_planned=False)
+    served = _serve_and_measure(
+        list(forced.argv),
+        {**env, **forced.env},
+        forced.ctx,
         workdir / f"{cell.id}.forced.log",
     )
-    return _replace(observed, forced_loaded=loaded, forced_sustained=sustained)
-
-
-def _replace(observation: Observation, **changes: object) -> Observation:
-    from dataclasses import replace
-
-    return replace(observation, **changes)  # type: ignore[arg-type]
+    return replace(
+        observed,
+        forced_planned=True,
+        forced_loaded=served.loaded,
+        forced_sustained=served.sustained,
+        vram_was_idle=served.vram_was_idle,
+    )

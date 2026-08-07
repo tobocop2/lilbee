@@ -23,6 +23,11 @@ Per cell (one model on one hardware shape):
 | `estimate-covers-devices` | every device the engine used was charged for |
 | `oversize-spills` | a model larger than the GPUs loads by spilling, not by dying |
 | `tight-group-has-no-ratio` | a best-effort placement leaves the split to the engine |
+| `readback-missing` | a load whose per-device report was unreadable, so nothing was checked |
+| `load-measured-alone` | another process held VRAM at launch, so the numbers describe a contended box |
+| `refusal-is-testable` | a refusal a `num_ctx` pin could not contradict, which proves nothing |
+| `cell-errored` | the cell raised; a crash is a failure, never an absent result |
+| `result-unreadable` | a merged result this harness cannot read, rather than one silently dropped |
 
 Across pairs of cells differing in exactly one knob, with no expected value
 needed — only an order that must hold:
@@ -59,7 +64,17 @@ python -m tools.qa.placement_matrix report --out results/
 ```
 
 Exit code is non-zero on any violation, and also when nothing ran — a matrix
-that produced no results must not read as a pass.
+that produced no results must not read as a pass. A cell that raises is written
+out as a failed result rather than dropped, so a run whose cells all crashed
+cannot merge into a clean report.
+
+Results carry a schema version. Shards are merged across pods and possibly
+across commits, so a file written by a different version is reported rather than
+loaded with today's defaults, which would show fields nobody measured.
+
+"Sustained" means the token counts came back, not that the request returned 200:
+a round has to generate what it asked for and occupy most of the window, so a
+silently truncated prompt or a one-token answer fails.
 
 Useful flags: `--resume` (skip cells already recorded, so a reclaimed pod picks
 up where it stopped), `--models tiny tight-split` (subset by key), `--max-cards`.

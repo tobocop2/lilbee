@@ -16,7 +16,12 @@ import json
 import sys
 from pathlib import Path
 
-from tools.qa.placement_matrix.cells import DEFAULT_MODELS, build_matrix, iter_pairs
+from tools.qa.placement_matrix.cells import (
+    DEFAULT_MODELS,
+    build_matrix,
+    iter_pairs,
+    pair_by_room,
+)
 from tools.qa.placement_matrix.observe import gpu_count, run_cell
 from tools.qa.placement_matrix.oracles import Failure, Observation, compare, judge_all
 
@@ -49,41 +54,49 @@ def _run(args: argparse.Namespace) -> int:
             observation = run_cell(cell, workdir=out, available_cards=cards)
         except Exception as exc:  # a crashed cell is a result, not a reason to stop
             print(f"  ERROR        {cell.id}: {type(exc).__name__}: {exc}")
-            continue
+            observation = Observation(
+                cell_id=cell.id,
+                model_key=cell.model.key,
+                cards=cell.cards,
+                total_free_bytes=0,
+                weights_bytes=0,
+                planned=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         target.write_text(json.dumps(observation.to_json(), indent=2))
     return _report(args)
 
 
 def _report(args: argparse.Namespace) -> int:
     out = Path(args.out)
-    observations = [
-        Observation.from_json(json.loads(path.read_text()))
-        for path in sorted(out.glob("*.json"))
-        if not path.name.endswith(".engine.log")
-    ]
+    observations: list[Observation] = []
+    unreadable: list[Failure] = []
+    for path in sorted(out.glob("*.json")):
+        try:
+            observations.append(Observation.from_json(json.loads(path.read_text())))
+        except (ValueError, TypeError) as exc:
+            # Loud, not skipped: a result the merge cannot read is missing coverage,
+            # and dropping it quietly shrinks the matrix into a pass.
+            unreadable.append(Failure("result-unreadable", path.name, str(exc)))
     by_id = {o.cell_id: o for o in observations}
-    failures: list[Failure] = judge_all(observations)
+    failures: list[Failure] = [*unreadable, *judge_all(observations)]
 
     matrix = build_matrix(DEFAULT_MODELS, max_cards=args.max_cards)
-    for low, high in iter_pairs(matrix.cells):
-        left, right = by_id.get(low.id), by_id.get(high.id)
-        if left is None or right is None:
+    for left, right in iter_pairs(matrix.cells):
+        ordered = pair_by_room(left, right)
+        if ordered is None:
             continue
-        if low.cards != high.cards:
-            knob = "cards"
-        elif low.usable_fraction != high.usable_fraction:
-            knob = "usable VRAM"
-        elif low.ballast_gib != high.ballast_gib:
-            knob, left, right = "free VRAM", right, left
-        else:
+        tighter, roomier, knob = ordered
+        observed_tighter, observed_roomier = by_id.get(tighter.id), by_id.get(roomier.id)
+        if observed_tighter is None or observed_roomier is None:
             continue
-        failures.extend(compare(left, right, knob))
+        failures.extend(compare(observed_tighter, observed_roomier, knob))
 
     ran = [o for o in observations if not o.skipped]
     print(f"\n{len(ran)} cells judged, {len(observations) - len(ran)} skipped")
     for failure in sorted(failures, key=lambda f: (f.rule, f.cell_id)):
         print(f"  FAIL [{failure.rule}] {failure.cell_id}: {failure.detail}")
-    if not ran:
+    if not ran and not unreadable:
         # Green on nothing is how a matrix that never ran reads as a pass.
         print("  NOTHING RAN: no cell produced a judgeable result")
         return 1

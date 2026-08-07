@@ -12,12 +12,31 @@ from __future__ import annotations
 import ast
 
 import pytest
-from tools.qa.placement_matrix import observe
-from tools.qa.placement_matrix.cells import Cell, ModelSpec, build_matrix, iter_pairs
+from tools.qa.placement_matrix import observe, oracles
+from tools.qa.placement_matrix.cells import (
+    Cell,
+    ModelSpec,
+    build_matrix,
+    iter_pairs,
+    pair_by_room,
+)
 from tools.qa.placement_matrix.oracles import Observation, compare, judge
 
 _GB = 1024**3
 _MODEL = ModelSpec(key="m", ref="org/repo/m.gguf", probes="test")
+
+_PLANNED_PAYLOAD = {
+    "planned": True,
+    "total_free_bytes": 48 * _GB,
+    "min_usable_ctx": 2160,
+    "refusal": None,
+    "ctx": 5888,
+    "slots": 1,
+    "argv": ["llama-server", "--ctx-size", "5888"],
+    "env": {"CUDA_VISIBLE_DEVICES": "0,1"},
+    "est_by_device": {"CUDA0": 20 * _GB},
+    "weights_bytes": 42 * _GB,
+}
 
 
 def _observation(**overrides: object) -> Observation:
@@ -247,3 +266,171 @@ class TestThePlanScriptStaysInSyncWithLilbee:
         from lilbee.providers.fleet.planning import FleetPlan
 
         assert {"launches", "skipped_unusable_ctx"} <= set(FleetPlan.__dataclass_fields__)
+
+
+class TestTheHarnessCannotReportGreenOnNothing:
+    """Each of these was a way a cell could pass without proving anything."""
+
+    def test_an_errored_cell_is_a_failure_not_an_absence(self) -> None:
+        # A cell that raised used to be printed and dropped, so a run whose cells
+        # all crashed merged into a report with nothing to complain about.
+        errored = _observation(error="RuntimeError: planner produced no decision")
+        assert [f.rule for f in judge(errored)] == ["cell-errored"]
+
+    def test_a_load_with_no_readback_is_not_a_passed_estimate(self) -> None:
+        # Silence from the log parser is indistinguishable from an accurate
+        # estimate, which is how a stale parser becomes invisible.
+        blind = _observation(est_by_device={"CUDA0": 20 * _GB}, actual_by_device={})
+        assert any(f.rule == "readback-missing" for f in judge(blind))
+        seeing = _observation(
+            est_by_device={"CUDA0": 20 * _GB}, actual_by_device={"CUDA0": 20 * _GB}
+        )
+        assert not any(f.rule == "readback-missing" for f in judge(seeing))
+
+    def test_a_contended_load_is_flagged(self) -> None:
+        contended = _observation(vram_was_idle=False)
+        assert any(f.rule == "load-measured-alone" for f in judge(contended))
+        assert not any(f.rule == "load-measured-alone" for f in judge(_observation()))
+
+    def test_a_refusal_no_pin_can_test_proves_nothing(self) -> None:
+        # If a num_ctx pin produces no launch either, the refusal was never
+        # actually contradicted, and recording it as honest is a free pass.
+        untestable = _observation(
+            planned=False,
+            loaded=False,
+            sustained=False,
+            refusal="only a 512-token context",
+            forced_planned=False,
+        )
+        assert any(f.rule == "refusal-is-testable" for f in judge(untestable))
+
+
+class TestPairsAreOrderedByRoomNotByName:
+    """The monotonic check reads 'the roomier side must not serve less', so the
+    direction has to come from the knob, never from the order a pair arrived in."""
+
+    def test_more_cards_is_the_roomier_side(self) -> None:
+        one, two = Cell(model=_MODEL, cards=1), Cell(model=_MODEL, cards=2)
+        assert pair_by_room(one, two) == (one, two, "cards")
+        assert pair_by_room(two, one) == (one, two, "cards")
+
+    def test_more_ballast_is_the_tighter_side(self) -> None:
+        # A resident tenant is VRAM chat does not get, so the ballasted cell is
+        # tighter even though its id sorts second.
+        free = Cell(model=_MODEL, cards=2, ballast_gib=(0, 0))
+        held = Cell(model=_MODEL, cards=2, ballast_gib=(8, 0))
+        assert pair_by_room(free, held) == (held, free, "free VRAM")
+        assert pair_by_room(held, free) == (held, free, "free VRAM")
+
+    def test_a_higher_usable_fraction_is_roomier(self) -> None:
+        tight = Cell(model=_MODEL, cards=2, usable_fraction=0.75)
+        roomy = Cell(model=_MODEL, cards=2, usable_fraction=0.9)
+        assert pair_by_room(roomy, tight) == (tight, roomy, "usable VRAM")
+
+    def test_identical_cells_are_not_comparable(self) -> None:
+        assert pair_by_room(Cell(model=_MODEL, cards=2), Cell(model=_MODEL, cards=2)) is None
+
+    def test_every_generated_pair_is_orderable(self) -> None:
+        # iter_pairs promises one differing knob; pair_by_room must handle each.
+        for left, right in iter_pairs(build_matrix(max_cards=3).cells):
+            assert pair_by_room(left, right) is not None
+
+
+class TestTheSustainCheckCannotBeFooled:
+    """A 200 is not a served window. These are the shapes that would otherwise
+    pass: a truncated prompt, and a model that answered with almost nothing."""
+
+    @staticmethod
+    def _reply(monkeypatch, prompt_tokens: int, completion_tokens: int, status: int = 200):
+        class _Response:
+            status_code = status
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                    }
+                }
+
+        monkeypatch.setattr(observe.httpx, "post", lambda *a, **k: _Response())
+
+    def test_a_filled_window_sustains(self, monkeypatch) -> None:
+        self._reply(monkeypatch, prompt_tokens=5283, completion_tokens=256)
+        sustained, generated, prompted = observe._sustains_full_window(5888)
+        assert sustained
+        assert (generated, prompted) == (256, 5283)
+
+    def test_a_truncated_prompt_does_not_sustain(self, monkeypatch) -> None:
+        # The server quietly took 500 tokens of a 5888-token window.
+        self._reply(monkeypatch, prompt_tokens=500, completion_tokens=256)
+        assert observe._sustains_full_window(5888)[0] is False
+
+    def test_an_almost_empty_answer_does_not_sustain(self, monkeypatch) -> None:
+        self._reply(monkeypatch, prompt_tokens=5283, completion_tokens=1)
+        assert observe._sustains_full_window(5888)[0] is False
+
+    def test_a_non_ok_status_does_not_sustain(self, monkeypatch) -> None:
+        self._reply(monkeypatch, prompt_tokens=5283, completion_tokens=256, status=500)
+        assert observe._sustains_full_window(5888)[0] is False
+
+
+class TestThePlanPayloadIsParsedStrictly:
+    """A key the planner stopped emitting must raise, not arrive as a zero that
+    reads like a real measurement."""
+
+    def test_a_full_payload_parses(self) -> None:
+        decision = observe.PlanDecision.from_payload(_PLANNED_PAYLOAD)
+        assert decision.ctx == 5888
+        assert decision.argv == ("llama-server", "--ctx-size", "5888")
+
+    @pytest.mark.parametrize("missing", ["ctx", "argv", "slots", "weights_bytes"])
+    def test_a_missing_field_raises(self, missing: str) -> None:
+        payload = {k: v for k, v in _PLANNED_PAYLOAD.items() if k != missing}
+        with pytest.raises(KeyError):
+            observe.PlanDecision.from_payload(payload)
+
+    def test_a_refusal_needs_no_launch_fields(self) -> None:
+        decision = observe.PlanDecision.from_payload(
+            {
+                "planned": False,
+                "total_free_bytes": 48 * _GB,
+                "min_usable_ctx": 2160,
+                "refusal": "only a 512-token context",
+            }
+        )
+        assert decision.planned is False
+        assert decision.ctx == 0
+
+
+class TestMergedResultsCannotBeMisread:
+    """Shards are merged across pods and possibly across commits, so a stale or
+    foreign result file must not load as a set of plausible defaults."""
+
+    def test_a_result_round_trips(self) -> None:
+        observation = _observation()
+        assert Observation.from_json(observation.to_json()) == observation
+
+    def test_a_result_carries_its_schema(self) -> None:
+        assert _observation().to_json()["schema"] == oracles.SCHEMA_VERSION
+
+    def test_another_schema_is_refused(self) -> None:
+        payload = _observation().to_json()
+        payload["schema"] = oracles.SCHEMA_VERSION + 1
+        with pytest.raises(ValueError, match="schema"):
+            Observation.from_json(payload)
+
+    def test_an_unversioned_result_is_refused(self) -> None:
+        payload = _observation().to_json()
+        del payload["schema"]
+        with pytest.raises(ValueError, match="schema"):
+            Observation.from_json(payload)
+
+    def test_an_unknown_field_is_refused(self) -> None:
+        # A field this version does not know means the writer measured something
+        # this reader would silently ignore.
+        payload = _observation().to_json()
+        payload["measured_something_new"] = True
+        with pytest.raises(ValueError, match="unknown fields"):
+            Observation.from_json(payload)
