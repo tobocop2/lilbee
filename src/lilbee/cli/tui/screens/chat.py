@@ -355,6 +355,9 @@ class ChatScreen(Screen[None]):
         # overwrites, reset clears). Never clear it in _finalize_stream: the
         # input unblocks first, so the clear races the next turn's question.
         self._active_question: UserMessage | None = None
+        # A model switch asked for mid-answer, applied when the stream ends so
+        # the fleet restart never tears down the server feeding a live answer.
+        self._model_switch_queued: bool = False
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -721,6 +724,12 @@ class ChatScreen(Screen[None]):
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
         self.refresh_bindings()
+        if self._model_switch_queued:
+            # Clear before applying: apply_model_change can re-enter through the
+            # swap-in-progress branch, and a stale flag would swap a second time
+            # at the next stream end.
+            self._model_switch_queued = False
+            self.apply_model_change()
 
     def _cmd_add(self, args: str) -> None:
         from lilbee.app.ingest import source_label_taken
@@ -2056,16 +2065,18 @@ class ChatScreen(Screen[None]):
         self.streaming = False
 
     def apply_model_change(self) -> None:
-        """Swap to the new chat model without freezing the UI.
+        """Swap to the new chat model without freezing the UI or losing an answer.
 
         Reloading the fleet for the new model is a multi-second restart, so it
-        runs in a thread worker instead of on the event loop. The in-flight stream
-        is cancelled first, the input is blocked behind a "switching" state with an
-        indicator toast, and the worker reloads only the chat role. The provider
-        retires any still-busy client across the restart and serializes overlapping
-        reloads, so the worker can start at once without waiting for other workers.
-        The input re-enables once the fleet has restarted with the new model (which
-        loads on the next request).
+        runs in a thread worker instead of on the event loop. The worker reloads
+        only the chat role; the provider retires any still-busy client across the
+        restart and serializes overlapping reloads, so the worker can start at
+        once without waiting for other workers.
+
+        A switch requested mid-answer is queued rather than applied: restarting
+        the chat server under a live stream would kill the answer being read.
+        The queued switch runs when the stream ends, by any route -- finished,
+        cancelled, or cleared -- because they all leave the streaming state.
         """
         if self.swapping_model:
             # A swap is already loading; a second one (rapid /model, or the model
@@ -2075,7 +2086,15 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
             return
         if self.streaming:
-            self._cancel_inflight_stream(msg.STREAM_CANCELLED_MODEL_SWITCH)
+            from lilbee.catalog.formatting import display_label_for_ref
+
+            # cfg already holds the new ref, so a second queued switch needs no
+            # extra state: the swap that runs at stream end reads the latest cfg.
+            self._model_switch_queued = True
+            self.app.notify(
+                msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
+            )
+            return
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()

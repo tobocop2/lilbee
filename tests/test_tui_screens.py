@@ -3389,10 +3389,9 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
-async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream with the model-switch note."""
-    from lilbee.cli.tui import messages as msg
-
+async def test_apply_model_change_queues_the_switch_while_streaming():
+    """A switch asked for mid-answer keeps the answer: nothing is cancelled and no
+    reload starts until the stream ends."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3402,8 +3401,87 @@ async def testapply_model_change_cancels_stream_when_streaming():
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
-            mock_cancel.assert_called_once_with(msg.STREAM_CANCELLED_MODEL_SWITCH)
+            mock_cancel.assert_not_called()
+            mock_worker.assert_not_called()
+        assert screen._model_switch_queued is True
+        assert screen.swapping_model is False
+
+
+async def test_queued_switch_toast_names_the_model_and_says_it_waits():
+    """The queued switch is announced, so a person knows it was accepted and when
+    it lands, rather than facing an answer that ignored their click."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker"),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen.apply_model_change()
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.args[0].startswith("Switching to ")
+        assert mock_notify.call_args.args[0] != msg.MODEL_SWAP_APPLYING
+
+
+async def test_queued_switch_runs_when_the_stream_ends():
+    """Leaving the streaming state applies the queued swap."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
+            screen.streaming = False
             mock_worker.assert_called_once()
+        assert screen._model_switch_queued is False
+        assert screen.swapping_model is True
+
+
+async def test_queued_switch_runs_when_the_user_cancels_the_stream():
+    """A cancelled answer still lands the queued switch: the user asked for the new
+    model, and cancelling the turn is not a withdrawal of that."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.get_services"),
+        ):
+            screen.apply_model_change()
+            screen.action_cancel_stream()
+            mock_worker.assert_called_once()
+
+
+async def test_two_queued_switches_swap_once_onto_the_latest_model():
+    """Queueing twice must not run two reloads; cfg already holds the latest ref."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            screen.apply_model_change()
+            screen.streaming = False
+            mock_worker.assert_called_once()
+
+
+async def test_stream_end_without_a_queued_switch_starts_no_reload():
+    """The common path -- an answer finishing with no switch asked for -- must not
+    swap the model."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.streaming = False
+            mock_worker.assert_not_called()
+        assert screen.swapping_model is False
 
 
 async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
