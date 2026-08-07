@@ -322,12 +322,36 @@ class Session:
 
     # -- navigation --------------------------------------------------------------
 
+    def palette_to(self, screen: str, marker: str, timeout: float = 25.0) -> None:
+        """Jump to a screen through the command palette rather than the nav ring.
+
+        The ring walk reads the tab strip, and the strip does not always carry names: on a
+        pod under engine load it rendered as bare separators, so a walk looking for "Chat"
+        matched nothing and stepped into Settings instead. The palette matches on the
+        command, not on a strip that may still be painting.
+        """
+        # Leave any focused field first. A walk that ends up in Settings lands focus in
+        # an Input, and a focused Input swallows ctrl+p, so the palette never opens and
+        # the fallback fails for a different reason than the walk did.
+        self.esc(2)
+        time.sleep(0.5)
+        self.key("C-p", after=0.9)
+        self.wait_for(r"Search for commands|Search for a command", timeout=15)
+        self.type_text(screen, rate=0.045)
+        time.sleep(0.7)
+        self.key("Enter", after=1.0)
+        self.wait_for(marker, timeout=timeout)
+
     def goto(self, screen: str, *, forward: bool = True, limit: int = 10,
              marker: str | None = None) -> None:
         """Walk the screen ring until `screen` is showing, reading the strip each step.
 
         Counting bracket presses is what the old tapes did and it is now wrong; the ring
         grew and the count no longer lands where the tape assumed.
+
+        Falls back to the palette when the walk runs out of steps: the strip can render
+        without names while the app is busy, and a reel should not die because a widget
+        was mid-paint.
         """
         probe = marker or screen
         for _ in range(limit):
@@ -346,6 +370,11 @@ class Session:
                 time.sleep(0.3)
                 continue
             self.key("]" if forward else "[")
+        try:
+            self.palette_to(screen, probe)
+            return
+        except Timeout:
+            pass
         raise Timeout(f"never reached {screen!r} in {limit} steps\n--- screen ---\n"
                       f"{self.screen()}")
 
