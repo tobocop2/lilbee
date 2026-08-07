@@ -496,7 +496,7 @@ class ChatScreen(Screen[None]):
 
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""
-        if self._reject_submit_when_busy():
+        if self._reject_submit_when_busy(text):
             return
         self._handle_slash(text)
 

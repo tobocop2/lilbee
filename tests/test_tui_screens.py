@@ -3755,6 +3755,35 @@ async def test_slash_model_typed_mid_answer_queues_the_switch():
             mock_worker.assert_not_called()
 
 
+async def test_command_palette_runs_cancel_mid_answer_too():
+    """The palette is the other entry point to the same commands; it must not
+    refuse mid-answer what the command bar allows."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
+            screen.run_command("/cancel")
+        assert screen.streaming is False
+        mock_services.return_value.cancel_inference.assert_called_once_with()
+
+
+async def test_command_palette_still_refuses_an_unsafe_command_mid_answer():
+    """Parity cuts both ways: the palette keeps the gate for commands that are
+    not on the allow-list."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_handle_slash") as mock_handle,
+            patch.object(app, "notify"),
+        ):
+            screen.run_command("/add /tmp/x")
+            mock_handle.assert_not_called()
+
+
 async def test_slash_cancel_typed_mid_answer_stops_the_stream():
     """End to end through the input: /cancel while streaming reaches the handler
     and stops the turn, instead of being toasted away as 'already answering'."""
