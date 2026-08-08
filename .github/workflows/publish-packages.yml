@@ -59,6 +59,9 @@ jobs:
 
           [ -n "$sha_linux" ] || { echo "lilbee-linux-x86_64 missing from release ${tag}"; exit 1; }
           [ -n "$sha_macos_arm64" ] || { echo "lilbee-macos-arm64 missing from release ${tag}"; exit 1; }
+          # Soft in the release fan-out, so it can be absent; the Intel url still
+          # interpolates the new version, so publishing without it ships a 404.
+          [ -n "$sha_macos_x86_64" ] || { echo "lilbee-macos-x86_64 missing from release ${tag}; re-run once the soft Intel cell has uploaded it"; exit 1; }
 
           {
             echo "tag=$tag"
@@ -84,10 +87,8 @@ jobs:
           SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
           SHA_MACOS_X86_64: ${{ needs.resolve.outputs.sha_macos_x86_64 }}
         run: |
-          args="--version ${VERSION} --sha-macos-arm64 ${SHA_MACOS_ARM64} --sha-linux-x86_64 ${SHA_LINUX}"
-          if [ -n "${SHA_MACOS_X86_64}" ]; then
-            args="${args} --sha-macos-x86_64 ${SHA_MACOS_X86_64}"
-          fi
+          args="--version ${VERSION} --sha-macos-arm64 ${SHA_MACOS_ARM64}"
+          args="${args} --sha-macos-x86_64 ${SHA_MACOS_X86_64} --sha-linux-x86_64 ${SHA_LINUX}"
           echo "value=${args}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/publish-homebrew-formula
         with:
