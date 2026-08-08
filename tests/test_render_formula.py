@@ -54,6 +54,57 @@ def test_every_seed_already_declares_the_project_license(tmp_path):
         assert 'license "MIT"' in seed.read_text(), seed.name
 
 
+_MACOS_INTEL_BLOCK = """
+    on_intel do
+      url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-macos-x86_64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    end
+"""
+
+_ARM64, _MACOS_INTEL, _LINUX = "1" * 64, "2" * 64, "3" * 64
+_EVERY_DIGEST = (
+    "--sha-macos-arm64",
+    _ARM64,
+    "--sha-macos-x86_64",
+    _MACOS_INTEL,
+    "--sha-linux-x86_64",
+    _LINUX,
+)
+
+
+def _seed(tmp_path, drop: str = "") -> pathlib.Path:
+    """The default formula seed, optionally with *drop* cut out of it."""
+    seed = _SEEDS.joinpath("lilbee.rb").read_text(encoding="utf-8")
+    assert not drop or drop in seed
+    formula = tmp_path / "lilbee.rb"
+    formula.write_text(seed.replace(drop, "") if drop else seed, encoding="utf-8")
+    return formula
+
+
+def test_the_default_formula_takes_a_digest_for_every_platform_it_ships(tmp_path):
+    """Intel macOS has an asset in every release; the formula has to carry its digest."""
+    formula = _seed(tmp_path)
+    result = _render(formula, *_EVERY_DIGEST)
+    assert result.returncode == 0, result.stderr
+    rendered = formula.read_text(encoding="utf-8")
+    for sha in (_ARM64, _MACOS_INTEL, _LINUX):
+        assert rendered.count(sha) == 1, rendered
+
+
+def test_a_formula_missing_a_platform_block_fails_loudly(tmp_path):
+    """Skipping the absent block instead is how Intel Macs lost `brew install` outright."""
+    result = _render(_seed(tmp_path, drop=_MACOS_INTEL_BLOCK), *_EVERY_DIGEST)
+    assert result.returncode != 0
+    assert "lilbee-macos-x86_64" in result.stderr
+
+
+def test_the_default_formula_requires_the_intel_macos_digest(tmp_path):
+    """A release that resolved no Intel digest must stop, not publish a partial formula."""
+    result = _render(_seed(tmp_path), "--sha-macos-arm64", _ARM64, "--sha-linux-x86_64", _LINUX)
+    assert result.returncode != 0
+    assert "--sha-macos-x86_64" in result.stderr
+
+
 def test_a_formula_with_no_license_line_fails_loudly(tmp_path):
     """Silently rendering a formula Homebrew will reject is worse than stopping."""
     formula = tmp_path / "lilbee-rocm.rb"
