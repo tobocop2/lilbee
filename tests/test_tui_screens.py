@@ -13934,15 +13934,20 @@ async def test_catalog_search_submit_installs_first_visible_match():
             assert grids, "chat grid should mount at least one ModelGrid"
             # Painting is done; from here a late worker landing repainting
             # the grid would restore the full dataset over the trim below.
+            # _remount_grid_sections is reached only from here, so with this
+            # stubbed no further tail mount can be scheduled.
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
-            # The deferred tail mount is the other way the trim gets undone: it
-            # runs from call_after_refresh, so it can land after the warm-up
-            # loop broke and remount a grid holding the full dataset. Stubbed
-            # so the trimmed grid is the one the selector walks, by
-            # construction rather than by winning the race.
-            screen._mount_remaining_grid_sections = (  # type: ignore[method-assign]
-                lambda *a, **k: []
-            )
+            # The loop breaks without a pause, so the tail mount _refresh_grid
+            # already queued through call_after_refresh is still pending; it
+            # would land on the pause below the trim and remount a grid holding
+            # the full dataset. Drain it here instead, while nothing is trimmed
+            # yet. Stubbing the method cannot help: call_after_refresh captured
+            # the bound method when it was scheduled.
+            for _ in range(3):
+                await _pilot.pause()
+            # Re-queried because the drained mount replaces the grid widgets.
+            grids = list(screen.query("#grid-chat ModelGrid"))
+            assert grids, "chat grid should survive the deferred tail mount"
             grid = grids[0]
             assert len(grid.rows) >= 2
             # ModelGrid filters at the dataset level: set_rows replaces
