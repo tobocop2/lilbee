@@ -12,15 +12,16 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lilbee.app.services import get_services
-
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
 from lilbee.providers.base import (
+    CONTEXT_WINDOW_MARGIN_TOKENS,
+    GENERATION_RESERVE_TOKENS,
     ProviderError,
     ProviderErrorKind,
+    estimate_budget_tokens,
     normalize_generation_options,
 )
 from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
@@ -108,6 +109,9 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     reaching for ``get_services()`` (callers running inside its construction).
     """
     if registry is None:
+        # call-time import: keeps the app-layer container off this module's import graph
+        from lilbee.app.services import get_services
+
         registry = get_services().registry
     try:
         return registry.resolve(model)
@@ -179,6 +183,23 @@ def resolve_chat_ctx(
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
         return min(training_ctx, cfg.chat_n_ctx_target)
+
+
+# Tokens the minimum grounded prompt allows for the question plus the context
+# template's framing, beyond the system prompt and one retrieved source.
+_GROUNDED_QUESTION_TOKENS = 128
+
+
+def min_usable_chat_ctx() -> int:
+    """Smallest chat window that serves one grounded answer: the system prompt,
+    one retrieved source, the question, and the generation reserve plus margin."""
+    return (
+        estimate_budget_tokens(cfg.rag_system_prompt)
+        + cfg.chunk_size
+        + _GROUNDED_QUESTION_TOKENS
+        + GENERATION_RESERVE_TOKENS
+        + CONTEXT_WINDOW_MARGIN_TOKENS
+    )
 
 
 def resolve_n_gpu_layers(*, embedding: bool) -> int:

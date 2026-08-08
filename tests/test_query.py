@@ -9,7 +9,7 @@ import pytest
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
 from lilbee.data.store import ChunkType, MemoryRow, SearchChunk
-from lilbee.providers.base import ChatResult, FinishReason
+from lilbee.providers.base import ChatResult, FinishReason, estimate_budget_tokens
 from lilbee.retrieval.query import (
     Searcher,
     build_context,
@@ -980,11 +980,10 @@ class TestContextBudget:
 
         kept = _fit(results, system, question)
 
-        searcher = get_services().searcher
         assembled = (
-            searcher._budget_tokens(system)
-            + searcher._budget_tokens(question)
-            + sum(searcher._budget_tokens(r.chunk) for r in kept)
+            estimate_budget_tokens(system)
+            + estimate_budget_tokens(question)
+            + sum(estimate_budget_tokens(r.chunk) for r in kept)
         )
         assert kept, "the top-ranked source is always kept"
         assert assembled <= prompt_token_budget(ctx), (
@@ -1141,9 +1140,9 @@ class TestNeighborExpansion:
         # Non-vacuous: at least one neighbor was actually merged in.
         assert widened[0].chunk != "c" * 1500
         assembled = (
-            searcher._budget_tokens(system)
-            + searcher._budget_tokens(question)
-            + sum(searcher._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in widened)
+            estimate_budget_tokens(system)
+            + estimate_budget_tokens(question)
+            + sum(estimate_budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in widened)
             + _CONTEXT_TEMPLATE_TOKENS
         )
         assert assembled <= prompt_token_budget(ctx), (
