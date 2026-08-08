@@ -100,9 +100,11 @@ HelpPanel #widget-help MarkdownBlock:last-child {
  * partial-block `tall` style, which does not tile in every terminal font: in
  * macOS Terminal.app the left edge renders as disconnected blocks and the rails
  * as broken dashes. lilbee's stylesheets use box-drawing everywhere, so restate
- * these three in `solid`, keeping Textual's own colors. Colors mirror
- * textual/widgets/_input.py, _select.py and _button.py; if a Textual upgrade
- * retints them, test_no_partial_block_borders catches the drift, not this note. */
+ * these three in `solid`, keeping Textual's own colors.
+ *
+ * The colors are copied from textual/widgets/_input.py, _select.py and
+ * _button.py. TestNoPartialBlockBorders asserts the style, not the color, so a
+ * Textual upgrade that retints these diverges here silently. */
 Input {
     border: solid $border-blurred;
 
