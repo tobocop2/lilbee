@@ -991,7 +991,7 @@ class TestModelBar:
                 await pilot.pause()
                 assert "-disabled" not in toggle.classes
 
-    async def test_chat_mode_toggle_left_selects_search(self) -> None:
+    async def test_chat_mode_toggle_set_mode_selects_search(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -1002,10 +1002,10 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_search()
+                assert toggle.set_mode("search") is True
                 assert cfg.chat_mode == "search"
 
-    async def test_chat_mode_toggle_right_selects_chat(self) -> None:
+    async def test_chat_mode_toggle_set_mode_selects_chat(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -1016,7 +1016,7 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_chat()
+                assert toggle.set_mode("chat") is True
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_select_chat_when_already_chat_is_noop(self) -> None:
@@ -1032,7 +1032,7 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 # already in chat mode; selecting chat returns False
-                assert toggle._set_mode("chat") is False
+                assert toggle.set_mode("chat") is False
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_select_search_no_op_when_disabled(self) -> None:
@@ -1046,7 +1046,7 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                toggle.action_select_search()
+                assert toggle.set_mode("search") is False
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_renders_two_pill_children(self) -> None:
@@ -1449,7 +1449,7 @@ class TestModelPickerButton:
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_pill_click_routes_per_id(self) -> None:
-        """Click on the search/chat pill calls ``_set_mode`` for that side only."""
+        """Click on the search/chat pill calls ``set_mode`` for that side only."""
         from textual import events
 
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -1462,13 +1462,13 @@ class TestModelPickerButton:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                with mock.patch.object(toggle, "set_mode") as set_mode:
                     search = toggle.query_one("#chat-mode-search", Static)
                     click = mock.MagicMock(spec=events.Click)
                     click.widget = search
                     toggle.on_click(click)
                     set_mode.assert_called_once_with("search")
-                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                with mock.patch.object(toggle, "set_mode") as set_mode:
                     chat = toggle.query_one("#chat-mode-chat", Static)
                     click = mock.MagicMock(spec=events.Click)
                     click.widget = chat
@@ -2538,7 +2538,7 @@ class TestSlashSuggester:
             "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
         ):
             assert s._get_model_names() == []
-        with patch("lilbee.cli.tui.widgets.suggester.get_services", side_effect=RuntimeError):
+        with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
             assert s._get_document_names() == []
 
     async def test_slash_prefix_suggests_command(self) -> None:
@@ -2580,7 +2580,7 @@ class TestSlashSuggester:
         """``/delete`` completes against indexed source filenames."""
         from types import SimpleNamespace
 
-        from lilbee.cli.tui.widgets import suggester as suggester_mod
+        from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         fake = SimpleNamespace(
@@ -2588,7 +2588,7 @@ class TestSlashSuggester:
                 get_sources=lambda: [{"filename": "notes.md"}, {"source": "todo.txt"}]
             )
         )
-        monkeypatch.setattr(suggester_mod, "get_services", lambda: fake)
+        monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
 
         s = SlashSuggester(use_cache=False)
         assert s._get_document_names() == ["notes.md", "todo.txt"]
@@ -2671,7 +2671,7 @@ class TestSlashSuggester:
 
         s = SlashSuggester(use_cache=False)
         with mock.patch(
-            "lilbee.cli.tui.widgets.suggester.get_services", side_effect=Exception("err")
+            "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
         ):
             assert s._get_document_names() == []
 
@@ -3131,6 +3131,21 @@ class TestCompletionOverlay:
             overlay = app.query_one(CompletionOverlay)
             overlay.show_completions([])
             assert not overlay.is_visible
+
+    async def test_get_current_without_a_list_cursor_is_none(self) -> None:
+        """The OptionList cursor is the source of truth; no cursor, no current."""
+        from textual.widgets import OptionList
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _OverlayApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            overlay.show_completions(["/help", "/model"])
+            await pilot.pause()
+            overlay.query_one("#completion-list", OptionList).highlighted = None
+            assert overlay.get_current() is None
 
     async def test_cycle_next(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -4334,8 +4349,8 @@ class TestGridSelect:
             grid = app.query_one(GridSelect)
             assert grid.validate_highlighted(100) == len(grid.children) - 1
 
-    def test_action_cursor_up_leave_when_no_grid(self) -> None:
-        """When grid_size is None, cursor_up posts LeaveUp."""
+    def test_action_cursor_up_stays_put_when_no_grid(self) -> None:
+        """When grid_size is None (layout not arranged), cursor_up stays put."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         grid = GridSelect(min_column_width=20)
@@ -4344,10 +4359,10 @@ class TestGridSelect:
         messages: list[object] = []
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_cursor_up()
-        assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
+        assert messages == []
 
-    def test_action_cursor_down_leave_when_no_grid(self) -> None:
-        """When grid_size is None, cursor_down posts LeaveDown."""
+    def test_action_cursor_down_stays_put_when_no_grid(self) -> None:
+        """When grid_size is None (layout not arranged), cursor_down stays put."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         grid = GridSelect(min_column_width=20)
@@ -4355,7 +4370,7 @@ class TestGridSelect:
         messages: list[object] = []
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_cursor_down()
-        assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
+        assert messages == []
 
     async def test_action_cursor_up_when_highlighted_none(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -4593,26 +4608,26 @@ class TestModelCardSelected:
         return LocalCatalogRow(**defaults)
 
     def test_build_status_with_downloads(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         row = self._make_row(downloads="1K", sort_downloads=1000)
         assert _build_status(row) is not None
 
     def test_build_status_installed(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         result = _build_status(self._make_row(installed=True))
         assert result is not None
         assert "installed" in str(result).lower()
 
     def test_build_status_downloads_positive(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         row = self._make_row(downloads="5K", sort_downloads=5000)
         assert _build_status(row) is not None
 
     def test_build_status_none(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         assert _build_status(self._make_row()) is None
 
@@ -4817,13 +4832,13 @@ class TestCollectNativeModelsError:
 
 class TestModelCardBuildHelpers:
     def test_build_specs_all_empty(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         result = _build_specs("--", "--", "--")
         assert str(result) == "--"
 
     def test_build_specs_all_blank(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         result = _build_specs("", "", "")
         assert str(result) == "--"
@@ -4831,7 +4846,7 @@ class TestModelCardBuildHelpers:
     def test_build_status_not_installed_zero_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -4859,7 +4874,7 @@ class TestModelCardBuildHelpers:
 
     def test_key_status_pill_missing_key(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import KeyStatus
-        from lilbee.cli.tui.widgets.model_card import _key_status_pill
+        from lilbee.cli.tui.widgets.catalog_card_shared import _key_status_pill
 
         ready = _key_status_pill(KeyStatus.READY)
         missing = _key_status_pill(KeyStatus.MISSING_KEY)
@@ -5034,9 +5049,10 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             bar.add_task("test", "download")
             bar.queue.advance()
-            # Remove the label to trigger the except path
+            # Remove the label to trigger the except path. Awaited: the except
+            # path is only genuinely reached once the removal has completed.
             label = bar.query_one("#task-status-label", Label)
-            label.remove()
+            await label.remove()
             await pilot.pause()
             # Should not raise
             bar._refresh_display()
@@ -5521,7 +5537,7 @@ class TestModelCardBuildStatusDownloads:
     def test_build_status_with_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -5604,7 +5620,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_yes_pill_click(self) -> None:
+    async def test_yes_button_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5621,7 +5637,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_no_pill_click(self) -> None:
+    async def test_no_button_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5634,6 +5650,25 @@ class TestConfirmDialog:
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.click("#confirm-no")
+            await pilot.pause()
+
+        assert results == [False]
+
+    async def test_tab_to_no_then_enter_cancels(self) -> None:
+        """Enter presses the focused No button instead of blanket-confirming."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.press("enter")
             await pilot.pause()
 
         assert results == [False]
@@ -6117,16 +6152,17 @@ def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
 
 
 class TestModelGridOnClick:
-    """Click hit-test math: first click highlights, second click posts Selected."""
+    """Click hit-test math: single click highlights, double-click posts Selected."""
 
     @staticmethod
-    def _click(x: int, y: int) -> object:
+    def _click(x: int, y: int, chain: int = 1) -> object:
         click = mock.Mock()
         click.x = x
         click.y = y
+        click.chain = chain
         return click
 
-    def test_first_click_highlights_second_click_selects(self) -> None:
+    def test_single_click_highlights_double_click_selects(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
@@ -6138,13 +6174,30 @@ class TestModelGridOnClick:
         grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
         received: list[ModelGrid.Selected] = []
         grid.post_message = received.append  # type: ignore[method-assign]
-        click = self._click(60, 1)  # second column, first card line
-        grid.on_click(click)
+        grid.on_click(self._click(60, 1))  # second column, first card line
         assert grid.highlighted == 1
         assert received == []
-        grid.on_click(click)
+        grid.on_click(self._click(60, 1, chain=2))
         assert received and isinstance(received[0], ModelGrid.Selected)
         assert received[0].row is rows[1]
+
+    def test_double_click_on_unhighlighted_card_only_highlights(self) -> None:
+        """A double-click landing on a card other than the cursor's re-aims
+        the cursor instead of installing."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.focus = lambda: None  # type: ignore[method-assign]
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        grid.highlighted = 0
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.on_click(self._click(60, 1, chain=2))
+        assert received == []
+        assert grid.highlighted == 1
 
     def test_click_outside_dataset_is_ignored(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -6589,17 +6642,72 @@ class TestModelGridHighlightHelpers:
         # 1 + 4 = 5
         assert grid.highlighted == 5
 
-    def test_set_rows_replaces_dataset_and_resets_highlight(self) -> None:
+    def test_set_rows_keeps_cursor_on_same_row_by_identity(self) -> None:
+        """The highlighted row is re-located in the new dataset, not reset."""
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
-        grid.highlighted = 1
-        new_rows = [_vgrid_row("c"), _vgrid_row("d"), _vgrid_row("e")]
         grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.set_rows([_vgrid_row("c"), _vgrid_row("b"), _vgrid_row("a")])
+        assert grid.highlighted == 1  # "b" moved to index 1, cursor follows
+
+    def test_set_rows_clamps_cursor_when_row_vanishes(self) -> None:
+        """No identity match: fall back to the clamped previous index."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row(f"m{i}") for i in range(5)])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 4
+        new_rows = [_vgrid_row("x"), _vgrid_row("y")]
         grid.set_rows(new_rows)
         assert grid.rows == new_rows
+        assert grid.highlighted == 1
+
+    def test_set_rows_without_prior_highlight_stays_bare(self) -> None:
+        """An unfocused grid with no cursor gains none from a data refresh."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.set_rows([_vgrid_row("b"), _vgrid_row("c")])
         assert grid.highlighted is None
+
+    def test_set_rows_empty_clears_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0
+        grid.set_rows([])
+        assert grid.highlighted is None
+
+    def test_on_show_completes_a_pending_reveal(self) -> None:
+        """A highlight assigned while hidden reveals once the grid is shown."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        revealed: list[bool] = []
+        grid._reveal_highlight = lambda *_a, **_k: revealed.append(True)  # type: ignore[method-assign]
+        grid._reveal_pending = True
+        grid.on_show()
+        assert revealed == [True]
+        grid._reveal_pending = False
+        grid.on_show()
+        assert revealed == [True]
+
+    def test_reveal_highlight_without_cursor_clears_pending(self) -> None:
+        """on_resize/on_show can fire with no cursor; the pending flag resets."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._reveal_pending = True
+        grid._reveal_highlight()
+        assert grid._reveal_pending is False
 
 
 def _row_height_offset(grid_row: int) -> int:
@@ -6710,7 +6818,7 @@ class TestModelGridCardRendering:
         assert "↓ 12K" in rendered
 
     def test_local_row_pads_short_specs_with_double_dash(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _build_specs
+        from lilbee.cli.tui.widgets.catalog_card_shared import _build_specs
 
         # All-default-row specs produce the placeholder.
         assert str(_build_specs("--", "--", "--")) == "--"
@@ -6971,14 +7079,17 @@ class TestCatalogFocusEdgeGuards:
 
         grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        entered: list[tuple[ModelGrid, bool]] = []
 
         class _StubScreen:
-            _grid_container = type(
-                "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
-            )()
             _loading_more = False
             focus_previous_called = False
-            focus_next_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_a, grid_b]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
 
             def _active_task_has_more(self) -> bool:
                 return False
@@ -6986,22 +7097,18 @@ class TestCatalogFocusEdgeGuards:
             def focus_previous(self) -> None:
                 self.focus_previous_called = True
 
-            def focus_next(self) -> None:
-                self.focus_next_called = True
-
         screen = _StubScreen()
         # Mimic the screen handler executing on the first grid's LeaveUp.
         event = ModelGrid.LeaveUp(grid_a)
-        # Bind the catalog method to the stub; the real method only reads
-        # _grid_container, _active_task_has_more, and _loading_more, all of
-        # which the stub provides.
         CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
-        assert screen.focus_previous_called is False
+        assert entered == []
 
-        # Sanity: from a non-first grid, focus DOES move.
+        # From a non-first grid, the cursor enters the previous grid's last
+        # row deliberately -- never via the generic focus chain.
         event2 = ModelGrid.LeaveUp(grid_b)
         CatalogScreen._on_grid_leave_up(screen, event2)  # type: ignore[arg-type]
-        assert screen.focus_previous_called is True
+        assert entered == [(grid_a, False)]
+        assert screen.focus_previous_called is False
 
     async def test_leave_down_at_last_grid_with_no_more_keeps_focus(self) -> None:
         """Pressing Down at the last row of the bottom grid (no load_more) parks."""
@@ -7011,19 +7118,23 @@ class TestCatalogFocusEdgeGuards:
         grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
         scroll_end_calls: list[bool] = []
+        entered: list[tuple[ModelGrid, bool]] = []
 
         class _StubScreen:
             _grid_container = type(
                 "C",
                 (),
-                {
-                    "query": staticmethod(lambda _cls: [grid_a, grid_b]),
-                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
-                },
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
             )()
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_a, grid_b]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
 
             def _active_task_has_more(self) -> bool:
                 return False
@@ -7037,15 +7148,17 @@ class TestCatalogFocusEdgeGuards:
         screen = _StubScreen()
         event = ModelGrid.LeaveDown(grid_b)
         CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
-        assert screen.focus_next_called is False
+        assert entered == []
         assert screen.load_more_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
 
-        # From a non-last grid, focus DOES move (no scroll_end).
+        # From a non-last grid, the cursor enters the next grid's top row
+        # deliberately (no scroll_end, no generic focus chain).
         scroll_end_calls.clear()
         event2 = ModelGrid.LeaveDown(grid_a)
         CatalogScreen._on_grid_leave_down(screen, event2)  # type: ignore[arg-type]
-        assert screen.focus_next_called is True
+        assert entered == [(grid_b, True)]
+        assert screen.focus_next_called is False
         assert not scroll_end_calls
 
     async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
@@ -7060,14 +7173,14 @@ class TestCatalogFocusEdgeGuards:
             _grid_container = type(
                 "C",
                 (),
-                {
-                    "query": staticmethod(lambda _cls: [grid_b]),
-                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
-                },
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
             )()
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [grid_b]
 
             def _active_task_has_more(self) -> bool:
                 return True
@@ -7085,12 +7198,126 @@ class TestCatalogFocusEdgeGuards:
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
 
+    async def test_grid_select_leave_falls_back_to_focus_chain(self) -> None:
+        """Setup-wizard GridSelect Leave events use the generic focus chain,
+        not the ModelGrid-only pane walk."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect()
+
+        class _StubScreen:
+            focus_next_called = False
+            focus_previous_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def focus_previous(self) -> None:
+                self.focus_previous_called = True
+
+        screen = _StubScreen()
+        CatalogScreen._on_grid_leave_down(screen, GridSelect.LeaveDown(grid))  # type: ignore[arg-type]
+        assert screen.focus_next_called is True
+        CatalogScreen._on_grid_leave_up(screen, GridSelect.LeaveUp(grid))  # type: ignore[arg-type]
+        assert screen.focus_previous_called is True
+
+    async def test_leave_from_a_grid_outside_the_pane_is_ignored(self) -> None:
+        """A Leave message from a grid that is not in the active pane (stale
+        handle, empty rail) moves nothing: no entry, no scroll, no fetch."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        pane_grid = ModelGrid([_vgrid_row("a")], id="mg-pane")
+        foreign_grid = ModelGrid([_vgrid_row("b")], id="mg-foreign")
+        entered: list[tuple[ModelGrid, bool]] = []
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {"scroll_end": lambda self, **_kw: scroll_end_calls.append(True)},
+            )()
+            _loading_more = False
+            load_more_called = False
+
+            def _pane_grids_with_rows(self) -> list[ModelGrid]:
+                return [pane_grid]
+
+            def _enter_grid(self, grid: ModelGrid, *, from_above: bool) -> None:
+                entered.append((grid, from_above))
+
+            def _active_task_has_more(self) -> bool:
+                return True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+            def focus_next(self) -> None:
+                raise AssertionError("generic focus chain must never run")
+
+            def focus_previous(self) -> None:
+                raise AssertionError("generic focus chain must never run")
+
+        screen = _StubScreen()
+        CatalogScreen._on_grid_leave_down(screen, ModelGrid.LeaveDown(foreign_grid))  # type: ignore[arg-type]
+        CatalogScreen._on_grid_leave_up(screen, ModelGrid.LeaveUp(foreign_grid))  # type: ignore[arg-type]
+        assert entered == []
+        assert scroll_end_calls == []
+        assert screen.load_more_called is False
+
+    async def test_pane_grids_with_rows_returns_empty_when_container_unmounted(self) -> None:
+        """The active pane's container can be unmounted mid-teardown; the
+        helper reports no grids instead of raising."""
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _StubScreen:
+            @property
+            def _grid_container(self):
+                raise NoMatches("pane gone")
+
+        assert CatalogScreen._pane_grids_with_rows(_StubScreen()) == []  # type: ignore[arg-type]
+
 
 class TestAppTitleSingleSource:
     def test_app_title_format(self):
         from lilbee.cli.tui import messages as msg
 
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
+
+
+class TestClampedOptionList:
+    async def test_zero_width_measurement_does_not_crash(self) -> None:
+        """A drawer plus a tiny terminal can measure the list at width 0;
+        found by the fuzz harness (seed 4: resize 20x24 + view burst)."""
+        from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+
+        class _App(LilbeeAppHost):
+            def compose(self):
+                yield ClampedOptionList("alpha", "beta")
+
+        app = _App()
+        async with app.run_test(size=(80, 24)):
+            ol = app.query_one(ClampedOptionList)
+            assert ol.get_content_height(ol.container_size, ol.container_size, 0) > 0
+
+    async def test_upstream_still_needs_the_clamp(self) -> None:
+        """Canary: plain OptionList still crashes at width 0 on the pinned
+        Textual. When this fails, upstream fixed it and the clamp can go."""
+        from textual.widgets import OptionList
+
+        class _App(LilbeeAppHost):
+            def compose(self):
+                yield OptionList("alpha", "beta")
+
+        app = _App()
+        async with app.run_test(size=(80, 24)):
+            ol = app.query_one(OptionList)
+            with pytest.raises(ValueError, match="range"):
+                ol.get_content_height(ol.container_size, ol.container_size, 0)
 
 
 class TestPathExists:
@@ -7140,7 +7367,7 @@ class TestModelBarScanRaces:
 def test_size_variant_strip_disambiguates_same_quant_families():
     """Chips fall back to full labels when every variant shares one quant."""
     from lilbee.cli.tui.screens.catalog_utils import SizeVariant
-    from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+    from lilbee.cli.tui.widgets.catalog_card_shared import _build_size_variant_strip
 
     same_quant = [
         SizeVariant(label="0.6B Q8_0", quant="Q8_0", size_gb=0.7, ref="r/a"),

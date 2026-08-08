@@ -418,3 +418,32 @@ def test_shrink_hf_download_chunk_size_missing_module() -> None:
 
     with patch.object(builtins, "__import__", side_effect=blocked_import):
         _shrink_hf_download_chunk_size()  # must not raise even on ImportError
+
+
+@pytest.mark.asyncio
+async def test_jump_actions_focus_first_and_last_rows() -> None:
+    app = LilbeeAppHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        # No rows: jumps are safe no-ops.
+        screen.action_jump_top()
+        screen.action_jump_bottom()
+        tids = [
+            app.task_bar.queue.enqueue(lambda: None, f"t{i}", TaskType.SYNC.value) for i in range(2)
+        ]
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if all(t in screen._rows for t in tids):
+                break
+        rows = list(screen.query(TaskRow))
+        assert len(rows) == 2
+        screen.action_jump_bottom()
+        await pilot.pause()
+        assert screen.focused is rows[-1]
+        screen.action_jump_top()
+        await pilot.pause()
+        assert screen.focused is rows[0]

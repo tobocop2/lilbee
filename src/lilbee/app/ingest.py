@@ -68,17 +68,20 @@ def _overlaps_existing(src: Path, docs_resolved: Path, roots: dict[str, str]) ->
     return False
 
 
-def source_label_taken(name: str) -> bool:
-    """Whether *name* is already a live registered root or an owned top-level entry.
+def source_label_taken(name: str, target: Path | None = None) -> bool:
+    """Whether registering *target* under *name* would collide with a different source.
 
-    The confirm-before-overwrite affordance in the TUI reads this; the authority
-    on what actually collides is :func:`_resolve_label`, which this mirrors.
+    The confirm-before-overwrite affordance in the TUI reads this. The label
+    rule is delegated to :func:`_resolve_label` (the authority register_sources
+    itself applies) rather than mirrored, and a *target* whose exact path is
+    already registered under *name* is not a collision: re-adding the same
+    source is idempotent, matching register_sources' by-target no-op.
     """
     config = active_config()
-    existing = config.linked_roots.get(name)
-    if existing is not None:
-        return Path(existing).exists()
-    return (config.documents_dir / name).exists()
+    roots = dict(config.linked_roots)
+    if target is not None and roots.get(name) == str(target.resolve()):
+        return False
+    return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
 
 def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:

@@ -28,6 +28,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Label
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.task_row import TaskRow
 
@@ -68,13 +69,14 @@ class TaskCenter(Screen[None]):
     app: LilbeeApp  # type: ignore[assignment]
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
-        Binding("r", "refresh_tasks", "Refresh", show=True),
+        *browse_back_bindings(),
+        *BROWSE_LIST_BINDINGS,
+        Binding("r", "refresh_tasks", "Refresh", show=False),
+        # `c` shadows the app-wide jump to Chat here. Allowed because the
+        # footer names it: Cancel is the reason you are on this screen, and
+        # [ ] / q still leave. Never shadow `c` with a hidden binding.
         Binding("c", "cancel_task", "Cancel", show=True),
-        Binding("C", "clear_history", "Clear done", show=True),
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
+        Binding("C", "clear_history", "Clear done", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -98,7 +100,7 @@ class TaskCenter(Screen[None]):
             yield Footer()
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def on_mount(self) -> None:
         self._tick: int = 0
@@ -182,6 +184,16 @@ class TaskCenter(Screen[None]):
 
     def action_cursor_up(self) -> None:
         self.focus_previous()
+
+    def action_jump_top(self) -> None:
+        rows = list(self.query(TaskRow))
+        if rows:
+            rows[0].focus()
+
+    def action_jump_bottom(self) -> None:
+        rows = list(self.query(TaskRow))
+        if rows:
+            rows[-1].focus()
 
     def _all_tasks(self) -> list[Task]:
         """Tasks in display order: active first, then queued, then history."""

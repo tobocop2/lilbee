@@ -4316,6 +4316,29 @@ class TestSourceLabelTaken:
 
         assert source_label_taken("nope") is False
 
+    def test_false_when_target_is_the_registered_source(self, isolated_env, tmp_path):
+        """Re-adding the exact path already registered under the label is not a
+        collision: register_sources treats it as a no-op, so no dialog either."""
+        from lilbee.app.ingest import source_label_taken
+
+        src = tmp_path / "report.pdf"
+        src.write_bytes(b"x")
+        cfg.linked_roots = {"report.pdf": str(src.resolve())}
+        assert source_label_taken("report.pdf", src) is False
+
+    def test_true_when_target_differs_from_registered_source(self, isolated_env, tmp_path):
+        """A different file whose basename collides with a live root still counts."""
+        from lilbee.app.ingest import source_label_taken
+
+        registered = tmp_path / "a" / "report.pdf"
+        registered.parent.mkdir()
+        registered.write_bytes(b"x")
+        cfg.linked_roots = {"report.pdf": str(registered.resolve())}
+        other = tmp_path / "b" / "report.pdf"
+        other.parent.mkdir()
+        other.write_bytes(b"y")
+        assert source_label_taken("report.pdf", other) is True
+
 
 class TestRegisteredRootHelpers:
     def test_unregister_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):

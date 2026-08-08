@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from functools import lru_cache
 from threading import Lock
 
 import httpx
@@ -34,6 +35,27 @@ log = logging.getLogger(__name__)
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 
 _CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
+
+
+@lru_cache(maxsize=1)
+def _discovery_client() -> httpx.Client:
+    """One shared client for the local-server discovery probes.
+
+    ``httpx.get`` builds a fresh ``Client`` per call, and every ``Client``
+    construction creates an SSL context that loads the system CA bundle. The
+    catalog re-runs discovery on tab activations and refreshes, which made
+    ``ssl.create_default_context`` 16% of a real-terminal TUI py-spy session.
+    One client builds it once and reuses connections between probes (same
+    pattern as the engine probes in ``fleet.swap_manager``). Unlike those
+    loopback-only probes, ``trust_env`` stays on: these base URLs are
+    user-configurable and a LAN server may sit behind a proxy.
+    """
+    return httpx.Client()
+
+
+def _http_get(url: str, *, timeout: float) -> httpx.Response:
+    """GET via the shared discovery client (module seam; tests stub here)."""
+    return _discovery_client().get(url, timeout=timeout)
 
 
 def _classify_remote_task(name: str, family: str) -> ModelTask:
@@ -88,7 +110,7 @@ def _discover_via_ollama_tags(
 ) -> list[RemoteModel]:
     """Classify models from Ollama's ``/api/tags`` using family metadata."""
     try:
-        resp = httpx.get(f"{base_url}/api/tags", timeout=timeout)
+        resp = _http_get(f"{base_url}/api/tags", timeout=timeout)
         resp.raise_for_status()
         raw_models = resp.json().get("models", [])
     except Exception:
@@ -125,7 +147,7 @@ def _discover_via_openai_models(
     is intentionally not filtered to locally-downloaded models.
     """
     try:
-        resp = httpx.get(openai_models_url(base_url), timeout=timeout)
+        resp = _http_get(openai_models_url(base_url), timeout=timeout)
         resp.raise_for_status()
         raw_models = resp.json().get("data", [])
     except Exception:

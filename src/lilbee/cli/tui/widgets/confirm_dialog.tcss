@@ -37,9 +37,11 @@ ConfirmDialog #confirm-buttons {
     height: 1;
 }
 
-ConfirmDialog .confirm-pill {
+ConfirmDialog Button {
     width: auto;
+    min-width: 0;
     height: 1;
+    border: none;
     padding: 0 2;
     margin: 0 1;
     background: $boost;

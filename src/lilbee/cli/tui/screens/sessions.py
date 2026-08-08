@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding, BindingType
+from textual.binding import BindingType
 from textual.screen import Screen
 
-from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.widgets.session_list import SessionListPanel
 
 if TYPE_CHECKING:
@@ -24,7 +24,8 @@ class SessionsScreen(Screen[None]):
     CSS_PATH = "sessions.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
+        *browse_back_bindings(),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def compose(self) -> ComposeResult:
@@ -43,7 +44,19 @@ class SessionsScreen(Screen[None]):
             yield Footer()
 
     def action_go_back(self) -> None:
-        self.app.switch_view(msg.DEFAULT_VIEW)
+        self.app.go_back()
+
+    def action_cursor_down(self) -> None:
+        self.query_one(SessionListPanel).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one(SessionListPanel).action_cursor_up()
+
+    def action_jump_top(self) -> None:
+        self.query_one(SessionListPanel).jump_to(0)
+
+    def action_jump_bottom(self) -> None:
+        self.query_one(SessionListPanel).jump_to(-1)
 
     @on(SessionListPanel.Resumed)
     def _on_resumed(self, event: SessionListPanel.Resumed) -> None:
@@ -55,4 +68,5 @@ class SessionsScreen(Screen[None]):
 
     @on(SessionListPanel.CloseRequested)
     def _on_close(self, _event: SessionListPanel.CloseRequested) -> None:
-        self.app.switch_view(msg.DEFAULT_VIEW)
+        # Same semantics as q: return to where the user came from.
+        self.app.go_back()

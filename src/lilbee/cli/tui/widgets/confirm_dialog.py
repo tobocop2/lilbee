@@ -4,26 +4,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from textual import events
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Label, Static
-
-
-class _ConfirmPill(Static, can_focus=True):
-    """Pill-styled clickable label used as Yes/No in :class:`ConfirmDialog`."""
-
-    def __init__(self, label: str, *, dialog_id: str) -> None:
-        super().__init__(label, id=dialog_id, classes="confirm-pill")
-        self._dialog_id = dialog_id
-
-    def on_click(self, event: events.Click) -> None:
-        event.stop()
-        screen = self.screen
-        if isinstance(screen, ConfirmDialog):
-            screen.dismiss(self._dialog_id == "confirm-yes")
+from textual.widgets import Button, Label, Static
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -33,6 +19,8 @@ class ConfirmDialog(ModalScreen[bool]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "confirm", "Yes", show=True),
+        # Fallback when no button holds focus; a focused button consumes
+        # enter itself, so tabbing to No and pressing enter cancels.
         Binding("enter", "confirm", "Confirm", show=False),
         Binding("n", "cancel", "No", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
@@ -48,8 +36,13 @@ class ConfirmDialog(ModalScreen[bool]):
             yield Static(self._title, id="confirm-title")
             yield Label(self._message, id="confirm-message")
             with Center(), Horizontal(id="confirm-buttons"):
-                yield _ConfirmPill("Yes (y)", dialog_id="confirm-yes")
-                yield _ConfirmPill("No (n)", dialog_id="confirm-no")
+                yield Button("Yes (y)", id="confirm-yes")
+                yield Button("No (n)", id="confirm-no")
+
+    @on(Button.Pressed)
+    def _on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(event.button.id == "confirm-yes")
 
     def action_confirm(self) -> None:
         self.dismiss(True)

@@ -61,6 +61,28 @@ jobs:
       - name: Check imports resolve
         run: make imports-check
 
+  # Seeded TUI fuzz: fixed seeds, deterministic, fails on any invariant break.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras
+
+      - name: Fuzz the TUI (smoke tier)
+        run: make fuzz-smoke
+
   test:
     # Bumped from 60 to 120: Windows 3.11 runs the suite serially (no
     # xdist) to dodge reactive-timing flakes, which exceeds 60 min. All

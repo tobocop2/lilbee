@@ -20,6 +20,7 @@ from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import COMMANDS, completion_names
+from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 
 log = logging.getLogger(__name__)
 
@@ -113,18 +114,21 @@ def _setting_options() -> list[str]:
     return [k for k in SETTINGS_MAP if _is_settable(k)]
 
 
+def _fetch_document_names() -> list[str]:
+    """Uncached indexed-source names; empty on any store error."""
+    try:
+        return [s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()]
+    except Exception:
+        log.debug("Failed to list documents for autocomplete", exc_info=True)
+        return []
+
+
 @functools.lru_cache(maxsize=1)
 def _document_options_cached() -> tuple[str, ...]:
     # Cached for ``/delete`` and ``/reset`` Tab completion; cleared by
     # invalidate_document_cache on document mutations. Order is stable (fetch
     # order) so the dropdown is deterministic.
-    try:
-        return tuple(
-            s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()
-        )
-    except Exception:
-        log.debug("Failed to list documents for autocomplete", exc_info=True)
-        return ()
+    return tuple(_fetch_document_names())
 
 
 def _document_options() -> list[str]:
@@ -233,15 +237,13 @@ class CompletionOverlay(Vertical):
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._options: list[str] = []
-        self._index = 0
 
     def compose(self) -> ComposeResult:
-        yield OptionList(id="completion-list")
+        yield ClampedOptionList(id="completion-list")
 
     def show_completions(self, options: list[str]) -> None:
         """Populate and show the overlay."""
         self._options = options[:_MAX_VISIBLE]
-        self._index = 0
         ol = self.query_one("#completion-list", OptionList)
         ol.clear_options()
         for opt in self._options:
@@ -252,29 +254,36 @@ class CompletionOverlay(Vertical):
         else:
             self.display = False
 
-    def cycle_next(self) -> str | None:
-        """Cycle to next option and return it."""
+    def _cycle(self, step: int) -> str | None:
+        """Move the OptionList cursor by *step* (wrapping) and return the option.
+
+        ``OptionList.highlighted`` is the single source of truth for the
+        cursor; a shadow index here drifted from it whenever the list moved
+        by other means (mouse hover, page keys).
+        """
         if not self._options:
             return None
-        self._index = (self._index + 1) % len(self._options)
         ol = self.query_one("#completion-list", OptionList)
-        ol.highlighted = self._index
-        return self._options[self._index]
+        index = ((ol.highlighted or 0) + step) % len(self._options)
+        ol.highlighted = index
+        return self._options[index]
+
+    def cycle_next(self) -> str | None:
+        """Cycle to next option and return it."""
+        return self._cycle(1)
 
     def cycle_prev(self) -> str | None:
         """Cycle to previous option and return it."""
-        if not self._options:
-            return None
-        self._index = (self._index - 1) % len(self._options)
-        ol = self.query_one("#completion-list", OptionList)
-        ol.highlighted = self._index
-        return self._options[self._index]
+        return self._cycle(-1)
 
     def get_current(self) -> str | None:
         """Get the currently highlighted option."""
-        if not self._options or self._index >= len(self._options):
+        if not self._options:
             return None
-        return self._options[self._index]
+        index = self.query_one("#completion-list", OptionList).highlighted
+        if index is None or index >= len(self._options):
+            return None
+        return self._options[index]
 
     @property
     def options(self) -> list[str]:

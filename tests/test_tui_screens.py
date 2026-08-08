@@ -706,10 +706,10 @@ def test_settings_screen_has_expected_handlers_and_actions() -> None:
         "_parse_value",
         "_refresh_help",
         "action_go_back",
-        "action_scroll_down",
-        "action_scroll_up",
-        "action_scroll_home",
-        "action_scroll_end",
+        "action_cursor_down",
+        "action_cursor_up",
+        "action_jump_top",
+        "action_jump_bottom",
     )
     missing = [name for name in expected if not callable(getattr(SettingsScreen, name, None))]
     assert not missing, f"SettingsScreen missing expected methods: {missing}"
@@ -3389,10 +3389,9 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
-async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream with the model-switch note."""
-    from lilbee.cli.tui import messages as msg
-
+async def test_apply_model_change_queues_the_switch_while_streaming():
+    """A switch asked for mid-answer keeps the answer: nothing is cancelled and no
+    reload starts until the stream ends."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3402,8 +3401,93 @@ async def testapply_model_change_cancels_stream_when_streaming():
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
-            mock_cancel.assert_called_once_with(msg.STREAM_CANCELLED_MODEL_SWITCH)
+            mock_cancel.assert_not_called()
+            mock_worker.assert_not_called()
+        assert screen._model_switch_queued is True
+        assert screen.swapping_model is False
+
+
+async def test_queued_switch_toast_names_the_model_and_says_it_waits():
+    """The queued switch is announced, so a person knows it was accepted and when
+    it lands, rather than facing an answer that ignored their click."""
+    from lilbee.catalog.formatting import display_label_for_ref
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker"),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen.apply_model_change()
+        assert mock_notify.call_count == 1
+        sent = mock_notify.call_args.args[0]
+        assert sent == msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
+        assert sent != msg.MODEL_SWAP_APPLYING
+
+
+async def test_queued_switch_runs_when_the_stream_ends():
+    """Leaving the streaming state applies the queued swap."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
+            screen.streaming = False
             mock_worker.assert_called_once()
+        assert screen._model_switch_queued is False
+        assert screen.swapping_model is True
+
+
+async def test_queued_switch_runs_when_the_user_cancels_the_stream():
+    """A cancelled answer still lands the queued switch: the user asked for the new
+    model, and cancelling the turn is not a withdrawal of that."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        await pilot.press("i")
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.get_services"),
+        ):
+            screen.apply_model_change()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            mock_worker.assert_called_once()
+        assert screen.streaming is False
+
+
+async def test_two_queued_switches_swap_once_onto_the_latest_model():
+    """Queueing twice must not run two reloads; cfg already holds the latest ref."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            screen.apply_model_change()
+            screen.streaming = False
+            mock_worker.assert_called_once()
+
+
+async def test_stream_end_without_a_queued_switch_starts_no_reload():
+    """The common path -- an answer finishing with no switch asked for -- must not
+    swap the model."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.streaming = False
+            mock_worker.assert_not_called()
+        assert screen.swapping_model is False
 
 
 async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
@@ -3588,6 +3672,134 @@ async def test_submit_not_rejected_when_idle():
         screen.swapping_model = False
         screen.streaming = False
         assert screen._reject_submit_when_busy() is False
+
+
+async def test_cancel_command_reaches_the_stream_it_cancels():
+    """/cancel is submittable mid-answer. Gating it on not-streaming left the one
+    command whose job is stopping the turn dead exactly when it is wanted."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        assert screen._reject_submit_when_busy("/cancel") is False
+
+
+async def test_model_command_queues_mid_answer_instead_of_being_refused():
+    """/model is submittable mid-answer; the chat screen queues the swap."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        assert screen._reject_submit_when_busy("/model") is False
+
+
+async def test_a_prompt_is_still_rejected_mid_answer():
+    """Relaxing the gate for commands must not let a second prompt through."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("tell me more") is True
+
+
+async def test_an_index_touching_command_is_still_rejected_mid_answer():
+    """/add is not on the allow-list: it would race the live turn."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("/add /tmp/x") is True
+
+
+async def test_allowed_command_still_waits_out_a_model_swap():
+    """The swap hold outranks the streaming allow-list: a half-torn-down fleet
+    must not take a /model or /cancel either."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("/cancel") is True
+
+
+def test_runs_while_streaming_covers_aliases_and_unknown_names():
+    """Alias lookup matches the command; unknown names stay gated."""
+    from lilbee.cli.tui.command_registry import runs_while_streaming
+
+    assert runs_while_streaming("/cancel") is True
+    assert runs_while_streaming("/model") is True
+    assert runs_while_streaming("/add") is False
+    assert runs_while_streaming("/q") is False
+    assert runs_while_streaming("/nope") is False
+
+
+async def test_slash_model_typed_mid_answer_queues_the_switch():
+    """End to end through the input: typing /model while streaming reaches the
+    handler and queues, rather than toasting the user away."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        await pilot.press("i")
+        screen.streaming = True
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.value = "/model some/ref.gguf"
+        with (
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.apply_active_model"),
+        ):
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen._model_switch_queued is True
+            mock_worker.assert_not_called()
+
+
+async def test_command_palette_runs_cancel_mid_answer_too():
+    """The palette is the other entry point to the same commands; it must not
+    refuse mid-answer what the command bar allows."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
+            screen.run_command("/cancel")
+        assert screen.streaming is False
+        mock_services.return_value.cancel_inference.assert_called_once_with()
+
+
+async def test_command_palette_still_refuses_an_unsafe_command_mid_answer():
+    """Parity cuts both ways: the palette keeps the gate for commands that are
+    not on the allow-list."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_handle_slash") as mock_handle,
+            patch.object(app, "notify"),
+        ):
+            screen.run_command("/add /tmp/x")
+            mock_handle.assert_not_called()
+
+
+async def test_slash_cancel_typed_mid_answer_stops_the_stream():
+    """End to end through the input: /cancel while streaming reaches the handler
+    and stops the turn, instead of being toasted away as 'already answering'."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        await pilot.press("i")
+        screen.streaming = True
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.value = "/cancel"
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
+            await pilot.press("enter")
+            await pilot.pause()
+        assert screen.streaming is False
+        mock_services.return_value.cancel_inference.assert_called_once_with()
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
@@ -5020,6 +5232,7 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     screen = CatalogScreen.__new__(CatalogScreen)
+    screen._active_tab_id_cache = "chat"
     target = MagicMock(spec=ModelGrid)
     target.highlighted = 0
     target.columns_per_row = 1
@@ -5035,6 +5248,7 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
 
     # Cursor mid-grid (not last row) does NOT scroll to end.
     screen2 = CatalogScreen.__new__(CatalogScreen)
+    screen2._active_tab_id_cache = "chat"
     target2 = MagicMock(spec=ModelGrid)
     target2.highlighted = 0
     target2.columns_per_row = 1
@@ -5323,6 +5537,37 @@ async def test_catalog_grid_hf_count_is_per_active_task():
             assert prep is not None
             _sections, hf_count = prep
             assert hf_count == len(chat_models)
+
+
+async def test_catalog_data_version_bump_invalidates_view_caches():
+    """A worker landing that changes rendered state without changing the
+    (name, installed) row shape (e.g. frontier key_status after adding an
+    API key) must repaint, not read as cache-hot."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    models = [
+        _make_catalog_model(name=f"chat-{i}", hf_repo=f"o/c{i}", task="chat", featured=False)
+        for i in range(2)
+    ]
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._families = []
+            screen._remote_models = []
+            screen._hf_models = models
+            screen._hf_fetched_tasks.add(ModelTask.CHAT)
+            assert screen._prepare_grid_refresh() is not None
+            # Unchanged data: the per-tab cache reads hot.
+            assert screen._prepare_grid_refresh() is None
+            # Same row shape, new data version: must repaint.
+            screen._data_version += 1
+            assert screen._prepare_grid_refresh() is not None
 
 
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
@@ -5667,6 +5912,23 @@ async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
                 assert not load_more.called
 
 
+def _grid_leave_row(name: str) -> LocalCatalogRow:
+    """Minimal chat row for grids exercised by the LeaveUp/LeaveDown handlers
+    (the handlers skip empty grids, so stub grids must carry a row)."""
+    return LocalCatalogRow(
+        name=name,
+        task="chat",
+        params="8B",
+        size="4.0 GB",
+        quant="Q4_K_M",
+        downloads="5K",
+        featured=False,
+        installed=False,
+        sort_downloads=5000,
+        sort_size=4.0,
+    )
+
+
 async def test_catalog_grid_leave_down_at_last_section_loads_more():
     """LeaveDown from the final grid section must fetch more rather than
     move focus past the grid area when there is more data to fetch."""
@@ -5685,7 +5947,7 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
             screen._grid_view = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            last_grid = ModelGrid([])
+            last_grid = ModelGrid([_grid_leave_row("tail")])
             event = ModelGrid.LeaveDown(last_grid)
             with (
                 patch.object(
@@ -5701,9 +5963,9 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
                 assert not focus_next.called
 
 
-async def test_catalog_grid_leave_down_in_middle_focuses_next():
-    """LeaveDown from a non-last grid must move focus to the next sibling,
-    not fetch more rows."""
+async def test_catalog_grid_leave_down_in_middle_enters_next_grid():
+    """LeaveDown from a non-last grid must enter the next sibling grid's top
+    row (never the generic focus chain), not fetch more rows."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -5719,8 +5981,8 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
             screen._grid_view = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            middle_grid = ModelGrid([])
-            tail_grid = ModelGrid([])
+            middle_grid = ModelGrid([_grid_leave_row("a")])
+            tail_grid = ModelGrid([_grid_leave_row("b")])
             event = ModelGrid.LeaveDown(middle_grid)
             with (
                 patch.object(
@@ -5729,10 +5991,10 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
                     return_value=[middle_grid, tail_grid],
                 ),
                 patch.object(screen, "_load_more") as load_more,
-                patch.object(screen, "focus_next") as focus_next,
+                patch.object(screen, "_enter_grid") as enter_grid,
             ):
                 screen._on_grid_leave_down(event)
-                assert focus_next.called
+                enter_grid.assert_called_once_with(tail_grid, from_above=True)
                 assert not load_more.called
 
 
@@ -5874,12 +6136,17 @@ async def test_catalog_update_sort_label_swallows_missing_widget():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Awaited: an unawaited push leaves the screen un-mounted, so the
+            # NoMatches below would come from the screen rather than from the
+            # removed label.
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Remove the sort-label widget so the next call hits NoMatches.
-            screen.query_one("#sort-label", Static).remove()
+            # Awaited: the branch is only genuinely reached once the removal
+            # has completed.
+            await screen.query_one("#sort-label", Static).remove()
             await _pilot.pause()
             # Must not raise.
             screen._update_sort_label()
@@ -6905,8 +7172,8 @@ async def test_settings_key_g_G():
     """g/G scroll settings via action methods."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen.action_scroll_end()
-        app.screen.action_scroll_home()
+        app.screen.action_jump_bottom()
+        app.screen.action_jump_top()
         # Scroll actions delegate to settings-scroll widget
         scroll = app.screen.query_one("#settings-scroll")
         assert scroll is not None
@@ -7460,7 +7727,7 @@ async def test_cmd_add_error_in_background(tmp_path):
             assert app.screen._sync_active is False
 
 
-def test_build_add_progress_callback_throttles_embed_updates() -> None:
+def test_build_add_progress_callback_throttles_embed_updates(monkeypatch) -> None:
     """Two EMBED events within ``_ADD_EMBED_THROTTLE_SECONDS`` collapse to one update.
 
     Without this the chat /add reporter would repaint hundreds of times a
@@ -7468,17 +7735,29 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
     """
     from unittest.mock import MagicMock
 
+    from lilbee.cli.tui.screens import chat_helpers
     from lilbee.cli.tui.screens.chat import build_add_progress_callback
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EmbedEvent, EventType
 
+    # Drive the throttle off a clock this test owns. Reading the real one made
+    # the window depend on how long two statements take, which a loaded runner
+    # can stretch past 0.15s.
+    clock = 1000.0
+    monkeypatch.setattr(chat_helpers.time, "monotonic", lambda: clock)
+
     reporter = MagicMock(spec=ProgressReporter)
     callback = build_add_progress_callback(reporter)
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=1, total_chunks=10))
-    # Second event arrives immediately; throttle returns early before reporter.update.
+    # Second event arrives inside the window; throttle returns early before update.
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=2, total_chunks=10))
-    # Only one update from the EMBED branch (the first call).
     assert reporter.update.call_count == 1
+
+    # Past the window the next event gets through, so the throttle delays
+    # updates rather than dropping every one after the first.
+    clock += chat_helpers._ADD_EMBED_THROTTLE_SECONDS * 2
+    callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=3, total_chunks=10))
+    assert reporter.update.call_count == 2
 
 
 def test_build_sync_progress_callback_routes_extract_event() -> None:
@@ -9948,8 +10227,13 @@ class TestWikiDraftsScreen:
 
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
-            screen.query_one("#wiki-drafts-search", TextualInput).value = "zzz"
-            await pilot.pause()
+            search = screen.query_one("#wiki-drafts-search", TextualInput)
+            search.focus()
+            # Typed rather than assigned: a key event carries the value change
+            # and its Changed handler through the pump in one awaited step,
+            # where an assignment leaves the refresh a pump cycle behind.
+            await pilot.press("z", "z", "z")
+            assert search.value == "zzz", "precondition: the keys reached the filter"
             diff = screen.query_one("#wiki-drafts-diff", Static)
             assert diff.content == msg.WIKI_DRAFTS_NO_MATCHES.format(filter="zzz")
 
@@ -11364,8 +11648,10 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = False
+            # Scope to the chat pane: screen-wide query also matches the
+            # Discover rails, which the leave handlers deliberately ignore.
             for _ in range(20):
-                grids = list(screen.query(ModelGrid))
+                grids = list(screen.query("#grid-chat ModelGrid"))
                 if len(grids) >= 2:
                     break
                 await pilot.pause()
@@ -11373,7 +11659,7 @@ async def test_catalog_grid_leave_down_focuses_next():
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
             await pilot.pause()
-            grids = list(screen.query(ModelGrid))
+            grids = list(screen.query("#grid-chat ModelGrid"))
             grids[0].focus()
             # Wait for focus to settle: focus() lands over one or more refresh
             # hops, so a bare pause can leave grids[0] unfocused and LeaveDown
@@ -11437,7 +11723,9 @@ async def test_catalog_grid_leave_up_focuses_previous():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            grids = list(screen.query(ModelGrid))
+            # Chat pane only: the Discover rails are sibling ModelGrids the
+            # leave handlers deliberately ignore.
+            grids = list(screen.query("#grid-chat ModelGrid"))
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[1].focus()
@@ -13633,7 +13921,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
@@ -13644,6 +13932,22 @@ async def test_catalog_search_submit_installs_first_visible_match():
                     break
                 await _pilot.pause()
             assert grids, "chat grid should mount at least one ModelGrid"
+            # Painting is done; from here a late worker landing repainting
+            # the grid would restore the full dataset over the trim below.
+            # _remount_grid_sections is reached only from here, so with this
+            # stubbed no further tail mount can be scheduled.
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            # The loop breaks without a pause, so the tail mount _refresh_grid
+            # already queued through call_after_refresh is still pending; it
+            # would land on the pause below the trim and remount a grid holding
+            # the full dataset. Drain it here instead, while nothing is trimmed
+            # yet. Stubbing the method cannot help: call_after_refresh captured
+            # the bound method when it was scheduled.
+            for _ in range(3):
+                await _pilot.pause()
+            # Re-queried because the drained mount replaces the grid widgets.
+            grids = list(screen.query("#grid-chat ModelGrid"))
+            assert grids, "chat grid should survive the deferred tail mount"
             grid = grids[0]
             assert len(grid.rows) >= 2
             # ModelGrid filters at the dataset level: set_rows replaces
@@ -13882,10 +14186,15 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Shields go in before mounting: on_mount schedules
+            # call_after_refresh(self._refresh_grid), and a post-mount stub
+            # loses that race on slow hosts, letting a real repaint unmount
+            # the test's grid.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
@@ -14237,10 +14546,12 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Same pre-mount repaint shield as the model_grid_branch test above.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 99
@@ -14318,11 +14629,12 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
+            # Same pre-mount repaint shield as the model_grid_branch test above.
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            app.push_screen(screen)
+            await _pilot.pause()
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
@@ -14442,15 +14754,29 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Awaited: push_screen returns an AwaitMount, and an unawaited push
+            # leaves the container un-running on a slow runner, which makes the
+            # branch under test return early instead of mounting.
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
+            # _mount_remaining_grid_sections returns early unless the container
+            # is running; assert it so a regression reads as the precondition
+            # failing, not as a bare "no heading appeared".
+            assert screen._grid_container.is_running
             before = len(list(screen._grid_container.query(".section-heading")))
-            screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
+            mounts = screen._mount_remaining_grid_sections(
+                screen._grid_container, sections, hf_count=1
+            )
+            # Awaited: pause only settles the widgets that existed when it was
+            # called, so it never waits for the ones just mounted.
+            assert mounts, "expected the iteration to mount the remaining section"
+            for mount in mounts:
+                await mount
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"

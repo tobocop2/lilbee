@@ -9,6 +9,7 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.browse_bindings import browse_back_bindings
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
 
@@ -24,12 +25,11 @@ class FleetScreen(Screen[None]):
     HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
+        *browse_back_bindings(),
         # priority so they fire even when a button/editor child has focus.
-        Binding("ctrl+r", "preview", "Preview", show=True, priority=True),
+        Binding("ctrl+r", "preview", "Preview", show=False, priority=True),
         Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
-        Binding("ctrl+x", "clear", "Auto", show=True, priority=True),
+        Binding("ctrl+x", "clear", "Auto", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -60,5 +60,5 @@ class FleetScreen(Screen[None]):
         self.query_one(FleetBody).action_clear()
 
     def action_go_back(self) -> None:
-        """Return to Chat via the guarded switch_view (inverse of Fleet entry)."""
-        self.app.switch_view("Chat")
+        """Return to the view the user came from via the guarded switch_view."""
+        self.app.go_back()

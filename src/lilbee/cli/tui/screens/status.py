@@ -23,6 +23,7 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.data.store import SourceRecord
@@ -164,14 +165,15 @@ class StatusScreen(Screen[None]):
     )
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
-        Binding("tab", "app.focus_next", "Next section", show=True),
-        Binding("shift+tab", "app.focus_previous", "Prev section", show=True),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
+        *browse_back_bindings(),
+        Binding("tab", "app.focus_next", "Next section", show=False),
+        Binding(
+            "shift+tab",
+            "app.focus_previous",
+            "Prev section",
+            show=False,
+        ),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def __init__(self) -> None:
@@ -397,7 +399,7 @@ class StatusScreen(Screen[None]):
             self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def action_cursor_down(self) -> None:
         self.query_one("#status-scroll", VerticalScroll).scroll_down()

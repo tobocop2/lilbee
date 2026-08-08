@@ -120,24 +120,37 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
-    _NAV_GROUP = Binding.Group("Navigate")
+    # The app row is [ and ] to move between views, plus Help and Quit. Every
+    # other app key is help-panel only, which lists every non-system binding whatever
+    # its ``show``. A group may hold one action pressed in two directions, where
+    # a single label still tells the whole truth, and never keys that do
+    # different things: five destinations behind one "Views" label named none of
+    # them. Textual groups CONSECUTIVE runs of shown bindings, so a group's
+    # members stay adjacent.
+    _NAV_GROUP = Binding.Group("Views")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # ``?`` is non-priority so a focused TextArea (chat input in INSERT
-        # mode) can swallow it and type the literal character. F1 / Ctrl+H
-        # remain priority routes that always open help, even mid-typing.
-        Binding("question_mark", "push_help", "Help", show=False),
-        Binding("f1", "push_help", "Help", show=True, priority=True),
-        Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
+        # ``?`` is the only key for help. Non-priority on purpose: a focused
+        # text field consumes printable keys, which both types the literal
+        # character and takes the key out of the footer row, so no guard here is
+        # needed to keep the row honest. ChatInput additionally routes ``?`` on
+        # an EMPTY prompt to this action, so an untouched prompt still opens
+        # help. F1 is gone; one advertised key is enough.
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
-        Binding("ctrl+t", "cycle_theme", "Theme", show=True),
-        Binding("t", "open_tasks", "Tasks", show=True),
-        Binding("f4", "toggle_lilbee_path", "Path/Name", show=True),
-        # Non-priority so Chat's "focus_commands" and Catalog's
-        # "focus_search" still win on those screens. Fires only on
-        # screens that don't bind slash themselves, routing the user
-        # to Chat with the slash already typed.
-        Binding("slash", "global_slash_to_chat", "Command", show=False),
+        # Guarded like open_tasks in check_action: a focused text input
+        # types the literal letter instead.
+        # Help-panel only: the view tabs run across the top of every screen and are
+        # clickable, so a footer cell per destination is a second copy of
+        # something already on screen. [ and ] move between them.
+        Binding("c", "open_chat", "Chat", show=False),
+        Binding("m", "open_catalog", "Models", show=False),
+        Binding("t", "open_tasks", "Tasks", show=False),
+        # These two keep their cells: they open a drawer beside the current
+        # screen rather than navigating, so unlike the jumps above they do
+        # something the tab strip cannot, and nothing else on screen says so.
+        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
+        Binding("ctrl+o", "toggle_sessions", "Sessions", show=True, priority=True),
         # priority=True so a focused TextArea cannot swallow the bracket
         # under stress (multi-key send-keys etc.); type literal brackets
         # via Shift+[ / Shift+] which produce { / } and bypass these.
@@ -158,15 +171,29 @@ class LilbeeApp(App[None]):
             priority=True,
         ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
+        # Off the row, like f4 below: cycling the theme is not something a user
+        # needs advertised on every screen, and the row is for getting around.
+        Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        # Hidden: a title-bar display toggle is not worth a permanent footer
+        # cell on all twelve screens. show=False only drops it from the footer
+        # row -- the help panel lists every non-system binding regardless -- so
+        # the key stays discoverable.
+        Binding("f4", "toggle_lilbee_path", "Path/Name", show=False),
+        # Non-priority so Chat's "focus_commands" and Catalog's
+        # "focus_search" still win on those screens. Fires only on
+        # screens that don't bind slash themselves, routing the user
+        # to Chat with the slash already typed.
+        Binding("slash", "global_slash_to_chat", "Command", show=False),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
-        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
-        Binding("ctrl+o", "toggle_sessions", "Sessions", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
         super().__init__()
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
+        # The view the user came from; go_back returns here so q/Escape mean
+        # "back", not "Chat", on every top-level view.
+        self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
         # Names of non-Chat screens already installed via install_screen.
@@ -191,6 +218,11 @@ class LilbeeApp(App[None]):
     _test_skip_auto_init: ClassVar[bool] = False
 
     async def on_mount(self) -> None:
+        # The app's own signal graph is part of being a working app, not
+        # "heavyweight auto-init": wiring it before the test-skip guard lets a
+        # test observe app-level signals without booting the startup gate, whose
+        # wait is a timing window that wedges loaded CI runners.
+        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         if self._test_skip_auto_init:
             return
         # Paint the gate before any other work so the terminal is never blank
@@ -211,7 +243,6 @@ class LilbeeApp(App[None]):
         self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
         self._sync_theme_index_to_current()
 
-        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self._wire_worker_pool_notifications()
         # Chat's import graph is the TUI's heaviest; loading it here would hold
         # the first frame back for seconds on a cold disk, leaving the terminal
@@ -486,6 +517,8 @@ class LilbeeApp(App[None]):
         if view_name != "Chat" and get_views().get(view_name) is None:
             return
         self._switching = True
+        if view_name != self.active_view:
+            self._previous_view = self.active_view
 
         awaitable: AwaitComplete | None = None
         if view_name == "Chat":
@@ -559,26 +592,92 @@ class LilbeeApp(App[None]):
         raise SkipAction()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Hide ``t Tasks`` from the footer while a text input is focused.
+        """Hide the letter view-keys from the footer while a text input is focused.
 
         ``t`` is not a priority binding, so a focused ``Input`` / ``TextArea``
         (the chat prompt in INSERT mode, a catalog/settings search box) eats
         it as a literal character. Showing ``t Tasks`` there would lie.
         """
         # isinstance: a focused Input/TextArea consumes printable keys before
-        # non-priority screen/app bindings see them, so `t` types a literal there.
-        if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
+        # screen/app bindings see them (verified empirically: this holds for
+        # priority bindings too), so `t`/`m` type literals there and the guard
+        # exists purely to keep the footer honest.
+        if action in ("open_tasks", "open_catalog", "open_chat") and isinstance(
+            self.focused, (Input, TextArea)
+        ):
             return False
-        # None (not False): hide the Sessions binding from the footer entirely
-        # when sessions are off, rather than show it greyed. There is nothing to
-        # toggle, so it should not advertise itself.
+        # Nothing to jump to when Chat is already the active view.
+        if action == "open_chat" and self.active_view == msg.DEFAULT_VIEW:
+            return False
+        # False, not None: Textual drops a False binding from the row entirely
+        # and renders a None one greyed but present. With sessions off there is
+        # nothing to toggle, so the key should not take a footer cell at all.
         if action == "toggle_sessions" and not cfg.sessions_enabled:
-            return None
+            return False
+        # Drop each drawer toggle only where pressing it would do nothing, which
+        # is the view that already shows the same panel full-screen. An OPEN
+        # DRAWER is not that case: the key closes it, and the drawer contains the
+        # very widget these predicates look for, so testing the panel alone
+        # disabled the key that closes the drawer.
+        if action == "toggle_fleet" and self._toggle_fleet_is_noop():
+            return False
+        if action == "toggle_sessions" and self._toggle_sessions_is_noop():
+            return False
         return super().check_action(action, parameters)
+
+    def go_back(self) -> None:
+        """Return to the view the user came from (Chat when there is none)."""
+        self.switch_view(self._previous_view or msg.DEFAULT_VIEW)
 
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
+
+    def action_open_catalog(self) -> None:
+        """Jump to the model catalog (m key)."""
+        self.switch_view("Catalog")
+
+    def action_open_chat(self) -> None:
+        """Jump to Chat (c key), the counterpart to t / m for the busiest view."""
+        self.switch_view(msg.DEFAULT_VIEW)
+
+    def _shows_placement_full_screen(self) -> bool:
+        """True when this screen shows the placement editor, tab or drawer.
+
+        FleetDrawer composes a FleetBody, so this is also True while the drawer
+        is open. Callers that care about "nothing left to do" must rule the
+        drawer out first, as :meth:`_toggle_fleet_is_noop` does.
+        """
+        return bool(self.screen.query("FleetBody"))
+
+    def _shows_sessions_full_screen(self) -> bool:
+        """True when this screen shows the session list, tab or drawer.
+
+        SessionsDrawer composes a SessionListPanel, so the same caveat as
+        :meth:`_shows_placement_full_screen` applies.
+        """
+        return bool(self.screen.query("SessionListPanel"))
+
+    def _toggle_fleet_is_noop(self) -> bool:
+        """True when ctrl+g would do nothing, mirroring the action's own order.
+
+        The action closes an open drawer first and only then treats a
+        full-screen placement editor as a reason to stop, so a drawer that can
+        be closed is never a no-op.
+        """
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+        if self.screen.query(FleetDrawer):
+            return False
+        return self._shows_placement_full_screen()
+
+    def _toggle_sessions_is_noop(self) -> bool:
+        """True when ctrl+o would do nothing. See :meth:`_toggle_fleet_is_noop`."""
+        from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
+
+        if self.screen.query(SessionsDrawer):
+            return False
+        return self._shows_sessions_full_screen()
 
     def action_toggle_fleet(self) -> None:
         """Toggle the Fleet drawer (ctrl+g): dock placement beside the current
@@ -590,7 +689,7 @@ class LilbeeApp(App[None]):
         if drawers:
             drawers.first().remove()
             return
-        if self.screen.query("FleetBody"):  # Fleet tab already shows placement
+        if self._shows_placement_full_screen():
             return
         self.screen.mount(FleetDrawer())
 
@@ -617,7 +716,7 @@ class LilbeeApp(App[None]):
         if drawers:
             drawers.first().remove()
             return
-        if self.screen.query("SessionListPanel"):  # Sessions tab already shows the list
+        if self._shows_sessions_full_screen():
             return
         self.screen.mount(SessionsDrawer())
 

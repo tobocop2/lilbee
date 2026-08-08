@@ -371,7 +371,7 @@ class TestLayoutDetectionSetting:
         assert defn.nullable is False
         assert defn.type is bool
         assert defn.group == "Ingest"
-        assert get_default("layout_detection") is True
+        assert get_default("layout_detection") is False
 
     def test_layout_detection_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS

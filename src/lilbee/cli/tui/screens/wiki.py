@@ -24,6 +24,7 @@ from textual.widgets.tree import TreeNode
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -110,18 +111,14 @@ class WikiScreen(Screen[None]):
     )
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "dismiss_or_back", "Back", show=False),
+        *browse_back_bindings(escape_action="dismiss_or_back"),
+        *BROWSE_LIST_BINDINGS,
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("D", "open_drafts", "Drafts", show=True),
+        Binding("D", "open_drafts", "Drafts", show=False),
         Binding("b", "wikify", "Wikify", show=True),
-        Binding("W", "wipe", "Wipe", show=True),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
+        Binding("W", "wipe", "Wipe", show=False),
         Binding("h", "cursor_left", "Collapse", show=False),
         Binding("l", "cursor_right", "Expand", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
     ]
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.12
@@ -413,7 +410,7 @@ class WikiScreen(Screen[None]):
         self.action_go_back()
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def _tree_or_none(self) -> Tree[str | None] | None:
         if isinstance(self.focused, Input):

@@ -656,13 +656,15 @@ class TestScreenTransitions:
                     await pilot.pause()
                     assert app.active_view == view
 
-                    # Use f1 instead of ? because focused inputs still swallow
-                    # question_mark.
-                    await pilot.press("f1")
+                    # `?` is the only help key. It reaches help here even on
+                    # Chat, where the prompt has focus, because the prompt is
+                    # empty and ChatInput routes `?` to help in that state.
+                    await pilot.press("question_mark")
                     await pilot.pause()
                     assert app.screen.query("HelpPanel")
 
-                    await pilot.press("f1")
+                    # `?` toggles: action_push_help hides an open panel.
+                    await pilot.press("question_mark")
                     await pilot.pause()
                     assert not app.screen.query("HelpPanel")
 
@@ -3217,7 +3219,14 @@ class TestQuestionMarkBehavior:
                 "? must not open help while the user is mid-typing"
             )
 
-    async def test_f1_opens_help_even_with_chat_input_focused(self, _mock_resolve):
+    async def test_question_mark_opens_help_from_an_empty_focused_prompt(self, _mock_resolve):
+        """With the prompt focused and empty, `?` still reaches help.
+
+        This replaces a test that pressed F1, which used to be the one key that
+        worked mid-typing. F1 is gone: `?` is the only help key now, and the
+        surviving route from a focused prompt is ChatInput._on_key, which sends
+        `?` to help while the prompt is empty and types it once there is text.
+        """
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -3226,9 +3235,11 @@ class TestQuestionMarkBehavior:
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
             await pilot.pause()
-            await pilot.press("f1")
+            assert inp.value == ""
+            await pilot.press("question_mark")
             await pilot.pause()
-            assert app.screen.query("HelpPanel"), "F1 must always open the help panel"
+            assert app.screen.query("HelpPanel"), "? must open help from an empty prompt"
+            assert inp.value == "", "? typed itself instead of opening help"
 
 
 class TestSetupWizardGrid:
@@ -3539,8 +3550,9 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
 
-    async def test_model_switch_during_streaming_cancels(self, _mock_resolve, _mock_services):
-        """apply_model_change cancels any in-flight stream. Regression for the model-swap path."""
+    async def test_model_switch_during_streaming_is_queued(self, _mock_resolve, _mock_services):
+        """A switch asked for mid-answer leaves the answer streaming and defers the
+        fleet restart until the stream ends."""
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
@@ -3550,9 +3562,14 @@ class TestChatStreaming:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert app.screen.streaming
-                app.screen.apply_model_change()
-                await pilot.pause()
-                assert app.screen.streaming is False
+                with mock.patch.object(app.screen, "_reload_chat_model_worker") as mock_worker:
+                    app.screen.apply_model_change()
+                    await pilot.pause()
+                    assert app.screen.streaming is True
+                    mock_worker.assert_not_called()
+                    app.screen._set_streaming(False)
+                    await pilot.pause()
+                    mock_worker.assert_called_once()
 
     async def test_exit_streaming_does_not_auto_send(self, _mock_resolve, _mock_services):
         """Stream exit does not auto-fire a follow-up prompt.

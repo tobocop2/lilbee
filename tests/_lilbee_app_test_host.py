@@ -87,3 +87,15 @@ def ready_services():
             yield services
     finally:
         set_services(None)
+
+
+def shown_footer_keys(app) -> set[str]:
+    """Keys the active screen's footer row is currently advertising.
+
+    Read off ``active_bindings`` rather than the rendered widgets so a caller
+    can assert what the row claims without waiting for a repaint. Filtered on
+    ``binding.show`` because that is what the footer filters on; note Textual
+    drops a binding whose ``check_action`` returned False and keeps a None one
+    greyed, so "absent here" means False, not None.
+    """
+    return {binding.key for _, binding, _, _ in app.screen.active_bindings.values() if binding.show}
