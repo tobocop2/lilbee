@@ -353,11 +353,11 @@ Either way, your files and the index stay on your computer. Only what you ask an
 
 ## Run a model bigger than one card
 
-When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router. This is automatic: ask a question and the model loads split across your cards, answering from your own indexed source.
+When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router. This is automatic: ask a question and the model loads split across your cards, answering from your own indexed source. Here a 70B is spread across three consumer cards and answers a mechanic's question from an indexed car manual, citing the page it came from.
+
+![a 70B spread across three cards without being asked, answering from an indexed manual with a citation](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-auto-placement.gif)
 
 You can also place it by hand. The placement editor pins each role to the cards you choose, previews the fit before anything loads, and applies it live. Ask for a layout that can't fit and it tells you the exact shortfall instead of failing at load time.
-
-![the placement editor: a too-small layout refused with the exact shortfall, then spread across the cards and applied](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-manual-placement.gif)
 
 ## TUI
 
