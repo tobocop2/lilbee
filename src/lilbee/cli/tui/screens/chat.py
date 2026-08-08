@@ -40,6 +40,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
+from lilbee.cli.tui.command_registry import runs_while_streaming
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -66,7 +67,7 @@ from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
 from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -230,7 +231,15 @@ class ChatScreen(Screen[None]):
         "# Chat\n\n"
         "Ask questions about your knowledge base.\n\n"
         "Press **Escape** for normal mode (vim keys), "
-        "**i**/**a**/**o** to return to insert mode."
+        "**i**/**a**/**o** to return to insert mode.\n\n"
+        "**/** opens the slash-command line and **Tab** completes what you "
+        "type there; **F2** lists every command.\n\n"
+        "**F6** jumps to the model strip under the prompt, and in normal mode "
+        "**h** / **l** or **Left** / **Right** step into it from either end. "
+        "**Left** / **Right** walk all six cells (the Chat, Embed, Vision and "
+        "Rerank pickers, then the Search and Chat mode pills), **h** / **l** do "
+        "the same, **Home** / **End** jump to either end, **Enter** opens or "
+        "picks the focused cell, **Escape** goes back."
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
@@ -244,12 +253,23 @@ class ChatScreen(Screen[None]):
     _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # `/` opens the slash-command line (Tab completes it -- the
-        # adjacent `Tab Complete` hint spells that out). The label says
-        # "Slash commands" rather than the bare "Commands" so the footer
-        # tells the user what `/` actually does.
-        Binding("slash", "focus_commands", "Slash commands", show=True),
-        Binding("tab", "complete", "Complete", show=True, priority=True),
+        # `/` opens the slash-command line: the one thing this screen is for
+        # besides typing, so it keeps a footer cell.
+        Binding("slash", "focus_commands", "Commands", show=True),
+        # F2 opens the searchable list of every slash command
+        # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
+        # Help-panel only: `/` already leads there, and the full list is a lookup.
+        Binding(
+            "f2",
+            "show_command_catalog",
+            "All commands",
+            show=False,
+            priority=True,
+        ),
+        # Hidden: Tab only completes while the slash dropdown is open, and the
+        # rest of the time it walks the focus chain, so a permanent
+        # "tab Complete" cell overstated it. Named in help beside `/`.
+        Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
         # Ctrl+P stays bound to the app's command palette by default. The
         # chat screen only intercepts it WHEN the dropdown is visible, via
@@ -283,12 +303,24 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("s", "cycle_scope", "Scope", show=False),
-        # F2 opens the searchable list of every slash command
-        # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
-        # Labeled "All commands" so it reads distinctly from `/ Slash commands`.
-        Binding("f2", "show_command_catalog", "All commands", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
+        # A function key, not a letter: the four role pickers are worth
+        # reaching mid-sentence, and a focused input consumes printable keys
+        # before any binding fires. Tab reaches the bar too, but only from
+        # NORMAL mode and only after walking past the log.
+        Binding("f6", "focus_model_bar", "Model bar", show=False, priority=True),
+        # NORMAL mode walks sideways into the role strip. h / l rather than the
+        # whole of hjkl: the transcript owns j / k for scrolling.
+        Binding("h", "enter_model_strip(-1)", "Prev role", show=False),
+        Binding("l", "enter_model_strip(1)", "Next role", show=False),
+        # The arrows reach here too. The focused transcript is a VerticalScroll
+        # and binds Left / Right to horizontal scrolling, but Widget's
+        # action_scroll_left raises SkipAction when there is nothing to scroll
+        # sideways, which resumes the key lookup and lands it here. A transcript
+        # wide enough to scroll keeps its own arrows; h / l are unconditional.
+        Binding("left", "enter_model_strip(-1)", "Prev role", show=False),
+        Binding("right", "enter_model_strip(1)", "Next role", show=False),
     ]
 
     def __init__(self) -> None:
@@ -324,6 +356,8 @@ class ChatScreen(Screen[None]):
         # overwrites, reset clears). Never clear it in _finalize_stream: the
         # input unblocks first, so the clear races the next turn's question.
         self._active_question: UserMessage | None = None
+        # A model switch asked for mid-answer, applied once the stream ends.
+        self._model_switch_queued: bool = False
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -448,9 +482,21 @@ class ChatScreen(Screen[None]):
         """
         self._enter_insert_mode()
 
+    def action_focus_model_bar(self) -> None:
+        """F6: put the cursor on the model strip. Left / Right walk it from there."""
+        self.query_one("#model-bar", ModelBar).focus_strip()
+
+    def action_enter_model_strip(self, direction: int) -> None:
+        """h / l and the arrows from NORMAL mode: step in from the matching side.
+
+        Only reached while focus is outside the bar. Once a role holds the
+        cursor the bar's own keys win, being nearer the focus.
+        """
+        self.query_one("#model-bar", ModelBar).focus_strip(direction)
+
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""
-        if self._reject_submit_when_busy():
+        if self._reject_submit_when_busy(text):
             return
         self._handle_slash(text)
 
@@ -487,9 +533,14 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select / picker button handle Enter itself; i/a/o
-            # mean nothing to those widgets, so they always return to INSERT.
-            if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
+            # Let a focused Select, or anything on the model strip, handle Enter
+            # itself; i/a/o mean nothing to those widgets, so they always return
+            # to INSERT. Asked of the bar rather than of a list of widget types:
+            # the mode pills were missing from that list and Enter on a pill
+            # dropped to INSERT instead of switching the mode.
+            if event.key == "enter" and (
+                isinstance(self.focused, Select) or self._focus_in_model_bar()
+            ):
                 return
             if self._focus_in_drawer():
                 return
@@ -571,10 +622,10 @@ class ChatScreen(Screen[None]):
 
     def _ready_to_submit(self, text: str) -> bool:
         """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
-        if self._reject_submit_when_busy() or self._dismiss_overlay_on_submit() or not text:
+        if self._reject_submit_when_busy(text) or self._dismiss_overlay_on_submit() or not text:
             return False
-        if text.startswith("/"):
-            cmd = text.split()[0].lower()
+        cmd = self._slash_name(text)
+        if cmd:
             if cmd not in self._command_handlers:
                 # Keep the draft so a typo (or a stale leading slash) can be
                 # fixed in place instead of retyped.
@@ -593,12 +644,14 @@ class ChatScreen(Screen[None]):
             return False
         return True
 
-    def _reject_submit_when_busy(self) -> bool:
+    def _reject_submit_when_busy(self, text: str = "") -> bool:
         """Toast and reject a submit while a swap is loading or a stream is in flight.
 
-        Returns True when the prompt was rejected so the caller stops. The swap
+        Returns True when the submit was rejected so the caller stops. The swap
         check comes first: a prompt sent mid-swap would race a half-torn-down
-        fleet, so the user is asked to wait rather than cancel.
+        fleet, so the user is asked to wait rather than cancel. Commands the
+        registry marks ``allowed_while_streaming`` pass the streaming check, so
+        /cancel and /model stay reachable during the turn they act on.
         """
         if self.swapping_model:
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
@@ -606,12 +659,17 @@ class ChatScreen(Screen[None]):
         if self.reloading_placement:
             self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
             return True
-        if self.streaming:
+        if self.streaming and not runs_while_streaming(self._slash_name(text)):
             # Only one chat message may be in flight at a time; surface a toast
             # so the prompt is visibly rejected, not silently dropped.
             self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
             return True
         return False
+
+    @staticmethod
+    def _slash_name(text: str) -> str:
+        """The command word of a slash submit, or "" when *text* is not one."""
+        return text.split()[0].lower() if text.startswith("/") else ""
 
     def _pending_required_model_download(self) -> str | None:
         """Return the in-flight download's name if it's for the configured chat or embedding model.
@@ -673,6 +731,10 @@ class ChatScreen(Screen[None]):
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
         self.refresh_bindings()
+        if self._model_switch_queued:
+            # Cleared before the call: apply_model_change can re-enter here.
+            self._model_switch_queued = False
+            self.apply_model_change()
 
     def _cmd_add(self, args: str) -> None:
         from lilbee.app.ingest import source_label_taken
@@ -698,7 +760,7 @@ class ChatScreen(Screen[None]):
         # (a live root elsewhere, or an owned file of that name); re-adding the
         # same path is idempotent, and a directory is left to register_sources'
         # own skipped notices rather than a duplicate-file prompt.
-        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name)]
+        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name, p)]
         if duplicates:
             self._prompt_overwrite(paths, duplicates)
             return
@@ -1945,6 +2007,13 @@ class ChatScreen(Screen[None]):
         """
         if action == "cancel_stream":
             return self.streaming and self._insert_mode
+        if action == "enter_model_strip":
+            # NORMAL mode parks the cursor on the transcript, and that is the
+            # only place these letters are free. Stated as where they DO apply,
+            # so a drawer, a dialog or any later focus target keeps its own
+            # letters without having to be named here.
+            focused = self.focused
+            return focused is not None and focused.id == "chat-log"
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
@@ -1963,10 +2032,10 @@ class ChatScreen(Screen[None]):
             if self._chat_input.value.strip() == "/":
                 self._set_input("")
             return
-        if isinstance(self.focused, (Select, ModelPickerButton)):
-            # Returning from a model picker should put us back in INSERT
-            # so the user can type their next prompt; routing through the
-            # helper makes sure can_focus is re-enabled.
+        if isinstance(self.focused, Select) or self._focus_in_model_bar():
+            # Leaving the model strip should put us back in INSERT so the
+            # user can type their next prompt; routing through the helper
+            # makes sure can_focus is re-enabled.
             self._enter_insert_mode()
             return
         self._insert_mode = False
@@ -2001,16 +2070,18 @@ class ChatScreen(Screen[None]):
         self.streaming = False
 
     def apply_model_change(self) -> None:
-        """Swap to the new chat model without freezing the UI.
+        """Swap to the new chat model without freezing the UI or losing an answer.
 
         Reloading the fleet for the new model is a multi-second restart, so it
-        runs in a thread worker instead of on the event loop. The in-flight stream
-        is cancelled first, the input is blocked behind a "switching" state with an
-        indicator toast, and the worker reloads only the chat role. The provider
-        retires any still-busy client across the restart and serializes overlapping
-        reloads, so the worker can start at once without waiting for other workers.
-        The input re-enables once the fleet has restarted with the new model (which
-        loads on the next request).
+        runs in a thread worker instead of on the event loop. The worker reloads
+        only the chat role; the provider retires any still-busy client across the
+        restart and serializes overlapping reloads, so the worker can start at
+        once without waiting for other workers.
+
+        A switch requested mid-answer is queued, not applied: restarting the chat
+        server under a live stream kills the answer being read. The queued switch
+        runs on leaving the streaming state, so it covers a finished, cancelled
+        and cleared answer alike.
         """
         if self.swapping_model:
             # A swap is already loading; a second one (rapid /model, or the model
@@ -2020,7 +2091,15 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
             return
         if self.streaming:
-            self._cancel_inflight_stream(msg.STREAM_CANCELLED_MODEL_SWITCH)
+            from lilbee.catalog.formatting import display_label_for_ref
+
+            # cfg already holds the new ref, so a second queued switch needs no
+            # extra state.
+            self._model_switch_queued = True
+            self.app.notify(
+                msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
+            )
+            return
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()
@@ -2251,6 +2330,15 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
+
+    def _focus_in_model_bar(self) -> bool:
+        """True when focus is on any model-strip member.
+
+        Asked of the container rather than of each member class so a member
+        added later is covered without a second edit here.
+        """
+        focused = self.focused
+        return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

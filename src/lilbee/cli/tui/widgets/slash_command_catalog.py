@@ -16,6 +16,7 @@ from textual.widgets.option_list import Option
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand
+from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ class SlashCommandCatalog(ModalScreen[str | None]):
         with Vertical(id="catalog-root"):
             yield Static(msg.SLASH_CATALOG_TITLE, id="catalog-title")
             yield Input(placeholder=msg.SLASH_CATALOG_FILTER_PLACEHOLDER, id="catalog-filter")
-            yield OptionList(id="catalog-list")
+            yield ClampedOptionList(id="catalog-list")
             yield Static(msg.SLASH_CATALOG_FOOTER_HINT, id="catalog-hint")
 
     def on_mount(self) -> None:

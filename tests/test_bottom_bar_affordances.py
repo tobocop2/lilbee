@@ -271,12 +271,20 @@ async def test_setup_wizard_hint_label_has_no_border_top_eating_its_row() -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_theme_keybinding_is_visible_in_app_bindings() -> None:
-    """ctrl+t must surface in the Footer so users can discover theme cycling."""
+def test_theme_keybinding_stays_discoverable_off_the_footer() -> None:
+    """ctrl+t must stay discoverable, now via F1 rather than a footer cell.
+
+    The original guarantee was "surfaces in the Footer so users can discover
+    theme cycling" (#186). The footer is now the keys that move between views
+    plus each screen's own verb, so theme cycling moved to the F1 key panel.
+    The discoverability requirement is unchanged and asserted here on its new
+    surface: the panel lists every non-system binding regardless of ``show``.
+    """
     bindings = [b for b in LilbeeApp.BINDINGS if getattr(b, "key", None) == "ctrl+t"]
     assert len(bindings) == 1
-    assert bindings[0].show is True
     assert bindings[0].action == "cycle_theme"
+    assert bindings[0].show is False, "the footer row is for navigation"
+    assert bindings[0].system is False, "system bindings are hidden from the F1 panel too"
 
 
 async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:

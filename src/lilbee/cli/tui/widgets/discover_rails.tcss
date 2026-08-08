@@ -16,6 +16,5 @@ DiscoverRails {
 
 .discover-rail-grid {
     height: auto;
-    max-height: 14;
     margin-bottom: 1;
 }

@@ -326,7 +326,7 @@ def test_acquire_engine_records_the_demand_plans_refusal(monkeypatch, tmp_path: 
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda: prov_mod._EngineDemand(set(), 0, {WorkerRole.CHAT: reason}),
+        lambda: prov_mod._EngineDemand(set(), 0, {}, {WorkerRole.CHAT: reason}),
     )
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     p = FleetProvider()
@@ -3567,7 +3567,7 @@ def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Pa
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {})
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {}, {})
     )  # nothing placeable
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
@@ -4358,7 +4358,7 @@ def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
 
-    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {})
+    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {}, {})
 
 
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
@@ -4371,6 +4371,53 @@ def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> Non
 
     with pytest.raises(ProviderError, match="wedged"):
         prov_mod._placeable_demand()
+
+
+def test_placeable_demand_carries_not_installed_skips(monkeypatch) -> None:
+    # The demand plan is the only plan a bind or an empty ladder ever runs, so
+    # it must carry the not-installed record out for the warm finalizer.
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (), skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+        ),
+    )
+    demand = prov_mod._placeable_demand()
+    assert demand.pairs == set()
+    assert demand.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+
+
+def test_acquire_engine_records_demand_skips_before_the_ladder(monkeypatch, tmp_path: Path) -> None:
+    """Zero installed models: the ladder exits before _plan_and_spawn ever runs,
+    and the not-installed record must still land so the warm finalizer can name
+    the missing chat model instead of leaving a retry-forever 'not ready'."""
+    skips = {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+    monkeypatch.setattr(
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, skips, {})
+    )
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: "pin")
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_in_dir", lambda *a, **kw: False)
+    assert p._acquire_engine(tmp_path) is False
+    assert p._skipped_not_installed == skips
+
+
+def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path: Path) -> None:
+    # No engine binary resolves: the quiet no-fleet path must not wipe the
+    # demand-time not-installed record the ladder already stored.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _no_binary() -> None:
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+    p = FleetProvider()
+    p._skipped_not_installed = {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+    assert p._plan_and_spawn(tmp_path) is False
+    assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
 def test_release_holds_drops_membership_without_stopping_engines(monkeypatch) -> None:

@@ -22,22 +22,18 @@ from textual.app import ComposeResult
 from textual.content import Content
 from textual.reactive import reactive
 
-from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
-    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.catalog_card_shared import (
-    _build_local_status,
-    _build_specs,
     _key_status_pill,
+    _local_card_lines,
     _truncate_name,
 )
-from lilbee.cli.tui.widgets.catalog_theme import TASK_COLORS
 
 if TYPE_CHECKING:
     pass
@@ -89,35 +85,9 @@ def _render(row: CatalogRow, *, selected: bool) -> Content:
 
 
 def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
-    from lilbee.cli.tui import messages as msg
-
-    bg = TASK_COLORS.get(row.task, "$primary")
-    name = Content.styled(_truncate_name(row.name), "bold")
-    primary_pills: list[Content] = []
-    if row.featured:
-        primary_pills.append(pill("pick", "$warning", "$text"))
-    primary_pills.append(pill(row.task, bg, "$text"))
-    # Drop the implied 'native' backend pill (parity with ModelGrid / ModelList).
-    if row.backend and row.backend != NATIVE_BACKEND:
-        primary_pills.append(pill(row.backend, "$accent", "$text"))
-    primary_line = Content(" ").join(primary_pills)
-
-    compat_chip = _compat_pill(row.compat)
-    secondary_line = compat_chip if compat_chip is not None else None
-
-    specs = _build_specs(row.params, row.quant, row.size)
-    status = _build_local_status(row)
-
-    parts: list[Content] = [name, primary_line]
-    if secondary_line is not None:
-        parts.append(secondary_line)
-    parts.append(specs)
-    if status is not None:
-        parts.append(status)
-    if selected:
-        hint = msg.INSTALLED_CARD_HINT if row.installed else msg.SETUP_CARD_HINT
-        parts.append(Content.styled(hint, "$text-muted 40% italic"))
-    return Content("\n").join(parts)
+    """Auto-height presentation of the shared card slots: absent slots are omitted."""
+    slots = _local_card_lines(row, selected=selected)
+    return Content("\n").join([line for line in slots if line is not None])
 
 
 def _render_frontier(row: FrontierCatalogRow) -> Content:
@@ -129,16 +99,5 @@ def _render_frontier(row: FrontierCatalogRow) -> Content:
     return Content("\n").join([name, pill_line, info])
 
 
-def _compat_pill(compat: ModelCompat) -> Content | None:
-    """Return the compat chip Content for non-SUPPORTED rows, or None for SUPPORTED."""
-    from lilbee.cli.tui import messages as msg
-
-    if compat is ModelCompat.SUPPORTED:
-        return None
-    if compat is ModelCompat.UNSUPPORTED:
-        return pill(msg.COMPAT_PILL_UNSUPPORTED, "$warning", "$text")
-    return pill(msg.COMPAT_PILL_UNKNOWN, "$panel", "$text-muted")
-
-
-# _key_status_pill / _build_specs / _build_local_status live in
-# catalog_card_shared and are re-imported above.
+# _local_card_lines / _key_status_pill / _truncate_name and the compat chip
+# live in catalog_card_shared.

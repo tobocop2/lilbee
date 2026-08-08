@@ -135,7 +135,8 @@ class GridSelect(containers.ItemGrid, can_focus=True):
 
     def action_cursor_up(self) -> None:
         if (grid_size := self.grid_size) is None:
-            self.post_message(self.LeaveUp(self))
+            # Layout not arranged yet (e.g. right after a remount): stay put
+            # rather than throwing focus out of the grid on the first keypress.
             return
         if self.highlighted is None:
             self.highlighted = 0
@@ -148,7 +149,7 @@ class GridSelect(containers.ItemGrid, can_focus=True):
 
     def action_cursor_down(self) -> None:
         if (grid_size := self.grid_size) is None:
-            self.post_message(self.LeaveDown(self))
+            # Same stay-put contract as action_cursor_up.
             return
         if self.highlighted is None:
             self.highlighted = 0

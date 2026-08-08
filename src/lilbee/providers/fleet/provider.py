@@ -708,6 +708,11 @@ class _EngineDemand(NamedTuple):
     pairs: set[tuple[WorkerRole, str]]
     # Per-slot chat tokens this process needs; 0 demands nothing.
     chat_ctx: int
+    # Configured roles the plan skipped because their model is not installed.
+    # Carried out of the demand plan so the warm tracker can name the missing
+    # model even when the ladder never reaches _plan_and_spawn (zero installed
+    # models fail _can_build_engine first) or binds an existing engine.
+    skipped_not_installed: dict[WorkerRole, str]
     # Launches the demand plan refused for an unusable window (role -> reason);
     # recorded even when the ladder binds an engine or never builds one.
     skipped_unusable_ctx: dict[WorkerRole, str]
@@ -734,7 +739,7 @@ def _placeable_demand() -> _EngineDemand:
         plan = plan_all_launches()
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
-            return _EngineDemand(set(), 0, {})
+            return _EngineDemand(set(), 0, {}, {})
         raise
     placed = {launch.role for launch in plan.launches}
     total_vram = placeable_total_vram()
@@ -746,7 +751,10 @@ def _placeable_demand() -> _EngineDemand:
         and role_model_placeable(role, model, total_vram)
     }
     return _EngineDemand(
-        pairs, _demanded_chat_ctx(plan.launches, pairs), dict(plan.skipped_unusable_ctx)
+        pairs,
+        _demanded_chat_ctx(plan.launches, pairs),
+        dict(plan.skipped_not_installed),
+        dict(plan.skipped_unusable_ctx),
     )
 
 
@@ -956,8 +964,11 @@ class FleetProvider:
         """
         pin = engine_pin()
         demand = _placeable_demand()
-        # Recorded from the demand plan too: a chat-only refusal never reaches
-        # _plan_and_spawn, and a bind skips it.
+        # Record the demand plan's skips before walking the ladder: a bind or an
+        # early serve-nothing exit never reaches _plan_and_spawn, and the warm
+        # tracker must still be able to say "chat model X is not installed"
+        # rather than a retryable not-ready.
+        self._skipped_not_installed = dict(demand.skipped_not_installed)
         self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
@@ -1127,8 +1138,11 @@ class FleetProvider:
                 raise
             log.debug("Engine binary unavailable; no swap started")
             plan = None
-        self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
-        self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx) if plan else {}
+        # plan None (no engine binary) keeps the demand-time record from
+        # _acquire_engine instead of wiping it.
+        if plan is not None:
+            self._skipped_not_installed = dict(plan.skipped_not_installed)
+            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
