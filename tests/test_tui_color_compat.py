@@ -184,7 +184,7 @@ class TestSeeingThroughTmux:
 
     def test_tmux_is_resolved_to_the_terminal_underneath(self):
         with (
-            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("lilbee.cli.tui.color_compat.shutil.which", return_value="/usr/bin/tmux"),
             mock.patch(
                 "subprocess.run", return_value=self._completed("TERM_PROGRAM=Apple_Terminal\n")
             ),
@@ -194,7 +194,7 @@ class TestSeeingThroughTmux:
     def test_a_resolved_terminal_app_turns_the_filter_on(self):
         """The whole point: the nested case must reach needs_eight_bit as Apple_Terminal."""
         with (
-            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("lilbee.cli.tui.color_compat.shutil.which", return_value="/usr/bin/tmux"),
             mock.patch(
                 "subprocess.run", return_value=self._completed("TERM_PROGRAM=Apple_Terminal\n")
             ),
@@ -204,37 +204,41 @@ class TestSeeingThroughTmux:
     def test_a_truecolor_terminal_under_tmux_stays_off(self):
         """iTerm users in tmux must not be downgraded."""
         with (
-            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
-            mock.patch("subprocess.run", return_value=self._completed("TERM_PROGRAM=iTerm.app\n")),
+            mock.patch("lilbee.cli.tui.color_compat.shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch(
+                "lilbee.cli.tui.color_compat.subprocess.run",
+                return_value=self._completed("TERM_PROGRAM=iTerm.app\n"),
+            ),
         ):
             assert not needs_eight_bit("truecolor", resolve_term_program({"TERM_PROGRAM": "tmux"}))
 
     def test_no_tmux_binary_falls_back_rather_than_raising(self):
-        with mock.patch("shutil.which", return_value=None):
+        with mock.patch("lilbee.cli.tui.color_compat.shutil.which", return_value=None):
             assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
 
     @pytest.mark.parametrize(
-        "failure",
+        "run_kwargs",
         [
-            pytest.param({"return_value": None}, id="nonzero-exit"),
+            pytest.param(
+                {"return_value": subprocess.CompletedProcess([], 1, stdout="")},
+                id="nonzero-exit",
+            ),
+            pytest.param(
+                {"return_value": subprocess.CompletedProcess([], 0, stdout="\n")},
+                id="empty-output",
+            ),
             pytest.param({"side_effect": OSError("boom")}, id="oserror"),
-            pytest.param({"side_effect": subprocess.TimeoutExpired("tmux", 1)}, id="timeout"),
+            pytest.param(
+                {"side_effect": subprocess.TimeoutExpired("tmux", 1)},
+                id="timeout",
+            ),
         ],
     )
-    def test_a_failing_tmux_falls_back_rather_than_raising(self, failure: dict):
-        """Startup must not die because a tmux query misbehaved."""
-        if "return_value" in failure:
-            failure = {"return_value": self._completed("", returncode=1)}
+    def test_a_misbehaving_tmux_falls_back_rather_than_raising(self, run_kwargs: dict):
+        """Startup must not die because the tmux query misbehaved."""
         with (
-            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
-            mock.patch("subprocess.run", **failure),
-        ):
-            assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
-
-    def test_empty_output_falls_back(self):
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
-            mock.patch("subprocess.run", return_value=self._completed("\n")),
+            mock.patch("lilbee.cli.tui.color_compat.shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("lilbee.cli.tui.color_compat.subprocess.run", **run_kwargs),
         ):
             assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
 
@@ -296,6 +300,21 @@ class TestNoPartialBlockBorders:
     stylesheets, because Textual's own Input, Select and Button set `tall` in
     their DEFAULT_CSS and lilbee has to restate those in app.tcss.
     """
+
+    def test_every_nav_view_is_covered_above(self):
+        """The screen list is hand-written, so pin it against the app's own view set.
+
+        Without this a new nav view joins the TUI and silently escapes the audit.
+        """
+        from lilbee.cli.tui.app import _VIEW_FACTORIES
+
+        covered = {param.values[1] for param in _SCREENS if param.values[1]}
+        missing = {
+            type(factory()).__name__
+            for factory in _VIEW_FACTORIES.values()
+            if type(factory()).__name__ not in covered
+        }
+        assert not missing
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("module", "cls_name"), _SCREENS)
