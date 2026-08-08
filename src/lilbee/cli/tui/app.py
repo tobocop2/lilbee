@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -14,6 +14,7 @@ from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
+from textual.filter import LineFilter
 from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
@@ -22,6 +23,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.color_compat import REDUCING_COLOR_SYSTEMS, EightBitPalette
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -210,6 +212,18 @@ class LilbeeApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
+
+    def get_line_filters(self) -> Sequence[LineFilter]:
+        """Textual's filters, plus the 256-color correction where the terminal needs it.
+
+        Rich reduces truecolor badly enough to collapse the theme's dark surfaces
+        onto one another; see color_compat. Only added when the console is actually
+        reducing, so truecolor terminals render byte-identically to before.
+        """
+        filters = list(super().get_line_filters())
+        if self.console.color_system in REDUCING_COLOR_SYSTEMS:
+            filters.append(EightBitPalette())
+        return filters
 
     # Test seam: the TUI test fixtures subclass LilbeeApp and set this to True
     # so on_mount short-circuits before the heavyweight setup (model
@@ -574,7 +588,12 @@ class LilbeeApp(App[None]):
             if overlay is not None and overlay.is_visible:
                 screen.action_complete_prev()
                 return
-        super().action_command_palette()
+        # Not super(): Textual hard-codes its own CommandPalette class, and the
+        # subclass is what replaces the emoji search icon.
+        from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
+
+        if self.use_command_palette and not LilbeeCommandPalette.is_open(self):
+            self.push_screen(LilbeeCommandPalette(id="--command-palette"))
 
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.
