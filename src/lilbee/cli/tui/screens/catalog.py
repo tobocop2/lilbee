@@ -17,6 +17,7 @@ from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
+from textual.widget import AwaitMount
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
@@ -1385,12 +1386,16 @@ class CatalogScreen(Screen[None]):
             return True
         return False
 
-    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> None:
+    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> AwaitMount:
         # ``name=section.heading`` doubles as the section identity used by
         # ``_capture_focused_section`` / ``_restore_focused_section`` to
         # preserve the cursor across teardown + remount.
+        #
+        # Returns mount_all's awaitable so a caller that needs the widgets to
+        # exist can wait for them. Pilot.pause only waits on the widgets that
+        # were present when it was called, so it never covers these.
         grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
-        container.mount_all(
+        return container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
                 grid,
@@ -1404,13 +1409,15 @@ class CatalogScreen(Screen[None]):
         hf_count: int,
         focus_anchor: tuple[str, int | None] | None = None,
         prior_scroll_y: float = 0.0,
-    ) -> None:
+    ) -> list[AwaitMount]:
         # Runs one refresh after _remount_grid_sections; the pane can be
-        # unmounted by then (screen teardown, tab remount).
+        # unmounted by then (screen teardown, tab remount). Returns one
+        # awaitable per mounted section (empty when the pane is gone) so a
+        # caller can wait for the sections to exist; the production caller
+        # runs from call_after_refresh and ignores it.
         if not container.is_running:
-            return
-        for section in remaining:
-            self._mount_grid_section(section, container)
+            return []
+        mounts = [self._mount_grid_section(section, container) for section in remaining]
         self._mount_grid_ctas(hf_count=hf_count)
         # Restore the prior viewport position; mounting fresh sections shifts
         # the layout and ``focus()`` below would otherwise overshoot.
@@ -1423,17 +1430,18 @@ class CatalogScreen(Screen[None]):
         # paint had a focused grid, restore the cursor to the same
         # section + highlighted index instead of jumping to the top.
         if not self._grid_view or self._focused_grid() is not None:
-            return
+            return mounts
         # ...but "no grid has focus" is not "nothing has focus". This runs from
         # call_after_refresh, so the user may have pressed `/` since the mount
         # was scheduled; _focused_grid() is None while the filter Input owns the
         # cursor, so the check above would let a repaint yank it out of the
         # field they just opened. Same invariant _initial_focus_first_grid keeps.
         if self._search_focused:
-            return
+            return mounts
         if self._restore_focused_section(focus_anchor):
-            return
+            return mounts
         self._focus_first_grid()
+        return mounts
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""

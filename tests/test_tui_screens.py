@@ -14751,7 +14751,14 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             # failing, not as a bare "no heading appeared".
             assert screen._grid_container.is_running
             before = len(list(screen._grid_container.query(".section-heading")))
-            screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
+            mounts = screen._mount_remaining_grid_sections(
+                screen._grid_container, sections, hf_count=1
+            )
+            # Awaited: pause only settles the widgets that existed when it was
+            # called, so it never waits for the ones just mounted.
+            assert mounts, "expected the iteration to mount the remaining section"
+            for mount in mounts:
+                await mount
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"

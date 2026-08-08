@@ -613,11 +613,15 @@ class TestAutoShowOverlayAsync:
         async with app.run_test() as pilot:
             inp = app.screen.query_one("#chat-input")
             overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.focus()
             inp.value = "/"
             await pilot.pause()
             full = list(overlay._options)
-            inp.value = "/m"
-            await pilot.pause()
+            # Typed rather than assigned: a key event carries the value change
+            # and its Changed handler through the pump in one awaited step,
+            # where an assignment leaves the refresh a pump cycle behind.
+            await pilot.press("m")
+            assert inp.value == "/m", "precondition: the key reached the input"
             assert overlay.is_visible
             filtered = list(overlay._options)
             assert filtered != full
