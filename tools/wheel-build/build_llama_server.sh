@@ -270,23 +270,18 @@ if [ -n "${_can_exec}" ] && [ -z "${target_arch}" ]; then
 fi
 
 # The vulkan module only loads via dlopen now, so the exec above proves nothing
-# about it: a module that cannot resolve is a silent CPU fallback on the user's
-# machine. Assert the loader reports it. No GPU is needed; a loaded module with
-# zero devices still registers and logs.
+# about it, and a module that cannot resolve is a silent CPU fallback on the
+# user's machine. An ICD-less build host cannot load the backend live (its reg
+# returns null without a driver), so assert the module's link closure resolves.
 if [ "${backend}" = "vulkan" ] && [ "$(uname -s)" = "Linux" ] && [ -z "${target_arch}" ]; then
-  devices_log=$("${pkg_bin_dir}/llama-server" --list-devices 2>&1) || {
-    printf '%s\n' "${devices_log}" >&2
-    echo "llama-server --list-devices failed" >&2
-    exit 1
-  }
-  case "${devices_log}" in
-    *"loaded vulkan backend"*) ;;
-    *)
-      printf '%s\n' "${devices_log}" >&2
-      echo "the vulkan backend module did not load from ${pkg_bin_dir}" >&2
+  for vk_module in "${pkg_bin_dir}"/libggml-vulkan.so*; do
+    unresolved=$(ldd "${vk_module}" | grep "not found" || true)
+    if [ -n "${unresolved}" ]; then
+      echo "$(basename "${vk_module}") does not resolve from the bundle:" >&2
+      echo "${unresolved}" >&2
       exit 1
-      ;;
-  esac
+    fi
+  done
 fi
 
 # Build the two Go engine helpers into the same wheel bin/. llama-swap is the
