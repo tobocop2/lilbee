@@ -18,7 +18,7 @@
 }
 
 #wiki-page-list > .option-list--option-highlighted {
-    border-left: thick $primary;
+    border-left: heavy $primary;
     background: $surface;
 }
 

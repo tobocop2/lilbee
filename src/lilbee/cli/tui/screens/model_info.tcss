@@ -9,7 +9,7 @@ ModelInfoModal {
     max-width: 90;
     max-height: 28;
     background: $surface;
-    border: thick $primary;
+    border: heavy $primary;
     padding: 1 2;
 }
 

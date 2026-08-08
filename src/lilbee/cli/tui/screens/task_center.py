@@ -1,7 +1,7 @@
 """Task Center screen: flight-deck-style background task monitor.
 
 Each task renders as a ``TaskRow`` with a three-line body (title +
-type, detail + percent, block-char bar) and a thick left rail in the
+type, detail + percent, block-char bar) and a heavy left rail in the
 state's color. On the active row the rail pulses at ~1 Hz, which is
 the only motion in the screen beyond the bar filling.
 

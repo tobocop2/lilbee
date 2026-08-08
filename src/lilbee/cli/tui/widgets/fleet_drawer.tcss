@@ -5,6 +5,6 @@ FleetDrawer {
     width: 50;
     height: 100%;
     background: $surface;
-    border-left: thick $primary;
+    border-left: heavy $primary;
     padding: 0 1;
 }

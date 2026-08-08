@@ -1,24 +1,24 @@
 ModelCard {
     height: auto;
-    border: tall $secondary 50%;
+    border: solid $secondary 50%;
     padding: 0 1;
     pointer: pointer;
 
     &:hover {
         background: $surface;
-        border: tall $accent;
+        border: solid $accent;
     }
 
     /* Mirror the list-view highlight: background fill plus accent border
      * so the focused card reads as a clearly separated, selected tile. */
     &.-highlight {
         background: $primary 30%;
-        border: tall $accent;
+        border: solid $accent;
     }
 
     &:focus, &:focus-within {
         background: $primary 30%;
-        border: tall $accent;
+        border: solid $accent;
     }
 
     .card-body {

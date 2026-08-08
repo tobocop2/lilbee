@@ -6,7 +6,7 @@ CrawlDialog > VerticalScroll {
     width: 64;
     height: auto;
     max-height: 90%;
-    border: thick $primary;
+    border: heavy $primary;
     background: $surface;
     padding: 1 2;
 }

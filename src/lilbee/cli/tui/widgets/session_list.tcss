@@ -11,7 +11,7 @@ SessionListPanel {
 
 #sessions-filter {
     height: 3;
-    border: tall $primary;
+    border: solid $primary;
     margin: 0 0 1 0;
 }
 
