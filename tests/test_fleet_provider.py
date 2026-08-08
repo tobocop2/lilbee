@@ -318,6 +318,41 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_p
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
+def test_acquire_engine_records_the_demand_plans_refusal(monkeypatch, tmp_path: Path) -> None:
+    # A refused chat with nothing else to serve never reaches _plan_and_spawn, and
+    # a bind reuses another process's engine; the reason still comes out of the
+    # demand plan so the warm and request paths can name it.
+    reason = "chat model serves only 512 tokens"
+    monkeypatch.setattr(
+        prov_mod,
+        "_placeable_demand",
+        lambda: prov_mod._EngineDemand(set(), 0, {WorkerRole.CHAT: reason}),
+    )
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_in_dir", lambda *_a, **_k: False)
+    assert p._acquire_engine(tmp_path) is False
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: reason}
+
+
+def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_path: Path) -> None:
+    # The plan refused a chat launch whose window cannot hold a grounded prompt;
+    # _plan_and_spawn records the reason so the warm finalizer and the request
+    # path can name it. The installed embed role still starts.
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED),),
+            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+        ),
+    )
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+
+
 def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
     # A reload with nothing running recaptures the probe like a first build; a
     # wedged probe there must fail loud, not silently leave the box empty. The
@@ -1346,6 +1381,28 @@ def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     assert order == ["reap", "plan"]
 
 
+def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -> None:
+    # A model swap onto a window the fit refuses must surface on the very next
+    # request, so the reload keeps the named skip reasons in step with its plan.
+    swap = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED),),
+            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+        ),
+    )
+    p = FleetProvider()
+    p._swaps = {SwapGroup.CHAT: swap}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+    p._reload_pass()
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+
+
 def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
@@ -1830,6 +1887,27 @@ def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> No
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert (snap.error or "") == "chat model Qwen3 8B is not installed"
+
+
+def test_warm_up_blocking_fails_when_chat_window_is_unusable(monkeypatch) -> None:
+    """Chat launch refused for an unusable window: the warm ends in a terminal
+    ERROR carrying the plan's reason, so the prompt path renders the real cause
+    instead of an endless 'not ready' bounce."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    reason = "The chat model org/m.gguf leaves room for only a 512-token context"
+
+    def _plan_refuses_chat() -> None:
+        p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+
+    monkeypatch.setattr(p, "_ensure_fleet", _plan_refuses_chat)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert (snap.error or "") == reason
 
 
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
@@ -3035,6 +3113,19 @@ def test_require_clients_no_reprobe_when_swap_none(monkeypatch, engine_installed
     assert rebuilt["called"] is False
 
 
+def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
+    """A chat request against a refused launch fails with the plan's reason (the
+    numbers and the remedy), not the generic 'no server is running' line."""
+    from lilbee.providers.base import ProviderError
+
+    p = FleetProvider()
+    reason = "The chat model org/m.gguf leaves room for only a 512-token context"
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: True)
+    p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+    with pytest.raises(ProviderError, match="512-token context"):
+        p._require_clients(WorkerRole.CHAT)
+
+
 def test_require_clients_no_reprobe_when_swap_live(monkeypatch, engine_installed: Path) -> None:
     """Empty pool + live swap (real misconfiguration) still raises, no rebuild."""
     from unittest import mock
@@ -3476,7 +3567,7 @@ def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Pa
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0)
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {})
     )  # nothing placeable
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
@@ -4267,7 +4358,7 @@ def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
 
-    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0)
+    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {})
 
 
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:

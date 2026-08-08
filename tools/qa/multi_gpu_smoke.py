@@ -75,7 +75,7 @@ def _check_enumeration() -> None:
 
     binary = resolve_llama_server()
     print(f"[1] binary: {binary}")
-    devices = probe_devices(binary)
+    devices = probe_devices(binary).devices
     print(f"[1] llama-server --list-devices: {len(devices)} device(s)")
     for dev in devices:
         print(f"      {dev.backend}{dev.index}: {dev.name} free={dev.free_bytes // 1024**2} MiB")

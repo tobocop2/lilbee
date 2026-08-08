@@ -714,13 +714,20 @@ touching the running fleet.
   `swap: true` group evicts same-group siblings, so a second replica inside it would
   evict the first). Interleaving a query with an ingest costs a model reload each
   way. With the VRAM to hold everything at once, no swap group forms and every role
-  pins to its own group. On GPUs the estimate advises but never refuses: a role that
-  does not fit even beside the one embedder its own phase needs is still **placed
-  tight** (best-effort) on the emptiest card, anchoring the swap group so the load
+  pins to its own group. On GPUs the estimate advises but does not gate the load: a
+  role that does not fit even beside the one embedder its own phase needs is still
+  **placed tight** (best-effort) on the emptiest card, anchoring the swap group so the load
   starts against as much free VRAM as possible, with a memory-is-tight warning
   carrying the estimated shortfall. The in-process pool never gated a load on an
   estimate, and the load itself is the only reliable arbiter (the estimate can be
-  high, and some drivers page into shared memory rather than fail).
+  high, and some drivers page into shared memory rather than fail). The one
+  exception is not about whether the load succeeds: a chat whose **fitted window
+  cannot hold the minimum grounded prompt** (system prompt, one retrieved source,
+  the question, and the answer reserve) would load, report ready, and then fail
+  every query at the window, so `plan_launches` refuses that launch and records a
+  reason with the numbers, surfaced by the warm tracker and the request path. A
+  `num_ctx` pin, or a `num_ctx_max` / `chat_n_ctx_target` the user set below that
+  minimum, is honored instead of refused.
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, fanning embedding and OCR across
   the box during ingest. Setting either value to `0` (the default) means auto: one

@@ -708,6 +708,9 @@ class _EngineDemand(NamedTuple):
     pairs: set[tuple[WorkerRole, str]]
     # Per-slot chat tokens this process needs; 0 demands nothing.
     chat_ctx: int
+    # Launches the demand plan refused for an unusable window (role -> reason);
+    # recorded even when the ladder binds an engine or never builds one.
+    skipped_unusable_ctx: dict[WorkerRole, str]
 
 
 def _placeable_demand() -> _EngineDemand:
@@ -731,7 +734,7 @@ def _placeable_demand() -> _EngineDemand:
         plan = plan_all_launches()
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
-            return _EngineDemand(set(), 0)
+            return _EngineDemand(set(), 0, {})
         raise
     placed = {launch.role for launch in plan.launches}
     total_vram = placeable_total_vram()
@@ -742,7 +745,9 @@ def _placeable_demand() -> _EngineDemand:
         and (model := _configured_model_for(role))
         and role_model_placeable(role, model, total_vram)
     }
-    return _EngineDemand(pairs, _demanded_chat_ctx(plan.launches, pairs))
+    return _EngineDemand(
+        pairs, _demanded_chat_ctx(plan.launches, pairs), dict(plan.skipped_unusable_ctx)
+    )
 
 
 def _demanded_chat_ctx(
@@ -889,6 +894,9 @@ class FleetProvider:
         # installed (role -> ref). The warm finalizer reads it to fail a not-installed
         # chat with a named reason instead of clearing to a silent "not ready" retry.
         self._skipped_not_installed: dict[WorkerRole, str] = {}
+        # Launches the last plan refused for an unusable window (role -> reason);
+        # read by the warm finalizer and _require_clients.
+        self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -948,6 +956,9 @@ class FleetProvider:
         """
         pin = engine_pin()
         demand = _placeable_demand()
+        # Recorded from the demand plan too: a chat-only refusal never reaches
+        # _plan_and_spawn, and a bind skips it.
+        self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1117,6 +1128,7 @@ class FleetProvider:
             log.debug("Engine binary unavailable; no swap started")
             plan = None
         self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
+        self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx) if plan else {}
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1266,6 +1278,10 @@ class FleetProvider:
             with self._lock:
                 clients = self._clients.get(role)
         if not clients:
+            # A refused launch's recorded reason wins over the generic line.
+            reason = self._skipped_unusable_ctx.get(role)
+            if reason is not None:
+                raise ProviderError(reason, provider=_PROVIDER_NAME)
             raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
         return list(clients)
 
@@ -1937,11 +1953,12 @@ class FleetProvider:
 
         ``_warm_chat_role`` always ends in READY or ERROR when it runs, so a
         snapshot still on STARTING after a successful preload means the plan had
-        no chat instance. A chat model that isn't installed, and a chat model with
-        no engine to run it, both fail the warm with a user-facing reason so the
-        prompt path renders "failed to load" instead of spinning a "not ready"
-        retry that can never succeed; any other reason (a remote-routed chat has
-        no local server to warm) clears the stamp.
+        no chat instance. A chat model that isn't installed, one whose launch the
+        plan refused for an unusable window, and one with no engine to run it all
+        fail the warm with a user-facing reason so the prompt path renders
+        "failed to load" instead of spinning a "not ready" retry that can never
+        succeed; any other reason (a remote-routed chat has no local server to
+        warm) clears the stamp.
         """
         snapshot = self._warm_tracker.snapshot()
         if snapshot is None or snapshot.phase is not WarmPhase.STARTING:
@@ -1949,10 +1966,15 @@ class FleetProvider:
         missing = self._skipped_not_installed.get(WorkerRole.CHAT)
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
-        elif _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
+            return
+        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        if unusable is not None:
+            self._warm_tracker.fail(unusable)
+            return
+        if _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
             self._warm_tracker.fail(reason)
-        else:
-            self._warm_tracker.clear()
+            return
+        self._warm_tracker.clear()
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
@@ -2322,6 +2344,9 @@ class FleetProvider:
                         raise
                     log.debug("Engine binary unavailable; reload left the fleet as-is")
                     return
+                # Keep the skip reasons in step with the fresh plan.
+                self._skipped_not_installed = dict(plan.skipped_not_installed)
+                self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
                 new = _launches_by_group(plan)
                 # A group restarts when its launches changed OR its running/planned
                 # presence disagrees (covers a group the new plan drops or adds).
