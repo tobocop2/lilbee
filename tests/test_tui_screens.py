@@ -14730,8 +14730,8 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
             # _mount_remaining_grid_sections returns early unless the container
-            # is running; assert it rather than let a slow runner turn the
-            # early return into a bare "no heading appeared".
+            # is running; assert it so a regression reads as the precondition
+            # failing, not as a bare "no heading appeared".
             assert screen._grid_container.is_running
             before = len(list(screen._grid_container.query(".section-heading")))
             screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
