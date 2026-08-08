@@ -209,11 +209,21 @@ load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
 
 Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searchable library, with citations that click back to the source line. The pattern works for anything you have a lot of text about: a shelf of appliance manuals, a field's research papers, a car's service manuals, your company's internal wiki. Whatever you give it becomes searchable, and you can talk to it.
 
-![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
+<details>
+<summary>Watch: /add a PDF, watch the Task Center, ask a cited question</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here it reads the towing section out of a car manual and answers with the page it came from, so you can check it. The panel on the right is the GPU doing it, on this machine.
 
-![ask what the manual says about towing a trailer; lilbee answers from the indexed PDF and cites the page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
+<details>
+<summary>Watch: ask what the manual says about towing a trailer; lilbee answers from the indexed PDF and cites the page</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### Launch your coding agent on local models
 
@@ -221,13 +231,28 @@ Ask it something with a real answer at stake and you get the answer, not a parap
 
 One model serves as many agents as you want to run. These reels show four working at once against a single local model, each on its own task: finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with `lilbee_search`.
 
-![four agents at once on Qwen3 Coder 30B A3B, each fixing, refactoring or searching through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.gif)
+<details>
+<summary>Watch: four agents at once on Qwen3 Coder 30B A3B, each fixing, refactoring or searching through lilbee</summary>
 
-![four agents at once on MiniMax M2.7, writing Python functions through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.gif)
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
+
+<details>
+<summary>Watch: four agents at once on MiniMax M2.7, writing Python functions through lilbee</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
-![agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
+<details>
+<summary>Watch: agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### A reference for AI agents
 
@@ -235,17 +260,32 @@ Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it you
 
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
-![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
+<details>
+<summary>Watch: an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### Offline copies of websites
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
 
-![/crawl a Wikipedia page, then ask a cited question against it](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
+<details>
+<summary>Watch: /crawl a Wikipedia page, then ask a cited question against it</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Or crawl a whole site, not just one page. With recursive crawling on, lilbee follows the links and indexes the lot; watch the page count climb in the Task Center, then ask one question that synthesizes across the whole site.
 
-![crawl a whole site at depth 1, then ask a multipart question that spans it: a cited answer drawn from across the pages, with Qwen3-8B and a reranker](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.gif)
+<details>
+<summary>Watch: crawl a whole site at depth 1, then ask a multipart question that spans it: a cited answer drawn from across the pages, with Qwen3-8B and a reranker</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### Documents, code, and scanned images
 
@@ -318,7 +358,12 @@ One representative per architecture family, pulled with `lilbee model pull` and 
 </details>
 
 
-![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
+<details>
+<summary>Watch: browse the model catalog, search Hugging Face Hub, pull a model live</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### Already running Ollama or LM Studio? Keep them.
 
@@ -332,15 +377,30 @@ One representative per architecture family, pulled with `lilbee model pull` and 
 
 Both reels run chat *and* embedding on the other manager's models, picked out of the catalog's Library tab where each row names the server it runs on.
 
-![models served by Ollama, picked from the catalog, answering from an indexed manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.gif)
+<details>
+<summary>Watch: models served by Ollama, picked from the catalog, answering from an indexed manual</summary>
 
-![models served by LM Studio, picked from the catalog, answering from an indexed manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-lmstudio-document.gif)
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
+
+<details>
+<summary>Watch: models served by LM Studio, picked from the catalog, answering from an indexed manual</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-lmstudio-document.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-lmstudio-document.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### See when a model won't load before you download it
 
 Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a subset of architectures and brand-new ones take time to reach the pinned runtime. lilbee tags incompatible models in the catalog and refuses the download (with an override confirm), so you don't wait through a multi-GB pull only to hit "unsupported architecture" at load.
 
-![search HF Hub for deepseek-v4, see the unsupported pill in grid and list view](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.gif)
+<details>
+<summary>Watch: search HF Hub for deepseek-v4, see the unsupported pill in grid and list view</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ### Cloud models, when you want them
 
@@ -355,7 +415,12 @@ Either way, your files and the index stay on your computer. Only what you ask an
 
 When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router. This is automatic: ask a question and the model loads split across your cards, answering from your own indexed source. Here a 70B is spread across three consumer cards and answers a mechanic's question from an indexed car manual, citing the page it came from.
 
-![a 70B spread across three cards without being asked, answering from an indexed manual with a citation](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-auto-placement.gif)
+<details>
+<summary>Watch: a 70B spread across three cards without being asked, answering from an indexed manual with a citation</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-auto-placement.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-auto-placement.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 You can also place it by hand. The placement editor pins each role to the cards you choose, previews the fit before anything loads, and applies it live. Ask for a layout that can't fit and it tells you the exact shortfall instead of failing at load time.
 
@@ -363,25 +428,55 @@ You can also place it by hand. The placement editor pins each role to the cards 
 
 `lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the generated wiki. Type `/` for the command list; tab completion works everywhere.
 
-![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
+<details>
+<summary>Watch: sweep through every TUI screen</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 `Ctrl+P` opens the Textual command palette, `?` on an empty prompt (or `F1` anywhere) toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
 
-![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
+<details>
+<summary>Watch: command palette, keybinding cheat sheet, slash-command catalog</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Conversations are kept. Reopen an earlier one and it comes back with its history and citations intact.
 
-![resume an earlier conversation from the sessions drawer](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.gif)
+<details>
+<summary>Watch: resume an earlier conversation from the sessions drawer</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Tell it something about yourself and it remembers, across conversations rather than only within one.
 
-![remember a fact and a preference, then answer from them in a brand new chat](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.gif)
+<details>
+<summary>Watch: remember a fact and a preference, then answer from them in a brand new chat</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Every setting is editable in the app, and a first run walks you through picking models.
 
-![walk every settings pane without leaving the terminal](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
+<details>
+<summary>Watch: walk every settings pane without leaving the terminal</summary>
 
-![the first-run wizard: pick a chat model and an embedding model, and go](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif)
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
+
+<details>
+<summary>Watch: the first-run wizard: pick a chat model and an embedding model, and go</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
@@ -390,7 +485,7 @@ Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/
 Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
 
 <details>
-<summary>Full platform and resource breakdown</summary>
+<summary>Watch: Full platform and resource breakdown</summary>
 
 | Platform           | Minimum                                                                                                    | Recommended                                             |
 | ------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
@@ -434,7 +529,7 @@ No external services either way; lilbee downloads and runs models locally. Optio
 The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA build that's faster on NVIDIA hardware and sidesteps the iGPU + dGPU Vulkan-loader crash on Windows.
 
 <details>
-<summary>CUDA install commands</summary>
+<summary>Watch: CUDA install commands</summary>
 
 |              | Command                                                                                                                                                                      |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -455,7 +550,7 @@ Same `lilbee` command after install. The CUDA runtime is bundled; you only need 
 The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn't set up. There's also a dedicated ROCm build that's faster. It bundles the ROCm userspace, so you need only the amdgpu kernel driver.
 
 <details>
-<summary>ROCm install commands</summary>
+<summary>Watch: ROCm install commands</summary>
 
 |              | Command                                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------------------------- |
@@ -485,7 +580,7 @@ The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, C
 Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Advanced_Vector_Extensions#Advanced_Vector_Extensions_2), so the normal build crashes on launch. The `lilbee-compat` build runs on any x86-64 chip back to ~2008.
 
 <details>
-<summary>Install commands for every channel, and why it's needed</summary>
+<summary>Watch: Install commands for every channel, and why it's needed</summary>
 
 |              | Command                                                                                                                                                                                  |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -569,11 +664,21 @@ Drop the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) into `.open
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
-![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+<details>
+<summary>Watch: an MCP-driven coding agent indexes a small local godot subset and answers with cited methods</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 It scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the same opencode + cloud setup writes a procedural level generator, every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
 
-![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
+<details>
+<summary>Watch: cited codegen against the full Godot class reference</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 ## HTTP Server
 
@@ -586,7 +691,7 @@ The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it star
 For tools that talk to lilbee's HTTP REST API (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep the HTTP server warm so requests skip the cold-start.
 
 <details>
-<summary>Daemon setup per platform</summary>
+<summary>Watch: Daemon setup per platform</summary>
 
 This is the only lilbee surface that benefits from a daemon. The TUI, `lilbee chat`, the MCP server, and the rest of the CLI load on demand and exit when you close them. No always-on process to babysit.
 
@@ -605,7 +710,7 @@ Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:
 Document extraction powered by [Xberg], code chunking by [tree-sitter]. lilbee handles every format Xberg can extract (100+) and tracks its list directly, so support grows as Xberg adds formats. The table below covers the common ones.
 
 <details>
-<summary>Format table</summary>
+<summary>Watch: Format table</summary>
 
 | Format       | Extensions                                                                                                                                              | Requires                                                                                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -630,7 +735,12 @@ lilbee reads the documents you've indexed and writes a wiki about them: one page
 
 Pages are written on demand: open one that does not exist yet and lilbee writes it from the sources it has, then links it into the rest.
 
-![browse a cited wiki, then watch lilbee write a new page on demand](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/wiki-lazy.gif)
+<details>
+<summary>Watch: browse a cited wiki, then watch lilbee write a new page on demand</summary>
+
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/wiki-lazy.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/wiki-lazy.png" controls muted playsinline preload="none" width="100%"></video>
+
+</details>
 
 See the [usage guide](docs/usage.md#wiki) for commands and configuration, and [how the wiki is validated](docs/benchmarks/wiki-validation.md) for the evidence behind it.
 
