@@ -10,16 +10,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-def _replace_sha_for_asset(content: str, asset_name: str, new_sha: str, *, required: bool) -> str:
+def _replace_sha_for_asset(content: str, asset_name: str, new_sha: str) -> str:
     pattern = re.compile(
         r'(url "[^"]*' + re.escape(asset_name) + r'"\s*\n\s*sha256 ")[0-9a-f]{64}(")',
     )
     new_content, count = pattern.subn(rf"\g<1>{new_sha}\g<2>", content)
     if count == 0:
-        if required:
-            raise SystemExit(f"expected sha256 match for {asset_name}, found none")
-        print(f"note: {asset_name} not in formula yet; skipping", file=sys.stderr)
-        return content
+        raise SystemExit(f"expected sha256 match for {asset_name}, found none")
     if count > 1:
         raise SystemExit(f"expected 1 sha256 match for {asset_name}, found {count}")
     return new_content
@@ -48,40 +45,42 @@ def _replace_version(content: str, version: str) -> str:
     return new_content
 
 
+# The default formula's platforms. Rendering is all-or-nothing: a digest with no
+# matching url block stops the publish. Skipping it instead is how the tap went on
+# publishing a formula with no Intel macOS url long after the asset existed.
+_DEFAULT_ASSETS = (
+    ("lilbee-macos-arm64", "--sha-macos-arm64"),
+    ("lilbee-macos-x86_64", "--sha-macos-x86_64"),
+    ("lilbee-linux-x86_64", "--sha-linux-x86_64"),
+)
+
+
+def _dest(flag: str) -> str:
+    """Where *flag*'s value lands on the namespace. Also passed to add_argument, so
+    registration and lookup cannot disagree."""
+    return flag[2:].replace("-", "_")
+
+
 def _render_default(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
-    content = _replace_sha_for_asset(
-        content, "lilbee-macos-arm64", args.sha_macos_arm64, required=True
-    )
-    content = _replace_sha_for_asset(
-        content, "lilbee-linux-x86_64", args.sha_linux_x86_64, required=True
-    )
-    if args.sha_macos_x86_64:
-        content = _replace_sha_for_asset(
-            content, "lilbee-macos-x86_64", args.sha_macos_x86_64, required=False
-        )
+    for asset, flag in _DEFAULT_ASSETS:
+        content = _replace_sha_for_asset(content, asset, getattr(args, _dest(flag)))
     return content
 
 
 def _render_cuda(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
-    return _replace_sha_for_asset(
-        content, "lilbee-linux-x86_64-cu125", args.sha_linux_cu125, required=True
-    )
+    return _replace_sha_for_asset(content, "lilbee-linux-x86_64-cu125", args.sha_linux_cu125)
 
 
 def _render_rocm(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
-    return _replace_sha_for_asset(
-        content, "lilbee-linux-x86_64-rocm", args.sha_linux_rocm, required=True
-    )
+    return _replace_sha_for_asset(content, "lilbee-linux-x86_64-rocm", args.sha_linux_rocm)
 
 
 def _render_compat(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
-    return _replace_sha_for_asset(
-        content, "lilbee-compat-linux-x86_64", args.sha_linux_compat, required=True
-    )
+    return _replace_sha_for_asset(content, "lilbee-compat-linux-x86_64", args.sha_linux_compat)
 
 
 # Each GPU/CPU flavor of the formula: the flag that selects it, the renderer, and
@@ -110,23 +109,15 @@ def main() -> None:
             action="store_true",
             help=f"Render the lilbee-{name} formula instead of the default lilbee formula.",
         )
-    parser.add_argument("--sha-macos-arm64")
-    parser.add_argument("--sha-linux-x86_64")
-    parser.add_argument("--sha-macos-x86_64", default=None)
+    for _, flag in _DEFAULT_ASSETS:
+        parser.add_argument(flag, dest=_dest(flag))
     for _, _, digest in _FLAVORS:
         parser.add_argument(f"--{digest.replace('_', '-')}")
     args = parser.parse_args()
 
     flavor = _selected_flavor(args)
     if flavor is None:
-        missing = [
-            flag
-            for flag, value in (
-                ("--sha-macos-arm64", args.sha_macos_arm64),
-                ("--sha-linux-x86_64", args.sha_linux_x86_64),
-            )
-            if not value
-        ]
+        missing = [flag for _, flag in _DEFAULT_ASSETS if not getattr(args, _dest(flag))]
         if missing:
             parser.error(f"missing required arguments: {', '.join(missing)}")
         render = _render_default
