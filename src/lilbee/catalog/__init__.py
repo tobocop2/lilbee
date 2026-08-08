@@ -9,6 +9,7 @@ The combined catalog puts picks first, then HF results.
 
 from lilbee.catalog.download import (
     DownloadConfig,
+    disk_shortfall,
     download_mmproj,
     download_model,
     resolve_filename,
@@ -64,6 +65,7 @@ __all__ = [
     "agent_model_id",
     "build_adhoc_entry",
     "clean_display_name",
+    "disk_shortfall",
     "display_label_for_ref",
     "download_mmproj",
     "download_model",

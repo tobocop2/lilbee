@@ -1,0 +1,17 @@
+# yamllint disable rule:line-length
+---
+# huggingface_hub decides Xet is available by asking importlib.metadata for the
+# version of "hf_xet", never by importing the module, so the frozen binary needs
+# that distribution's metadata or every download silently falls back to HTTP.
+#
+# This has to be a package configuration rather than
+# --include-distribution-metadata=hf_xet on the command line. The command-line
+# path replaces the name given with the distribution's canonical name, which for
+# this package is the hyphenated "hf-xet", and Nuitka's frozen metadata lookup
+# folds case but treats '-' and '_' as distinct. A canonical "hf-xet" entry can
+# therefore never answer huggingface_hub's "hf_xet" query. The include-metadata
+# key below registers the name verbatim.
+- module-name: 'huggingface_hub.utils._runtime'
+  data-files:
+    - include-metadata:
+        - 'hf_xet'

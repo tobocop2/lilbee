@@ -648,6 +648,7 @@ class TestCLIIntegration:
         mock_run_tui.assert_called_once_with()
 
 
+@pytest.mark.xdist_group("tui_pilot")
 class TestThemes:
     def test_dark_themes_available(self) -> None:
         from lilbee.app.themes import DARK_THEMES
