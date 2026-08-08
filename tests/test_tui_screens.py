@@ -13921,7 +13921,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
@@ -13935,6 +13935,14 @@ async def test_catalog_search_submit_installs_first_visible_match():
             # Painting is done; from here a late worker landing repainting
             # the grid would restore the full dataset over the trim below.
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
+            # The deferred tail mount is the other way the trim gets undone: it
+            # runs from call_after_refresh, so it can land after the warm-up
+            # loop broke and remount a grid holding the full dataset. Stubbed
+            # so the trimmed grid is the one the selector walks, by
+            # construction rather than by winning the race.
+            screen._mount_remaining_grid_sections = (  # type: ignore[method-assign]
+                lambda *a, **k: []
+            )
             grid = grids[0]
             assert len(grid.rows) >= 2
             # ModelGrid filters at the dataset level: set_rows replaces
