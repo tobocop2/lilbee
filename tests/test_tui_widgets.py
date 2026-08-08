@@ -5049,9 +5049,10 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             bar.add_task("test", "download")
             bar.queue.advance()
-            # Remove the label to trigger the except path
+            # Remove the label to trigger the except path. Awaited: the except
+            # path is only genuinely reached once the removal has completed.
             label = bar.query_one("#task-status-label", Label)
-            label.remove()
+            await label.remove()
             await pilot.pause()
             # Should not raise
             bar._refresh_display()

@@ -514,7 +514,9 @@ async def test_populate_discover_rails_swallows_missing_widget() -> None:
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         rails = screen.query_one("#discover-rails")
-        rails.remove()
+        # Awaited: the missing-widget branch is only genuinely reached once the
+        # removal has completed.
+        await rails.remove()
         await pilot.pause()
         # Should not raise.
         screen._populate_discover_rails()
@@ -881,7 +883,9 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         drawer = screen.query_one("#catalog-detail-drawer")
-        drawer.remove()
+        # Awaited: the swallowed-query branch is only genuinely reached once the
+        # removal has completed.
+        await drawer.remove()
         await pilot.pause()
         # Build a synthetic grid + call _update_drawer_for_grid; the
         # try/except branch swallows the missing drawer query.
