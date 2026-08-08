@@ -49,12 +49,15 @@ can take is reachable from one of those three.
 
 ### Terminal recommendations
 
-The TUI is a full-screen Textual app, so it looks its best in a terminal with
-24-bit "true color" and a monospaced font that covers box-drawing and
-block/braille glyphs. Anything current handles both: iTerm2, kitty, WezTerm,
-Alacritty, or Ghostty on macOS and Linux; Windows Terminal on Windows; the
-built-in GNOME and KDE terminals. An 8/256-color terminal still runs everything,
-just with a flatter palette.
+The TUI is a full-screen Textual app and needs a monospaced font that covers
+box-drawing and block/braille glyphs, which any current terminal has. It runs
+the same everywhere, including macOS Terminal.app and plain xterm; there is no
+reduced mode and nothing is hidden on a lesser terminal.
+
+A terminal with 24-bit "true color" shows the themes as designed. On a
+256-color terminal the palette has no dark tinted colors to offer, so surfaces
+come out as neutral greys and the theme's tint shows only in the accents. The
+layout, contrast and layering are the same either way.
 
 - **Give it room.** The model bar and layout want about 100 columns; narrower
   and panels start to wrap.
@@ -65,9 +68,10 @@ just with a flatter palette.
   avoid: two multiplexers fight over the same escape sequences and mangle
   box-drawing and the cursor. Attach to the remote session directly, or start
   lilbee outside the inner tmux.
-- **Colors look washed out?** The terminal is probably in 256-color mode. Pick a
-  truecolor `TERM` such as `xterm-256color`; most terminals then export
-  `COLORTERM=truecolor` and the full palette comes back.
+- **Want the full palette over SSH?** SSH does not forward `COLORTERM`, so a
+  remote lilbee falls back to 256 colors even from a truecolor terminal. Add
+  `SendEnv COLORTERM` to your `~/.ssh/config` and `AcceptEnv COLORTERM` to the
+  server's `sshd_config`, or just export `COLORTERM=truecolor` on the remote.
 
 ### First run
 
