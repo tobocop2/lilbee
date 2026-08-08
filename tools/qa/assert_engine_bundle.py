@@ -69,6 +69,17 @@ BACKEND_LIBRARY = {
     "sycl": "ggml-sycl",
     "vulkan": "ggml-vulkan",
 }
+# Cells built with GGML_CPU_ALL_VARIANTS ship the CPU backend as one module per
+# x86 feature level, picked at runtime. A single module is the flag not taking
+# effect: the fallback lib carries only the build host's instruction set.
+DISPATCH_CELLS = {("cpu", "linux"), ("cpu", "win_amd64"), ("vulkan", "linux")}
+_VARIANT_FORMS = {
+    "linux": ("libggml-cpu-<variant>.so", r"libggml-cpu-.+\.so(\.[\d.]+)?"),
+    "win_amd64": ("ggml-cpu-<variant>.dll", r"ggml-cpu-.+\.dll"),
+}
+# The loader the vulkan module dlopens under GGML_BACKEND_DL. Nothing links it,
+# so a missing loader is a silent CPU fallback, visible only in the payload.
+_VULKAN_LOADER = ("libvulkan.so.1", r"libvulkan\.so\.[\d.]+")
 # How each platform spells a shared library, and how a version lands in the name:
 # ``libggml-hip.so.0.15.1`` on Linux, ``libggml-metal.0.15.1.dylib`` on macOS.
 # Matching the versioned form matters because the engine links by SONAME, so that
@@ -103,6 +114,9 @@ def _missing_backend_library(
     name: str, backend: str, platform: str, entries: list[str]
 ) -> str | None:
     """The problem with *entries* not holding *backend*'s ggml library, if it doesn't."""
+    if backend == "cpu" and (backend, platform) in DISPATCH_CELLS:
+        # A dispatch cell has no single libggml-cpu; the variant check owns it.
+        return None
     library = "ggml-cuda" if backend.startswith("cu") else BACKEND_LIBRARY.get(backend)
     form = _LIBRARY_FORMS.get(platform)
     if library is None or form is None:
@@ -114,6 +128,32 @@ def _missing_backend_library(
         f"{name}: {backend} wheel is missing {display} from {BIN_DIR} "
         f"(the build produced no {backend} backend, so this engine runs on CPU)"
     )
+
+
+def _missing_dispatch_modules(
+    name: str, backend: str, platform: str, entries: list[str]
+) -> list[str]:
+    """The problems with *entries* not holding a runtime-dispatch CPU backend."""
+    if (backend, platform) not in DISPATCH_CELLS:
+        return []
+    problems = []
+    display, pattern = _VARIANT_FORMS[platform]
+    variants = [e for e in entries if re.fullmatch(pattern, e)]
+    if len(variants) < 2:
+        problems.append(
+            f"{name}: {backend} wheel has {len(variants)} {display} modules in {BIN_DIR} "
+            f"(runtime CPU dispatch needs at least two; a single module carries only "
+            f"the build host's instruction set)"
+        )
+    if backend == "vulkan" and platform == "linux":
+        loader_display, loader_pattern = _VULKAN_LOADER
+        if not any(re.fullmatch(loader_pattern, e) for e in entries):
+            problems.append(
+                f"{name}: vulkan wheel is missing {loader_display} from {BIN_DIR} "
+                f"(the vulkan module dlopens the loader; without it the engine "
+                f"silently runs on CPU)"
+            )
+    return problems
 
 
 def _oversized(wheel: Path) -> str | None:
@@ -151,6 +191,8 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
     missing = _missing_backend_library(name, backend, platform, entries) if backend else None
     if missing:
         problems.append(missing)
+    if backend:
+        problems.extend(_missing_dispatch_modules(name, backend, platform, entries))
 
     if backend == "rocm" and platform == "linux" and not missing:
         # Only worth asking once the backend is actually there: a wheel with no
