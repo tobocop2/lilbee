@@ -58,7 +58,7 @@ dependencies = [
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
     "gguf>=0.18",
-    "huggingface_hub>=1.11.0",
+    "huggingface_hub>=1.26.0",
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.
@@ -162,6 +162,7 @@ markers = [
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
     "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
+    "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
 ]
 
 [tool.coverage.run]

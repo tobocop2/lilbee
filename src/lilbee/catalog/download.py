@@ -2,8 +2,9 @@
 
 import fnmatch
 import logging
+import os
 import re
-import threading
+import shutil
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -49,55 +50,132 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
-_HTTP_TOO_LARGE_MARKER = "too large to be downloaded using the regular download method"
-
-_xet_flip_lock = threading.Lock()
-"""Serializes the global ``HF_HUB_DISABLE_XET`` flip in ``_download_with_xet``.
-
-The flag is a huggingface_hub module global with no per-call override, so two
-overlapping xet downloads would otherwise nest their save/restore and leave xet
-permanently toggled. Holding the lock for the whole download keeps the window
-exclusive; over-cap xet downloads are rare large files, so serializing them is
-an acceptable cost for a correct restore."""
+_BYTES_PER_GB = 1024**3
 
 
-def _download_with_xet(config: DownloadConfig) -> Path:
-    """Re-run the download with xet enabled, for files past the HTTP size cap.
+def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
+    """Bytes an interrupted attempt at *hf_repo* already holds on disk.
 
-    xet is enabled by default, but a user can force the slow HTTP path with
-    ``HF_HUB_DISABLE_XET=1``; huggingface_hub then refuses files over its HTTP
-    size cap, and only xet can fetch them. ``is_xet_available()`` reads the
-    constant live, so flip it on for this one download (under ``_xet_flip_lock``
-    so concurrent xet downloads cannot corrupt the restore) and restore it after.
-    hf_xet is a hard dependency, so the xet path is always available.
+    A resume needs only the remainder, so these count toward available space.
     """
-    from huggingface_hub import constants, hf_hub_download
+    from huggingface_hub.file_download import repo_folder_name
 
-    with _xet_flip_lock:
-        original = constants.HF_HUB_DISABLE_XET
-        constants.HF_HUB_DISABLE_XET = False
+    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    if not repo_dir.is_dir():
+        return 0
+    return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
+
+
+def _free_bytes(path: Path) -> int | None:
+    """Free space on the volume that will hold *path*, which need not exist yet.
+
+    Measured at the nearest existing ancestor, since shutil.disk_usage raises on
+    a missing path.
+    """
+    probe = path.resolve()
+    while True:
         try:
-            log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
-            return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
-        finally:
-            constants.HF_HUB_DISABLE_XET = original
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
 
 
-def _hf_download_or_translate(
-    entry: CatalogModel, config: DownloadConfig, *, use_xet: bool = False
-) -> Path:
-    """Run the HF download and translate every error class into a clean exception.
+def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
+    """Describe why *needed* bytes will not fit, or None when they will."""
+    if needed == _SIZE_UNKNOWN:
+        return None  # offline or unresolvable; nothing to compare against
+    free = _free_bytes(models_dir)
+    if free is None:
+        return None  # unmeasurable volume; let the download report the truth
+    available = free + _repo_partial_bytes(models_dir, hf_repo)
+    if needed <= available:
+        return None
+    return (
+        f"Not enough disk space for {hf_repo}: needs "
+        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
+    )
 
-    *use_xet* forces xet for this file (large files, where xet's speed beats the
-    smoother HTTP bar). Otherwise the default HTTP path is used, with a one-shot
-    xet fallback for files past huggingface_hub's HTTP size cap.
+
+def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
+    """Refuse a download the disk cannot hold, naming the shortfall.
+
+    huggingface_hub only warns, and the xet path reports a full disk as a
+    reconstruction error naming neither the disk nor the file.
     """
+    message = disk_shortfall(models_dir, entry.hf_repo, needed)
+    if message is not None:
+        raise RuntimeError(message)
+
+
+_LOW_DISK_FLOOR = 512 * 1024**2
+"""Free bytes below which a failed download is reported as a full disk.
+
+Catches a volume that filled mid-transfer, which the pre-flight cannot see."""
+
+
+def _raise_if_disk_exhausted(
+    entry: CatalogModel, config: DownloadConfig, cause: BaseException
+) -> None:
+    """Re-raise a failed download as a disk problem when the volume is full.
+
+    Low free space is a heuristic, not a diagnosis, so *cause* stays in the
+    message.
+    """
+    if config.cache_dir is None:
+        return
+    try:
+        free = shutil.disk_usage(config.cache_dir).free
+    except OSError:
+        return  # the path went away with the failure; leave the original error
+    if free >= _LOW_DISK_FLOOR:
+        return
+    raise RuntimeError(
+        f"Ran out of disk space downloading {entry.hf_repo}: "
+        f"{free / _BYTES_PER_GB:.1f} GB free. {type(cause).__name__}: {cause}"
+    ) from None
+
+
+_XET_CANCELLED_MARKER = "Operation cancelled"
+
+
+def abort_active_download() -> None:
+    """Stop the xet transfer running in this process.
+
+    Aborts at session granularity; hf_xet exposes nothing finer.
+    """
+    from huggingface_hub.utils._xet import abort_xet_session
+
+    abort_xet_session()
+
+
+_XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
+
+
+def _apply_fast_download_mode() -> None:
+    """Publish the high-performance setting to xet before it builds a session.
+
+    hf_xet reads it from the environment in Rust and caches it when the session
+    is built, so a change lands on restart.
+    """
+    # circular: catalog.download -> core.config via cfg, the same cycle
+    # _models_dir documents (config -> model_ref -> catalog -> here).
+    from lilbee.core.config.model import cfg
+
+    if cfg.fast_model_downloads:
+        os.environ[_XET_HIGH_PERFORMANCE_ENV] = "1"
+    else:
+        os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
+
+
+def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
+    _apply_fast_download_mode()
     try:
-        if use_xet:
-            return _download_with_xet(config)
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
@@ -112,20 +190,14 @@ def _hf_download_or_translate(
         raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
-    except ValueError as exc:
-        if not use_xet and _HTTP_TOO_LARGE_MARKER in str(exc):
-            return _download_with_xet(config)
-        raise RuntimeError(f"Failed to download {entry.hf_repo}: ValueError: {exc}") from None
     except Exception as exc:
+        if _XET_CANCELLED_MARKER in str(exc):
+            # An aborted session surfaces as a bare RuntimeError.
+            raise TaskCancelledError(str(exc)) from None
+        _raise_if_disk_exhausted(entry, config, exc)
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
-
-
-# Above this total model size, fetch via xet (much faster) even though its
-# progress bar is coarser; below it, the HTTP path's smooth per-chunk bar is
-# worth the wait. Read from the catalog's known size_gb, so no extra probe.
-_XET_SIZE_THRESHOLD_GB = 8.0
 
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -186,33 +258,19 @@ def download_model(
             on_progress(size, size)  # Report 100% immediately (every shard)
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
+    shard_sizes = [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+    sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
+    _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
+
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
     # 0->100% against the real total, not N separate per-shard cycles. Only use
     # the sum when every shard size is known (0 = unresolved/offline); a partial
     # sum would undercount the total and let progress run past 100%.
-    shard_sizes = (
-        [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
-        if len(shards) > 1
-        else []
-    )
-    grand_total = (
-        sum(shard_sizes)
-        if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
-        else 0
-    )
-    # Big models go over xet (fast, coarser bar); small ones stay on the HTTP
-    # path for its smooth per-chunk progress. Decided once from the catalog size.
-    use_xet = entry.size_gb >= _XET_SIZE_THRESHOLD_GB
+    grand_total = sum(shard_sizes) if len(shards) > 1 and sizes_known else 0
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
-        log.info(
-            "Downloading %s/%s → %s (%s)",
-            entry.hf_repo,
-            shard,
-            models_dir,
-            "xet" if use_xet else "http",
-        )
+        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
         config = DownloadConfig(
             repo_id=entry.hf_repo,
             filename=shard,
@@ -220,7 +278,7 @@ def download_model(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_path = _hf_download_or_translate(entry, config, use_xet=use_xet)
+        shard_path = _hf_download_or_translate(entry, config)
         shard_paths.append(shard_path)
         if tracker is not None:
             tracker.shard_done(shard_path.stat().st_size)
@@ -272,18 +330,20 @@ def download_mmproj(
         log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
         return None
 
-    from huggingface_hub import hf_hub_download
-
+    models_dir = _models_dir()
     tracker = _ProgressTracker(on_progress) if on_progress else None
-    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, _models_dir())
-    path = Path(
-        hf_hub_download(
+    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
+    _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
+    # The projector gets the same error translation as the GGUF.
+    path = _hf_download_or_translate(
+        entry,
+        DownloadConfig(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
-            cache_dir=str(_models_dir()),
             token=hf_token(),
+            cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
-        )
+        ),
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
         # Cache hit: HF returned the cached path without invoking tqdm.

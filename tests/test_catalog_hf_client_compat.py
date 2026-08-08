@@ -8,6 +8,8 @@ import pytest
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 
+pytestmark = pytest.mark.real_hf_client
+
 
 def _hf_row(architecture: str | None) -> dict[str, object]:
     gguf_block: dict[str, object] = {"total": 4_000_000_000, "context_length": 4096}

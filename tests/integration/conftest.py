@@ -14,7 +14,12 @@ from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
+_DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
+# Exact filename, not a wildcard: resolve_filename only calls the HF API to
+# expand a pattern, and one call per entry rate-limits the matrix cells that run
+# last. An overridden repo has no known filename, so it keeps the pattern.
+_CI_CHAT_FILE = _DEFAULT_CHAT_FILE if _CI_CHAT_REPO == _DEFAULT_CHAT_REPO else "*Q8_0.gguf"
 _EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
@@ -39,7 +44,7 @@ def _real_entry(hf_repo: str, gguf_filename: str, task: str, size_gb: float) -> 
     )
 
 
-CHAT_ENTRY = _real_entry(_CI_CHAT_REPO, "*Q8_0.gguf", "chat", 0.5)
+CHAT_ENTRY = _real_entry(_CI_CHAT_REPO, _CI_CHAT_FILE, "chat", 0.5)
 EMBED_ENTRY = _real_entry(_EMBED_REPO, _EMBED_FILE, "embedding", 0.3)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

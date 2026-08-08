@@ -1963,6 +1963,72 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             screen._reveal_scroll_hint_at_catalog_end()
         fake_container.scroll_end.assert_not_called()
 
+    def test_reveal_scroll_hint_returns_when_focus_is_not_the_last_grid(self) -> None:
+        """Only the bottom grid overshoots. Reached by construction here: whether
+        a layout puts focus on a non-final grid varies by terminal size, so
+        relying on that leaves the branch uncovered on some platforms."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
+        focused = mock.MagicMock(spec=ModelGrid)
+        focused.highlighted = 0
+        focused.columns_per_row = 1
+        focused.rows = [object()]
+        last = mock.MagicMock(spec=ModelGrid)
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = [focused, last]
+        with (
+            mock.patch.object(screen, "_focused_grid", return_value=focused),
+            mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        ):
+            screen._reveal_scroll_hint_at_catalog_end()
+        fake_container.scroll_end.assert_not_called()
+
+    def test_reveal_scroll_hint_returns_when_there_are_no_grids(self) -> None:
+        """The other half of the same guard."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
+        focused = mock.MagicMock(spec=ModelGrid)
+        focused.highlighted = 0
+        focused.columns_per_row = 1
+        focused.rows = [object()]
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = []
+        with (
+            mock.patch.object(screen, "_focused_grid", return_value=focused),
+            mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        ):
+            screen._reveal_scroll_hint_at_catalog_end()
+        fake_container.scroll_end.assert_not_called()
+
     def test_prefetch_returns_when_no_grids(self) -> None:
         """Direct call: when grid container has no ModelGrid, prefetch no-ops."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
