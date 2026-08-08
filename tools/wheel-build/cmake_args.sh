@@ -33,13 +33,21 @@ esac
 #                     runners would otherwise crash with "Illegal
 #                     instruction" on weaker pool members.
 #
-# GPU cells cap the single libggml-cpu.so at AVX baseline (Sandy Bridge
-# 2011+); each extension is explicitly OFF because ggml's CMake
-# auto-enables whatever the build host supports.
-# The macOS x86_64 CPU cell builds runtime dispatch instead: one
-# libggml-cpu-<variant>.so per x86 feature level, loaded best-match at
-# backend init. GGML_BACKEND_DL would split GPU backends into DL modules
-# too, so the GPU cells stay single-variant.
+# The cpu cells and vulkan_Linux build runtime dispatch: one
+# libggml-cpu-<variant> module per x86 feature level (x64 through
+# sapphirerapids, AMX included), loaded best-match at backend init.
+# build_llama_server.sh counts the variant modules and, on vulkan_Linux,
+# bundles the Vulkan loader: under GGML_BACKEND_DL a missing
+# libvulkan.so.1 is a silent CPU fallback, not a startup failure.
+# The remaining GPU cells cap their single CPU backend library (.so/.dll)
+# at AVX baseline (Sandy Bridge 2011+); each extension is explicitly OFF
+# because ggml's CMake auto-enables whatever the build host supports. GGML_BACKEND_DL
+# splits their GPU backends into DL modules too, so each converts only
+# with an on-target run proving offload still works (vulkan_Windows:
+# Nuitka handling of DL .dlls untested; cu12x: the CUDA runtime copy
+# assumes the backend is a DT_NEEDED of libggml; rocm: the runtime
+# bundler and its ld.so gate assume a linked backend; sycl: never
+# validated on hardware).
 # arm64: NEON is mandatory in ARMv8; one variant covers all aarch64.
 # LLAMA_BUILD_UI=OFF + LLAMA_USE_PREBUILT_UI=OFF: no npm UI build, no HF
 # asset download (the pinned bucket revision is pruned upstream); lilbee
@@ -96,19 +104,18 @@ rocm_buildable_targets() {
 
 case "${backend}_${runner_os}" in
   cpu_Linux)
-    args="${common_x86} -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=OFF"
+    args="${dispatch_x86} -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=OFF"
     ;;
   cpu_macOS)
     if [ "${target_arch}" = "x86_64" ]; then
-      # Disable OpenSSL find_package: arm64 runner has no x86_64 libssl,
-      # so cpp-httplib's TLS code fails to link. We don't ship llama-server.
+      # OpenSSL off: an arm64 cross-build has no x86_64 libssl to link.
       args="${dispatch_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
     else
       args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
     fi
     ;;
   cpu_Windows)
-    args="${common_x86} -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
+    args="${dispatch_x86} -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
   metal_macOS)
     if [ "${target_arch}" = "x86_64" ]; then
@@ -117,10 +124,15 @@ case "${backend}_${runner_os}" in
     fi
     args="${common_arm} -DGGML_METAL=ON -DGGML_BLAS=OFF"
     ;;
-  vulkan_Linux|vulkan_Windows)
+  vulkan_Linux)
     # Vulkan is cross-vendor (NVIDIA, AMD, Intel Arc). Single Vulkan-built
-    # wheel covers the GPU users on Linux/Windows. CUDA stays off here — a
-    # CUDA-built wheel is a separate variant on the extra-index publish.
+    # wheel covers the GPU users. CUDA stays off here; a CUDA-built wheel
+    # is a separate variant on the extra-index publish.
+    args="${dispatch_x86} -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_BLAS=OFF"
+    ;;
+  vulkan_Windows)
+    # Same backend split as vulkan_Linux, still AVX-capped: Nuitka ships DL
+    # .dll modules through --include-data-files, unvalidated with variants.
     args="${common_x86} -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_BLAS=OFF"
     ;;
   cu121_Linux|cu121_Windows|cu122_Linux|cu122_Windows|cu123_Linux|cu123_Windows|cu124_Linux|cu124_Windows|cu125_Linux|cu125_Windows)

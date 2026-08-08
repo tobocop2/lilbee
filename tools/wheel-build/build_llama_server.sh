@@ -145,14 +145,23 @@ done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
 # cmake ignores an unknown -D, and a variant-less fallback would carry the build
-# host's AVX2. Verify the mac x86_64 dispatch modules actually exist.
-if [ "${backend}" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch:-$(uname -m)}" = "x86_64" ]; then
-  variant_count=$(find "${pkg_bin_dir}" -name 'libggml-cpu-*.so' | wc -l)
+# host's AVX2. Verify the dispatch modules actually exist on every dispatch cell.
+if [[ "${CMAKE_ARGS}" == *"-DGGML_CPU_ALL_VARIANTS=ON"* ]]; then
+  variant_count=$(find "${pkg_bin_dir}" \( -name 'libggml-cpu-*.so' -o -name 'ggml-cpu-*.dll' \) | wc -l)
   if [ "${variant_count}" -lt 2 ]; then
-    echo "found ${variant_count} libggml-cpu-<variant>.so in ${pkg_bin_dir}:" \
+    echo "found ${variant_count} ggml-cpu variant modules in ${pkg_bin_dir}:" \
       "GGML_CPU_ALL_VARIANTS did not take effect" >&2
     exit 1
   fi
+fi
+
+# Under GGML_BACKEND_DL nothing links libvulkan: the vulkan module dlopens it, and
+# a missing loader is a silent CPU fallback instead of a startup failure. Bundle
+# the SDK's loader beside the binary; ICDs still come from the host's driver.
+if [ "${backend}" = "vulkan" ] && [ "$(uname -s)" = "Linux" ]; then
+  vulkan_loader="${VULKAN_SDK:-/opt/vulkan/x86_64}/lib/libvulkan.so.1"
+  [ -e "${vulkan_loader}" ] || { echo "no Vulkan loader at ${vulkan_loader}" >&2; exit 1; }
+  cp -L "${vulkan_loader}" "${pkg_bin_dir}/"
 fi
 
 # A CUDA build links the CUDA 12 runtime dynamically, and those libraries live in the
@@ -164,8 +173,9 @@ fi
 # Both platforms broke without this, in different ways. On Windows cudart is a hard
 # import of the process, so llama-server.exe died before binding its port with a
 # "cudart64_12.dll was not found" dialog. On Linux the backend is a DT_NEEDED of
-# libggml.so.0, since GGML_BACKEND_DL is off (see cmake_args.sh), so a missing runtime
-# is a loader failure at startup rather than a silent fall back to CPU.
+# libggml.so.0, since the cu12x cells build without GGML_BACKEND_DL (see
+# cmake_args.sh), so a missing runtime is a loader failure at startup rather than a
+# silent fall back to CPU.
 #
 # ROCm gets the same treatment further down, for the same reason and with the same
 # goal: an AMD user should need a driver and nothing else, exactly as an NVIDIA one
@@ -257,6 +267,26 @@ case "${backend}" in
 esac
 if [ -n "${_can_exec}" ] && [ -z "${target_arch}" ]; then
   "${pkg_bin_dir}/llama-server" --version
+fi
+
+# The vulkan module only loads via dlopen now, so the exec above proves nothing
+# about it: a module that cannot resolve is a silent CPU fallback on the user's
+# machine. Assert the loader reports it. No GPU is needed; a loaded module with
+# zero devices still registers and logs.
+if [ "${backend}" = "vulkan" ] && [ "$(uname -s)" = "Linux" ] && [ -z "${target_arch}" ]; then
+  devices_log=$("${pkg_bin_dir}/llama-server" --list-devices 2>&1) || {
+    printf '%s\n' "${devices_log}" >&2
+    echo "llama-server --list-devices failed" >&2
+    exit 1
+  }
+  case "${devices_log}" in
+    *"loaded vulkan backend"*) ;;
+    *)
+      printf '%s\n' "${devices_log}" >&2
+      echo "the vulkan backend module did not load from ${pkg_bin_dir}" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # Build the two Go engine helpers into the same wheel bin/. llama-swap is the

@@ -69,9 +69,10 @@ done
 # the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
-    # --include-package pulls the __init__.py and every bin/*.so, Linux libs and
-    # macOS libggml-cpu-<variant>.so alike (Nuitka places a bare .so beside the
-    # binary verbatim). --include-package-data ships the executables as data.
+    # --include-package pulls the __init__.py and every bin/*.so, the
+    # libggml-cpu-<variant>.so dispatch modules alike (Nuitka places a bare .so
+    # beside the binary verbatim); versioned .so.N files and the bundled
+    # libvulkan.so.1 ride --include-package-data along with the executables.
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
     LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
     # Platform gap: --include-package-data keeps the extensionless executables on

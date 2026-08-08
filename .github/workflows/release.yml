@@ -301,10 +301,8 @@ jobs:
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.34.0 ships no
       # macosx_x86_64 wheel. Resolve it from the +compat index (PEP 440 drop-in),
-      # then install the rest of [release] fresh from PyPI. CMAKE_ARGS + deployment
-      # target hold any throwaway llama-cpp-python sdist build at the cpu/x86_64
-      # baseline; the dedicated step below builds the llama-cpp-python that actually
-      # ships. The cell stays soft so an install failure never blocks the fan-out.
+      # then install the rest of [release] fresh from PyPI. The cell stays soft
+      # so an install failure never blocks the fan-out.
       #
       # --python-platform resolves wheels for the x86_64 target instead of the
       # runner. Without it uv picks the newest wheel the macOS 15 image accepts
@@ -317,8 +315,6 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
         run: |
           set -euxo pipefail
-          eval "$(BACKEND=cpu TARGET_ARCH=x86_64 tools/wheel-build/cmake_args.sh)"
-          export CMAKE_ARGS
           uv venv
           uv pip install --python-platform x86_64-apple-darwin \
             --extra-index-url https://lilbee.sh/compat/ \
@@ -342,16 +338,6 @@ jobs:
             uv pip install 'nuitka[onefile]>=4.0,<5' pip
             check
           fi
-
-      # Nuitka bundles these dylibs, and dyld enforces each one's minos separately
-      # from the launcher's, so one dep built on a newer runner silently ships a
-      # binary that dies at load. Fail here rather than on the user's Mac.
-      - name: Verify macOS floor
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
-        run: bash tools/wheel-build/check_macos_floor.sh
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
@@ -377,6 +363,19 @@ jobs:
           cache-env: ${{ matrix.container || matrix.os }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+
+      # Nuitka bundles these dylibs, and dyld enforces each one's minos separately
+      # from the launcher's, so one dep built on a newer runner silently ships a
+      # binary that dies at load. Fail here rather than on the user's Mac. Runs
+      # after the engine bundle and the compat lancedb swap so the engine's
+      # dlopen'd modules and the swapped wheel are scanned too, including engines
+      # restored from cache or mirror.
+      - name: Verify macOS floor
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+        run: bash tools/wheel-build/check_macos_floor.sh
 
       - name: Build executable
         shell: bash
