@@ -1,27 +1,24 @@
 """Correct color reduction for terminals without truecolor.
 
-Terminals that advertise 256 colors rather than truecolor (macOS Terminal.app,
-and any SSH session, since OpenSSH forwards LANG/LC_* but not COLORTERM) make
-Rich reduce every color to the 256-color palette. Rich's ``Color.downgrade``
-does that by snapping each channel into the 6x6x6 cube, whose first two steps
-are 0 and 95, and only falls back to the grey ramp under 15% saturation. Dark
-theme surfaces sit at roughly 20% saturation with channel values of 25-58,
-inside that gap, so they either collapse to pure black or overshoot into a
-saturated hue: rose-pine's $background and $surface both land on slot 16, and
-$panel lands on slot 17, a navy that appears nowhere in the theme.
+Without truecolor (macOS Terminal.app; any SSH session, since OpenSSH does not
+forward COLORTERM) Rich reduces colors with ``Color.downgrade``, which uses the
+grey ramp only below 15% saturation and otherwise rounds each channel into the
+6x6x6 cube, whose first two steps are 0 and 95.
+
+Dark theme surfaces straddle that line. 18 of the 33 surfaces across the themes
+lilbee ships sit above it and get cube-rounded, and their channels are far
+enough below 95 that each rounds to 0 or up to 95; 8 come back more saturated
+than they went in. On rose-pine, $background #191724 and $surface #1f1d2e both
+land on slot 16 and $panel #26233a lands on slot 17, a navy in no theme.
 
 Build vs buy: Textual owns the filter pipeline (``App.get_line_filters``) and
-Rich owns a correct perceptual matcher (``Palette.match``, redmean-weighted).
-Neither needs reimplementing. This module only connects the two, because
-``downgrade`` does not call ``match``. Resolving a style to 8-bit here means
-Rich receives a color that is already 8-bit, so its own reduction is a no-op.
+Rich owns a correct perceptual matcher (``Palette.match``), which ``downgrade``
+does not call. This module only connects the two. A style resolved to 8-bit here
+reaches Rich already 8-bit, so its reduction is a no-op.
 
-What this does not do is invent color the terminal cannot show. The 256 palette
-holds no dark tinted colors at all: below the greys, its color cube jumps
-straight from 0 to 95 per channel. So on such a terminal every dark surface
-lands on the greyscale ramp and the theme's tint survives only in the brighter
-accents. Neutral grey is the honest nearest answer, and the ramp's ten-unit
-steps still separate $background, $surface and $panel on most themes.
+The 256 palette holds no dark tinted colors, so surfaces land on the greyscale
+ramp and the theme tint survives only in the accents. The ramp's ten-unit steps
+still separate $background, $surface and $panel on most themes.
 """
 
 from __future__ import annotations
@@ -58,9 +55,7 @@ def _reduce(color: Color | None) -> Color | None:
     """Resolve *color* to an explicit 8-bit color, or None if it needs no change."""
     if color is None or color.type != ColorType.TRUECOLOR:
         return None
-    triplet = color.triplet
-    if triplet is None:
-        return None
+    triplet = color.get_truecolor()
     return nearest_eight_bit((triplet.red, triplet.green, triplet.blue))
 
 

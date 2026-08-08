@@ -13,6 +13,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
+from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.filter import LineFilter
 from textual.screen import Screen
@@ -589,10 +590,12 @@ class LilbeeApp(App[None]):
                 screen.action_complete_prev()
                 return
         # Not super(): Textual hard-codes its own CommandPalette class, and the
-        # subclass is what replaces the emoji search icon.
+        # subclass is what replaces the emoji search icon. Textual's own is_open
+        # takes an App[object], which App[None] does not satisfy; the screen check
+        # it performs is this isinstance in every case that matters.
         from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 
-        if self.use_command_palette and not LilbeeCommandPalette.is_open(self):
+        if self.use_command_palette and not isinstance(self.screen, CommandPalette):
             self.push_screen(LilbeeCommandPalette(id="--command-palette"))
 
     def action_dismiss_help_if_open(self) -> None:

@@ -71,9 +71,9 @@ class TestLayeringSurvivesReduction:
 
         rose-pine's $panel #26233a has a channel spread of 23 and reduces under
         downgrade() to #00005f, a spread of 95: a navy that is in no theme. Across
-        the dark themes that happens to seven of 33 surfaces. Distinctness is not
-        the oracle here, since dracula's surfaces land on three different slots
-        under downgrade() precisely because one of them is that wrong hue.
+        the dark themes that happens to 8 of 33 surfaces. Distinctness is not the
+        oracle here, since dracula's surfaces land on three different slots under
+        downgrade() precisely because one of them is that wrong hue.
         """
         colors = _theme_colors(theme_name)
         for token in _LAYERING_TOKENS:
@@ -173,15 +173,37 @@ class TestNoEmoji:
         for path in sorted(root.rglob("*")):
             if path.suffix not in {".py", ".tcss"}:
                 continue
-            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            source = path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(source.splitlines(), 1):
                 for char in line:
                     if unicodedata.east_asian_width(char) == "W" or 0x1F000 <= ord(char) <= 0x1FAFF:
                         offenders.append(f"{path.name}:{lineno} {char!r} U+{ord(char):04X}")
         assert not offenders
 
-    def test_palette_search_icon_is_overridden(self):
-        """Guards the one glyph owned by Textual, which an upgrade could move."""
+    def test_the_replacement_icon_is_one_cell_and_not_textuals(self):
         from textual.command import SearchIcon
 
         assert cell_len(msg.COMMAND_PALETTE_ICON) == 1
         assert SearchIcon.icon._default != msg.COMMAND_PALETTE_ICON
+
+    @pytest.mark.asyncio
+    async def test_the_open_palette_shows_the_replacement_icon(self):
+        """Opens the real palette and reads the mounted icon.
+
+        Asserting the constant alone would pass even if the override never ran,
+        and this is the one glyph Textual owns, so an upgrade moving SearchIcon
+        out of the palette must fail here rather than silently restore the emoji.
+        """
+        from textual.command import SearchIcon
+
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        app = LilbeeAppHost()
+        with ready_services():
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+                icons = list(app.screen.query(SearchIcon))
+                assert icons, "the palette no longer mounts a SearchIcon"
+                assert [icon.icon for icon in icons] == [msg.COMMAND_PALETTE_ICON]
