@@ -1,6 +1,9 @@
 """Tests for catalog.py: model catalog, HF API fetching, filtering, downloading."""
 
+import logging
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -308,6 +311,8 @@ class TestEstimateSizeGb:
 
 
 class TestFetchHfModels:
+    pytestmark = pytest.mark.real_hf_client
+
     def _mock_hf_response(self) -> list[dict]:
         return [
             {
@@ -996,104 +1001,6 @@ class TestSplitShardDownload:
         assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
         assert len(completed) == 1  # manifest write only after the full set is on disk
 
-    def test_xet_fallback_when_file_too_large_for_http(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A 'too large for HTTP' error retries with xet enabled, then restores the flag."""
-        import huggingface_hub.constants as hc
-
-        monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)  # a user who forced the HTTP path
-        entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
-
-        calls = {"n": 0}
-        disable_during_retry: list[bool] = []
-
-        def fake(**kwargs: Any) -> str:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise ValueError(
-                    "The file is too large to be downloaded using the regular download method."
-                )
-            disable_during_retry.append(hc.HF_HUB_DISABLE_XET)
-            return _fake_download(**kwargs)
-
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
-        download_model(entry)
-
-        assert calls["n"] == 2  # original attempt + xet retry
-        assert disable_during_retry == [False]  # xet was on for the retry
-        assert hc.HF_HUB_DISABLE_XET is True  # flag restored afterwards
-
-    def test_import_disables_xet_by_default(self) -> None:
-        """Importing lilbee disables xet by default so the download bar stays
-        smooth; the catalog re-enables it per-download for large files."""
-        import os
-        import subprocess
-        import sys
-
-        env = {k: v for k, v in os.environ.items() if k != "HF_HUB_DISABLE_XET"}
-        out = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import os, lilbee; print(os.environ.get('HF_HUB_DISABLE_XET'))",
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=True,
-        )
-        assert out.stdout.strip() == "1"
-
-    def test_xet_flip_holds_lock_during_download(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The global XET flip stays under _xet_flip_lock for the whole download.
-
-        Two overlapping xet downloads would otherwise nest their save/restore and
-        leave xet permanently toggled; the lock makes the flip window exclusive.
-        """
-        import huggingface_hub.constants as hc
-
-        from lilbee.catalog.download import DownloadConfig, _download_with_xet, _xet_flip_lock
-
-        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)
-        locked_during: list[bool] = []
-
-        def fake(**kwargs: Any) -> str:
-            locked_during.append(_xet_flip_lock.locked())
-            return str(tmp_path / "x.gguf")
-
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
-        config = DownloadConfig(repo_id="r/r", filename="x.gguf", token=None)
-        _download_with_xet(config)
-
-        assert locked_during == [True]  # lock held across the flipped window
-        assert hc.HF_HUB_DISABLE_XET is True  # restored, lock released
-
-    def test_xet_flip_restores_and_releases_on_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A failed xet download still restores the flag and releases the lock."""
-        import huggingface_hub.constants as hc
-
-        from lilbee.catalog.download import DownloadConfig, _download_with_xet, _xet_flip_lock
-
-        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)
-
-        def fake(**kwargs: Any) -> str:
-            raise ValueError("boom")
-
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
-        config = DownloadConfig(repo_id="r/r", filename="x.gguf", token=None)
-        with pytest.raises(ValueError, match="boom"):
-            _download_with_xet(config)
-
-        assert hc.HF_HUB_DISABLE_XET is True  # restored even on failure
-        assert not _xet_flip_lock.locked()  # lock released
-
 
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1168,45 +1075,6 @@ class TestDownloadModel:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry)
         assert result.exists()
-
-    def test_large_model_uses_xet_small_uses_http(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Models over the size threshold fetch via xet (fast); smaller ones stay
-        on the HTTP path for its smooth progress bar."""
-        monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model.gguf")
-
-        xet_files: list[str] = []
-        http_files: list[str] = []
-
-        def fake_xet(config: Any) -> Path:
-            xet_files.append(config.filename)
-            return Path(_fake_download(repo_id=config.repo_id, cache_dir=config.cache_dir))
-
-        def fake_http(**kwargs: Any) -> str:
-            http_files.append(kwargs["filename"])
-            return _fake_download(**kwargs)
-
-        monkeypatch.setattr(catalog.download, "_download_with_xet", fake_xet)
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_http)
-
-        def _entry(size_gb: float) -> CatalogModel:
-            return CatalogModel(
-                hf_repo="org/Test-GGUF",
-                gguf_filename="model.gguf",
-                size_gb=size_gb,
-                min_ram_gb=1.0,
-                description="",
-                featured=False,
-                downloads=0,
-                task=ModelTask.CHAT,
-            )
-
-        download_model(_entry(20.0))  # large -> xet
-        download_model(_entry(1.0))  # small -> http
-        assert xet_files == ["model.gguf"]
-        assert http_files == ["model.gguf"]
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
@@ -1481,6 +1349,7 @@ class TestSortModels:
 
 
 class TestHfCacheEviction:
+    pytestmark = pytest.mark.real_hf_client
     """Tests for HfClient.fetch_models cache eviction and size cap."""
 
     def test_expired_entries_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1977,6 +1846,7 @@ class TestResolveMmprojFilename:
 
 
 class TestHfModelsSearchFilter:
+    pytestmark = pytest.mark.real_hf_client
     """HF API uses search=GGUF to find GGUF repos."""
 
     def test_returns_all_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2005,6 +1875,7 @@ class TestHfSearchValue:
 
 
 class TestFetchHfModelsSearchForwarding:
+    pytestmark = pytest.mark.real_hf_client
     """User search text reaches HF as one space-joined ``search=`` value."""
 
     def test_search_value_sent_as_single_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2442,6 +2313,136 @@ class TestDownloadProgressCallback:
 
         assert calls == [(100, 200), (200, 200)]
         assert tracker.was_used is True
+
+
+class TestTransferProgressStream:
+    """The network-bytes stream huggingface_hub reports alongside disk bytes.
+
+    On the xet path only ``update_transfer`` moves continuously; ``update`` fires
+    a handful of times per file, when buffered blocks flush to disk. On the HTTP
+    path both fire for every chunk.
+    """
+
+    def _tracker(self) -> tuple[Any, list[tuple[int, int]]]:
+        from lilbee.catalog.download_progress import _ProgressTracker
+
+        calls: list[tuple[int, int]] = []
+        return _ProgressTracker(lambda d, t: calls.append((d, t))), calls
+
+    def test_transfer_updates_drive_the_callback(self) -> None:
+        """Xet: transfer bytes alone must move the bar, with no disk-byte events."""
+        tracker, calls = self._tracker()
+        bar = tracker.make_tqdm_class()(total=200)
+        bar.update_transfer(50)
+        bar.update_transfer(50)
+
+        assert calls == [(50, 200), (100, 200)]
+        assert tracker.was_used is True
+
+    def test_streams_are_not_summed(self) -> None:
+        """HTTP reports the same chunk on both streams; summing would double-count."""
+        tracker, calls = self._tracker()
+        bar = tracker.make_tqdm_class()(total=200)
+        bar.update(100)
+        bar.update_transfer(100)
+        bar.update(100)
+        bar.update_transfer(100)
+
+        assert [done for done, _ in calls] == [100, 100, 200, 200]
+
+    def test_disk_stream_wins_when_transfer_undercounts(self) -> None:
+        """Xet transfers fewer bytes than the file when blocks dedupe or compress,
+        so completion comes from the disk stream."""
+        tracker, calls = self._tracker()
+        bar = tracker.make_tqdm_class()(total=200)
+        bar.update_transfer(180)
+        bar.update(200)
+
+        assert calls[-1] == (200, 200)
+
+    def test_resume_offset_counts_toward_progress(self) -> None:
+        """A resumed download starts at the bytes already on disk, which
+        huggingface_hub reports once as tqdm's ``initial`` and never re-sends."""
+        tracker, calls = self._tracker()
+        bar = tracker.make_tqdm_class()(total=200, initial=150)
+        bar.update_transfer(50)
+
+        assert calls == [(200, 200)]
+
+    def test_shards_aggregate_across_the_transfer_stream(self) -> None:
+        """A split GGUF must report one monotonic climb over the whole set.
+
+        Xet transfers slightly fewer bytes than each shard occupies, so the
+        per-shard base has to come from the file on disk, not from the transfer
+        count, or the total drifts low with every shard.
+        """
+        from lilbee.catalog.download_progress import _ProgressTracker
+
+        calls: list[tuple[int, int]] = []
+        tracker = _ProgressTracker(lambda d, t: calls.append((d, t)), grand_total=200)
+
+        first = tracker.make_tqdm_class()(total=100)
+        first.update_transfer(90)  # dedup: fewer bytes on the wire than on disk
+        first.update(100)
+        tracker.shard_done(100)
+
+        second = tracker.make_tqdm_class()(total=100)
+        second.update_transfer(50)
+        second.update(100)
+
+        assert [done for done, _ in calls] == [90, 100, 150, 200]
+        assert {total for _, total in calls} == {200}
+
+    def test_hub_routes_transfer_into_our_bar(self) -> None:
+        """huggingface_hub only shares its transfer stream with a tqdm class that
+        declares ``update_transfer``; otherwise it opens a second stderr bar.
+
+        Drives hub's own reporter rather than calling our methods directly, so
+        dropping either ``update_transfer`` or ``set_transfer_postfix_str``
+        fails here instead of at the next real download.
+        """
+        from huggingface_hub.utils._xet_progress_reporting import XetDownloadProgressReporter
+
+        tracker, calls = self._tracker()
+        cls = tracker.make_tqdm_class()
+        reporter = XetDownloadProgressReporter(
+            reconstruction_desc="x", total=100, log_level=logging.INFO, tqdm_class=cls
+        )
+        assert reporter.transfer_bar is reporter.reconstruction_bar
+        assert isinstance(reporter.reconstruction_bar, cls)
+
+        # Xet mid-download: bytes are on the wire, none flushed to disk yet.
+        reporter.update_progress(
+            SimpleNamespace(
+                total_bytes_completed=0,
+                total_transfer_bytes_completed=40,
+                total_bytes_completion_rate=None,
+                total_transfer_bytes_completion_rate=None,
+                total_bytes=100,
+            )
+        )
+        assert calls[-1] == (40, 100)
+
+
+class TestXetIsLeftEnabled:
+    def test_import_does_not_force_the_http_path(self) -> None:
+        """Importing lilbee must leave huggingface_hub's xet default alone."""
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "HF_HUB_DISABLE_XET"}
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, lilbee; print(os.environ.get('HF_HUB_DISABLE_XET'))",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        assert out.stdout.strip() == "None"
 
 
 class TestRegisterDownloadedModel:

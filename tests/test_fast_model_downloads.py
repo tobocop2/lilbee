@@ -1,0 +1,82 @@
+"""The fast-downloads toggle reaches hf_xet, which only reads the environment.
+
+huggingface_hub exposes `HF_XET_HIGH_PERFORMANCE` as a constant it never acts
+on; hf_xet reads the variable itself in its Rust layer. Setting the constant
+does nothing, so lilbee has to publish the variable.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+from lilbee.catalog import download as dl
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(True, "1"), (False, None)],
+    ids=["on", "off"],
+)
+def test_the_setting_publishes_the_variable_xet_reads(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, expected: str | None
+) -> None:
+    from lilbee.core.config.model import cfg
+
+    monkeypatch.delenv(dl._XET_HIGH_PERFORMANCE_ENV, raising=False)
+    monkeypatch.setattr(cfg, "fast_model_downloads", enabled)
+
+    dl._apply_fast_download_mode()
+
+    assert os.environ.get(dl._XET_HIGH_PERFORMANCE_ENV) == expected
+
+
+def test_turning_it_off_clears_an_inherited_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shell may already export it. Off has to mean off."""
+    from lilbee.core.config.model import cfg
+
+    monkeypatch.setenv(dl._XET_HIGH_PERFORMANCE_ENV, "1")
+    monkeypatch.setattr(cfg, "fast_model_downloads", False)
+
+    dl._apply_fast_download_mode()
+
+    assert dl._XET_HIGH_PERFORMANCE_ENV not in os.environ
+
+
+def test_the_variable_name_is_the_one_hf_xet_reads() -> None:
+    """A rename upstream must fail here, not silently stop applying."""
+    from huggingface_hub import constants
+
+    assert hasattr(constants, dl._XET_HIGH_PERFORMANCE_ENV)
+
+
+def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Xet caches its config when the session is built, so this has to run
+    before the transfer, not after."""
+    calls: list[str] = []
+    monkeypatch.setattr(dl, "_apply_fast_download_mode", lambda: calls.append("applied"))
+
+    def _fake_download(**_kw: object) -> str:
+        calls.append("downloaded")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+
+    config = dl.DownloadConfig(repo_id="acme/x", filename="x.gguf", token=None)
+    with pytest.raises(RuntimeError):
+        dl._hf_download_or_translate(
+            dl.CatalogModel(
+                hf_repo="acme/x",
+                gguf_filename="x.gguf",
+                size_gb=1.0,
+                min_ram_gb=2.0,
+                description="",
+                featured=False,
+                downloads=0,
+                task="chat",
+            ),
+            config,
+        )
+
+    assert calls == ["applied", "downloaded"]

@@ -168,13 +168,14 @@ class TaskCenter(Screen[None]):
 
         Falls back to the first active task if no row has focus.
         """
+        # cancel_task, not queue.cancel: only the controller aborts the transfer.
         focused = self.focused
         if isinstance(focused, TaskRow) and focused.id:
-            self.app.task_bar.queue.cancel(focused.id.removeprefix("task-"))
+            self.app.task_bar.cancel_task(focused.id.removeprefix("task-"))
             return
         active = self.app.task_bar.queue.active_task
         if active is not None:
-            self.app.task_bar.queue.cancel(active.task_id)
+            self.app.task_bar.cancel_task(active.task_id)
 
     def action_cursor_down(self) -> None:
         self.focus_next()
