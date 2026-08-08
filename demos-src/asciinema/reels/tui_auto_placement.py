@@ -39,9 +39,15 @@ BEATS = (
 )
 
 TAIL_FORBID = ("Cancel stream",)
-SPEED_WINDOWS = ("load", "gen")
-# The answer is the payoff and runs at real speed.
-PROTECT_WINDOWS = ("answer",)
+# Generation is never compressed. How fast the answer actually arrives is part of what
+# these reels are showing -- a 70B split across consumer cards answering in real time is
+# the claim -- and a timelapse over the stream makes the model look faster than it is.
+# Only the model load compresses; that is minutes of a progress bar and says nothing.
+SPEED_WINDOWS = ("load",)
+# "gen" covers the stream itself, "answer" the readable hold after it finishes. Protected
+# spans are exempt from the auto wait/slow detection too, so token streaming cannot be
+# swept up as a slow section.
+PROTECT_WINDOWS = ("gen", "answer")
 
 ROOT = "/workspace/reelroot"
 QUESTION = ("a customer says the engine overheats in stop-and-go traffic and the "

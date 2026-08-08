@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""tui-manual-placement: override where each model runs, on a two-card machine.
+"""tui-manual-placement: override where each model runs, on a three-card machine.
 
 Recorded on a pod because there is nothing to place on one card. The model is Llama 3.3
-70B, large enough that placement is a real decision rather than a preference: 40 GB of
-weights has to go somewhere across two 32 GB cards. The placement screen
-shows a row per role and a column per GPU, with -/+ for replicas, and the reel moves chat
-and embedding onto different cards, previews the plan, and applies it.
+70B at Q4_K_M -- 39.6 GiB of weights that no single consumer card holds.
+
+Three cards, not two, and that is a measured decision rather than a preference. On two
+4090s the weights leave so little room for KV that the served context collapses to 512
+tokens, below lilbee's own retrieval prompt, so the model loads, splits, occupies 41 GB
+and cannot answer anything (filed separately). gguf-parser puts the same model at about
+22.3 GiB per card on two and about 15 GiB per card on three at an 8k context. Three cards
+is where this demo becomes honest.
+
+The placement screen shows a row per role and a column per GPU, with -/+ for replicas,
+and the reel moves chat and embedding onto the cards it chooses, previews the plan, and
+applies it.
 
 Bindings come from the screen's own footer: ctrl+r previews, ctrl+s applies, ctrl+x
 returns to automatic placement.
@@ -28,21 +36,29 @@ import drive  # noqa: E402
 
 NAME = "tui-manual-placement"
 COLS, ROWS = 128, 41
-MUST_STRINGS = ("Placement", "Preview", "Apply", "replicas", "70B")
+MUST_STRINGS = ("Placement", "Preview", "Apply", "replicas", "70B", "cv-manual")
 BEATS = (
-    ("both cards listed", r"CUDA0"),
+    ("first card listed", r"CUDA0"),
     ("second card listed", r"CUDA1"),
+    ("third card listed", r"CUDA2"),
     ("the grid of roles", r"replicas"),
     ("a plan previewed", r"Preview"),
-    ("asked the split model a multi-step question", r"short trips"),
+    ("asked the split model a multi-step question", r"overheats in stop-and-go"),
     ("it answered while split", r"Sources:"),
     ("back to automatic", r"Auto"),
 )
 
 TAIL_FORBID = ("Cancel stream",)
 # The 35 GB load across two cards is minutes of a static screen; compress it.
-SPEED_WINDOWS = ("load", "gen")
-PROTECT_WINDOWS = ("answer",)
+# Generation is never compressed. How fast the answer actually arrives is part of what
+# these reels are showing -- a 70B split across consumer cards answering in real time is
+# the claim -- and a timelapse over the stream makes the model look faster than it is.
+# Only the model load compresses; that is minutes of a progress bar and says nothing.
+SPEED_WINDOWS = ("load",)
+# "gen" covers the stream itself, "answer" the readable hold after it finishes. Protected
+# spans are exempt from the auto wait/slow detection too, so token streaming cannot be
+# swept up as a slow section.
+PROTECT_WINDOWS = ("gen", "answer")
 # The placement drawer coalesces repaints: nine rounds of Tab-and-toggle produce six
 # measurable frames, and Tab alone produces none. There is no animation here to be choppy,
 # which is the only thing the frame-rate floor exists to catch, so this reel declares the
@@ -63,8 +79,10 @@ CHAT_MODEL = "bartowski/Llama-3.3-70B-Instruct-GGUF/Llama-3.3-70B-Instruct-Q4_K_
 # reliably answers half of it. Deliberately prose rather than a specification table --
 # sideways pages still extract as scrambled text, so a table question would fail for a
 # reason that has nothing to do with the model (bb-depek).
-QUESTION = ("my car is driven mostly on short trips in cold weather -- which maintenance "
-            "schedule does the manual say applies to me, and what does it change?")
+QUESTION = ("a customer says the engine overheats in stop-and-go traffic and the "
+            "temperature gauge climbs into the red. what does the manual say to do "
+            "right then, what can cause it, and what should I check before putting "
+            "the car back on the road?")
 
 
 def record(cast: pathlib.Path) -> dict:
@@ -108,23 +126,44 @@ def record(cast: pathlib.Path) -> dict:
         s.wait_for(r"CUDA0", timeout=120)
         time.sleep(4.0)
 
-        # Walk the role/GPU grid. Safe to do now that it is populated -- the failure mode
-        # this avoids is Tabbing while the drawer still says "probing GPUs", which falls
-        # through to a model-picker modal. Also the reel's only sustained driver motion.
-        # Toggle rather than only Tab. Tab moves focus without repainting anything, so a
-        # Tab-only walk is dead keys on camera and nothing to measure; Space flips a GPU
-        # for the focused role and redraws the grid.
-        for _ in range(9):
-            s.key("Tab", "space", "Tab", "space", after=0.06)
-            time.sleep(1.2)
+        # Make ONE deliberate change, from a known-good starting point.
+        #
+        # An earlier cut toggled the grid blindly -- nine rounds of Tab/space -- which is
+        # motion on camera and a coin flip in effect: it can land on a plan that does not
+        # fit, and applying that leaves the cards empty. The recording then waits fifteen
+        # minutes for an answer no model is loaded to give, which is exactly how the last
+        # take was lost. Placement is a demonstration of control, so the reel has to look
+        # like someone who knows what they want.
+        #
+        # ctrl+x restores automatic placement first, so whatever the grid inherited is
+        # replaced by a layout known to fit. From there a single Tab/space moves one role,
+        # which is legible on camera in a way that eighteen toggles never were.
+        s.key("C-x", after=1.5)
+        time.sleep(3.0)
+        s.key("Tab", after=0.5)
+        time.sleep(1.0)
+        s.key("space", after=0.5)
+        time.sleep(2.0)
+        s.key("Tab", after=0.5)
+        time.sleep(1.0)
+        s.key("space", after=0.5)
+        time.sleep(2.5)
 
         # 3. Drive it with the bindings the drawer advertises rather than by walking Tab.
-        # ctrl+r previews, ctrl+s applies, ctrl+x returns to automatic; those are screen
-        # bindings, so they work without guessing which widget holds focus.
+        # ctrl+r previews, ctrl+s applies; those are screen bindings, so they work without
+        # guessing which widget holds focus.
         s.key("C-r", after=1.5)
         time.sleep(4.0)
         s.key("C-s", after=1.5)
-        time.sleep(4.5)
+        time.sleep(5.0)
+        # The apply reloads the engine. Wait for it to be resident again before asking:
+        # a question typed into a reloading engine is the same lost take by another route.
+        try:
+            s.wait_for(r"warming up|starting engine", absent=True, timeout=900)
+        except drive.Timeout:
+            pass
+        time.sleep(3.0)
+
         # 4. The payoff: ask it something with the drawer still open, so the answer
         # streams next to the two rows carrying the weights.
         s.ask(QUESTION, rate=0.045)
