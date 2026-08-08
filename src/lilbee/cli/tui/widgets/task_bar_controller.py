@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any
 
 from textual.app import App
 
+from lilbee.catalog.download import abort_active_download
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
@@ -24,7 +25,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_DOWNLOAD_CONCURRENCY = 2
+# hf_xet aborts at session granularity, so a concurrent transfer dies with the
+# cancelled one.
+_DOWNLOAD_CONCURRENCY = 1
 _BYTES_PER_MB = 1024 * 1024
 
 
@@ -47,20 +50,28 @@ class ProgressReporter:
     def __init__(self, controller: TaskBarController, task_id: str) -> None:
         self._controller = controller
         self._task_id = task_id
+        self._aborted = False
 
     @property
     def task_id(self) -> str:
         return self._task_id
 
-    @property
-    def cancelled(self) -> bool:
-        task = self._controller.queue.get_task(self._task_id)
-        return task is not None and task.status == TaskStatus.CANCELLED
-
     def check_cancelled(self) -> None:
-        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
-        if self.cancelled:
-            raise TaskCancelledError
+        """Raise ``TaskCancelledError`` if the task was cancelled from the UI.
+
+        A cancelled download aborts here too: the progress callback only runs
+        while a transfer is live, whereas ``cancel_task`` can fire before the
+        session exists.
+        """
+        task = self._controller.queue.get_task(self._task_id)
+        if task is None or task.status is not TaskStatus.CANCELLED:
+            return
+        if task.task_type == TaskType.DOWNLOAD.value and not self._aborted:
+            # Once per task: a later abort would fall on whichever transfer the
+            # queue has since promoted.
+            self._aborted = True
+            abort_active_download()
+        raise TaskCancelledError
 
     def update(
         self, progress: float, detail: str = "", *, indeterminate: bool | None = None
@@ -169,10 +180,31 @@ class TaskBarController:
         self._advance_all(self._task_type_of(task_id))
 
     def cancel_task(self, task_id: str) -> None:
-        """Mark a task cancelled. Row lingers in history until the user clears it."""
+        """Mark a task cancelled, aborting the transfer if a download is running.
+
+        The row alone does not stop xet: it drives the progress callback from a
+        thread it owns, where a raise is swallowed.
+        """
+        task = self.queue.get_task(task_id)
+        was_running_download = (
+            task is not None
+            and task.task_type == TaskType.DOWNLOAD.value
+            and task.status is TaskStatus.ACTIVE
+        )
+        started = task_id in self._task_targets
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
-        self._advance_all(task_type)
+        if was_running_download:
+            # Session-wide abort: only for the running transfer.
+            abort_active_download()
+        if not started:
+            # Rows put straight on the queue have no worker whose exit advances
+            # it, so the cancel must. A started row either has a worker that
+            # finalizes, or is queued and holds no slot worth freeing.
+            # Advancing an active one here would run its successor while the
+            # cancelled transfer is still winding down, and the session-wide
+            # abort would take both.
+            self._advance_all(task_type)
 
     def _after_done_hooks(self, task_type: str | None) -> None:
         """Side effects triggered by a DONE completion.
@@ -193,11 +225,16 @@ class TaskBarController:
         return task.task_type if task else None
 
     def _advance_all(self, task_type: str | None) -> None:
-        """Try to advance the freed type first, then any other idle type."""
+        """Start the freed type's next task, then any other idle type's.
+
+        Promotion has to spawn the worker. A task advanced without one sits
+        ACTIVE with no thread behind it, which renders as a live row that never
+        progresses.
+        """
         if task_type:
-            self.queue.advance(task_type)
-        while self.queue.advance() is not None:
-            pass
+            self._try_start_next(task_type)
+        while (task := self.queue.advance()) is not None:
+            self._spawn_task_worker(task.task_id)
 
     def downloading_label_for(self, ref: str) -> str | None:
         """Return the task name if *ref*'s download is queued or active, else None.
@@ -295,6 +332,7 @@ class TaskBarController:
         *,
         indeterminate: bool = False,
         on_success: Callable[[], None] | None = None,
+        dedupe_key: str | None = None,
     ) -> str:
         """Enqueue a task, spawn its worker, return task_id.
 
@@ -310,13 +348,19 @@ class TaskBarController:
         until the user presses capital ``C`` to clear; the bottom bar
         flashes the outcome once and then hides when idle.
 
-        Per-type capacity in ``TaskQueue`` (download=2, everything else=1)
-        controls concurrency: a second sync queues behind the first, but a
-        third download waits until one of the two active downloads finishes.
+        Per-type capacity in ``TaskQueue`` (1 for every type) controls
+        concurrency: a second task of the same type queues behind the first.
         """
         task_id = self.queue.enqueue(
-            lambda: None, name, task_type.value, indeterminate=indeterminate
+            lambda: None,
+            name,
+            task_type.value,
+            indeterminate=indeterminate,
+            dedupe_key=dedupe_key,
         )
+        if task_id in self._task_targets:
+            # Deduplicated: the live task keeps its original target.
+            return task_id
         self._task_targets[task_id] = (target, on_success)
         self._try_start_next(task_type.value)
         return task_id
@@ -445,13 +489,27 @@ class TaskBarController:
         allow_unsupported: bool = False,
         on_success: Callable[[], None] | None = None,
     ) -> str:
-        """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk."""
+        """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk.
+
+        Re-requesting a download that is already queued or running returns that
+        task's id and starts nothing.
+        """
         return self.start_task(
             model.display_name,
             TaskType.DOWNLOAD,
             lambda reporter: _download_target(reporter, model, allow_unsupported=allow_unsupported),
             on_success=on_success,
+            dedupe_key=download_key(model),
         )
+
+    def pending_download(self, model: CatalogModel) -> Task | None:
+        """Return the queued-or-active download for *model*, if there is one."""
+        return self.queue.find_pending(TaskType.DOWNLOAD.value, download_key(model))
+
+
+def download_key(model: CatalogModel) -> str:
+    """Identity of a pull: repo plus filename, since one repo ships several quants."""
+    return f"{model.hf_repo}::{model.gguf_filename}"
 
 
 def _download_target(

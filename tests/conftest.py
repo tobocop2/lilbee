@@ -843,3 +843,42 @@ def make_pdf(*, pages: int = 1, title: str | None = None, author: str | None = N
         c.showPage()
     c.save()
     return buf.getvalue()
+
+
+_STUB_HF_SEARCH_HIT = CatalogModel(
+    hf_repo="Qwen/Qwen3-0.6B-GGUF",
+    gguf_filename="Qwen3-0.6B-Q4_K_M.gguf",
+    size_gb=0.4,
+    min_ram_gb=2.0,
+    description="Stub HuggingFace search result.",
+    featured=False,
+    downloads=1000,
+    task="chat",
+    params=600_000_000,
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_hf_client(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the unit suite off the HuggingFace API.
+
+    Search results were coming from the live API, so a rate-limited runner
+    turned "search finds something" into "search finds nothing" and the matrix
+    cells that ran last failed. Returns an empty page as the catalog tests
+    already stub by hand, and one deterministic hit for a Qwen search, which is
+    the only query any test asserts must match.
+    """
+    if request.node.get_closest_marker("real_hf_client"):
+        return  # exercises fetch_models itself, and stubs the transport already
+
+    from lilbee.catalog.hf_client import HfClient
+    from lilbee.catalog.models import HfPage
+
+    def _fetch(_self: object, **kwargs: object) -> HfPage:
+        search = str(kwargs.get("search") or "").lower()
+        hit = "qwen" in search
+        return HfPage(models=[_STUB_HF_SEARCH_HIT] if hit else [], has_more=False)
+
+    # On the class, not on get_services().hf_client: this runs for every test in
+    # the suite, and building the services container each time is not free.
+    monkeypatch.setattr(HfClient, "fetch_models", _fetch)

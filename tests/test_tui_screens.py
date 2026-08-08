@@ -4082,6 +4082,7 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_chat_log_does_not_follow_again_from_part_way_back_down():
     """Scrolling part of the way back is still reading, not catching up.
 
@@ -4760,6 +4761,11 @@ async def test_catalog_install_new_model():
                 patch(
                     "lilbee.app.services.get_services",
                     return_value=MagicMock(model_manager=mock_mgr),
+                ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
@@ -13178,6 +13184,11 @@ async def test_catalog_install_model_resolve_exception():
                 patch(
                     "lilbee.cli.tui.screens.catalog.resolve_filename",
                     side_effect=RuntimeError("fail"),
+                ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
