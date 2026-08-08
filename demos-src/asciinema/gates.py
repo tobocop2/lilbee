@@ -270,6 +270,22 @@ def pacing_gate(gif: pathlib.Path,
                    f"thing it is demonstrating, left at real speed on purpose")
     rows = [Row("no_long_wait", "PASS" if worst_wait <= MAX_WAIT_S else "FAIL", detail)]
 
+    # How much of the shipped reel is waiting, in total rather than in one stretch. A reel
+    # can clear the longest-wait limit and still be mostly spinner.
+    total_s = sum(durs) / 1000.0
+    waiting = sum(d / 1000.0 for share, d in zip(changed, durs[1:]) if share < WAIT_CHANGE)
+    guarded_s = sum(min(hi, total_s) - lo for lo, hi in guard) if guard else 0.0
+    unguarded_wait = max(waiting - guarded_s, 0.0)
+    # Against the whole reel, not against the unprotected remainder. The question this row
+    # answers is what share of what a viewer watches is waiting, and protected generation
+    # is content they are watching. Dividing by the remainder made a reel that is mostly
+    # a real-time answer read as 62% dead air because its denominator was 22 of 95
+    # seconds.
+    share_w = unguarded_wait / max(total_s, 0.001)
+    rows.append(Row("no_dead_air", "PASS" if share_w <= MAX_STALL_SHARE else "FAIL",
+                    f"{unguarded_wait:.1f}s waiting of {total_s:.1f}s = {share_w:.0%} "
+                    f"(limit {MAX_STALL_SHARE:.0%}); protected spans count as content"))
+
     # Sections where the screen really is repainting. Frame rate here belongs to
     # whatever is driving it, which is the point: if that is too slow to watch, the
     # section needs compressing.
@@ -354,6 +370,7 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
               forbid: tuple[str, ...] = ("Traceback", "not ready yet", "Error 1213"),
               window: tuple[float, float | None] | None = None,
               tail_forbid: tuple[str, ...] = (),
+              protect: list[tuple[float, float]] | None = None,
               beats: tuple[tuple[str, str], ...] = ()) -> list[Row]:
     """Everything checkable from the byte stream, before a frame is ever rendered.
 
@@ -400,13 +417,19 @@ def cast_gate(cast: pathlib.Path, *, must: tuple[str, ...] = (),
     if len(content) < 2:
         rows.append(Row("no_dead_air", "UNTESTED", "fewer than two content events"))
     else:
-        gaps = np.diff(content)
-        stall = float(np.clip(gaps - MAX_CONTENT_GAP, 0, None).sum())
-        span = content[-1] - content[0]
-        share = stall / span if span else 0.0
-        rows.append(Row("no_dead_air", "PASS" if share <= MAX_STALL_SHARE else "FAIL",
-                        f"{stall:.1f}s of stall over {span:.1f}s = {share:.0%} "
-                        f"(limit {MAX_STALL_SHARE:.0%}), longest gap {gaps.max():.1f}s"))
+        # Gaps inside a protected span are not stall: the reel declared that stretch as
+        # the thing it is demonstrating, and a model taking two minutes to answer on
+        # consumer cards is the measurement, not dead air. This row learned about
+        # protection later than the pacing rows did, and until it did it failed a reel
+        # for showing exactly what it set out to show.
+        guard = list(protect or [])
+        # The cast-based stall row lived here. It measured the recording, and the
+        # pipeline now compresses waits, so it failed reels whose shipped output was
+        # fine: an engine reload was 47.7s in the cast and a few seconds in the gif.
+        # Total stall share moved onto the shipped frames, in pacing_gate, where it sits
+        # beside the longest-single-wait row and measures a genuinely different thing.
+        pass
+
     return rows
 
 

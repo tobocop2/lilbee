@@ -102,7 +102,14 @@ def build(name: str, *, record: bool = True,
             protect.append((lo, hi))
     info = frametrim.trim_gif(full.with_suffix(".gif"), gif,
                               start=marks.get("boot_end", 0.0),
-                              end=marks.get("payload_end"),
+                              # A reel may name an earlier stopping point. The default
+                              # tail runs to payload_end, which on the placement reels
+                              # trails several seconds of a static answer after the
+                              # protected hold has ended -- deliberate on camera, but
+                              # unprotected dead air to the gate. Ending on the beat that
+                              # matters is better than padding a threshold to allow it.
+                              end=marks.get(getattr(mod, "END_MARK", "payload_end"),
+                                            marks.get("payload_end")),
                               protect=protect or None,
                               motion=[(lo, hi) for lo, hi in timings.get("motion_spans", [])],
                               speedup=speedup or None)
@@ -124,7 +131,13 @@ def build(name: str, *, record: bool = True,
 
     forbid = ("Traceback", "not ready yet", "Error 1213", "No space left on device",
               *getattr(mod, "FORBID_STRINGS", ()))
+    cast_protect = []
+    for base in getattr(mod, "PROTECT_WINDOWS", ()):
+        lo, hi = marks.get(f"{base}_start"), marks.get(f"{base}_end")
+        if lo is not None and hi is not None:
+            cast_protect.append((lo, hi))
     rows = gates.cast_gate(cast, must=tuple(getattr(mod, "MUST_STRINGS", ())), forbid=forbid,
+                           protect=cast_protect or None,
                            window=(marks.get("boot_end", 0.0), marks.get("payload_end")),
                            tail_forbid=getattr(mod, "TAIL_FORBID", ()),
                            beats=getattr(mod, "BEATS", ()))

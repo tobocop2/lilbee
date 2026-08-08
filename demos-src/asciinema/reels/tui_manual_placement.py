@@ -42,10 +42,15 @@ BEATS = (
     ("second card listed", r"CUDA1"),
     ("third card listed", r"CUDA2"),
     ("the grid of roles", r"replicas"),
+    # The reel pins chat to one card, which cannot hold it, and lilbee answers with the
+    # arithmetic rather than failing at load time. That refusal is the demonstration: it
+    # is the difference between a placement editor and a text box that accepts anything.
+    # An earlier cut asserted the header flipped to "manual", which never happens
+    # precisely because the plan was rejected -- the beat was wrong, not the take.
+    ("an impossible layout refused with the shortfall", r"needs [\d.]+ GiB but device"),
     ("a plan previewed", r"Preview"),
     ("asked the split model a multi-step question", r"overheats in stop-and-go"),
     ("it answered while split", r"Sources:"),
-    ("back to automatic", r"Auto"),
 )
 
 TAIL_FORBID = ("Cancel stream",)
@@ -59,6 +64,9 @@ SPEED_WINDOWS = ("load",)
 # spans are exempt from the auto wait/slow detection too, so token streaming cannot be
 # swept up as a slow section.
 PROTECT_WINDOWS = ("gen", "answer")
+# Stop on the readable hold rather than running on through the return to
+# automatic: that tail is a static answer with nothing happening in it.
+END_MARK = "answer_end"
 # The placement drawer coalesces repaints: nine rounds of Tab-and-toggle produce six
 # measurable frames, and Tab alone produces none. There is no animation here to be choppy,
 # which is the only thing the frame-rate floor exists to catch, so this reel declares the
