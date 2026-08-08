@@ -36,10 +36,22 @@ from textual.filter import LineFilter
 if TYPE_CHECKING:
     from textual.color import Color as TextualColor
 
-# Rich's name for the one color system that needs correcting. Its 16-color path
+# Rich's name for the color system that needs correcting. Its 16-color path
 # already matches against the standard palette properly, and routing that through
 # 8-bit first only adds a rounding step, so "standard" is deliberately excluded.
 EIGHT_BIT_COLOR_SYSTEM = "256"
+
+# macOS Terminal.app exports COLORTERM=truecolor but cannot render 24-bit SGR: it
+# reads "48;2;r;g;b" as separate codes, so #191724 turns cyan because the trailing
+# 36 lands as "foreground cyan". Measured on Terminal 453 / macOS 14.6.1, where a
+# 24-bit gradient comes out alternating green and magenta while the 256-color one
+# is correct. Rich believes COLORTERM, so the color system alone cannot detect it.
+APPLE_TERMINAL = "Apple_Terminal"
+
+
+def needs_eight_bit(color_system: str | None, term_program: str | None) -> bool:
+    """Whether truecolor styles must be resolved to the 256 palette before output."""
+    return color_system == EIGHT_BIT_COLOR_SYSTEM or term_program == APPLE_TERMINAL
 
 
 @lru_cache(maxsize=4096)

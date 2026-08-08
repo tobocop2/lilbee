@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import unicodedata
+from unittest import mock
 
 import pytest
 from rich._palettes import EIGHT_BIT_PALETTE
@@ -15,7 +17,7 @@ from textual.color import Color as TextualColor
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.color_compat import EightBitPalette, nearest_eight_bit
+from lilbee.cli.tui.color_compat import EightBitPalette, nearest_eight_bit, needs_eight_bit
 from lilbee.cli.tui.task_queue import STATUS_ICONS
 
 _COLOR_SYSTEMS = {
@@ -131,33 +133,57 @@ class TestFilter:
         assert out[0].style is style
 
 
+class TestDetection:
+    """Which terminals need the correction, decided without mounting an app."""
+
+    def test_a_256_color_terminal_does(self):
+        assert needs_eight_bit("256", "iTerm.app")
+
+    def test_a_truecolor_terminal_does_not(self):
+        """Capable terminals must render exactly as before this change."""
+        assert not needs_eight_bit("truecolor", "iTerm.app")
+
+    def test_a_16_color_terminal_does_not(self):
+        """Rich's 16-color path already matches properly; 8-bit first would only round twice."""
+        assert not needs_eight_bit("standard", "iTerm.app")
+
+    def test_terminal_app_does_even_though_it_claims_truecolor(self):
+        """Terminal.app exports COLORTERM=truecolor and renders 24-bit SGR as garbage.
+
+        Verified on Terminal 453 / macOS 14.6.1: a 24-bit gradient comes out
+        alternating green and magenta, and #191724 renders cyan, because the
+        parameters of "48;2;25;23;36" are read as separate SGR codes. Rich believes
+        COLORTERM, so without this the filter never installs where it is needed most.
+        """
+        assert needs_eight_bit("truecolor", "Apple_Terminal")
+
+
 class TestFilterInstallation:
-    """Installed on a real app, so the wiring is covered and not just the constant."""
+    """Installed on a real app, so the wiring is covered and not just the predicate."""
 
     @staticmethod
-    async def _filters_for(color_system: str) -> list[str]:
+    async def _filters_for(color_system: str, term_program: str) -> list[str]:
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
-        app = LilbeeAppHost()
-        with ready_services():
-            async with app.run_test(size=(80, 24)) as pilot:
-                app.console._color_system = _COLOR_SYSTEMS[color_system]
-                await pilot.pause()
-                return [type(line_filter).__name__ for line_filter in app.get_line_filters()]
+        with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+            app = LilbeeAppHost()
+            with ready_services():
+                async with app.run_test(size=(80, 24)) as pilot:
+                    app.console._color_system = _COLOR_SYSTEMS[color_system]
+                    await pilot.pause()
+                    return [type(line_filter).__name__ for line_filter in app.get_line_filters()]
 
     @pytest.mark.asyncio
     async def test_installed_on_a_256_color_terminal(self):
-        assert EightBitPalette.__name__ in await self._filters_for("256")
+        assert EightBitPalette.__name__ in await self._filters_for("256", "iTerm.app")
+
+    @pytest.mark.asyncio
+    async def test_installed_on_terminal_app(self):
+        assert EightBitPalette.__name__ in await self._filters_for("truecolor", "Apple_Terminal")
 
     @pytest.mark.asyncio
     async def test_absent_on_truecolor(self):
-        """Capable terminals must render exactly as before this change."""
-        assert EightBitPalette.__name__ not in await self._filters_for("truecolor")
-
-    @pytest.mark.asyncio
-    async def test_absent_on_a_16_color_terminal(self):
-        """Rich's 16-color path already matches properly; 8-bit first would only round twice."""
-        assert EightBitPalette.__name__ not in await self._filters_for("standard")
+        assert EightBitPalette.__name__ not in await self._filters_for("truecolor", "iTerm.app")
 
 
 class TestNoEmoji:
