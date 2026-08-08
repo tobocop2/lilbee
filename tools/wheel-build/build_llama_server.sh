@@ -274,6 +274,10 @@ fi
 # user's machine. An ICD-less build host cannot load the backend live (its reg
 # returns null without a driver), so assert the module's link closure resolves.
 if [ "${backend}" = "vulkan" ] && [ "$(uname -s)" = "Linux" ] && [ -z "${target_arch}" ]; then
+  compgen -G "${pkg_bin_dir}/libggml-vulkan.so*" >/dev/null || {
+    echo "no libggml-vulkan.so in ${pkg_bin_dir}: the vulkan cell produced no backend" >&2
+    exit 1
+  }
   for vk_module in "${pkg_bin_dir}"/libggml-vulkan.so*; do
     unresolved=$(ldd "${vk_module}" | grep "not found" || true)
     if [ -n "${unresolved}" ]; then
