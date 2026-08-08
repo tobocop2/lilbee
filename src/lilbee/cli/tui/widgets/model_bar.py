@@ -20,7 +20,7 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Static
 
-from lilbee.app.services import get_services, reset_services
+from lilbee.app.services import peek_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
@@ -33,7 +33,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
-from lilbee.retrieval.embedder import is_model_available
+from lilbee.retrieval.embedder import is_model_available, is_model_installed
 
 log = logging.getLogger(__name__)
 
@@ -278,6 +278,18 @@ class ModelPickerButton(Static, can_focus=True):
         # called "(none)".
         ref = getattr(cfg, self._key)
         label = (display_label_for_ref(ref) or ref) if ref else msg.MODEL_BAR_DISABLED
+        # Only local models can be "not installed": remote refs (ollama, cloud
+        # APIs) resolve through their backend at call time. Checked against the
+        # registry, never get_services(): a cold get_services() builds the whole
+        # container and eager-starts the worker pool, and a repaint must not
+        # spawn engines as a side effect.
+        missing = bool(ref) and not parse_model_ref(ref).is_remote and not is_model_installed(ref)
+        self.set_class(missing, "-missing")
+        if missing:
+            label = msg.MODEL_BAR_NOT_INSTALLED.format(name=label)
+        self.tooltip = (
+            msg.MODEL_BAR_NOT_INSTALLED_TOOLTIP if missing else _SCOPE_TO_TOOLTIP[self._scope]
+        )
         self.update(label)
 
     def repaint(self) -> None:
@@ -334,10 +346,10 @@ class ModelPickerButton(Static, can_focus=True):
     def _commit_after_change(self) -> None:
         """Repaint the label, then run the chat-screen side effect for chat swaps.
 
-        ``apply_model_pick`` already persisted the ref and (for non-chat
-        scopes) reloaded the worker. Chat swaps cancel the in-flight stream
-        and reset services here so the new chat model takes over cleanly. Works
-        regardless of which container the button is mounted in.
+        ``apply_model_pick`` already persisted the ref and (for non-chat scopes)
+        reloaded the worker. Chat swaps hand off to the chat screen, which defers
+        the reload while an answer is streaming. Works regardless of which
+        container the button is mounted in.
         """
         self._refresh()
         if self._scope != "chat":
@@ -369,21 +381,17 @@ class ChatModePill(Static, can_focus=True):
         target = (
             ChatMode.SEARCH.value if self.id == _CHAT_MODE_SEARCH_PILL_ID else ChatMode.CHAT.value
         )
-        toggle._set_mode(target)
+        toggle.set_mode(target)
 
 
 class ChatModeToggle(Widget, can_focus=False):
     """Two-pill control toggling cfg.chat_mode between Search and Chat.
 
-    The toggle itself is not focusable; the inner pills are. Tab walks
-    Search then Chat, Enter / Space picks. The container keeps left /
-    right arrow handling so the legacy keyboard flow still works.
+    The toggle itself is not focusable; the inner pills are. Enter / Space
+    picks the focused pill. Left / Right belong to the enclosing ModelBar,
+    which steps across the whole strip, so they are not bound here: one pair
+    of arrows cannot both move along the bar and pick a mode.
     """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("left", "select_search", "Search mode", show=False),
-        Binding("right", "select_chat", "Chat mode", show=False),
-    ]
 
     def __init__(self) -> None:
         super().__init__(id=_CHAT_MODE_TOGGLE_ID)
@@ -417,7 +425,17 @@ class ChatModeToggle(Widget, can_focus=False):
             self._refresh()
 
     def _embedding_ready(self) -> bool:
-        return is_model_available(cfg.embedding_model, get_services().provider)
+        """Whether Search is usable. Paint path, so it must not build services.
+
+        With a live container the provider answers authoritatively (it can see
+        remote-backend models); before one exists, fall back to the registry so
+        a repaint never triggers a container build and its engine spawns.
+        """
+        services = peek_services()
+        if services is not None:
+            return is_model_available(cfg.embedding_model, services.provider)
+        ref = cfg.embedding_model
+        return bool(ref) and (parse_model_ref(ref).is_remote or is_model_installed(ref))
 
     def _refresh(self) -> None:
         ready = self._embedding_ready()
@@ -440,7 +458,7 @@ class ChatModeToggle(Widget, can_focus=False):
             msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
         )
 
-    def _set_mode(self, target: str) -> bool:
+    def set_mode(self, target: str) -> bool:
         """Apply *target* if it differs from the current mode and Search is allowed."""
         if cfg.chat_mode == target:
             return False
@@ -455,7 +473,7 @@ class ChatModeToggle(Widget, can_focus=False):
         target = (
             ChatMode.CHAT.value if cfg.chat_mode == ChatMode.SEARCH.value else ChatMode.SEARCH.value
         )
-        return self._set_mode(target)
+        return self.set_mode(target)
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -465,21 +483,15 @@ class ChatModeToggle(Widget, can_focus=False):
         if widget is not None:
             wid = widget.id
             if wid == _CHAT_MODE_SEARCH_PILL_ID:
-                self._set_mode(ChatMode.SEARCH.value)
+                self.set_mode(ChatMode.SEARCH.value)
                 return
             if wid == _CHAT_MODE_CHAT_PILL_ID:
-                self._set_mode(ChatMode.CHAT.value)
+                self.set_mode(ChatMode.CHAT.value)
                 return
         self.toggle()
 
     def action_flip_mode(self) -> None:
         self.toggle()
-
-    def action_select_search(self) -> None:
-        self._set_mode(ChatMode.SEARCH.value)
-
-    def action_select_chat(self) -> None:
-        self._set_mode(ChatMode.CHAT.value)
 
 
 class RoleRow(Widget, can_focus=False):
@@ -535,16 +547,88 @@ class RoleRow(Widget, can_focus=False):
 
 
 class ModelBar(Widget, can_focus=False):
-    """Horizontal band of the four role pickers + the Search/Chat toggle, below the input."""
+    """Horizontal band of the four role pickers + the Search/Chat toggle, below the input.
+
+    The bar reads as one strip, so it walks like one: Left / Right step between
+    its members, and Enter acts on the focused one (opening a picker, or picking
+    a chat mode). The bindings live here rather than on the members because key
+    lookup walks the focused widget's ancestors: one definition covers every
+    member, and it cannot fire anywhere else, so the arrows stay free for the
+    prompt's own cursor movement without needing a guard.
+    """
 
     app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     _SCOPES: ClassVar[tuple[PickerScope, ...]] = ("chat", "embed", "vision", "rerank")
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("left", "step(-1)", "Prev role", show=False),
+        Binding("right", "step(1)", "Next role", show=False),
+        # h / l alongside the arrows: the strip is horizontal, so j / k would
+        # mean nothing here and stay with the transcript's vim scrolling.
+        Binding("h", "step(-1)", "Prev role", show=False),
+        Binding("l", "step(1)", "Next role", show=False),
+        Binding("home", "step_end(-1)", "First role", show=False),
+        Binding("end", "step_end(1)", "Last role", show=False),
+    ]
+
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
         self._options_cache: dict[str, tuple[tuple[str, str], ...]] = {}
+
+    @property
+    def strip(self) -> list[Widget]:
+        """The bar's focusable members, left to right as rendered.
+
+        Ordered and filtered by the screen's focus chain rather than by a
+        hand-rolled visibility test: the narrow layout hides switched-off roles
+        on the RoleRow, so the button's own ``display`` still reads True and
+        Left / Right would step onto a member the user cannot see.
+        """
+        members = {*self.query(ModelPickerButton).results(), *self.query(ChatModePill).results()}
+        return [w for w in self.screen.focus_chain if w in members]
+
+    def focus_strip(self, direction: int = 1) -> None:
+        """Enter the strip from outside it, travelling in *direction*.
+
+        Walking rightwards enters at the first role, so the next step continues
+        the way the key pointed. No-op while the bar is still composing.
+        """
+        self._focus_end(first=direction > 0)
+
+    def _focus_end(self, *, first: bool) -> None:
+        """Focus the leftmost or rightmost member.
+
+        Named by which end it lands on rather than by a direction: entering the
+        strip and jumping to an end read the same sign oppositely, since walking
+        left *into* the strip lands on its last member while Home walks left
+        *within* it and lands on the first.
+        """
+        self._focus_at(0 if first else len(self.strip) - 1)
+
+    def _focus_at(self, index: int) -> None:
+        """Focus the member at *index*, clamped to the ends of the strip."""
+        members = self.strip
+        if members:
+            members[max(0, min(index, len(members) - 1))].focus()
+
+    def _focused_index(self) -> int | None:
+        """Position of the focused member, or None when focus is off the strip."""
+        members = self.strip
+        focused = self.screen.focused
+        return members.index(focused) if focused in members else None
+
+    def action_step(self, delta: int) -> None:
+        """Move focus one member along the strip; clamps at both ends."""
+        current = self._focused_index()
+        if current is not None:
+            self._focus_at(current + delta)
+
+    def action_step_end(self, direction: int) -> None:
+        """Home / End jump to the first or last member of the strip."""
+        if self._focused_index() is not None:
+            self._focus_end(first=direction < 0)
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="model-bar-roles"):

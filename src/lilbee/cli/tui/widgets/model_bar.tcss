@@ -35,9 +35,18 @@ RoleRow.-off ModelPickerButton {
     color: $text-muted;
 }
 
+/* $accent, matching the mode pills: $boost resolves to the contrast text at
+   4% alpha, so over the bar's own background the cursor was effectively
+   invisible and the strip read as mouse-only even though Tab walks it. */
 RoleRow ModelPickerButton:focus {
-    background: $boost;
+    background: $accent;
+    color: $text;
     text-style: bold;
+}
+
+RoleRow ModelPickerButton.-missing {
+    color: $warning;
+    text-style: italic;
 }
 
 ModelBar.-narrow RoleRow.-off {

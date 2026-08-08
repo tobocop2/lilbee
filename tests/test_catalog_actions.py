@@ -486,7 +486,10 @@ async def test_action_toggle_drawer_swallows_missing_widget() -> None:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         drawer = screen.query_one("#catalog-detail-drawer")
-        drawer.remove()
+        # Awaited: an unawaited remove leaves the drawer attached with its
+        # children already gone, so the toggle hits a half-removed subtree and
+        # raises NoMatches instead of exercising the no-op branch.
+        await drawer.remove()
         await pilot.pause()
         # Should not raise.
         screen.action_toggle_drawer()
@@ -511,7 +514,9 @@ async def test_populate_discover_rails_swallows_missing_widget() -> None:
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         rails = screen.query_one("#discover-rails")
-        rails.remove()
+        # Awaited: the missing-widget branch is only genuinely reached once the
+        # removal has completed.
+        await rails.remove()
         await pilot.pause()
         # Should not raise.
         screen._populate_discover_rails()
@@ -878,7 +883,9 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         drawer = screen.query_one("#catalog-detail-drawer")
-        drawer.remove()
+        # Awaited: the swallowed-query branch is only genuinely reached once the
+        # removal has completed.
+        await drawer.remove()
         await pilot.pause()
         # Build a synthetic grid + call _update_drawer_for_grid; the
         # try/except branch swallows the missing drawer query.
@@ -1348,3 +1355,71 @@ async def test_spinner_tick_updates_the_loading_more_hint() -> None:
         await pilot.pause()
 
         assert "loading more models" in str(hint.render()).lower()
+
+
+async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
+    """A refresh that lands after `/` must leave the cursor in the filter.
+
+    `_mount_remaining_grid_sections` runs from call_after_refresh and used to
+    gate only on "is a grid focused", which is False while the Input owns the
+    cursor, so a mount arriving after the user pressed `/` pulled focus onto
+    the first grid. Driven directly rather than through a key race: the steal
+    is a property of the callback, so it should be reachable by construction.
+    """
+    from textual.widgets import Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._grid_view = True
+        screen.action_focus_search()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), "setup: filter should hold focus"
+
+        screen._mount_remaining_grid_sections(
+            screen._grid_container, [], hf_count=0, focus_anchor=None
+        )
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), (
+            f"a deferred grid mount stole the filter focus; now on {screen.focused}"
+        )
+
+
+async def test_focus_search_wins_against_an_already_queued_focus() -> None:
+    """A mount-path list focus landing after `/` must leave the filter alone.
+
+    _focus_list_item runs from call_after_refresh, so it can be scheduled
+    before the user presses `/` and still execute afterwards, taking the cursor
+    out of the field they just opened. Driven directly rather than through a
+    mount race so the path is reached by construction.
+    """
+    from textual.widgets import Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._grid_view = False
+        await pilot.pause()
+
+        # The real sequence: `/` focuses the filter, then a mount-path callback
+        # that was already scheduled lands and tries to focus the list.
+        # _focus_list_item no-ops on an empty list, so give it a row to focus:
+        # without this the assertion below cannot fail.
+        from lilbee.cli.tui.widgets.model_list import ModelListSection
+
+        screen._list_widget.set_rows(
+            [ModelListSection(heading=None, rows=[_row("focus-race-row")])]
+        )
+        await pilot.pause()
+        assert screen._list_widget.option_count, "setup: the list needs a focusable row"
+
+        screen.action_focus_search()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input), "setup: `/` should focus the filter"
+        screen._focus_list_item(0)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert isinstance(screen.focused, Input), (
+            f"a focus queued before `/` outlived it; cursor ended on {screen.focused}"
+        )

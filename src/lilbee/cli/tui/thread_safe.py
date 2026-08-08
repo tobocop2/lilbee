@@ -28,8 +28,21 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
     (TaskBarController pattern in widgets/task_bar.py) rather than
     relying on this wrapper.
     """
+    # Resolving the app is guarded separately from running *fn*. Textual's
+    # ``node.app`` reads a contextvar that is unset in a plain thread and then
+    # walks ``node._parent``, which raises AttributeError on a node whose
+    # MessagePump state is gone: seen in CI as "'ChatScreen' object has no
+    # attribute '_MessagePump__parent'" from a worker outliving its screen.
+    # That is the same "app is gone" case this wrapper exists for, but it cannot
+    # be folded into the except below: an AttributeError raised *inside* fn must
+    # still propagate, which is what the docstring promises.
     try:
-        node.app.call_from_thread(fn, *args, **kwargs)
+        app = node.app
+    except (AttributeError, RuntimeError) as exc:
+        log.debug("call_from_thread found no app for %s: %s", getattr(fn, "__name__", fn), exc)
+        return
+    try:
+        app.call_from_thread(fn, *args, **kwargs)
     except (OSError, RuntimeError) as exc:
         # Only the shutdown signals: OSError when the message queue is closed,
         # RuntimeError (incl. NoActiveAppError) when the app is no longer running.

@@ -23,6 +23,7 @@ from textual.widgets import DataTable, Input, Static
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -122,15 +123,11 @@ class WikiDraftsScreen(Screen[None]):
     HELP = "Review pending wiki drafts. j/k navigate, a accept, r reject, / search, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "dismiss_or_back", "Back", show=False),
+        *browse_back_bindings(escape_action="dismiss_or_back"),
         Binding("a", "accept", "Accept", show=True),
         Binding("r", "reject", "Reject", show=True),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def __init__(self) -> None:

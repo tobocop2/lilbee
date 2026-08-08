@@ -17,7 +17,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
@@ -168,7 +168,7 @@ class TestTaskBarUnit:
 
 
 class TestRemoteClassification:
-    @mock.patch("httpx.get")
+    @mock.patch("lilbee.modelhub.model_manager.discovery._http_get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import classify_remote_models
         from lilbee.providers.local_servers import OLLAMA
@@ -495,15 +495,22 @@ class TestCatalogScreenAsync:
             for _ in range(8):
                 await pilot.pause()
             # Open the filter via `/` (reveal + focus); a hidden input is
-            # never focused in production.
+            # never focused in production. pump_until rather than one pause
+            # because focus spans two hops of the bus, but be aware that is
+            # NOT sufficient here: action_focus_search does focus the Input and
+            # then a catalog widget still mounting takes it back, which no
+            # amount of waiting recovers. See the bead on the filter-focus
+            # steal; this test is a known flake while that stands.
             await pilot.press("slash")
-            await pilot.pause()
-            assert isinstance(catalog.focused, Input)
+            assert await pump_until(pilot, lambda: isinstance(catalog.focused, Input)), (
+                f"`/` never focused the filter; focus is on {catalog.focused}"
+            )
             catalog.action_go_back()
-            await pilot.pause()
-            # Still on the catalog screen; focus no longer on the Input.
+            assert await pump_until(pilot, lambda: not isinstance(catalog.focused, Input)), (
+                "Escape left focus on the filter input"
+            )
+            # Still on the catalog screen, and focus is off the Input.
             assert isinstance(app.screen, CatalogScreen)
-            assert not isinstance(catalog.focused, Input)
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_escape_from_filter_in_list_view_focuses_list(
@@ -794,7 +801,7 @@ class TestThemes:
 
 
 class TestDetectRemoteEmbeddings:
-    @mock.patch("httpx.get")
+    @mock.patch("lilbee.modelhub.model_manager.discovery._http_get")
     def test_detects_bert_family(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
@@ -811,7 +818,10 @@ class TestDetectRemoteEmbeddings:
         result = detect_remote_embedding_models()
         assert result == ["nomic-embed-text:latest"]
 
-    @mock.patch("httpx.get", side_effect=Exception("connection refused"))
+    @mock.patch(
+        "lilbee.modelhub.model_manager.discovery._http_get",
+        side_effect=Exception("connection refused"),
+    )
     def test_returns_empty_on_error(self, mock_get: mock.MagicMock) -> None:
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
@@ -1015,29 +1025,29 @@ class TestMinimalFooter:
         assert not any(d == "Catalog" for d in visible)
         assert not any(d == "Status" for d in visible)
         assert not any(d == "Settings" for d in visible)
-        # Theme cycling IS exposed in the Footer (Ctrl+T) so users can
-        # discover it without digging through docs.
-        assert any(d == "Theme" for d in visible)
+        # Theme cycling moved off the row: the footer is for getting around,
+        # and F1 lists every non-system binding, so it stays discoverable.
+        # Asserted in test_bottom_bar_affordances, which owns that guarantee.
+        assert not any(d == "Theme" for d in visible)
 
     def test_chat_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
-        # `/` says "Slash commands" (not the bare, uninformative "Commands")
-        # so the footer tells the user what the key actually does. The
-        # adjacent "Complete" hint (Tab) covers tab-completion.
-        assert any(d == "Slash commands" for d in visible)
-        # F2 is intentionally visible so the searchable slash-command list
-        # has a discoverable keybinding in the footer alongside / -- labeled
-        # "All commands" so it reads distinctly and is never "Catalog" (that
-        # word belongs to /models, the model catalog).
-        assert any(d == "All commands" for d in visible)
+        # `/` is the one verb this screen keeps on the row.
+        assert any(d == "Commands" for d in visible)
+        # The full command list and the model strip are F1-only: `/` already
+        # leads to the first, and the row is for getting between views.
+        assert not any(d == "All commands" for d in visible)
+        assert not any(d == "Model bar" for d in visible)
         assert not any(d == "Catalog" for d in visible)
-        # Footer shows the small discoverable set: slash commands, Tab
-        # completion, the dual-purpose Esc dispatch, Models, F2 all-commands.
-        # Hidden helpers (history, scope cycle, other F-keys) stay show=False.
-        assert len(visible) <= 6
+        # No entry-count cap here: it read as "the row does not overflow" while
+        # measuring nothing, and vetoed useful keys. That budget is asserted on
+        # rendered columns in
+        # test_tui_navigation.test_every_footer_fits_the_column_budget.
+        # Hidden helpers (history, scope cycle, Tab completion) stay show=False.
+        assert not any(d == "Complete" for d in visible)
 
     def test_catalog_numeric_tab_bindings(self) -> None:
         """1-6 jump to the corresponding tab in the 6-tab catalog shell.
@@ -1054,25 +1064,28 @@ class TestMinimalFooter:
             assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
-        """Catalog footer shows only the always-needed actions.
+        """The catalog footer carries its always-needed actions and no clutter.
 
-        Earlier the catalog row included Delete / Info / Next tab / Prev
-        tab so every action was visible at all times. That made the row
-        overflow on narrow terminals and truncate the rightmost global
-        binding mid-word (`^t Theme` -> `^t The`). Delete and Info are
-        still bound (and tab cycling still works on > / <); they're just
-        not in the always-on footer row. F1 / F2 surface them on demand.
+        This used to also assert a maximum entry count as a stand-in for "the
+        row does not overflow", which vetoed useful additions (the > / < tab
+        keys) while never measuring the thing it cared about. The width
+        invariant now lives in
+        test_tui_navigation.test_every_footer_fits_the_column_budget, which
+        renders the row and counts columns; Delete and Info stay hidden here
+        because F1 / F2 surface them on demand.
         """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         visible = self._visible_bindings(CatalogScreen.BINDINGS)
         assert any("Back" in d for d in visible)
         assert any("Search" in d for d in visible)
-        assert any("Grid/List" in d for d in visible)
+        assert any("Next tab" in d for d in visible)
+        assert any("Prev tab" in d for d in visible)
+        # Grid/List joined Delete and Info in F1: a display preference is not a
+        # way around the catalog, and search is the verb this screen is for.
+        assert not any("Grid/List" in d for d in visible)
         assert not any("Delete" in d for d in visible)
         assert not any(d == "Info" for d in visible)
-        assert not any("tab" in d.lower() for d in visible)
-        assert len(visible) <= 4
 
     def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
         """D, Backspace, and the legacy X all delete an installed model.
@@ -1111,7 +1124,10 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(StatusScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert len(visible) <= 3
+        # Tab / shift+Tab step the sections, but every Textual app moves focus
+        # that way and the pair rendered as a mashed "tabshift+tabSection"
+        # cell, so it is F1-only. Status has no verb of its own to advertise.
+        assert not any("section" in d.lower() for d in visible)
 
     def test_settings_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -1120,9 +1136,25 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         # Search binding was removed when the settings filter was dropped.
         assert not any("Search" in d for d in visible)
-        # 4 baseline (Back, Next field, Prev field, Reset all) + 2 visible
-        # tab-cycling bindings (Next tab / Prev tab) shared with Catalog.
-        assert len(visible) <= 6
+        # Resetting the focused setting is the verb this screen keeps.
+        assert any(d == "Reset" for d in visible)
+        # Field tabbing and reset-all are F1-only, and "Reset field" / "Reset
+        # all" must not share one label: they are different actions, and one
+        # label covering both is what made the old row unreadable.
+        assert not any("field" in d.lower() for d in visible)
+        assert not any(d == "Reset all" for d in visible)
+        # < and > are the one surviving pair: one action, two directions.
+        assert any(
+            b.group is not None and b.group.description == "Tabs"
+            for b in SettingsScreen.BINDINGS
+            if isinstance(b, Binding)
+        )
+        for gone in ("Field", "Reset"):
+            assert not any(
+                b.group is not None and b.group.description == gone
+                for b in SettingsScreen.BINDINGS
+                if isinstance(b, Binding)
+            ), f"{gone} grouped keys that do different things"
 
 
 class TestNavBindings:
@@ -1566,3 +1598,113 @@ class TestRunSyncRetry:
         switch.assert_not_called()
         timer.assert_not_called()
         chat._run_sync.assert_not_called()
+
+
+def _is_one_action_two_ways(first: str, second: str) -> bool:
+    """True when two binding actions are the same action pressed both ways.
+
+    Two legitimate shapes: the same action with opposite arguments
+    (``cycle_pane(-1)`` / ``cycle_pane(1)``) and sibling actions differing only
+    by a direction word (``nav_prev`` / ``nav_next``). Longest tokens first so
+    ``focus_previous`` is not mangled by the ``prev`` rule.
+    """
+    base_first, _, arg_first = first.partition("(")
+    base_second, _, arg_second = second.partition("(")
+    if base_first == base_second:
+        return arg_first != arg_second
+    for low, high in (
+        ("previous", "next"),
+        ("prev", "next"),
+        ("backward", "forward"),
+        ("up", "down"),
+        ("left", "right"),
+        ("first", "last"),
+    ):
+        if base_first.replace(low, high) == base_second:
+            return True
+        if base_second.replace(low, high) == base_first:
+            return True
+    return False
+
+
+def test_no_shared_footer_label_covers_more_than_one_action() -> None:
+    """Every screen: a shared label may only cover one action pressed both ways.
+
+    The rendered walk in test_tui_navigation covers the seven views; this one is
+    static and covers every screen and widget that declares BINDINGS, including
+    the ones reachable only by command (wiki, memories, draft review). Those
+    three each had a group label naming none of its keys ("Pages" over Drafts /
+    Wikify / Wipe, "Review" over Accept / Reject), which is the shape that made
+    the app row unreadable.
+
+    Counting members is not enough: Accept / Reject is a two-member group too,
+    and an earlier version of this test passed with it restored. The actions
+    themselves have to prove they are one action in two directions.
+
+    A group whose members are all hidden never renders, so only shown members
+    count.
+    """
+    import importlib
+    import pkgutil
+
+    import lilbee.cli.tui.screens as screens_pkg
+    import lilbee.cli.tui.widgets as widgets_pkg
+    from lilbee.cli.tui.app import LilbeeApp
+
+    holders: list[type] = [LilbeeApp]
+    for pkg in (screens_pkg, widgets_pkg):
+        for found in pkgutil.iter_modules(pkg.__path__):
+            module = importlib.import_module(f"{pkg.__name__}.{found.name}")
+            for obj in vars(module).values():
+                if (
+                    isinstance(obj, type)
+                    and obj.__module__ == module.__name__
+                    and getattr(obj, "BINDINGS", None)
+                ):
+                    holders.append(obj)
+    assert len(holders) > 10, f"only found {len(holders)} binding holders; the walk is broken"
+
+    for holder in holders:
+        shown = [b for b in holder.BINDINGS if isinstance(b, Binding) and b.show]
+        for binding in shown:
+            assert binding.description.strip(), (
+                f"{holder.__name__}: {binding.key} is in the footer with no label"
+            )
+        grouped: dict[str, list[Binding]] = {}
+        for binding in shown:
+            if binding.group is not None:
+                grouped.setdefault(binding.group.description, []).append(binding)
+        for label, members in grouped.items():
+            assert len(members) == 2, (
+                f"{holder.__name__}: {len(members)} keys share the label {label!r}; only a "
+                f"two-key pair of one action may share a label"
+            )
+            assert _is_one_action_two_ways(members[0].action, members[1].action), (
+                f"{holder.__name__}: {label!r} covers {members[0].action} and "
+                f"{members[1].action}, which are different actions, so the label names "
+                f"neither key"
+            )
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "one_action"),
+    [
+        pytest.param("cycle_pane(-1)", "cycle_pane(1)", True, id="opposite-arguments"),
+        pytest.param("nav_prev", "nav_next", True, id="prev-next-siblings"),
+        pytest.param("app.focus_previous", "app.focus_next", True, id="previous-not-mangled"),
+        pytest.param("cycle_pane(1)", "cycle_pane(1)", False, id="same-key-twice"),
+        pytest.param("accept", "reject", False, id="opposite-outcomes-not-directions"),
+        pytest.param("delete", "toggle_shared", False, id="unrelated"),
+        pytest.param("reset_focused", "reset_all", False, id="same-prefix-different-scope"),
+    ],
+)
+def test_is_one_action_two_ways(first: str, second: str, one_action: bool) -> None:
+    """The predicate the footer-label rule leans on, tested in both directions.
+
+    ``test_no_shared_footer_label_covers_more_than_one_action`` is only as good
+    as this helper: if it answered True for accept / reject, the rule it enforces
+    would be vacuous, which is exactly how the first version of that test passed
+    with Accept / Reject regrouped.
+    """
+    assert _is_one_action_two_ways(first, second) is one_action
+    assert _is_one_action_two_ways(second, first) is one_action, "must be symmetric"

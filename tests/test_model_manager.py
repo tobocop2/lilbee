@@ -162,7 +162,9 @@ class TestModelManagerListInstalled:
         }
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
@@ -172,7 +174,10 @@ class TestModelManagerListInstalled:
         assert set(result) == {"llama3:latest", "nomic-embed-text:latest"}
 
     def test_litellm_connection_error(self) -> None:
-        with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get",
+            side_effect=httpx.ConnectError("Connection refused"),
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
@@ -183,7 +188,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
@@ -200,7 +207,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": "remote-model:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             result = mgr.list_installed(None)
 
@@ -219,7 +228,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": native_ref}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             result = mgr.list_installed(None)
 
@@ -231,7 +242,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             mgr = ModelManager(Path("/tmp"))
             mgr.list_installed(ModelSource.REMOTE)
             after_first = mock_get.call_count
@@ -250,7 +263,9 @@ class TestModelManagerListInstalled:
         from lilbee.modelhub.model_manager import core as mm_core
 
         with (
-            mock.patch("httpx.get", return_value=mock_response) as mock_get,
+            mock.patch(
+                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+            ) as mock_get,
             mock.patch.object(mm_core.time, "monotonic") as mock_clock,
         ):
             # One clock tick per list_installed call: second tick is past TTL.
@@ -275,7 +290,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             mgr.list_installed(ModelSource.NATIVE)  # populate cache
             assert mgr._installed_cache
@@ -298,7 +315,9 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             mgr.list_installed(None)  # populate cache
             assert mgr._installed_cache
@@ -328,7 +347,9 @@ class TestModelManagerIsInstalled:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.is_installed("llama3:latest", ModelSource.REMOTE)
 
@@ -339,7 +360,9 @@ class TestModelManagerIsInstalled:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.is_installed("missing:latest", ModelSource.REMOTE)
 
@@ -354,7 +377,9 @@ class TestModelManagerIsInstalled:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             assert mgr.is_installed("native-model.gguf", None) is True
             assert mgr.is_installed("remote-model:latest", None) is False
@@ -379,7 +404,9 @@ class TestModelManagerGetSource:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("llama3:latest")
 
@@ -388,7 +415,7 @@ class TestModelManagerGetSource:
     def test_ollama_prefixed_ref_is_ollama_source_without_network(self) -> None:
         """An ``ollama/`` ref classifies on the prefix, no /api/tags call."""
         mgr = ModelManager(Path("/tmp"))
-        with mock.patch("httpx.get") as mock_get:
+        with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("ollama/llama3:latest")
         assert result == ModelSource.OLLAMA
         mock_get.assert_not_called()
@@ -396,7 +423,7 @@ class TestModelManagerGetSource:
     def test_api_prefixed_ref_is_frontier_source(self) -> None:
         """A hosted API ref classifies as FRONTIER without a network call."""
         mgr = ModelManager(Path("/tmp"))
-        with mock.patch("httpx.get") as mock_get:
+        with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("gemini/gemini-2.5-pro")
         assert result == ModelSource.FRONTIER
         mock_get.assert_not_called()
@@ -404,7 +431,7 @@ class TestModelManagerGetSource:
     def test_lm_studio_prefixed_ref_is_lm_studio_source_without_network(self) -> None:
         """An ``lm_studio/`` ref classifies on the prefix, no network call."""
         mgr = ModelManager(Path("/tmp"))
-        with mock.patch("httpx.get") as mock_get:
+        with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("lm_studio/qwen2.5-coder")
         assert result == ModelSource.LM_STUDIO
         mock_get.assert_not_called()
@@ -418,7 +445,9 @@ class TestModelManagerGetSource:
         mock_response.json.return_value = {"data": [{"id": "qwen2.5-coder"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("qwen2.5-coder")
 
@@ -430,7 +459,9 @@ class TestModelManagerGetSource:
         mock_response.json.return_value = {"models": [{"name": "custom-model"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("custom-model")
 
@@ -446,7 +477,9 @@ class TestModelManagerGetSource:
         mock_response.json.return_value = {"models": [{"name": "shared:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             result = mgr.get_source("shared:latest.gguf")
 
@@ -460,7 +493,9 @@ class TestModelManagerGetSource:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir)
             result = mgr.get_source("nonexistent.gguf")
 
@@ -610,7 +645,10 @@ class TestModelManagerRemove:
 
     def test_remove_refuses_ollama_prefixed_ref_without_network(self) -> None:
         """An ``ollama/`` ref with source=None resolves on the prefix, no network call."""
-        with mock.patch("httpx.get") as mock_get, mock.patch("httpx.request") as mock_req:
+        with (
+            mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get,
+            mock.patch("httpx.request") as mock_req,
+        ):
             mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("ollama/llama3:latest")
@@ -623,7 +661,9 @@ class TestModelManagerRemove:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("llama3:latest")
@@ -649,7 +689,9 @@ class TestModelManagerRemove:
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(Path("/tmp"))
             result = mgr.remove("nonexistent.gguf")
 
@@ -707,14 +749,19 @@ class TestLitellmEdgeCases:
             "Server Error", request=mock.Mock(), response=mock_response
         )
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             mgr = ModelManager(models_dir=tmp_path)
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
 
     def test_litellm_timeout(self, tmp_path: Path) -> None:
-        with mock.patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get",
+            side_effect=httpx.TimeoutException("timeout"),
+        ):
             mgr = ModelManager(models_dir=tmp_path)
             result = mgr.list_installed(ModelSource.REMOTE)
 
@@ -845,7 +892,9 @@ class TestRemoteModelProvider:
         }
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             result = classify_remote_models("http://localhost:11434", OLLAMA)
 
         assert len(result) == 1
@@ -860,7 +909,9 @@ class TestRemoteModelProvider:
         mock_response.json.return_value = {"data": [{"id": "gpt-4"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             result = classify_remote_models("https://api.openai.com/v1", LM_STUDIO)
 
         assert len(result) == 1
@@ -883,7 +934,9 @@ class TestRemoteModelProvider:
         }
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         # Hit the OpenAI-compatible endpoint (no doubled /v1), not Ollama's /api/tags.
@@ -912,7 +965,9 @@ class TestRemoteModelProvider:
         }
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert {m.name for m in result} == {"local-qwen2.5-7b", "openai/gpt-oss-120b"}
@@ -926,7 +981,9 @@ class TestRemoteModelProvider:
         mock_response.json.return_value = {"data": [{"id": ""}, {}, {"id": "qwen2.5-7b-instruct"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.get", return_value=mock_response):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
             result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert [m.name for m in result] == ["qwen2.5-7b-instruct"]
@@ -938,7 +995,10 @@ class TestRemoteModelProvider:
         from lilbee.modelhub.model_manager import classify_remote_models
         from lilbee.providers.local_servers import LM_STUDIO
 
-        with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get",
+            side_effect=httpx.ConnectError("refused"),
+        ):
             result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert result == []
@@ -968,7 +1028,7 @@ class TestRemoteModelProvider:
                 resp.json.return_value = {"data": [{"id": "qwen2.5-7b"}]}
             return resp
 
-        with mock.patch("httpx.get", side_effect=fake_get):
+        with mock.patch("lilbee.modelhub.model_manager.discovery._http_get", side_effect=fake_get):
             result = classify_all_remote_models()
 
         assert {m.name: m.provider for m in result} == {
@@ -1334,3 +1394,20 @@ class TestKnownModelCache:
         cache.refs()
         # The expiry was left at zero because invalidate ran during refresh.
         assert cache._expires_at == 0.0
+
+
+class TestDiscoveryHttpSeam:
+    """The probes go through one shared client, not per-call httpx.get."""
+
+    def test_http_get_delegates_to_the_shared_client(self) -> None:
+        from lilbee.modelhub.model_manager import discovery
+
+        client = mock.Mock()
+        with mock.patch.object(discovery, "_discovery_client", return_value=client):
+            discovery._http_get("http://x/api/tags", timeout=1.5)
+        client.get.assert_called_once_with("http://x/api/tags", timeout=1.5)
+
+    def test_discovery_client_is_shared(self) -> None:
+        from lilbee.modelhub.model_manager.discovery import _discovery_client
+
+        assert _discovery_client() is _discovery_client()

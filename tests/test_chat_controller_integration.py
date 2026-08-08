@@ -643,6 +643,37 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_cmd_add_re_adding_registered_path_skips_dialog(tmp_path: Path) -> None:
+    """Re-adding the path already registered under its label is idempotent: the
+    add proceeds with no overwrite dialog (the label is held by this very file)."""
+    from lilbee.core.config import cfg as _cfg
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    _cfg.linked_roots = {"doc.pdf": str(src.resolve())}
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+
+        pushed: list[object] = []
+        real_push = app.push_screen
+
+        def _capture_push(screen_or_name, callback=None, **kwargs):  # type: ignore[no-untyped-def]
+            pushed.append(screen_or_name)
+            return real_push(screen_or_name, callback, **kwargs)
+
+        app.push_screen = _capture_push  # type: ignore[assignment]
+
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_add(str(src))
+            assert not pushed, "re-adding the same path must not open a confirm dialog"
+            assert mock_start.called, "the idempotent add should submit directly"
+
+
+@pytest.mark.asyncio
 async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) -> None:
     """When the user answers No to the overwrite dialog, no task is spawned."""
     from lilbee.core.config import cfg as _cfg
