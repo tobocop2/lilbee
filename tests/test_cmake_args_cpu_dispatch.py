@@ -1,11 +1,5 @@
-"""The macOS x86_64 CPU cell builds runtime CPU dispatch; every other x86 cell
-keeps the single-variant AVX cap, and no cell downloads server-UI assets.
-
-cmake caches an unknown ``-D`` instead of failing, so a dropped or renamed flag
-here builds successfully and ships the wrong engine. These tests pin the emitted
-flag set; ``build_llama_server.sh`` separately asserts the variant modules exist
-in the built bundle.
-"""
+"""Pin cmake_args.sh flag emission per build cell; cmake ignores an unknown
+``-D``, so a dropped flag builds successfully with the wrong engine."""
 
 from __future__ import annotations
 
@@ -43,8 +37,7 @@ def test_macos_x86_64_cpu_builds_runtime_dispatch() -> None:
     flags = _flags("cpu", "macOS", "x86_64")
     assert "-DGGML_BACKEND_DL=ON" in flags
     assert "-DGGML_CPU_ALL_VARIANTS=ON" in flags
-    # The AVX cap and variant dispatch are mutually exclusive: capping the
-    # variants would rebuild the single-baseline engine under a new name.
+    # An AVX cap on a dispatch build would cap every variant.
     assert "-DGGML_AVX2=OFF" not in flags
 
 

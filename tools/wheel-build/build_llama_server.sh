@@ -144,11 +144,8 @@ while IFS= read -r -d '' lib; do
 done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
-# The macOS x86_64 CPU cell builds GGML_CPU_ALL_VARIANTS (see cmake_args.sh). That
-# flag is a cached -D like any other: cmake ignores an unknown spelling instead of
-# failing, and the fallback single libggml-cpu would carry the AVX2 the build host
-# supports -- a SIGILL on the pre-Haswell Macs this cell exists for, invisible on
-# an AVX2 runner. Count the variant modules instead of trusting the flag.
+# cmake ignores an unknown -D, and a variant-less fallback would carry the build
+# host's AVX2. Verify the mac x86_64 dispatch modules actually exist.
 if [ "${backend}" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch:-$(uname -m)}" = "x86_64" ]; then
   variant_count=$(find "${pkg_bin_dir}" -name 'libggml-cpu-*.so' | wc -l)
   if [ "${variant_count}" -lt 2 ]; then

@@ -34,36 +34,16 @@ esac
 #                     instruction" on weaker pool members.
 #
 # GPU cells cap the single libggml-cpu.so at AVX baseline (Sandy Bridge
-# 2011+). Explicitly disable AVX2 / FMA / F16C / BMI2 / AVX512 / VNNI
-# so ggml's CMake (which auto-enables those when GGML_NATIVE=OFF on a
-# build host that supports them) doesn't bake them in. The resulting
-# wheel runs on any x86_64 CPU from 2011 forward — a Sandy Bridge Xeon
-# E5-2609 included. Those users are on GPU paths for chat and only hit
-# CPU for embedding fallback, where the AVX2 loss is negligible.
-#
-# The macOS x86_64 CPU cell instead builds GGML_CPU_ALL_VARIANTS +
-# GGML_BACKEND_DL: one libggml-cpu-<variant>.so per x86 feature level
-# (x64 through sapphirerapids) beside the binary, and libllama itself
-# calls ggml_backend_load_all() at backend init to pick the best one
-# at runtime. Chat runs entirely on CPU there, and the AVX cap
-# costs Haswell+ Macs ~2x prompt speed (measured on a Broadwell 2015
-# MBP: 14.6 -> 34.1 tok/s prompt, 11.7 -> 17.6 gen; the loader picked
-# the haswell variant). The x64/sse42 variants sit below the AVX cap,
-# so the pre-AVX compat tail is covered by the same bundle.
-#
-# An earlier GGML_CPU_ALL_VARIANTS attempt was reverted (44aea6bd1)
-# because the then-shipped llama-cpp-python binding never loads DL
-# backends. The engine runtime is llama-server now, which does. The
-# GPU cells stay single-variant: under GGML_BACKEND_DL the GPU
-# backends also become DL modules, and that bundling is unvalidated.
-#
-# arm64: NEON is mandatory in ARMv8 so a single baseline variant covers
-# every aarch64 system.
-# LLAMA_BUILD_UI=OFF + LLAMA_USE_PREBUILT_UI=OFF: no npm/vite UI build
-# (flaky on Windows runners) and no HF-bucket asset download; the
-# bucket keeps only its newest revision, so the pinned fetch 404s on
-# any uncached rebuild (b1 is already gone). lilbee never serves the
-# web UI; the server builds with an empty asset table.
+# 2011+); each extension is explicitly OFF because ggml's CMake
+# auto-enables whatever the build host supports.
+# The macOS x86_64 CPU cell builds runtime dispatch instead: one
+# libggml-cpu-<variant>.so per x86 feature level, loaded best-match at
+# backend init. GGML_BACKEND_DL would split GPU backends into DL modules
+# too, so the GPU cells stay single-variant.
+# arm64: NEON is mandatory in ARMv8; one variant covers all aarch64.
+# LLAMA_BUILD_UI=OFF + LLAMA_USE_PREBUILT_UI=OFF: no npm UI build, no HF
+# asset download (the pinned bucket revision is pruned upstream); lilbee
+# never serves the server web UI.
 ui_off="-DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF"
 common_x86="${ui_off} -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
 dispatch_x86="${ui_off} -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"

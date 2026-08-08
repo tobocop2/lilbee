@@ -69,12 +69,9 @@ done
 # the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
-    # --include-package pulls the __init__.py and every bin/*.so: the Linux
-    # ggml/llama libraries and the macOS libggml-cpu-<variant>.so CPU-dispatch
-    # modules (Nuitka classifies a bare .so as an extension module on both
-    # platforms and places it beside the binary verbatim).
-    # --include-package-data ships the executables (llama-server, llama-swap,
-    # gguf-parser) as data.
+    # --include-package pulls the __init__.py and every bin/*.so, Linux libs and
+    # macOS libggml-cpu-<variant>.so alike (Nuitka places a bare .so beside the
+    # binary verbatim). --include-package-data ships the executables as data.
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
     LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
     # Platform gap: --include-package-data keeps the extensionless executables on
