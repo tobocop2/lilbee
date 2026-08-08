@@ -207,8 +207,8 @@ class Config(BaseSettings):
     table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
     # Layout-aware PDF extraction (reading-order sort, header/footer stripping),
     # run in xberg's AUTO strategy so detection only fires when it helps. Off by
-    # default: the strategy still needs the ONNX layout models (~730MB pulled on
-    # first use) and per-page inference, which a CPU-only ingest pays for.
+    # default: enabling it downloads the ONNX layout and table-structure models
+    # and adds per-page inference, which a CPU-only ingest pays for.
     layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
     # Table structure model; only applied when layout_detection is on.
     table_model: TableModel = ConfigField(

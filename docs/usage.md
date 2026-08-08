@@ -960,8 +960,8 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
-| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
-| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction (xberg AUTO strategy): text follows the detected reading order and running headers/footers are stripped. Off by default: the layout models are a ~730MB pull and add per-page inference |
+| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats. Set `LILBEE_LAYOUT_DETECTION=1` alongside it to use the table structure model; on its own it falls back to the native extractor |
+| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction (xberg AUTO strategy): text follows the detected reading order and running headers/footers are stripped. Off by default: enabling it downloads the ONNX layout and table-structure models and adds per-page inference |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
 | `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
