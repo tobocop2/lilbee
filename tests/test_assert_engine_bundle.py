@@ -32,6 +32,9 @@ _ROCM_RUNTIME = (
     "libhipblas.so.3",
     "rocblas/library/TensileLibrary.dat",
 )
+# What a runtime-dispatch cell ships instead of a single libggml-cpu.
+_LINUX_VARIANTS = ("libggml-cpu-x64.so", "libggml-cpu-haswell.so", "libggml-cpu-sapphirerapids.so")
+_WINDOWS_VARIANTS = ("ggml-cpu-x64.dll", "ggml-cpu-haswell.dll")
 
 
 def _wheel(tmp_path: Path, name: str, bin_files: tuple[str, ...]) -> Path:
@@ -97,7 +100,7 @@ def test_non_cuda_wheel_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
-        ("llama-server", "libggml-cpu.so"),
+        ("llama-server", *_LINUX_VARIANTS),
     )
     assert acb.check(wheel) == []
 
@@ -296,7 +299,71 @@ def test_a_non_rocm_wheel_is_not_asked_for_the_rocm_runtime(tmp_path: Path) -> N
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
-        ("llama-server", "libggml-vulkan.so"),
+        ("llama-server", "libggml-vulkan.so", "libvulkan.so.1", *_LINUX_VARIANTS),
+    )
+    assert acb.check(wheel) == []
+
+
+def test_cpu_linux_wheel_with_a_single_cpu_library_is_rejected(tmp_path: Path) -> None:
+    # The pre-dispatch shape: one libggml-cpu.so carrying only the AVX baseline.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu.so"),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "libggml-cpu-<variant>.so" in problems[0]
+
+
+def test_cpu_windows_wheel_needs_variant_modules(tmp_path: Path) -> None:
+    single = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.cpu-py3-none-win_amd64.whl",
+        ("llama-server.exe", "ggml-cpu.dll"),
+    )
+    problems = acb.check(single)
+    assert len(problems) == 1
+    assert "ggml-cpu-<variant>.dll" in problems[0]
+
+    dispatched = _wheel(
+        tmp_path,
+        "ok-1.0-1.cpu-py3-none-win_amd64.whl",
+        ("llama-server.exe", *_WINDOWS_VARIANTS),
+    )
+    assert acb.check(dispatched) == []
+
+
+def test_a_lone_variant_module_is_rejected(tmp_path: Path) -> None:
+    # One variant means the build host's instruction set, not runtime dispatch.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-cpu-haswell.so"),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "libggml-cpu-<variant>.so" in problems[0]
+
+
+def test_vulkan_linux_wheel_without_the_loader_is_rejected(tmp_path: Path) -> None:
+    # Under GGML_BACKEND_DL a missing loader is a silent CPU fallback, not a
+    # startup failure, so only the payload can prove the loader ships.
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
+        ("llama-server", "libggml-vulkan.so", *_LINUX_VARIANTS),
+    )
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "libvulkan.so.1" in problems[0]
+
+
+def test_vulkan_windows_wheel_is_not_asked_for_variants_or_loader(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        ("llama-server.exe", "ggml-vulkan.dll", "ggml-cpu.dll"),
     )
     assert acb.check(wheel) == []
 
@@ -356,14 +423,16 @@ _ROCM_PAYLOAD = (
 _ROCM_WHEEL = "lilbee_engine-0.1-1.rocm-py3-none-manylinux_2_17_x86_64.whl"
 
 
-def test_a_wheel_too_big_to_upload_is_a_problem(tmp_path, monkeypatch):
+def test_a_wheel_too_big_to_upload_is_a_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """GitHub caps one artifact at 2 GiB, and a bundled ROCm engine is the one near it."""
     wheel = _wheel(tmp_path, _ROCM_WHEEL, _ROCM_PAYLOAD)
     monkeypatch.setattr(acb, "WHEEL_SIZE_LIMIT", 1)
     assert any("exceeds the" in p for p in acb.check(wheel))
 
 
-def test_a_wheel_within_the_limit_passes(tmp_path):
+def test_a_wheel_within_the_limit_passes(tmp_path: Path) -> None:
     """The common case must not pay for the check with a false failure."""
     wheel = _wheel(tmp_path, _ROCM_WHEEL, _ROCM_PAYLOAD)
     assert acb.check(wheel) == []
