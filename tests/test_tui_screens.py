@@ -5535,7 +5535,7 @@ async def test_catalog_grid_hf_count_is_per_active_task():
             screen._hf_fetched_tasks.update({ModelTask.CHAT, ModelTask.EMBEDDING})
             prep = screen._prepare_grid_refresh()
             assert prep is not None
-            _sections, hf_count = prep
+            _sections, hf_count, _filter_changed = prep
             assert hf_count == len(chat_models)
 
 
@@ -6189,7 +6189,7 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._hf_models = []
             screen._remote_models = []
             # Invalidate the grid cache so _refresh_grid() rebuilds from scratch.
-            screen._grid_cache_keys["chat"] = ()
+            screen._grid_cache_keys.pop("chat", None)
             screen._refresh_grid()
             screen._refresh_list()
             # Pin _focused_grid to None so a slow worker that left a stale
@@ -7436,7 +7436,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
             await screen.workers.wait_for_complete()
             screen._hf_fetched_tasks.add(ModelTask.CHAT)
             screen._families = []
-            screen._grid_cache_keys["chat"] = ()
+            screen._grid_cache_keys.pop("chat", None)
             with patch.object(
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):

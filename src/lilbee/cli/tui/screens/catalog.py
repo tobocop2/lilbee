@@ -6,7 +6,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from textual import getters, on, work
 from textual.app import ComposeResult
@@ -38,6 +38,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
+    flatten_sections,
     for_you_by_role,
     group_frontier_rows,
     group_rows_for_grid,
@@ -154,6 +155,14 @@ class _RowCacheEntry:
 
     key: _RowCacheKey
     rows: list[LocalCatalogRow]
+
+
+class _GridCacheKey(NamedTuple):
+    """Per-tab identity of a painted grid; equal keys mean nothing to repaint."""
+
+    data_version: int
+    rows: tuple[tuple[str, bool], ...]
+    search: str
 
 
 class CatalogScreen(Screen[None]):
@@ -301,7 +310,7 @@ class CatalogScreen(Screen[None]):
         self._loading_more: bool = False
         # Per-tab grid/list cache keys. Each tab tracks its own last-rendered
         # shape; switching between already-populated tabs is a no-op refresh.
-        self._grid_cache_keys: dict[str, tuple] = {}
+        self._grid_cache_keys: dict[str, _GridCacheKey] = {}
         self._list_cache_keys: dict[str, tuple] = {}
         self._search_in_flight: bool = False
         self._frontier_rows: list[FrontierCatalogRow] = []
@@ -1239,7 +1248,12 @@ class CatalogScreen(Screen[None]):
         if prep is None:
             self._update_sort_label()
             return
-        sections, hf_count = prep
+        sections, hf_count, filter_changed = prep
+        if filter_changed:
+            # The offset belongs to the previous result set. Keeping it parks
+            # the viewport past the end of a shorter one (Textual clamps to the
+            # new max), so the matches render above the visible area.
+            self._grid_container.scroll_to(y=0, animate=False)
         if not sections:
             self._grid_container.remove_children()
             self._mount_grid_ctas(hf_count=hf_count)
@@ -1250,8 +1264,11 @@ class CatalogScreen(Screen[None]):
         self._remount_grid_sections(sections, hf_count)
         self._update_sort_label()
 
-    def _prepare_grid_refresh(self) -> tuple[list[GridSection], int] | None:
+    def _prepare_grid_refresh(self) -> tuple[list[GridSection], int, bool] | None:
         """Build sections + cache them. Returns None when the cache is hot.
+
+        Third element is True when the search text changed since the last
+        paint, which the caller uses to reset the scroll offset.
 
         On the None branch the caller refreshes the sort label so the
         cached path still picks up sort-toggle clicks.
@@ -1275,7 +1292,7 @@ class CatalogScreen(Screen[None]):
         # (name, installed), so a worker landing that changes rendered state
         # the signature misses (frontier key_status, fit, compat) must still
         # repaint rather than read as cache-hot.
-        row_key = (
+        row_key = _GridCacheKey(
             self._data_version,
             tuple(row_cache_signature(r) for r in tab_rows),
             search,
@@ -1283,9 +1300,11 @@ class CatalogScreen(Screen[None]):
         # Per-tab cache key: switching back to an already-rendered tab
         # is a no-op refresh; only sort-label refreshes. Keyed by
         # active_tab so other tabs' caches survive in-place.
-        if self._grid_cache_keys.get(active_tab) == row_key:
+        previous_key = self._grid_cache_keys.get(active_tab)
+        if previous_key == row_key:
             return None
         self._grid_cache_keys[active_tab] = row_key
+        filter_changed = previous_key is not None and previous_key.search != search
         if active_tab in TASK_TAB_IDS:
             active_task = TAB_ID_TO_TASK[active_tab]
             task_label = active_task.value.capitalize()
@@ -1301,7 +1320,11 @@ class CatalogScreen(Screen[None]):
         else:
             sections = [s for s in group_rows_for_grid(local_tab_rows) if s.rows]
             hf_count = len(hf_rows)
-        return sections, hf_count
+        if search:
+            # A filtered catalog is one result set, not a taxonomy: matches
+            # render flat so the viewport holds cards instead of headings.
+            sections = flatten_sections(sections, msg.HEADING_MATCHES)
+        return sections, hf_count, filter_changed
 
     def _extend_grid_sections_in_place(self, sections: list[GridSection], hf_count: int) -> bool:
         """Update existing ModelGrids in place when section count matches.
