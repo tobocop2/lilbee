@@ -26,6 +26,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.color_compat import EIGHT_BIT_COLOR_SYSTEM, EightBitPalette
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
@@ -589,12 +590,9 @@ class LilbeeApp(App[None]):
             if overlay is not None and overlay.is_visible:
                 screen.action_complete_prev()
                 return
-        # Not super(): Textual hard-codes its own CommandPalette class, and the
-        # subclass is what replaces the emoji search icon. Textual's own is_open
-        # takes an App[object], which App[None] does not satisfy; the screen check
-        # it performs is this isinstance in every case that matters.
-        from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
-
+        # Not super(): Textual hard-codes its own CommandPalette, and the subclass
+        # is what replaces the emoji search icon. isinstance rather than Textual's
+        # is_open, which is typed for App[object] and rejects App[None].
         if self.use_command_palette and not isinstance(self.screen, CommandPalette):
             self.push_screen(LilbeeCommandPalette(id="--command-palette"))
 
