@@ -18,7 +18,7 @@ from typing import ClassVar, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from lilbee.cli.tui.screens.catalog_utils import CatalogRow, LocalCatalogRow
@@ -56,8 +56,13 @@ class _RailHeading(Static, can_focus=True):
         grid.focus()
 
 
-class DiscoverRails(Vertical):
-    """Stack of three named rails. Each rail is a small ModelGrid."""
+class DiscoverRails(VerticalScroll):
+    """Stack of three named rails. Each rail is a small ModelGrid.
+
+    A scroll container, not a plain Vertical: the rails can exceed the pane
+    height, and the card cursor's reveal path needs a scrollable ancestor to
+    follow the highlight.
+    """
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8") if _CSS_FILE.exists() else ""
 

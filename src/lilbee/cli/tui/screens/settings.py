@@ -28,6 +28,7 @@ from textual.widgets import (
 from lilbee.app.settings import reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
@@ -105,28 +106,49 @@ class SettingsScreen(Screen[None]):
     AUTO_FOCUS = "#settings-tabs Tabs"
     HELP = (
         "Browse and edit configuration.\n\n"
-        "Use / to search, Enter to confirm, Escape to return to the list."
+        "Tab / Shift+Tab move between fields, > and < jump between groups, "
+        "j / k scroll and g / G jump to the top / bottom, "
+        "Ctrl+R resets the focused field and Ctrl+Shift+R resets every "
+        "setting, and q or Escape goes back."
     )
 
+    # < and > are one action in two directions, so a single "Tabs" label still
+    # says what both keys do. Keys that do different things get their own cell
+    # or move to the help panel.
+    _TAB_GROUP = Binding.Group("Tabs", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
+        *browse_back_bindings(),
         # Tab cycles editors inside the active pane and rolls over to the
         # next group tab when you Tab past the last editor (and the
         # previous group tab on shift+Tab past the first editor). Use
         # > / < to jump straight to the next / previous group tab.
-        Binding("tab", "next_field_or_pane", "Next field", show=True),
-        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True),
+        Binding("tab", "next_field_or_pane", "Next field", show=False),
+        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=False),
         # Direct tab cycling, mirrored from CatalogScreen. priority=True
         # so the bindings win when an editor input has focus.
-        Binding("greater_than_sign", "cycle_pane(1)", "Next tab", show=True, priority=True),
-        Binding("less_than_sign", "cycle_pane(-1)", "Prev tab", show=True, priority=True),
-        Binding("ctrl+r", "reset_focused", "Reset field", show=False),
-        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
-        Binding("j", "scroll_down", "Down", show=False),
-        Binding("k", "scroll_up", "Up", show=False),
-        Binding("g", "scroll_home", "Top", show=False),
-        Binding("G", "scroll_end", "End", show=False),
+        Binding(
+            "less_than_sign",
+            "cycle_pane(-1)",
+            "Prev tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
+        Binding(
+            "greater_than_sign",
+            "cycle_pane(1)",
+            "Next tab",
+            show=True,
+            priority=True,
+            group=_TAB_GROUP,
+        ),
+        # Resetting the focused setting is what this screen is for, so it keeps
+        # a cell. Reset-all is a rarer, wider-reaching action and lives in help;
+        # the two are different actions, so they must not share one label.
+        Binding("ctrl+r", "reset_focused", "Reset", show=True),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=False),
+        *BROWSE_LIST_BINDINGS,
     ]
 
     def __init__(self) -> None:
@@ -570,7 +592,7 @@ class SettingsScreen(Screen[None]):
         set_widget_value(widget, value)
 
     def action_go_back(self) -> None:
-        self.app.switch_view("Chat")
+        self.app.go_back()
 
     def _active_pane_body(self) -> _LazyGroupBody | None:
         """Resolve the currently-active settings tab body (a VerticalScroll).
@@ -591,19 +613,19 @@ class SettingsScreen(Screen[None]):
         except Exception:
             return None
 
-    def action_scroll_down(self) -> None:
+    def action_cursor_down(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_down()
 
-    def action_scroll_up(self) -> None:
+    def action_cursor_up(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_up()
 
-    def action_scroll_home(self) -> None:
+    def action_jump_top(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_home()
 
-    def action_scroll_end(self) -> None:
+    def action_jump_bottom(self) -> None:
         if (body := self._active_pane_body()) is not None:
             body.scroll_end()
 
@@ -619,7 +641,10 @@ class SettingsScreen(Screen[None]):
         """Step the active settings tab by *delta*, wrapping around the strip.
 
         Shortcut for users who don't want to Tab through every field to
-        reach the next group. Mirrors CatalogScreen.action_cycle_tab.
+        reach the next group. Mirrors CatalogScreen.action_cycle_tab. A
+        focused editor is not a concern here: a focused Input/TextArea
+        consumes printable keys before even priority bindings see them
+        (verified empirically), so < and > always type into editors.
         """
         try:
             tabs = self.query_one("#settings-tabs", TabbedContent)

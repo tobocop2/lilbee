@@ -14,7 +14,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, shown_footer_keys
 from tests.conftest import make_mock_services
 
 
@@ -102,16 +102,28 @@ async def test_sessions_on_by_default() -> None:
 
 
 async def test_disabled_hides_the_footer_binding(sessions, monkeypatch) -> None:
-    """check_action returns None so ctrl+o leaves the footer entirely."""
+    """With sessions off, ctrl+o leaves the footer row entirely.
+
+    Asserted on the row rather than on check_action's return value: the guard
+    used to return None, which reads as "hidden" but which Textual renders
+    greyed-and-present, so a return-value check passed while the footer still
+    advertised a toggle with nothing to toggle. Only False drops the cell.
+    """
     from lilbee.core.config import cfg
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
+
         monkeypatch.setattr(cfg, "sessions_enabled", True)
-        assert app.check_action("toggle_sessions", ()) is not None
+        app.screen.refresh_bindings()
+        await pilot.pause()
+        assert "ctrl+o" in shown_footer_keys(app)
+
         monkeypatch.setattr(cfg, "sessions_enabled", False)
-        assert app.check_action("toggle_sessions", ()) is None
+        app.screen.refresh_bindings()
+        await pilot.pause()
+        assert "ctrl+o" not in shown_footer_keys(app)
 
 
 async def test_disabled_shows_notice_on_toggle(sessions, monkeypatch) -> None:
@@ -558,3 +570,183 @@ async def test_resuming_an_obsidian_session_keeps_its_origin(sessions) -> None:
             surface=SessionOrigin.TUI,
         )
         assert sessions.get(sid).meta.message_count == 1
+
+
+async def test_sessions_tab_vocabulary_walks_the_list(sessions):
+    """j/k/g/G drive the sessions list from the full-screen tab."""
+    from textual.widgets import ListView
+
+    for n in range(3):
+        _seed(sessions, f"s{n}")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        lv = app.screen.query_one("#sessions-list", ListView)
+        lv.focus()
+        await pilot.pause()
+        await pilot.press("G")
+        await pilot.pause()
+        assert lv.index == len(lv) - 1
+        await pilot.press("g")
+        await pilot.pause()
+        assert lv.index == 0
+        await pilot.press("j")
+        await pilot.pause()
+        assert lv.index == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert lv.index == 0
+
+
+async def test_sessions_escape_returns_to_previous_view(sessions):
+    """Escape leaves Sessions with the same semantics as q: back, not Chat."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    _seed(sessions, "one")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Settings")
+        await pilot.pause()
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        await pilot.press("escape")
+        for _ in range(10):
+            await pilot.pause()
+            if isinstance(app.screen, SettingsScreen):
+                break
+        assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_sessions_jump_on_empty_list_is_safe(sessions):
+    """g/G on an empty sessions list must not raise."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        panel = app.screen.query_one(SessionListPanel)
+        panel.jump_to(0)
+        panel.jump_to(-1)
+
+
+async def test_clicking_a_session_row_never_starts_a_text_selection(sessions, monkeypatch) -> None:
+    """A click on a row must not enter Textual's selection path.
+
+    That path takes ``content_widget.parent`` and dereferences
+    ``container.region`` without a None check, so a click landing on a row that
+    has just been unparented crashed the app: AttributeError on
+    `_MessagePump__parent`, reported from a live session. Rows are unparented on
+    every store mutation and every filter keystroke, because `_render_rows`
+    clears the ListView without awaiting the removal, so the window is open
+    often and cannot be closed by ordering alone.
+
+    Asserted on the entry condition rather than by racing a detach against a
+    click, which pilot cannot time: with selection off for row text the path is
+    unreachable regardless of when the click lands. Flip ALLOW_SELECT back to
+    True on _RowText and this fails.
+    """
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", True)
+    _seed(sessions, "first session")
+    _seed(sessions, "second session")
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        rows = list(drawer.query(".session-row-meta").results())
+        assert rows, "the drawer rendered no session rows to click"
+        assert app.screen._select_state is None
+
+        # mouse_down, not click: a full click is down-then-up, and MouseUp calls
+        # clear_selection(), so _select_state reads None afterwards either way.
+        # MouseDown is also the event in the reported traceback.
+        await pilot.mouse_down(rows[0])
+        await pilot.pause()
+
+        assert app.screen._select_state is None, (
+            "MouseDown on a session row started a text selection, which is the "
+            "path that crashes on an unparented row"
+        )
+
+
+async def test_mouse_down_on_a_detached_session_row_does_not_crash(sessions, monkeypatch) -> None:
+    """End-to-end: the reported crash, driven through Textual's real event path.
+
+    The report was a MouseDown on a row's meta line raising AttributeError:
+    'NoneType' object has no attribute 'region', because Textual's selection
+    path takes content_widget.parent and dereferences container.region without a
+    None check. This builds that exact state: paint the rows so the compositor
+    maps clicks to them, unparent one, confirm it is still hit-testable, then
+    forward a real MouseDown at its screen coordinates.
+
+    The detachment is injected rather than raced. `_render_rows` clears the
+    ListView without awaiting the removal, so the real trigger is a click
+    arriving between the detach and the next repaint, which the pilot cannot
+    time; injecting it reproduces the same state the race produces. With
+    ALLOW_SELECT left on for row text this raises.
+    """
+    from textual import events
+
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", True)
+    _seed(sessions, "first session")
+    _seed(sessions, "second session")
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        rows = list(drawer.query(".session-row-meta").results())
+        assert rows, "the drawer rendered no session rows"
+        target = rows[0]
+        # The drawer is mounted but not necessarily laid out: until it is, the
+        # row's region is empty and the point below lands on whatever occupies
+        # the top-left corner, so the hit-test asserts against the wrong widget.
+        for _ in range(10):
+            if target.region.size:
+                break
+            await pilot.pause()
+        assert target.region.size, "the session row was never laid out, so it has no hit area"
+        x = target.region.offset.x + 2
+        y = target.region.offset.y
+
+        # Unparent it while the painted frame still maps clicks to it, the way
+        # Textual's own _detach does. Restored before teardown: the DOM prune
+        # asserts on a live parent, so leaving it nulled fails the test for an
+        # unrelated reason and hides the result of the click.
+        original_parent = target._parent
+        target._parent = None
+        try:
+            assert target.parent is None, "the row is still attached; nothing to test"
+            hit, _offset = app.screen.get_widget_and_offset_at(x, y)
+            assert hit is target, "the compositor no longer maps that point to the row"
+
+            crash: Exception | None = None
+            try:
+                app.screen._forward_event(
+                    events.MouseDown(
+                        None,
+                        x=x,
+                        y=y,
+                        delta_x=0,
+                        delta_y=0,
+                        button=1,
+                        shift=False,
+                        meta=False,
+                        ctrl=False,
+                    )
+                )
+            except Exception as exc:
+                crash = exc
+        finally:
+            target._parent = original_parent
+
+        assert crash is None, f"MouseDown on a detached row still crashes: {crash!r}"
+        await pilot.pause()

@@ -167,7 +167,9 @@ class SetupWizard(Screen[str | None]):
     CSS_PATH = "setup.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Done", show=True),
+        # "Close", not "Done"/"Cancel": Escape dismisses the wizard keeping
+        # whatever selections were already committed.
+        Binding("escape", "cancel", "Close", show=True),
         Binding("tab", "app.focus_next", "Next", show=False),
         Binding("shift+tab", "app.focus_previous", "Prev", show=False),
     ]

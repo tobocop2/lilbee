@@ -10,7 +10,8 @@ from __future__ import annotations
 from unittest import mock
 
 import pytest
-from textual.widgets import Footer, Input
+from rich.console import Console
+from textual.widgets import Footer, Input, TabbedContent
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
@@ -336,6 +337,110 @@ async def test_grid_arrows_stay_on_catalog():
         assert isinstance(app.screen, CatalogScreen)
 
 
+def _discover_row(name: str, *, installed: bool = False):
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+    return LocalCatalogRow(
+        name=name,
+        task=ModelTask.CHAT,
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=installed,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref=name,
+        backend="native",
+    )
+
+
+async def test_discover_arrow_flow_keeps_visible_cursor_on_rail_grids():
+    """Arrowing through Discover must always leave focus on a visible rail grid
+    with a highlight -- never on a hidden sibling pane's grid, and the cursor
+    must come back when arrowing up again (bb-hca4h's Discover symptom)."""
+    from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+        screen = app.screen
+        assert isinstance(screen, CatalogScreen)
+
+        def _seed_rails() -> None:
+            rails = screen.query_one("#discover-rails", DiscoverRails)
+            rails.set_rails(
+                for_you=[_discover_row("Alpha"), _discover_row("Beta")],
+                collection=[_discover_row("Gamma", installed=True)],
+                fresh=[_discover_row("Delta"), _discover_row("Epsilon")],
+            )
+
+        # Deterministic rail content: worker landings re-seed the same rows.
+        screen._populate_discover_rails = _seed_rails  # type: ignore[method-assign]
+        await pilot.press("1")  # Discover tab
+        await pilot.pause()
+        _seed_rails()
+        await pilot.pause()
+
+        rails = screen.query_one("#discover-rails", DiscoverRails)
+        rail_grids = list(rails.query(ModelGrid))
+        visited: list[ModelGrid] = []
+        for _ in range(8):
+            await pilot.press("down")
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, ModelGrid), f"focus left the grids: {focused!r}"
+            assert focused in rail_grids, "arrows drove a grid outside the Discover pane"
+            assert focused.highlighted is not None, "cursor vanished mid-navigation"
+            visited.append(focused)
+        assert rails.query_one("#discover-grid-fresh", ModelGrid) in visited
+
+        for _ in range(8):
+            await pilot.press("up")
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, ModelGrid)
+            assert focused in rail_grids
+            assert focused.highlighted is not None
+        assert app.focused is rails.query_one("#discover-grid-for-you", ModelGrid)
+
+
+async def test_grid_cursor_survives_dataset_refresh():
+    """A background page landing (set_rows) must not strand the cursor (bb-hca4h)."""
+    from textual.app import ComposeResult
+    from textual.containers import VerticalScroll
+
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    class _App(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            with VerticalScroll():
+                yield ModelGrid([_discover_row(f"m{i}") for i in range(6)], id="mg")
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        grid = pilot.app.query_one("#mg", ModelGrid)
+        grid.focus()
+        await pilot.pause()
+        await pilot.press("right", "right")
+        await pilot.pause()
+        assert grid.highlighted == 2
+        # Simulate an HF page landing: same rows plus a new page appended.
+        grid.set_rows([_discover_row(f"m{i}") for i in range(10)])
+        await pilot.pause()
+        assert grid.highlighted == 2, "refresh stranded the cursor"
+        await pilot.press("right")
+        await pilot.pause()
+        assert grid.highlighted == 3, "cursor teleported after refresh"
+
+
 async def test_footer_present_on_screens():
     """Every screen should have a Footer widget."""
     app = LilbeeApp()
@@ -568,3 +673,1124 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
             await pilot.pause()
     finally:
         services_mod.set_services(None)
+
+
+async def test_m_opens_catalog_and_q_returns_to_previous_view():
+    """m jumps to the catalog from any view; q returns to the view the user
+    came from rather than always landing on Chat."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Settings")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        await pilot.press("q")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+
+async def test_capital_s_and_m_type_into_chat_input():
+    """The S sync binding and the m catalog binding must not steal characters
+    from a focused text input."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        assert chat_input.has_focus, "Chat input should auto-focus on mount"
+
+        with mock.patch.object(LilbeeApp, "action_run_sync") as run_sync:
+            await pilot.press("S")
+            await pilot.pause()
+            assert not run_sync.called, "S must type, not start a document sync"
+        await pilot.press("m")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen), "m must not navigate mid-typing"
+        assert chat_input.value == "Sm"
+
+
+async def test_settings_editor_accepts_angle_brackets():
+    """< and > must type into a focused settings editor, not switch panes."""
+    from textual.widgets import TabbedContent
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Settings")
+        await _wait_for_screen(app, pilot, SettingsScreen)
+
+        editor = None
+        for _ in range(20):
+            editors = app.screen.query(Input)
+            if editors:
+                editor = editors.first()
+                break
+            await pilot.pause()
+        if editor is None:
+            pytest.skip("no Input editors mounted on the settings screen")
+        editor.focus()
+        await pump_until(pilot, lambda: editor.has_focus)
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        active_before = tabs.active
+        before = editor.value
+
+        await pilot.press("less_than_sign", "greater_than_sign")
+        await pilot.pause()
+        assert editor.value == f"{before}<>", "angle brackets must type literally"
+        assert tabs.active == active_before, "panes must not cycle mid-typing"
+
+
+async def test_catalog_tab_strip_shows_digit_shortcuts():
+    """Tab labels carry the 1-6 numerals so the digit keys are discoverable."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, TAB_DISCOVER, TAB_LIBRARY
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Catalog")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
+        tabs = app.screen.query_one("#catalog-tabs", TabbedContent)
+        assert str(tabs.get_tab(TAB_DISCOVER).label).startswith("1 ")
+        assert str(tabs.get_tab(TAB_CHAT).label).startswith("2 ")
+        assert str(tabs.get_tab(TAB_LIBRARY).label).startswith("6 ")
+
+
+def test_catalog_and_settings_share_the_tab_cycle_keys():
+    """Both screens bind < / > to tab cycling and both advertise it the same way.
+
+    The catalog used to hide the pair because its row overflowed; grouping the
+    app-level bindings freed the columns, so the two screens agree again. A
+    user who learns > on one screen must not find it missing on the other.
+    """
+    from textual.binding import Binding
+
+    def binding(screen_cls, key: str) -> Binding | None:
+        return next(
+            (b for b in screen_cls.BINDINGS if isinstance(b, Binding) and b.key == key), None
+        )
+
+    for key in ("greater_than_sign", "less_than_sign"):
+        catalog = binding(CatalogScreen, key)
+        settings = binding(SettingsScreen, key)
+        assert catalog is not None and settings is not None
+        assert catalog.show is True
+        assert settings.show is True
+        assert catalog.group is not None and settings.group is not None
+
+
+def test_catalog_help_documents_every_visible_and_hidden_tab_key():
+    """Keys must be findable in F1 help, whether or not they reach the footer.
+
+    Asserted in both directions: help that mentions a key no longer bound is
+    as wrong as a binding no help mentions. `o` is here because it took over
+    the source filter from `c`, which is now the app-wide jump to Chat.
+    """
+    from textual.binding import Binding
+
+    help_text = CatalogScreen.HELP
+    bound = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
+
+    assert "< / >" in help_text
+    assert {"less_than_sign", "greater_than_sign"} <= bound
+    assert "1-6" in help_text
+    assert {str(n) for n in range(1, 7)} <= bound
+    assert "- o: cycle source chip" in help_text
+    assert "o" in bound
+    assert "c" not in bound
+
+
+def test_settings_help_documents_the_shared_browse_keys():
+    """Settings adopted the shared j/k/g/G fragment, so its help must say so.
+
+    Both directions, like the catalog check: the keys must be bound and the
+    help must name them.
+    """
+    from textual.binding import Binding
+
+    help_text = SettingsScreen.HELP
+    bound = {b.key for b in SettingsScreen.BINDINGS if isinstance(b, Binding)}
+
+    assert {"j", "k", "g", "G"} <= bound
+    for token in ("j / k", "g / G"):
+        assert token in help_text
+
+    # Both resets now hold a footer cell under one label, so help has to name
+    # both: the group label alone does not say which key does which.
+    assert {"ctrl+r", "ctrl+shift+r"} <= bound
+    assert "Ctrl+R resets the focused field" in help_text
+    assert "Ctrl+Shift+R resets every setting" in help_text
+
+
+# A footer wider than this scrolls its tail out of view on a normal terminal,
+# which is how `^t Theme` once rendered as `^t The`. Measured on the rendered
+# row, not on a count of bindings: what overflows a row is columns, and an
+# entry count vetoes useful keys while missing a single verbose label.
+_FOOTER_COLUMN_BUDGET = 120
+
+
+def _footer_columns(app) -> tuple[int, str]:
+    """Rendered width of the active screen's footer, plus its cells for failures."""
+    footer = app.screen.query_one(Footer)
+    cells = [getattr(c.render(), "plain", type(c).__name__) for c in footer.children]
+    width = sum(c.outer_size.width + c.styles.margin.width for c in footer.children if c.display)
+    return width, " | ".join(cells)
+
+
+async def test_every_footer_fits_the_column_budget():
+    """No screen's key row may outgrow a 120-column terminal.
+
+    This is the invariant the per-screen "at most N visible bindings" asserts
+    were standing in for. Every view is measured after its footer has laid
+    out, so a verbose new label fails here rather than silently pushing the
+    rightmost global binding off the row.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(_FOOTER_COLUMN_BUDGET, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        for view in ("Chat", "Catalog", "Status", "Settings", "Tasks", "Fleet", "Sessions"):
+            app.switch_view(view)
+            assert await pump_until(pilot, lambda v=view: app.active_view == v), (
+                f"never landed on {view}"
+            )
+            # The footer composes its keys on a later refresh than the switch.
+            # Asserted, not merely awaited: an un-laid-out row measures zero,
+            # and zero would sail under the budget while proving nothing.
+            assert await pump_until(pilot, lambda: _footer_columns(app)[0] > 0), (
+                f"{view} footer never laid out"
+            )
+            width, cells = _footer_columns(app)
+            assert width <= _FOOTER_COLUMN_BUDGET, f"{view} footer is {width} cols: {cells}"
+
+
+async def test_the_app_row_is_view_movement_plus_help_and_quit():
+    """The app's share of the footer is [ ], Help and Quit, and nothing else.
+
+    The keys that jump straight to a view stay bound and stay in F1, but not on
+    the row: the view tabs are already across the top of every screen, so a cell
+    per destination duplicated what the user can see and click.
+    """
+    from textual.binding import Binding
+
+    bound = {b.key: b for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
+    shown = {key: b for key, b in bound.items() if b.show}
+    assert set(shown) == {
+        "left_square_bracket",
+        "right_square_bracket",
+        # Drawers, not destinations: they open beside the current screen, which
+        # the tab strip cannot do, so they are not a duplicate of it.
+        "ctrl+g",
+        "ctrl+o",
+        # `?` is the advertised help key; F1 and Ctrl+H still work but stay off
+        # the row, and carry a different action so the guard below can drop `?`
+        # in a text field without disabling them.
+        "question_mark",
+        "ctrl+c",
+    }
+
+    # One action in two directions, so a single label is still the whole truth.
+    assert shown["left_square_bracket"].group is shown["right_square_bracket"].group
+    assert shown["left_square_bracket"].group.description == "Views"
+    # Help and Quit do different things, so neither may share a label.
+    assert shown["question_mark"].group is None
+    assert shown["ctrl+c"].group is None
+    # `?` is the only help key. F1 and Ctrl+H are gone rather than hidden: one
+    # advertised key is enough, and Ctrl+H is what many terminals send for
+    # Backspace, so binding it near text fields was a hazard.
+    assert "f1" not in bound
+    assert "ctrl+h" not in bound
+    assert bound["question_mark"].action == "push_help"
+
+    # Still bound, still in the help panel, which ignores `show` and filters on
+    # `system` instead.
+    for key in ("c", "m", "t", "ctrl+t", "f4"):
+        assert key in bound, f"{key} was dropped, not hidden"
+        assert not bound[key].show
+        assert not bound[key].system, f"{key} would vanish from the F1 panel too"
+
+
+async def test_c_returns_to_chat_from_another_view():
+    """`c` is the counterpart to t / m for the view users leave most often."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+        await pilot.press("c")
+        await _wait_for_screen(app, pilot, ChatScreen)
+
+
+async def test_c_stops_acting_while_an_input_has_focus():
+    """`c` types a literal letter in a text field rather than jumping to Chat.
+
+    Same contract as t / m. The guard is asserted here on `check_action`, the
+    mechanism; the keystroke itself is driven in
+    test_every_view_jump_key_yields_to_a_text_field.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        assert app.check_action("open_chat", ()) is True
+        app.screen.query_one("#catalog-search", Input).focus()
+        await pilot.pause()
+        assert app.check_action("open_chat", ()) is False
+
+
+async def test_c_does_nothing_on_chat_where_there_is_nowhere_to_jump():
+    """Chat is where `c` has no destination, so the key must not act.
+
+    False, not None: Textual skips a False binding entirely and renders a None
+    one greyed but present, so None would leave the key live here.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.check_action("open_chat", ()) is False
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen), "c left the screen it was already on"
+
+
+async def test_catalog_source_filter_moved_off_c():
+    """`o` cycles the source chip; `c` leaves for Chat instead of flipping it.
+
+    A hidden binding must never shadow an app-wide key: pressing `c` used to
+    change the catalog's filter with nothing on screen to explain it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        screen = app.screen
+        await pilot.press("2")
+        await pilot.pause()
+        before = dict(screen._source_modes)
+        await pilot.press("o")
+        await pilot.pause()
+        assert dict(screen._source_modes) != before
+
+
+async def _focus_strip(app, pilot):
+    """Put the cursor on the model strip the way a user does, via F6."""
+    await pilot.press("f6")
+    await pump_until(pilot, lambda: app.screen.focused is not None)
+    return app.screen.focused
+
+
+async def test_f6_reaches_the_model_strip_while_typing():
+    """The strip must be reachable mid-sentence, without leaving insert mode.
+
+    A printable key cannot do this: a focused TextArea consumes it first. The
+    pickers were mouse-only from the prompt before F6 existed.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        assert chat_input.has_focus
+
+        focused = await _focus_strip(app, pilot)
+        assert focused is not None and focused.id == "model-pick-chat"
+
+
+async def test_arrows_walk_the_whole_model_strip():
+    """Left / Right step every role picker and both mode pills, and clamp at the ends.
+
+    One pair of arrows for the whole strip: the mode toggle used to bind
+    left/right to picking a mode, which made the same keys mean two things
+    depending on where the cursor sat.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await _focus_strip(app, pilot)
+
+        expected = [
+            "model-pick-embed",
+            "model-pick-vision",
+            "model-pick-rerank",
+            "chat-mode-search",
+            "chat-mode-chat",
+        ]
+        for want in expected:
+            await pilot.press("right")
+            await pilot.pause()
+            assert app.screen.focused is not None
+            assert app.screen.focused.id == want
+
+        # Clamps rather than wrapping round to the first picker.
+        await pilot.press("right")
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-mode-chat"
+
+        for want in reversed(expected[:-1]):
+            await pilot.press("left")
+            await pilot.pause()
+            assert app.screen.focused.id == want
+        await pilot.press("left")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+        await pilot.press("left")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+
+
+async def test_home_and_end_jump_to_the_ends_of_the_strip():
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await _focus_strip(app, pilot)
+
+        await pilot.press("end")
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-mode-chat"
+        await pilot.press("home")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+
+
+async def test_escape_returns_to_the_prompt_from_any_strip_member():
+    """Escape means "back to typing" from every member, not just the pickers.
+
+    From a mode pill it used to drop focus on the chat log instead, so the
+    user had to guess a second key to get back to the prompt.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+
+        for steps in (0, 3, 5):
+            await _focus_strip(app, pilot)
+            for _ in range(steps):
+                await pilot.press("right")
+                await pilot.pause()
+            await pilot.press("escape")
+            await pump_until(pilot, lambda: app.screen.focused is not None)
+            focused = app.screen.focused
+            assert isinstance(focused, ChatInput), f"after {steps} steps, got {focused}"
+
+
+async def test_chat_help_documents_the_strip_keys():
+    """Both directions: the keys are bound and help names them."""
+    from textual.binding import Binding
+
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+    help_text = ChatScreen.HELP
+    screen_keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, Binding)}
+    bar_keys = {b.key for b in ModelBar.BINDINGS if isinstance(b, Binding)}
+
+    assert "f6" in screen_keys
+    assert "**F6**" in help_text
+    assert {"left", "right", "home", "end", "h", "l"} <= bar_keys
+    # The keys that step in from outside the bar live on the screen, not the bar.
+    assert {"h", "l", "left", "right"} <= screen_keys
+    for token in ("**Left**", "**Right**", "**Home**", "**End**", "**h**", "**l**"):
+        assert token in help_text
+
+
+async def test_the_strip_skips_a_role_the_narrow_layout_hides():
+    """Left / Right must not step onto a member the narrow bar has hidden.
+
+    The narrow layout hides switched-off roles on the RoleRow, so the picker
+    button's own ``display`` still reads True; the strip has to take its
+    membership from the focus chain to see that.
+    """
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        # Assert the setup, don't just wait for it: pump_until returns a bool,
+        # so an unmet precondition would leave the check below passing on a
+        # strip that never had a vision picker to skip in the first place.
+        assert await pump_until(pilot, lambda: len(bar.strip) == 6), (
+            f"strip never reached six members: {[w.id for w in bar.strip]}"
+        )
+
+        # Vision is off in this config, so the narrow class drops its row.
+        bar.add_class("-narrow")
+        assert await pump_until(
+            pilot, lambda: "model-pick-vision" not in {w.id for w in bar.strip}
+        ), "the narrow layout never dropped the vision row"
+
+        await _focus_strip(app, pilot)
+        seen = [app.screen.focused.id]
+        for _ in range(len(bar.strip)):
+            await pilot.press("right")
+            await pilot.pause()
+            seen.append(app.screen.focused.id)
+        assert "model-pick-vision" not in seen
+
+
+async def test_footer_hidden_keys_still_reach_the_help_panel():
+    """show=False moves a key off the footer row; it must not hide it outright.
+
+    Trimming the footer is only defensible because Textual's key panel filters
+    on `binding.system`, not on `show`. Asserted against what the panel actually
+    renders rather than by re-applying that filter here: `active_bindings` keeps
+    a `show=False` binding either way, so a re-implemented filter would still
+    pass on the day an upgrade starts honouring `show` and hides f4 for real.
+
+    Opened with `?`, which is the only help key now, and which reaches the app
+    binding here because NORMAL mode parks the cursor on the transcript rather
+    than in a text field.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("question_mark")
+        assert await pump_until(pilot, lambda: bool(app.screen.query("BindingsTable"))), (
+            "? never opened the help panel"
+        )
+
+        console = Console(width=200, no_color=True)
+        with console.capture() as capture:
+            console.print(app.screen.query_one("BindingsTable").render())
+        rendered = capture.get()
+        for key, description in (("f4", "Path/Name"), ("tab", "Complete")):
+            assert key in rendered and description in rendered, (
+                f"{key} is hidden from the footer AND from the key panel"
+            )
+
+
+async def test_strip_arrows_leave_the_prompt_alone():
+    """The strip's arrows must not reach the prompt's own cursor movement.
+
+    What protects the prompt is the focused input consuming these keys first,
+    not where the bindings live: the screen itself now binds Left / Right to
+    step into the strip from NORMAL mode, and typing Left in a half-written
+    prompt still has to move the cursor rather than jump focus into the bar.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        assert chat_input.has_focus
+
+        await pilot.press("a", "b", "c")
+        await pilot.pause()
+        assert chat_input.value == "abc"
+        for key in ("left", "right", "home", "end"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert app.screen.focused is chat_input, f"{key} moved focus off the prompt"
+        assert chat_input.value == "abc"
+
+
+async def test_every_view_jump_key_yields_to_a_text_field():
+    """c, m and t must all type a literal letter into an input, not navigate.
+
+    These keys left the footer, so the guard is no longer about an honest row:
+    `check_action` returning False also stops the key from firing, which is what
+    keeps a one-letter key from hijacking a search box. Asserted for all three
+    together because the guard names them as a set and a new one added to that
+    tuple without a test would silently steal a keystroke.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("m")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        search = app.screen.query_one("#catalog-search", Input)
+        search.focus()
+        await pilot.pause()
+        await pilot.press("c", "m", "t")
+        await pilot.pause()
+
+        assert search.value == "cmt", f"a view key hijacked the field, got {search.value!r}"
+        assert isinstance(app.screen, CatalogScreen), "typing in the filter navigated away"
+
+
+async def test_c_still_cancels_on_tasks_instead_of_leaving():
+    """Tasks deliberately shadows the app-wide `c`, so pin that it does.
+
+    The pre-existing e2e coverage for this key asserts `app.screen.is_current`,
+    which stays true even if `c` had navigated to Chat, so nothing caught the
+    shadow either way. Cancel is why you are on this screen; the shadow is
+    allowed only because the footer names it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("t")
+        await _wait_for_screen(app, pilot, TaskCenter)
+        with mock.patch.object(app.screen, "action_cancel_task") as cancel:
+            await pilot.press("c")
+            await pilot.pause()
+            assert cancel.called, "c stopped cancelling on Tasks"
+        assert isinstance(app.screen, TaskCenter), "c left the Tasks screen"
+
+
+async def test_enter_on_a_mode_pill_switches_chat_mode():
+    """Enter on a focused pill is now the only keyboard route to the mode.
+
+    Removing the toggle's own Left / Right, so one pair of arrows walks the
+    whole strip, made this the single key path, and the help text promises it.
+    The pre-existing coverage calls `action_select()` directly, which bypasses
+    key resolution and focus routing, so nothing pressed a key to prove it.
+    """
+    app = LilbeeApp()
+    with mock.patch(
+        "lilbee.cli.tui.widgets.model_bar.is_model_available",
+        return_value=True,
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+            cfg.chat_mode = "chat"
+
+            await _focus_strip(app, pilot)
+            await pump_until(pilot, lambda: app.screen.focused is not None)
+            while app.screen.focused.id != "chat-mode-search":
+                await pilot.press("right")
+                await pilot.pause()
+
+            # pump_until returns a bool and deliberately does not assert, so
+            # the assertion has to be the caller's.
+            await pilot.press("enter")
+            assert await pump_until(pilot, lambda: cfg.chat_mode == "search"), (
+                f"Enter on the Search pill left the mode at {cfg.chat_mode!r}"
+            )
+
+            await pilot.press("right")
+            await pilot.pause()
+            assert app.screen.focused.id == "chat-mode-chat"
+            await pilot.press("enter")
+            assert await pump_until(pilot, lambda: cfg.chat_mode == "chat"), (
+                f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
+            )
+
+
+async def test_l_walks_into_the_model_strip_from_normal_mode():
+    """NORMAL mode reaches the strip sideways, without knowing about F6.
+
+    Escape parks the cursor on the transcript. h / l are free there, and read as
+    "move along the row" to anyone already scrolling it with j / k.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("l")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), f"l from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+
+async def test_h_enters_the_strip_at_its_far_end():
+    """Walking left into the strip lands on the last role, not the first.
+
+    Entering from the side the key points at keeps one more press from being
+    needed to get where the direction already said.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("h")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"h from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+
+async def test_h_and_l_step_between_roles_once_inside_the_strip():
+    """Inside the strip the bar's own h / l win, so the keys keep one meaning.
+
+    Entered from NORMAL mode rather than via F6: F6 leaves the screen in INSERT,
+    where a printable key is routed back into the prompt as typing before any
+    binding sees it, so h / l are NORMAL-mode keys end to end.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("l")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), "never entered the strip"
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-embed"
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+        # Clamps at the near end instead of wrapping to the mode pills.
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused.id == "model-pick-chat"
+
+
+async def test_typing_h_and_l_in_insert_mode_reaches_the_prompt():
+    """The strip keys must not eat two letters out of every prompt.
+
+    A canary on Textual rather than a guard on these bindings: the focused
+    prompt keeps printable keys, and it goes on keeping them when the strip
+    keys are made ``priority=True`` and when the mode guard below is removed,
+    both measured. It stays because binding plain letters is the one real risk
+    here, and a Textual upgrade is what would break it.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+
+        await pilot.press("h", "e", "l", "l", "o")
+        await pilot.pause()
+        assert screen._chat_input.value == "hello"
+        assert screen._chat_input.has_focus
+
+
+async def test_the_strip_keys_leave_an_open_drawer_alone():
+    """Focus inside a drawer keeps h / l, and the guard must gate the KEY, not
+    just the footer.
+
+    ``check_action`` returning False has to stop the binding from firing at all;
+    a guard that only greys a footer cell would let h yank the cursor out of the
+    drawer. The drawer's pills do not consume letters, so this reaches dispatch.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        for _ in range(12):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.screen._focus_in_drawer():
+                break
+        assert app.screen._focus_in_drawer(), (
+            f"never tabbed into the fleet drawer, landed on {app.screen.focused!r}"
+        )
+
+        before = app.screen.focused
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.screen.focused is before
+
+
+async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
+    """Walking to a pill must be able to act, not only to arrive.
+
+    NORMAL mode's Enter handler drops back to INSERT for any focus target that
+    does not handle Enter itself, and it named two widget types that did not
+    include the mode pills. Nothing could reach a pill from NORMAL mode before
+    h / l, so pressing Enter there switched to INSERT and left the mode alone.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        cfg.chat_mode = "search"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # h enters at the far end of the strip, which is the Chat pill.
+        await pilot.press("h")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"h never reached the Chat pill, landed on {app.screen.focused!r}"
+
+        await pilot.press("enter")
+        assert await pump_until(pilot, lambda: cfg.chat_mode == "chat"), (
+            f"Enter on the Chat pill left the mode at {cfg.chat_mode!r}"
+        )
+        assert not app.screen._insert_mode, "Enter fell through to INSERT instead of the pill"
+
+
+async def test_the_arrows_also_step_into_the_strip_from_normal_mode():
+    """Left / Right are the discoverable route in; h / l are the vim one.
+
+    The transcript is a VerticalScroll and binds Left / Right to horizontal
+    scrolling, but Widget.action_scroll_left raises SkipAction when there is
+    nothing to scroll sideways, so key lookup resumes and reaches the screen.
+    Measured, not assumed: the first version of this work bound only h / l on
+    the belief that the arrows could never get here.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        assert getattr(app.screen.focused, "id", None) == "chat-log"
+
+        await pilot.press("right")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "model-pick-chat"
+        ), f"Right from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+        # And the far end from the other side, after handing the cursor back.
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("left")
+        assert await pump_until(
+            pilot, lambda: getattr(app.screen.focused, "id", None) == "chat-mode-chat"
+        ), f"Left from NORMAL mode left the cursor on {app.screen.focused!r}"
+
+
+async def test_every_footer_cell_names_what_its_keys_do():
+    """No key may sit in the footer without a word, and only a pair may share one.
+
+    This is the readability rule the row is built on. The previous shape put
+    five different destinations behind one "Views" label and three unrelated app
+    keys behind "App", rendering as `tmc^g^oViews` and `f1^tApp`: a user could
+    not tell which key went where. A pair of one action in two directions
+    (`[` / `]`, `<` / `>`) is the only case where a single label still tells the
+    whole truth, so a group is allowed exactly two members.
+    """
+    from collections import Counter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        for view in ("Chat", "Catalog", "Status", "Settings", "Tasks", "Fleet", "Sessions"):
+            app.switch_view(view)
+            assert await pump_until(pilot, lambda v=view: app.active_view == v), (
+                f"never landed on {view}"
+            )
+            shown = [b for _, b, _, _ in app.screen.active_bindings.values() if b.show]
+            assert shown, f"{view} footer has no keys at all"
+            for binding in shown:
+                assert binding.description.strip(), (
+                    f"{view}: {binding.key} is in the footer with no label"
+                )
+            members = Counter(b.group.description for b in shown if b.group is not None)
+            for label, count in members.items():
+                assert count == 2, (
+                    f"{view}: {count} keys share the label {label!r}; only a two-key "
+                    f"pair of one action may share a label"
+                )
+
+
+async def test_a_drawer_toggle_leaves_the_row_on_the_view_it_duplicates():
+    """^g must drop off Fleet and ^o off Sessions: there the key does nothing.
+
+    Both actions return early when the current screen already shows that panel
+    full-screen, so a cell for them on those two rows promises a key that cannot
+    act. Same rule that drops `c` on Chat, and the reason the guard returns
+    False rather than None: None renders the cell greyed but present.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+        # Both are live on a screen that shows neither panel.
+        assert app.check_action("toggle_fleet", ()) is not False
+        assert app.check_action("toggle_sessions", ()) is not False
+
+        app.switch_view("Fleet")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, FleetScreen))
+        assert app.check_action("toggle_fleet", ()) is False, "Fleet advertises its own drawer"
+        assert app.check_action("toggle_sessions", ()) is not False
+
+        app.switch_view("Sessions")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, SessionsScreen))
+        assert app.check_action("toggle_sessions", ()) is False, "Sessions advertises its own"
+        assert app.check_action("toggle_fleet", ()) is not False
+
+
+async def test_an_open_drawer_keeps_the_key_that_closes_it():
+    """The toggle must stay live while its own drawer is open.
+
+    FleetDrawer composes a FleetBody and SessionsDrawer composes a
+    SessionListPanel, so a guard that only asks "is that panel on screen" also
+    fires while the drawer is open and disables the key that closes it. The
+    action closes an open drawer before it ever considers the full-screen case,
+    and the guard has to mirror that order. Regression: this shipped for one
+    session and made both drawers impossible to close from the keyboard.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(app.screen.query("FleetBody"))), (
+            "ctrl+g never opened the fleet drawer"
+        )
+        assert app.check_action("toggle_fleet", ()) is not False, (
+            "the open fleet drawer disabled the key that closes it"
+        )
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: not app.screen.query("FleetBody")), (
+            "ctrl+g could not close the drawer it opened"
+        )
+
+        cfg.sessions_enabled = True
+        app.screen.refresh_bindings()
+        await pilot.press("ctrl+o")
+        assert await pump_until(pilot, lambda: bool(app.screen.query("SessionListPanel"))), (
+            "ctrl+o never opened the sessions drawer"
+        )
+        assert app.check_action("toggle_sessions", ()) is not False, (
+            "the open sessions drawer disabled the key that closes it"
+        )
+        await pilot.press("ctrl+o")
+        assert await pump_until(pilot, lambda: not app.screen.query("SessionListPanel")), (
+            "ctrl+o could not close the drawer it opened"
+        )
+
+
+_FOOTER_KEY_CHARS = "?cmtqvsnoiao<>[]/"
+
+
+async def test_every_footer_key_character_types_into_a_text_field():
+    """No advertised key may steal a keystroke from a text box.
+
+    Sweeps every printable character the footer or the help panel binds, typed
+    into a real field. A focused text widget consumes printable keys before any
+    binding sees them, which is also what takes those keys out of the footer
+    row, so this is the property the whole "keys plus a guard" design rests on.
+    Pinned as a sweep rather than one key at a time because the risk is a key
+    added later without asking whether it is safe next to an input.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+
+        prompt = app.screen.query_one("#chat-input", ChatInput)
+        assert prompt.has_focus
+        # Leading "x" so the prompt is never empty: `?` on an empty prompt is a
+        # deliberate route to help (ChatInput._on_key), and this sweep is about
+        # mid-typing, which is the case that must stay literal.
+        await pilot.press("x")
+        for char in _FOOTER_KEY_CHARS:
+            await pilot.press(char if char.isalnum() else _key_name(char))
+        await pilot.pause()
+
+        assert prompt.value == "x" + _FOOTER_KEY_CHARS, (
+            f"a bound key was swallowed by the footer instead of typed: {prompt.value!r}"
+        )
+        assert isinstance(app.screen, ChatScreen), "typing navigated away from chat"
+
+
+def _key_name(char: str) -> str:
+    """Textual's key name for a punctuation character."""
+    return {
+        "?": "question_mark",
+        "<": "less_than_sign",
+        ">": "greater_than_sign",
+        "[": "left_square_bracket",
+        "]": "right_square_bracket",
+        "/": "slash",
+    }[char]
+
+
+async def test_footer_key_characters_type_into_a_settings_editor():
+    """Same sweep in a Settings editor, which is an Input rather than a TextArea.
+
+    Settings binds `<` / `>` for pane cycling and `^r` for reset, so its editors
+    are the place a pane could cycle mid-word. The crawl-exclude and
+    system-prompt fields are the ones a user types regexes and prose into.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        app.switch_view("Settings")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+
+        editors = [w for w in app.screen.query(Input).results() if w.display]
+        assert editors, "Settings rendered no text field to type into"
+        editor = editors[0]
+        editor.focus()
+        await pump_until(pilot, lambda: editor.has_focus)
+        editor.value = ""
+        await pilot.pause()
+
+        pane_before = getattr(app.screen, "_active_pane", None)
+        for char in _FOOTER_KEY_CHARS:
+            await pilot.press(char if char.isalnum() else _key_name(char))
+        await pilot.pause()
+
+        assert editor.value == _FOOTER_KEY_CHARS, (
+            f"a bound key was swallowed instead of typed: {editor.value!r}"
+        )
+        assert isinstance(app.screen, SettingsScreen), "typing navigated away from settings"
+        assert getattr(app.screen, "_active_pane", None) == pane_before, (
+            "typing < or > cycled the settings pane"
+        )
+
+
+# Every printable character bound anywhere in the TUI, including `S` (run_sync,
+# which is priority=True and therefore the riskiest) and the punctuation the
+# footer advertises.
+_BOUND_CHARS = "?cmtqvsnoidxjkgGarCDbWS<>[]/"
+
+_KEY_NAMES = {
+    "?": "question_mark",
+    "<": "less_than_sign",
+    ">": "greater_than_sign",
+    "[": "left_square_bracket",
+    "]": "right_square_bracket",
+    "/": "slash",
+}
+
+
+def _press_name(char: str) -> str:
+    """Textual's key name for *char*."""
+    return _KEY_NAMES.get(char, char)
+
+
+async def test_every_bound_character_types_into_the_chat_prompt():
+    """No bound key may steal a keystroke from the prompt.
+
+    A canary on Textual, not a guard on our bindings. A focused text widget
+    consumes printable keys and stops the event, and Textual filters consumed
+    keys out of the binding chain, so no binding-side change can break this:
+    making `?` priority=True and adding it to ChatInput._UNCONSUMED_KEYS were
+    both tried and neither reached the binding. That is why no key here needs a
+    guard, and why the footer honestly drops these keys while a field has focus.
+    It stays because a Textual upgrade is what would break it, and because it is
+    the direct answer to "does typing still work everywhere".
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        prompt = app.screen.query_one("#chat-input", ChatInput)
+        assert prompt.has_focus
+
+        # Leading "z" so the prompt is never empty: `?` on an empty prompt is a
+        # deliberate route to help, and this sweep is about the mid-typing case.
+        await pilot.press("z")
+        for char in _BOUND_CHARS:
+            await pilot.press(_press_name(char))
+        await pilot.pause()
+
+        assert prompt.value == "z" + _BOUND_CHARS, (
+            f"a bound key was swallowed instead of typed: {prompt.value!r}"
+        )
+        assert isinstance(app.screen, ChatScreen), "typing navigated away from chat"
+
+
+async def test_every_bound_character_types_into_a_settings_editor():
+    """Same sweep in a Settings editor, an Input rather than a TextArea.
+
+    Settings binds `<` / `>` for pane cycling with priority=True and carries no
+    guard against a focused editor, because it does not need one: the same
+    consume-then-stop behaviour applies to Input, which action_cycle_pane's own
+    docstring records. This pins that, since the crawl-pattern and system-prompt
+    fields are where a user types regexes and prose.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        app.switch_view("Settings")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+
+        editors = [w for w in app.screen.query(Input).results() if w.display]
+        assert editors, "Settings rendered no text field to type into"
+        editor = editors[0]
+        app.screen.set_focus(editor)
+        assert await pump_until(pilot, lambda: editor.has_focus), "could not focus an editor"
+        editor.value = ""
+        await pilot.pause()
+        pane_before = app.screen.query_one("#settings-tabs", TabbedContent).active
+
+        for char in _BOUND_CHARS:
+            await pilot.press(_press_name(char))
+        await pilot.pause()
+
+        assert editor.value == _BOUND_CHARS, (
+            f"a bound key was swallowed instead of typed: {editor.value!r}"
+        )
+        assert isinstance(app.screen, SettingsScreen), "typing navigated away from settings"
+        assert app.screen.query_one("#settings-tabs", TabbedContent).active == pane_before, (
+            "typing < or > cycled the settings pane"
+        )
+
+
+async def test_toggle_fleet_refuses_when_the_view_already_shows_placement():
+    """The action keeps its own guard for callers that bypass the binding.
+
+    `check_action` stops ctrl+g from firing on the Fleet view, so this branch is
+    unreachable by keyboard; it exists for direct callers, the way `/sessions`
+    calls action_toggle_sessions and bypasses check_action entirely. Asserted by
+    calling the action, which is exactly how such a caller reaches it.
+    """
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        app.switch_view("Fleet")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, FleetScreen))
+        assert app.screen.query("FleetBody"), "the Fleet view should show placement"
+
+        app.action_toggle_fleet()
+        await pilot.pause()
+        assert not app.screen.query(FleetDrawer), (
+            "mounted a drawer over the full-screen placement editor"
+        )
