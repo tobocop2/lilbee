@@ -95,3 +95,48 @@ HelpPanel #widget-help MarkdownBlock:last-child {
 .sessions-open BottomBars {
     margin-left: 50;
 }
+
+/* Textual's own Input, Select overlay and Button draw their borders with the
+ * partial-block `tall` style, which does not tile in every terminal font: in
+ * macOS Terminal.app the left edge renders as disconnected blocks and the rails
+ * as broken dashes. lilbee's stylesheets use box-drawing everywhere, so restate
+ * these three in `solid`, keeping Textual's own colors. Colors mirror
+ * textual/widgets/_input.py, _select.py and _button.py; if a Textual upgrade
+ * retints them, test_no_partial_block_borders catches the drift, not this note. */
+Input {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+
+    &.-invalid {
+        border: solid $error 60%;
+    }
+
+    &.-invalid:focus {
+        border: solid $error;
+    }
+}
+
+Select > SelectOverlay {
+    border: solid $border-blurred;
+}
+
+Select:focus > SelectCurrent {
+    border: solid $border;
+}
+
+Button.-style-default {
+    border-top: solid $surface-lighten-1;
+    border-bottom: solid $surface-darken-1;
+
+    &:hover {
+        border-top: solid $surface;
+    }
+
+    &.-active {
+        border-top: solid $surface-darken-1;
+        border-bottom: solid $surface-lighten-1;
+    }
+}

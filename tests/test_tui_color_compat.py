@@ -267,6 +267,63 @@ class TestFilterInstallation:
         assert EightBitPalette.__name__ not in await self._filters_for("truecolor", "iTerm.app")
 
 
+_PARTIAL_BLOCK_BORDERS = frozenset({"tall", "thick", "wide", "panel"})
+_BORDER_EDGES = ("border_top", "border_right", "border_bottom", "border_left")
+
+_SCREENS = [
+    pytest.param(None, None, id="chat"),
+    pytest.param("lilbee.cli.tui.screens.catalog", "CatalogScreen", id="catalog"),
+    pytest.param("lilbee.cli.tui.screens.settings", "SettingsScreen", id="settings"),
+    pytest.param("lilbee.cli.tui.screens.task_center", "TaskCenter", id="tasks"),
+    pytest.param("lilbee.cli.tui.screens.fleet", "FleetScreen", id="fleet"),
+    pytest.param("lilbee.cli.tui.screens.sessions", "SessionsScreen", id="sessions"),
+    pytest.param("lilbee.cli.tui.screens.memories", "MemoriesScreen", id="memories"),
+    pytest.param("lilbee.cli.tui.screens.status", "StatusScreen", id="status"),
+    pytest.param("lilbee.cli.tui.screens.wiki", "WikiScreen", id="wiki"),
+    pytest.param("lilbee.cli.tui.screens.wiki_drafts", "WikiDraftsScreen", id="wiki-drafts"),
+    pytest.param("lilbee.cli.tui.screens.setup", "SetupWizard", id="setup"),
+    pytest.param("lilbee.cli.tui.screens.command_palette", "LilbeeCommandPalette", id="palette"),
+]
+
+
+class TestNoPartialBlockBorders:
+    """Borders must be box-drawing, which tiles in every font.
+
+    Textual's `tall` and `thick` are built from partial block glyphs. Measured in
+    macOS Terminal.app, `tall`'s left edge draws as three disconnected blocks and
+    `thick`'s rails show a seam per cell, so a bordered panel reads as dashes and
+    corner ticks. Checked on the mounted screen rather than by grepping the
+    stylesheets, because Textual's own Input, Select and Button set `tall` in
+    their DEFAULT_CSS and lilbee has to restate those in app.tcss.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("module", "cls_name"), _SCREENS)
+    async def test_screen_has_no_partial_block_border(
+        self, module: str | None, cls_name: str | None
+    ):
+        import importlib
+
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        app = LilbeeAppHost()
+        with ready_services():
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                if module is not None:
+                    app.push_screen(getattr(importlib.import_module(module), cls_name)())
+                for _ in range(4):
+                    await pilot.pause()
+                offenders = [
+                    f"{type(widget).__name__}.{edge}={border[0]}"
+                    for widget in app.screen.query("*")
+                    for edge in _BORDER_EDGES
+                    if (border := getattr(widget.styles, edge, None))
+                    and border[0] in _PARTIAL_BLOCK_BORDERS
+                ]
+        assert not offenders
+
+
 class TestNoEmoji:
     def test_status_icons_are_all_one_cell_wide(self):
         """A double-width icon shifts its row out of the column the others share."""
