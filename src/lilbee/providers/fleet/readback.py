@@ -245,7 +245,7 @@ def check_launch(
     renumbers its verbosity levels. Loud, it names itself as the thing to fix.
     """
     try:
-        text = engine_log_path(log_dir, model_id).read_text(errors="replace")
+        text = engine_log_path(log_dir, model_id).read_text(encoding="utf-8", errors="replace")
     except OSError:
         # No log at all. Usually the engine simply has not written one yet, so
         # this is silent by default. It is also exactly what a wrong environment

@@ -164,6 +164,8 @@ def _intel_gpu_top_output() -> str:
             [binary, "-J", "-s", str(_IGT_SAMPLE_MS)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_IGT_CAPTURE_S,
             check=False,
         )
@@ -254,6 +256,8 @@ def _igt_permission_denied(binary: str) -> bool:
             [binary, "-J", "-s", str(_IGT_SAMPLE_MS)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_IGT_PERM_CHECK_S,
             check=False,
         )

@@ -486,7 +486,10 @@ async def test_action_toggle_drawer_swallows_missing_widget() -> None:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         drawer = screen.query_one("#catalog-detail-drawer")
-        drawer.remove()
+        # Awaited: an unawaited remove leaves the drawer attached with its
+        # children already gone, so the toggle hits a half-removed subtree and
+        # raises NoMatches instead of exercising the no-op branch.
+        await drawer.remove()
         await pilot.pause()
         # Should not raise.
         screen.action_toggle_drawer()

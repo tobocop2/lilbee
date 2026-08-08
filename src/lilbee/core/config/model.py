@@ -567,6 +567,11 @@ class Config(BaseSettings):
     # the last lilbee process exits, leaving the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
+    # Hugging Face's high-performance transfer mode: more connections and much
+    # larger in-flight buffers. Off by default, those ceilings suit a server
+    # rather than a laptop also holding a model in memory.
+    fast_model_downloads: bool = ConfigField(default=False, writable=True)
+
     # Idle minutes before the engine unloads its weights (llama-swap ttl), in
     # every mode: even a persistent engine naps when unused. 0 keeps weights
     # loaded until the engine stops.

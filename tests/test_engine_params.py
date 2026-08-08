@@ -130,6 +130,23 @@ class TestChatCtxCeiling:
         assert ep.chat_ctx_ceiling({"arch": "x"}, Path("/m.gguf")) == 4096
 
 
+class TestMinUsableChatCtx:
+    def test_sums_the_grounded_prompt_and_the_generation_reserve(self, monkeypatch) -> None:
+        # 300 chars of system prompt budget at 3 chars/token = 100 tokens, plus one
+        # 512-token chunk, the 128-token question allowance, the 1024-token
+        # generation reserve, and the 128-token engine margin.
+        monkeypatch.setattr(cfg, "rag_system_prompt", "p" * 300)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        assert ep.min_usable_chat_ctx() == 100 + 512 + 128 + 1024 + 128
+
+    def test_grows_with_the_configured_system_prompt(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "rag_system_prompt", "p" * 300)
+        small = ep.min_usable_chat_ctx()
+        monkeypatch.setattr(cfg, "rag_system_prompt", "p" * 3000)
+        assert ep.min_usable_chat_ctx() == small + 900
+
+
 class TestResolveNGpuLayers:
     def test_embedding_offloads_all(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "n_gpu_layers", 20)

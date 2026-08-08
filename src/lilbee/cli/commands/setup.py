@@ -397,9 +397,10 @@ def token(
             console.print("No running server found (server.json missing).")
         raise SystemExit(1)
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         tok = data.get("token", "")
-    except (json.JSONDecodeError, OSError) as exc:
+    # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         if cfg.json_mode:
             json_output({"error": f"Could not read server.json: {exc}"})
         else:

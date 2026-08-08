@@ -12,6 +12,10 @@ format-check:
 
 typecheck:
 	uv run mypy src/lilbee/
+	# The GPU QA tools read lilbee's own types, so they rot silently when one
+	# changes: multi_gpu_smoke crashed on its first check from #540 until this
+	# was added. The rest of tools/qa/ is not clean yet and is not listed.
+	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup

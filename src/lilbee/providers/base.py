@@ -33,10 +33,19 @@ T_co = TypeVar("T_co", covariant=True)
 GENERATION_RESERVE_TOKENS = 1024
 CONTEXT_WINDOW_MARGIN_TOKENS = 128
 
+# Chars-per-token assumed when BUDGETING context, deliberately harsher than the
+# display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars per token.
+BUDGET_CHARS_PER_TOKEN = 3
+
 
 def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
     """Tokens a prompt may occupy in a *ctx*-token window, reserve and margin removed."""
     return ctx - (num_predict or GENERATION_RESERVE_TOKENS) - CONTEXT_WINDOW_MARGIN_TOKENS
+
+
+def estimate_budget_tokens(text: str) -> int:
+    """Conservative token cost of *text* for budgeting (see BUDGET_CHARS_PER_TOKEN)."""
+    return max(1, len(text) // BUDGET_CHARS_PER_TOKEN)
 
 
 THINK_OPEN_TAG = "<think>"

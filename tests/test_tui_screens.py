@@ -4294,6 +4294,7 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_chat_log_does_not_follow_again_from_part_way_back_down():
     """Scrolling part of the way back is still reading, not catching up.
 
@@ -4972,6 +4973,11 @@ async def test_catalog_install_new_model():
                 patch(
                     "lilbee.app.services.get_services",
                     return_value=MagicMock(model_manager=mock_mgr),
+                ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
@@ -13445,6 +13451,11 @@ async def test_catalog_install_model_resolve_exception():
                     "lilbee.cli.tui.screens.catalog.resolve_filename",
                     side_effect=RuntimeError("fail"),
                 ),
+                # Otherwise this asserts on the runner's free space.
+                patch(
+                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    return_value=None,
+                ),
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
                 screen._install_model(cm)
@@ -14708,13 +14719,20 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Awaited: push_screen returns an AwaitMount, and an unawaited push
+            # leaves the container un-running on a slow runner, which makes the
+            # branch under test return early instead of mounting.
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
+            # _mount_remaining_grid_sections returns early unless the container
+            # is running; assert it rather than let a slow runner turn the
+            # early return into a bare "no heading appeared".
+            assert screen._grid_container.is_running
             before = len(list(screen._grid_container.query(".section-heading")))
             screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
             await _pilot.pause()

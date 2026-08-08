@@ -230,7 +230,7 @@ def test_resolve_model_path_with_registry_skips_get_services(monkeypatch):
     def explode():
         raise AssertionError("get_services must not be called when a registry is passed")
 
-    monkeypatch.setattr(engine_params, "get_services", explode)
+    monkeypatch.setattr("lilbee.app.services.get_services", explode)
     fake_registry = mock.MagicMock()
     fake_registry.resolve.return_value = Path("/m/embed.gguf")
     assert engine_params.resolve_model_path("ref", fake_registry) == Path("/m/embed.gguf")

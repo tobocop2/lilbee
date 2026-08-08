@@ -36,7 +36,7 @@ from lilbee.providers.base import (
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import engine_pin
+from lilbee.providers.fleet.binary import engine_pin, resolve_llama_server
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -65,6 +65,7 @@ from lilbee.providers.fleet.swap_manager import (
     stop_engine,
 )
 from lilbee.providers.fleet.windowing import window_messages
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
 from lilbee.runtime.engine_lock import (
@@ -660,6 +661,47 @@ def _configured_model_for(role: WorkerRole) -> str:
     return getattr(cfg, field) or "" if field else ""
 
 
+def _unusable_engine_reason() -> str | None:
+    """Why no server can start on this host, or None once an engine resolves.
+
+    Planning drops an engine-less host to serving nothing and says so only at
+    debug, so by the time a surface has an empty pool the engine is the one cause
+    it cannot see. Re-resolving here is also what keeps an engine installed
+    mid-session from being reported as still missing.
+    """
+    try:
+        resolve_llama_server()
+    except ProviderError as exc:
+        return str(exc)
+    return None
+
+
+def _chat_needs_local_engine() -> bool:
+    """Whether the configured chat model is one this host has to serve itself.
+
+    A chat ref routed to an SDK backend runs without any local engine, so a
+    missing one is not its failure and must not be stamped on its warm.
+    """
+    ref = _configured_model_for(WorkerRole.CHAT)
+    return bool(ref) and not parse_model_ref(ref).is_remote
+
+
+def _no_server_message(role: WorkerRole) -> str:
+    """User-facing reason *role* has no server, engine state first.
+
+    A missing engine and a model that never placed both arrive as an empty pool,
+    and reading the second onto the first sends the reader to a model
+    configuration that is already correct.
+    """
+    reason = _unusable_engine_reason()
+    if reason is not None:
+        return f"No {role.value} model server is running: {reason}"
+    return (
+        f"No {role.value} model server is running. Make sure the {role.value} "
+        "model is installed and configured, then try again."
+    )
+
+
 class _EngineDemand(NamedTuple):
     """What this process needs an engine to serve: pairs plus its chat window."""
 
@@ -671,6 +713,9 @@ class _EngineDemand(NamedTuple):
     # model even when the ladder never reaches _plan_and_spawn (zero installed
     # models fail _can_build_engine first) or binds an existing engine.
     skipped_not_installed: dict[WorkerRole, str]
+    # Launches the demand plan refused for an unusable window (role -> reason);
+    # recorded even when the ladder binds an engine or never builds one.
+    skipped_unusable_ctx: dict[WorkerRole, str]
 
 
 def _placeable_demand() -> _EngineDemand:
@@ -694,7 +739,7 @@ def _placeable_demand() -> _EngineDemand:
         plan = plan_all_launches()
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
-            return _EngineDemand(set(), 0, {})
+            return _EngineDemand(set(), 0, {}, {})
         raise
     placed = {launch.role for launch in plan.launches}
     total_vram = placeable_total_vram()
@@ -709,6 +754,7 @@ def _placeable_demand() -> _EngineDemand:
         pairs,
         _demanded_chat_ctx(plan.launches, pairs),
         dict(plan.skipped_not_installed),
+        dict(plan.skipped_unusable_ctx),
     )
 
 
@@ -856,6 +902,9 @@ class FleetProvider:
         # installed (role -> ref). The warm finalizer reads it to fail a not-installed
         # chat with a named reason instead of clearing to a silent "not ready" retry.
         self._skipped_not_installed: dict[WorkerRole, str] = {}
+        # Launches the last plan refused for an unusable window (role -> reason);
+        # read by the warm finalizer and _require_clients.
+        self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -915,11 +964,12 @@ class FleetProvider:
         """
         pin = engine_pin()
         demand = _placeable_demand()
-        # Record the demand plan's not-installed skips before walking the
-        # ladder: a bind or an early serve-nothing exit never reaches
-        # _plan_and_spawn, and the warm tracker must still be able to say
-        # "chat model X is not installed" rather than a retryable not-ready.
+        # Record the demand plan's skips before walking the ladder: a bind or an
+        # early serve-nothing exit never reaches _plan_and_spawn, and the warm
+        # tracker must still be able to say "chat model X is not installed"
+        # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
+        self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1092,6 +1142,7 @@ class FleetProvider:
         # _acquire_engine instead of wiping it.
         if plan is not None:
             self._skipped_not_installed = dict(plan.skipped_not_installed)
+            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1241,11 +1292,11 @@ class FleetProvider:
             with self._lock:
                 clients = self._clients.get(role)
         if not clients:
-            raise ProviderError(
-                f"No {role.value} model server is running. Make sure a {role.value} "
-                "model is installed and configured, then try again.",
-                provider=_PROVIDER_NAME,
-            )
+            # A refused launch's recorded reason wins over the generic line.
+            reason = self._skipped_unusable_ctx.get(role)
+            if reason is not None:
+                raise ProviderError(reason, provider=_PROVIDER_NAME)
+            raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
         return list(clients)
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
@@ -1916,19 +1967,28 @@ class FleetProvider:
 
         ``_warm_chat_role`` always ends in READY or ERROR when it runs, so a
         snapshot still on STARTING after a successful preload means the plan had
-        no chat instance. A chat model that isn't installed fails the warm with a
-        user-facing reason so the prompt path renders "failed to load" instead of
-        spinning a "not ready" retry that can never succeed; any other reason (a
-        remote-routed chat has no local server to warm) clears the stamp.
+        no chat instance. A chat model that isn't installed, one whose launch the
+        plan refused for an unusable window, and one with no engine to run it all
+        fail the warm with a user-facing reason so the prompt path renders
+        "failed to load" instead of spinning a "not ready" retry that can never
+        succeed; any other reason (a remote-routed chat has no local server to
+        warm) clears the stamp.
         """
         snapshot = self._warm_tracker.snapshot()
         if snapshot is None or snapshot.phase is not WarmPhase.STARTING:
             return
         missing = self._skipped_not_installed.get(WorkerRole.CHAT)
-        if missing is None:
-            self._warm_tracker.clear()
-        else:
+        if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
+            return
+        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        if unusable is not None:
+            self._warm_tracker.fail(unusable)
+            return
+        if _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
+            self._warm_tracker.fail(reason)
+            return
+        self._warm_tracker.clear()
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
@@ -2298,6 +2358,9 @@ class FleetProvider:
                         raise
                     log.debug("Engine binary unavailable; reload left the fleet as-is")
                     return
+                # Keep the skip reasons in step with the fresh plan.
+                self._skipped_not_installed = dict(plan.skipped_not_installed)
+                self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
                 new = _launches_by_group(plan)
                 # A group restarts when its launches changed OR its running/planned
                 # presence disagrees (covers a group the new plan drops or adds).

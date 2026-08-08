@@ -141,6 +141,19 @@ def _install_engine(
     return swap
 
 
+@pytest.fixture
+def engine_installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Plant a llama-server the conftest engine seal cannot hide.
+
+    An empty pool means something different with and without an engine, so a test
+    about the server state has to say which one it is standing in.
+    """
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cfg, "llama_server_path", str(binary))
+    return binary
+
+
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
     """A provider with a fake swap already up and a client pool per role (no real start)."""
     p = FleetProvider()
@@ -216,7 +229,7 @@ def test_chat_routes_to_chat_server() -> None:
     client.chat_result.assert_called_once()
 
 
-def test_chat_without_server_raises() -> None:
+def test_chat_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})  # no chat client, no in-process fallback
@@ -303,6 +316,41 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_p
     p = FleetProvider()
     p._ensure_fleet()
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+
+
+def test_acquire_engine_records_the_demand_plans_refusal(monkeypatch, tmp_path: Path) -> None:
+    # A refused chat with nothing else to serve never reaches _plan_and_spawn, and
+    # a bind reuses another process's engine; the reason still comes out of the
+    # demand plan so the warm and request paths can name it.
+    reason = "chat model serves only 512 tokens"
+    monkeypatch.setattr(
+        prov_mod,
+        "_placeable_demand",
+        lambda: prov_mod._EngineDemand(set(), 0, {}, {WorkerRole.CHAT: reason}),
+    )
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_in_dir", lambda *_a, **_k: False)
+    assert p._acquire_engine(tmp_path) is False
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: reason}
+
+
+def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_path: Path) -> None:
+    # The plan refused a chat launch whose window cannot hold a grounded prompt;
+    # _plan_and_spawn records the reason so the warm finalizer and the request
+    # path can name it. The installed embed role still starts.
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED),),
+            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+        ),
+    )
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
 def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
@@ -571,11 +619,41 @@ def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> 
     assert captured[WorkerRole.RERANK] is None
 
 
-def test_embed_without_server_raises() -> None:
+def test_embed_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})
-    with pytest.raises(ProviderError, match="No embed model server is running"):
+    with pytest.raises(ProviderError, match="Make sure the embed model is installed"):
+        p.embed(["a"])
+
+
+def test_missing_engine_is_reported_as_a_missing_engine() -> None:
+    """With no engine anywhere, the message must not send the reader to model config.
+
+    Nothing is wrong with the model here, so a message about installing and
+    configuring one costs the reader the whole search before they find the engine.
+    """
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError) as caught:
+        p.embed(["a"])
+
+    message = str(caught.value)
+    assert "llama-server" in message
+    assert "lilbee[engine]" in message
+    assert "Make sure the embed model is installed" not in message
+
+
+def test_unusable_configured_engine_path_is_reported_as_the_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LILBEE_LLAMA_SERVER_PATH pointing nowhere is an engine problem too."""
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "llama_server_path", str(tmp_path / "gone"))
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError, match="LILBEE_LLAMA_SERVER_PATH is not a file"):
         p.embed(["a"])
 
 
@@ -587,7 +665,7 @@ def test_rerank_routes_to_engine() -> None:
     client.rerank.assert_called_once_with("q", ["a", "b"])
 
 
-def test_rerank_without_server_raises() -> None:
+def test_rerank_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
     p = _provider_with_clients({})
@@ -1303,6 +1381,28 @@ def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     assert order == ["reap", "plan"]
 
 
+def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -> None:
+    # A model swap onto a window the fit refuses must surface on the very next
+    # request, so the reload keeps the named skip reasons in step with its plan.
+    swap = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED),),
+            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+        ),
+    )
+    p = FleetProvider()
+    p._swaps = {SwapGroup.CHAT: swap}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+    p._reload_pass()
+    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+
+
 def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
@@ -1737,15 +1837,34 @@ def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> No
     assert seen == [WarmPhase.STARTING]
 
 
-def test_warm_up_blocking_clears_stamp_when_chat_absent_for_other_reasons(monkeypatch) -> None:
-    """No chat instance placed for a non-install reason (a remote-routed chat has
-    no local server to warm): the early STARTING stamp is dropped so the warm line
-    cannot spin forever, and no spurious failure is stamped."""
+def test_warm_up_blocking_clears_stamp_when_chat_routes_remote(monkeypatch) -> None:
+    """A remote-routed chat has no local server to warm: the early STARTING stamp is
+    dropped so the warm line cannot spin forever, and no spurious failure is stamped.
+    An engine is missing here too (the conftest seal), which is not this chat's
+    problem and must not be stamped on its warm."""
+    monkeypatch.setattr(cfg, "chat_model", "ollama/llama3.2:1b")
     p = FleetProvider()
     monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
     p._warm_up_blocking()
     assert p.warm_progress() is None
+
+
+def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypatch) -> None:
+    """A local chat model with no engine to run it: the warm ends in a terminal ERROR
+    naming the engine and the install command. Waiting cannot fix a missing engine, so
+    a 'not ready, send again' bounce would loop for the rest of the session."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert "llama-server binary not found" in (snap.error or "")
+    assert "lilbee[engine]" in (snap.error or "")
 
 
 def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> None:
@@ -1768,6 +1887,27 @@ def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> No
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert (snap.error or "") == "chat model Qwen3 8B is not installed"
+
+
+def test_warm_up_blocking_fails_when_chat_window_is_unusable(monkeypatch) -> None:
+    """Chat launch refused for an unusable window: the warm ends in a terminal
+    ERROR carrying the plan's reason, so the prompt path renders the real cause
+    instead of an endless 'not ready' bounce."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    reason = "The chat model org/m.gguf leaves room for only a 512-token context"
+
+    def _plan_refuses_chat() -> None:
+        p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+
+    monkeypatch.setattr(p, "_ensure_fleet", _plan_refuses_chat)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert (snap.error or "") == reason
 
 
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
@@ -2275,7 +2415,7 @@ class TestChatWithTools:
         client.chat_tools.assert_called_once()
         assert client.chat_tools.call_args.kwargs["tool_choice"] == "auto"
 
-    def test_without_server_raises(self) -> None:
+    def test_without_server_raises(self, engine_installed: Path) -> None:
         from lilbee.providers.base import ProviderError
 
         p = _provider_with_clients({})
@@ -2955,7 +3095,7 @@ def test_require_clients_reprobes_dead_swap(monkeypatch) -> None:
     assert len(clients) == 1
 
 
-def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
+def test_require_clients_no_reprobe_when_swap_none(monkeypatch, engine_installed: Path) -> None:
     """Empty pool + no swap at all (unconfigured role) still raises, no rebuild."""
     from lilbee.providers.base import ProviderError
 
@@ -2973,7 +3113,20 @@ def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
     assert rebuilt["called"] is False
 
 
-def test_require_clients_no_reprobe_when_swap_live(monkeypatch) -> None:
+def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
+    """A chat request against a refused launch fails with the plan's reason (the
+    numbers and the remedy), not the generic 'no server is running' line."""
+    from lilbee.providers.base import ProviderError
+
+    p = FleetProvider()
+    reason = "The chat model org/m.gguf leaves room for only a 512-token context"
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: True)
+    p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+    with pytest.raises(ProviderError, match="512-token context"):
+        p._require_clients(WorkerRole.CHAT)
+
+
+def test_require_clients_no_reprobe_when_swap_live(monkeypatch, engine_installed: Path) -> None:
     """Empty pool + live swap (real misconfiguration) still raises, no rebuild."""
     from unittest import mock
 
@@ -3414,7 +3567,7 @@ def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Pa
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {})
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {}, {})
     )  # nothing placeable
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
@@ -4205,7 +4358,7 @@ def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
 
-    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {})
+    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {}, {})
 
 
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
@@ -4241,7 +4394,7 @@ def test_acquire_engine_records_demand_skips_before_the_ladder(monkeypatch, tmp_
     the missing chat model instead of leaving a retry-forever 'not ready'."""
     skips = {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, skips)
+        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, skips, {})
     )
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "pin")
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
