@@ -3389,10 +3389,9 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
-async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream with the model-switch note."""
-    from lilbee.cli.tui import messages as msg
-
+async def test_apply_model_change_queues_the_switch_while_streaming():
+    """A switch asked for mid-answer keeps the answer: nothing is cancelled and no
+    reload starts until the stream ends."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3402,8 +3401,93 @@ async def testapply_model_change_cancels_stream_when_streaming():
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
-            mock_cancel.assert_called_once_with(msg.STREAM_CANCELLED_MODEL_SWITCH)
+            mock_cancel.assert_not_called()
+            mock_worker.assert_not_called()
+        assert screen._model_switch_queued is True
+        assert screen.swapping_model is False
+
+
+async def test_queued_switch_toast_names_the_model_and_says_it_waits():
+    """The queued switch is announced, so a person knows it was accepted and when
+    it lands, rather than facing an answer that ignored their click."""
+    from lilbee.catalog.formatting import display_label_for_ref
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker"),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen.apply_model_change()
+        assert mock_notify.call_count == 1
+        sent = mock_notify.call_args.args[0]
+        assert sent == msg.MODEL_SWAP_QUEUED.format(name=display_label_for_ref(cfg.chat_model))
+        assert sent != msg.MODEL_SWAP_APPLYING
+
+
+async def test_queued_switch_runs_when_the_stream_ends():
+    """Leaving the streaming state applies the queued swap."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
+            screen.streaming = False
             mock_worker.assert_called_once()
+        assert screen._model_switch_queued is False
+        assert screen.swapping_model is True
+
+
+async def test_queued_switch_runs_when_the_user_cancels_the_stream():
+    """A cancelled answer still lands the queued switch: the user asked for the new
+    model, and cancelling the turn is not a withdrawal of that."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        await pilot.press("i")
+        screen.streaming = True
+        with (
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.get_services"),
+        ):
+            screen.apply_model_change()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            mock_worker.assert_called_once()
+        assert screen.streaming is False
+
+
+async def test_two_queued_switches_swap_once_onto_the_latest_model():
+    """Queueing twice must not run two reloads; cfg already holds the latest ref."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            screen.apply_model_change()
+            screen.streaming = False
+            mock_worker.assert_called_once()
+
+
+async def test_stream_end_without_a_queued_switch_starts_no_reload():
+    """The common path -- an answer finishing with no switch asked for -- must not
+    swap the model."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.streaming = False
+            mock_worker.assert_not_called()
+        assert screen.swapping_model is False
 
 
 async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
@@ -3588,6 +3672,134 @@ async def test_submit_not_rejected_when_idle():
         screen.swapping_model = False
         screen.streaming = False
         assert screen._reject_submit_when_busy() is False
+
+
+async def test_cancel_command_reaches_the_stream_it_cancels():
+    """/cancel is submittable mid-answer. Gating it on not-streaming left the one
+    command whose job is stopping the turn dead exactly when it is wanted."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        assert screen._reject_submit_when_busy("/cancel") is False
+
+
+async def test_model_command_queues_mid_answer_instead_of_being_refused():
+    """/model is submittable mid-answer; the chat screen queues the swap."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        assert screen._reject_submit_when_busy("/model") is False
+
+
+async def test_a_prompt_is_still_rejected_mid_answer():
+    """Relaxing the gate for commands must not let a second prompt through."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("tell me more") is True
+
+
+async def test_an_index_touching_command_is_still_rejected_mid_answer():
+    """/add is not on the allow-list: it would race the live turn."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("/add /tmp/x") is True
+
+
+async def test_allowed_command_still_waits_out_a_model_swap():
+    """The swap hold outranks the streaming allow-list: a half-torn-down fleet
+    must not take a /model or /cancel either."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with patch.object(app, "notify"):
+            assert screen._reject_submit_when_busy("/cancel") is True
+
+
+def test_runs_while_streaming_covers_aliases_and_unknown_names():
+    """Alias lookup matches the command; unknown names stay gated."""
+    from lilbee.cli.tui.command_registry import runs_while_streaming
+
+    assert runs_while_streaming("/cancel") is True
+    assert runs_while_streaming("/model") is True
+    assert runs_while_streaming("/add") is False
+    assert runs_while_streaming("/q") is False
+    assert runs_while_streaming("/nope") is False
+
+
+async def test_slash_model_typed_mid_answer_queues_the_switch():
+    """End to end through the input: typing /model while streaming reaches the
+    handler and queues, rather than toasting the user away."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        await pilot.press("i")
+        screen.streaming = True
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.value = "/model some/ref.gguf"
+        with (
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.apply_active_model"),
+        ):
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen._model_switch_queued is True
+            mock_worker.assert_not_called()
+
+
+async def test_command_palette_runs_cancel_mid_answer_too():
+    """The palette is the other entry point to the same commands; it must not
+    refuse mid-answer what the command bar allows."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
+            screen.run_command("/cancel")
+        assert screen.streaming is False
+        mock_services.return_value.cancel_inference.assert_called_once_with()
+
+
+async def test_command_palette_still_refuses_an_unsafe_command_mid_answer():
+    """Parity cuts both ways: the palette keeps the gate for commands that are
+    not on the allow-list."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "_handle_slash") as mock_handle,
+            patch.object(app, "notify"),
+        ):
+            screen.run_command("/add /tmp/x")
+            mock_handle.assert_not_called()
+
+
+async def test_slash_cancel_typed_mid_answer_stops_the_stream():
+    """End to end through the input: /cancel while streaming reaches the handler
+    and stops the turn, instead of being toasted away as 'already answering'."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        await pilot.press("i")
+        screen.streaming = True
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.value = "/cancel"
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
+            await pilot.press("enter")
+            await pilot.pause()
+        assert screen.streaming is False
+        mock_services.return_value.cancel_inference.assert_called_once_with()
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():

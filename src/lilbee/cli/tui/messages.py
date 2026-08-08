@@ -135,6 +135,7 @@ CMD_MODEL_SET = "Model set to {name}"
 # swap and the embed/vision/rerank swaps in model_pick, which name the model in
 # their own surfaces (the chat input placeholder and warm footer for chat).
 MODEL_SWAP_APPLYING = "Switching model, loading…"
+MODEL_SWAP_QUEUED = "Switching to {name} when this answer finishes"
 MODEL_SWAP_DONE = "Now using {name}"
 MODEL_SWAP_FAILED = "Could not switch model: {error}"
 # Chat-input placeholder while a swap holds the input disabled: names the target
@@ -242,7 +243,6 @@ CMD_WIKI_WIPE_WARNING = (
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
 STREAM_CANCELLED = "\n\n*Response cancelled.*"
-STREAM_CANCELLED_MODEL_SWITCH = "\n\n*Response cancelled: the model was switched.*"
 SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"
 SYNC_STATUS_FAILED = "Sync failed"
