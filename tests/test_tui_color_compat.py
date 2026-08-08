@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import subprocess
 import unicodedata
 from unittest import mock
 
@@ -17,7 +18,12 @@ from textual.color import Color as TextualColor
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.color_compat import EightBitPalette, nearest_eight_bit, needs_eight_bit
+from lilbee.cli.tui.color_compat import (
+    EightBitPalette,
+    nearest_eight_bit,
+    needs_eight_bit,
+    resolve_term_program,
+)
 from lilbee.cli.tui.task_queue import STATUS_ICONS
 
 _COLOR_SYSTEMS = {
@@ -156,6 +162,81 @@ class TestDetection:
         COLORTERM, so without this the filter never installs where it is needed most.
         """
         assert needs_eight_bit("truecolor", "Apple_Terminal")
+
+
+class TestSeeingThroughTmux:
+    """tmux hides the real terminal, and a tmux inside Terminal.app hit the same bug.
+
+    tmux overwrites TERM_PROGRAM with its own name and forwards COLORTERM, so both
+    signals said truecolor and the filter stayed off: running the TUI in tmux inside
+    Terminal.app rendered the same bright green page as bare Terminal.app did.
+    """
+
+    @staticmethod
+    def _completed(stdout: str, returncode: int = 0):
+        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout)
+
+    def test_a_plain_terminal_is_returned_as_is(self):
+        assert resolve_term_program({"TERM_PROGRAM": "Apple_Terminal"}) == "Apple_Terminal"
+
+    def test_an_absent_variable_stays_absent(self):
+        assert resolve_term_program({}) is None
+
+    def test_tmux_is_resolved_to_the_terminal_underneath(self):
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch(
+                "subprocess.run", return_value=self._completed("TERM_PROGRAM=Apple_Terminal\n")
+            ),
+        ):
+            assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "Apple_Terminal"
+
+    def test_a_resolved_terminal_app_turns_the_filter_on(self):
+        """The whole point: the nested case must reach needs_eight_bit as Apple_Terminal."""
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch(
+                "subprocess.run", return_value=self._completed("TERM_PROGRAM=Apple_Terminal\n")
+            ),
+        ):
+            assert needs_eight_bit("truecolor", resolve_term_program({"TERM_PROGRAM": "tmux"}))
+
+    def test_a_truecolor_terminal_under_tmux_stays_off(self):
+        """iTerm users in tmux must not be downgraded."""
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("subprocess.run", return_value=self._completed("TERM_PROGRAM=iTerm.app\n")),
+        ):
+            assert not needs_eight_bit("truecolor", resolve_term_program({"TERM_PROGRAM": "tmux"}))
+
+    def test_no_tmux_binary_falls_back_rather_than_raising(self):
+        with mock.patch("shutil.which", return_value=None):
+            assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param({"return_value": None}, id="nonzero-exit"),
+            pytest.param({"side_effect": OSError("boom")}, id="oserror"),
+            pytest.param({"side_effect": subprocess.TimeoutExpired("tmux", 1)}, id="timeout"),
+        ],
+    )
+    def test_a_failing_tmux_falls_back_rather_than_raising(self, failure: dict):
+        """Startup must not die because a tmux query misbehaved."""
+        if "return_value" in failure:
+            failure = {"return_value": self._completed("", returncode=1)}
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("subprocess.run", **failure),
+        ):
+            assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
+
+    def test_empty_output_falls_back(self):
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tmux"),
+            mock.patch("subprocess.run", return_value=self._completed("\n")),
+        ):
+            assert resolve_term_program({"TERM_PROGRAM": "tmux"}) == "tmux"
 
 
 class TestFilterInstallation:

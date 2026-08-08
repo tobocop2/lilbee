@@ -23,6 +23,8 @@ still separate $background, $surface and $panel on most themes.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -34,6 +36,8 @@ from rich.style import Style
 from textual.filter import LineFilter
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from textual.color import Color as TextualColor
 
 # Rich's name for the color system that needs correcting. Its 16-color path
@@ -48,10 +52,47 @@ EIGHT_BIT_COLOR_SYSTEM = "256"
 # is correct. Rich believes COLORTERM, so the color system alone cannot detect it.
 APPLE_TERMINAL = "Apple_Terminal"
 
+# tmux overwrites TERM_PROGRAM with its own name, hiding the terminal underneath,
+# and passes COLORTERM through, so a tmux session inside Terminal.app looks
+# truecolor-capable from both signals. It keeps the original in its global
+# environment, which is the only way back to the real terminal. tmux forwards
+# 8-bit colors unchanged, so resolving this is enough to fix the nested case.
+TMUX_TERM_PROGRAM = "tmux"
+_TMUX_ENV_TIMEOUT_S = 1.0
+
 
 def needs_eight_bit(color_system: str | None, term_program: str | None) -> bool:
     """Whether truecolor styles must be resolved to the 256 palette before output."""
     return color_system == EIGHT_BIT_COLOR_SYSTEM or term_program == APPLE_TERMINAL
+
+
+def resolve_term_program(environ: Mapping[str, str]) -> str | None:
+    """The terminal actually drawing the screen, seeing through tmux where possible.
+
+    Reports the client that started the tmux server, so attaching one server from
+    two different terminals can still get this wrong; there is no per-client answer
+    to ask for.
+    """
+    term_program = environ.get("TERM_PROGRAM")
+    if term_program != TMUX_TERM_PROGRAM:
+        return term_program
+    tmux = shutil.which("tmux")
+    if tmux is None:
+        return term_program
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, path resolved by which
+            [tmux, "show-environment", "-g", "TERM_PROGRAM"],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=_TMUX_ENV_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return term_program
+    if result.returncode != 0:
+        return term_program
+    _, _, value = result.stdout.strip().partition("=")
+    return value or term_program
 
 
 @lru_cache(maxsize=4096)
