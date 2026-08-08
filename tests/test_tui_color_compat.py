@@ -8,19 +8,21 @@ import unicodedata
 import pytest
 from rich._palettes import EIGHT_BIT_PALETTE
 from rich.cells import cell_len
-from rich.color import Color, ColorType
+from rich.color import Color, ColorSystem, ColorType
 from rich.segment import Segment
 from rich.style import Style
 from textual.color import Color as TextualColor
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.color_compat import (
-    REDUCING_COLOR_SYSTEMS,
-    EightBitPalette,
-    nearest_eight_bit,
-)
+from lilbee.cli.tui.color_compat import EightBitPalette, nearest_eight_bit
 from lilbee.cli.tui.task_queue import STATUS_ICONS
+
+_COLOR_SYSTEMS = {
+    "standard": ColorSystem.STANDARD,
+    "256": ColorSystem.EIGHT_BIT,
+    "truecolor": ColorSystem.TRUECOLOR,
+}
 
 # The surfaces that must stay visually distinct: without them, every panel edge
 # and every card lift disappears into a single flat fill.
@@ -130,13 +132,32 @@ class TestFilter:
 
 
 class TestFilterInstallation:
-    @pytest.mark.parametrize("color_system", ["256", "standard", "windows"])
-    def test_installed_when_the_terminal_reduces(self, color_system: str):
-        assert color_system in REDUCING_COLOR_SYSTEMS
+    """Installed on a real app, so the wiring is covered and not just the constant."""
 
-    def test_absent_on_truecolor(self):
+    @staticmethod
+    async def _filters_for(color_system: str) -> list[str]:
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        app = LilbeeAppHost()
+        with ready_services():
+            async with app.run_test(size=(80, 24)) as pilot:
+                app.console._color_system = _COLOR_SYSTEMS[color_system]
+                await pilot.pause()
+                return [type(line_filter).__name__ for line_filter in app.get_line_filters()]
+
+    @pytest.mark.asyncio
+    async def test_installed_on_a_256_color_terminal(self):
+        assert EightBitPalette.__name__ in await self._filters_for("256")
+
+    @pytest.mark.asyncio
+    async def test_absent_on_truecolor(self):
         """Capable terminals must render exactly as before this change."""
-        assert "truecolor" not in REDUCING_COLOR_SYSTEMS
+        assert EightBitPalette.__name__ not in await self._filters_for("truecolor")
+
+    @pytest.mark.asyncio
+    async def test_absent_on_a_16_color_terminal(self):
+        """Rich's 16-color path already matches properly; 8-bit first would only round twice."""
+        assert EightBitPalette.__name__ not in await self._filters_for("standard")
 
 
 class TestNoEmoji:

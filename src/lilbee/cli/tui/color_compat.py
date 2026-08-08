@@ -39,8 +39,10 @@ from textual.filter import LineFilter
 if TYPE_CHECKING:
     from textual.color import Color as TextualColor
 
-# Color systems that reduce a truecolor style, and so need the correction.
-REDUCING_COLOR_SYSTEMS = frozenset({"256", "eight_bit", "standard", "windows"})
+# Rich's name for the one color system that needs correcting. Its 16-color path
+# already matches against the standard palette properly, and routing that through
+# 8-bit first only adds a rounding step, so "standard" is deliberately excluded.
+EIGHT_BIT_COLOR_SYSTEM = "256"
 
 
 @lru_cache(maxsize=4096)

@@ -23,7 +23,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.color_compat import REDUCING_COLOR_SYSTEMS, EightBitPalette
+from lilbee.cli.tui.color_compat import EIGHT_BIT_COLOR_SYSTEM, EightBitPalette
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -221,7 +221,7 @@ class LilbeeApp(App[None]):
         reducing, so truecolor terminals render byte-identically to before.
         """
         filters = list(super().get_line_filters())
-        if self.console.color_system in REDUCING_COLOR_SYSTEMS:
+        if self.console.color_system == EIGHT_BIT_COLOR_SYSTEM:
             filters.append(EightBitPalette())
         return filters
 
