@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import is_network_path
-from lilbee.providers import model_cache
+from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
@@ -68,7 +69,9 @@ _SPLIT_CHAT_SLOTS = 1
 # (single) / fit_split_ctx (split) toward the cards' real headroom, with each
 # sequence capped at the working-context target. A split may then serve several
 # such sequences, so the served total can exceed the single-window reserve; the
-# per-device headroom test in fit_split_ctx is what bounds it.
+# per-device headroom test in fit_split_ctx is what bounds it. A fit still at
+# its floor after the forced split is refused by plan_launches
+# (_unusable_chat_ctx_reason).
 _MIN_USABLE_CHAT_CTX = 8192
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
@@ -375,24 +378,20 @@ def _role_ctx(
     per-device headroom instead (see :func:`fit_split_ctx`).
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.engine_params import (
-        resolve_chat_ctx,
-        resolve_embed_ctx,
-        resolve_llm_rerank_ctx,
-        resolve_vision_ctx,
-    )
 
     if role is WorkerRole.EMBED:
-        return resolve_embed_ctx(meta, model_path)
+        return engine_params.resolve_embed_ctx(meta, model_path)
     if role is WorkerRole.RERANK:
         if _rerank_mode_for(meta) is RerankMode.LLM:
-            return resolve_llm_rerank_ctx(meta, model_path)
-        return resolve_embed_ctx(meta, model_path)
+            return engine_params.resolve_llm_rerank_ctx(meta, model_path)
+        return engine_params.resolve_embed_ctx(meta, model_path)
     if role is WorkerRole.VISION:
-        return resolve_vision_ctx(model_path)
+        return engine_params.resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
         return _pinned_chat_ctx(model_path, meta)
-    return resolve_chat_ctx(model_path, meta, available_bytes=plan_sizing_budget(device))
+    return engine_params.resolve_chat_ctx(
+        model_path, meta, available_bytes=plan_sizing_budget(device)
+    )
 
 
 def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
@@ -476,9 +475,8 @@ def _pooled_batch_size(role: WorkerRole, rerank_mode: RerankMode | None, ctx: in
 
 def _role_gpu_layers(role: WorkerRole) -> int:
     """GPU-layer offload: chat honors ``cfg.n_gpu_layers``, others offload all layers."""
-    from lilbee.providers.engine_params import resolve_n_gpu_layers
 
-    return resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
+    return engine_params.resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
 
 
 def _flash_enabled() -> bool:
@@ -583,11 +581,10 @@ def chat_cache_type_flags() -> tuple[str | None, str | None]:
 def _vision_mmproj(model_ref: str) -> Path | None:
     """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import find_mmproj_for_model
 
     try:
-        return find_mmproj_for_model(resolve_model_path(model_ref))
+        return find_mmproj_for_model(engine_params.resolve_model_path(model_ref))
     except (ProviderError, OSError, ValueError, KeyError):
         return None
 
@@ -608,10 +605,9 @@ def _estimate_role(
     roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
     Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    path = resolve_model_path(model_ref)
+    path = engine_params.resolve_model_path(model_ref)
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
     # Size the single-instance footprint against the placement reserve (a usable
@@ -684,7 +680,6 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
     model that cannot hold weights + this floor on one card is tensor-split.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.engine_params import chat_ctx_ceiling
 
     if role is WorkerRole.CHAT:
         if cfg.num_ctx is not None:
@@ -692,7 +687,7 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
         return apply_ctx_downshift(
             role,
             min(
-                chat_ctx_ceiling(meta, model_path),
+                engine_params.chat_ctx_ceiling(meta, model_path),
                 max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX),
             ),
         )
@@ -724,11 +719,10 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
     Estimates each role at its launch ceiling (ctx x slots) with the candidate
     tensor-split ratio, so the planner reserves enough cards for the busiest one.
     """
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
-        path = resolve_model_path(model_refs[role])
+        path = engine_params.resolve_model_path(model_refs[role])
         meta = read_gguf_metadata(path)
         mmproj = _vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
         slots = _placement_estimate_slots(role, meta)
@@ -763,18 +757,14 @@ def _chat_split_ctx_objective(
     """
     if WorkerRole.CHAT not in model_refs:
         return None, 0
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    path = resolve_model_path(model_refs[WorkerRole.CHAT])
+    path = engine_params.resolve_model_path(model_refs[WorkerRole.CHAT])
     meta = read_gguf_metadata(path)
     target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta)
 
     def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
-        # circular: fleet.ctx -> engine_params -> app.services
-        from lilbee.providers.fleet.ctx import fit_split_ctx
-
-        return fit_split_ctx(
+        return fleet_ctx.fit_split_ctx(
             path,
             meta=meta,
             slots=_SPLIT_CHAT_SLOTS,
@@ -804,10 +794,9 @@ def _role_weights_bytes(role: WorkerRole, ref: str) -> int:
     """The model's weight bytes on disk (plus the mmproj for vision): a
     ground-truth lower bound on residency. 0 when the file cannot be resolved."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.engine_params import resolve_model_path
 
     try:
-        size = _weights_bytes(resolve_model_path(ref))
+        size = _weights_bytes(engine_params.resolve_model_path(ref))
         if role is WorkerRole.VISION:
             mmproj = _vision_mmproj(ref)
             if mmproj is not None:
@@ -1017,10 +1006,12 @@ def _analytic_footprint_floor(
     failure. Without a readable header the per-token fallback still applies:
     zero is the one answer that is certainly wrong.
     """
-    from lilbee.providers import model_cache
-    from lilbee.providers.engine_params import _kv_elem_bytes_for_cfg
 
-    kv_bytes = model_cache.kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg()) * ctx * max(slots, 1)
+    kv_bytes = (
+        model_cache.kv_bytes_per_token(meta, engine_params._kv_elem_bytes_for_cfg())
+        * ctx
+        * max(slots, 1)
+    )
     overhead = int(weights * model_cache._BUFFER_OVERHEAD_FRACTION)
     return weights + kv_bytes + overhead
 
@@ -1102,11 +1093,10 @@ def _sizing_failure_fallback(
 def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
     """:func:`_analytic_footprint_floor` for *role*, reading what metadata it can."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
-        path = resolve_model_path(ref)
+        path = engine_params.resolve_model_path(ref)
         meta = read_gguf_metadata(path)
     except (ProviderError, OSError, ValueError):
         meta = None
@@ -1120,11 +1110,10 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
 def _ref_is_moe(ref: str) -> bool:
     """Whether *ref*'s GGUF declares routed experts; False when it cannot be read."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
-        return _is_moe(read_gguf_metadata(resolve_model_path(ref)))
+        return _is_moe(read_gguf_metadata(engine_params.resolve_model_path(ref)))
     except (ProviderError, OSError):
         return False
 
@@ -1158,9 +1147,7 @@ def _host_bytes_must_be_resident(role: WorkerRole, ref: str) -> bool:
     if role is not WorkerRole.CHAT:
         return False
     try:
-        from lilbee.providers.engine_params import resolve_model_path
-
-        path = resolve_model_path(ref)
+        path = engine_params.resolve_model_path(ref)
     except (ProviderError, OSError, ValueError):
         return False
     if not is_network_path(path):
@@ -1409,15 +1396,11 @@ def _launch_for(
     model_path: Path | None = None,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.engine_params import (
-        _EMBED_CTX_MARGIN,
-        resolve_model_path,
-    )  # circular: fleet.planning -> engine_params -> app.services
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     # The self-check holds a downloaded file rather than a configured reference,
     # so it hands the path over instead of asking for one to be resolved.
-    model_path = model_path or resolve_model_path(model_ref)
+    model_path = model_path or engine_params.resolve_model_path(model_ref)
     weights_bytes = _weights_bytes(model_path)
     meta = read_gguf_metadata(model_path)
     from lilbee.core.config import cfg
@@ -1453,16 +1436,13 @@ def _launch_for(
         )
     split_slots = _SPLIT_CHAT_SLOTS
     if split_chat:
-        # circular: fleet.ctx -> engine_params -> app.services
-        from lilbee.providers.fleet.ctx import fit_split_ctx
-
         reserved = reserved_by_device or {}
         # Headroom left after the embed/rerank servers on each shared card, not the
         # card's raw free VRAM, so the chat KV doesn't over-commit.
         per_device_free = [max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen]
 
         def _split_fit(slots: int) -> int:
-            return fit_split_ctx(
+            return fleet_ctx.fit_split_ctx(
                 model_path,
                 meta=meta,
                 slots=slots,
@@ -1532,7 +1512,7 @@ def _launch_for(
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
-        token_cap=max(1, ctx - _EMBED_CTX_MARGIN) if cross_encoder_pooled else None,
+        token_cap=max(1, ctx - engine_params._EMBED_CTX_MARGIN) if cross_encoder_pooled else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
         weights_bytes=weights_bytes,
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
@@ -2489,6 +2469,9 @@ class FleetPlan:
     # ref), so the warm path can fail a not-installed chat with a named reason
     # instead of spinning the warm line forever.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
+    # Launches refused for a window below the minimum grounded prompt
+    # (role -> user-facing reason with the numbers).
+    skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
 
 
 def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
@@ -2523,6 +2506,34 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
         )
 
 
+def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
+    """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
+
+    ``None`` for non-chat roles, for a window that holds the minimum grounded
+    prompt, and for user knobs that ask for a smaller one (a ``num_ctx`` pin,
+    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``).
+    """
+    from lilbee.core.config import cfg
+
+    if launch.role is not WorkerRole.CHAT or cfg.num_ctx is not None:
+        return None
+    needed = engine_params.min_usable_chat_ctx()
+    # User knobs capping the window below the minimum are honored (the num_ctx
+    # pin bypasses above).
+    asked = min(cfg.chat_n_ctx_target, cfg.num_ctx_max or cfg.chat_n_ctx_target)
+    if asked < needed:
+        return None
+    if launch.ctx >= needed:
+        return None
+    return (
+        f"The chat model {launch.model} loads, but the memory left after its weights "
+        f"backs only a {launch.ctx}-token context, and a grounded answer needs about "
+        f"{needed} tokens (system prompt, a retrieved source, the question, and room "
+        "for the answer), so it will not be served. Use a smaller model or a smaller "
+        "quant, or set num_ctx to force a larger window."
+    )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -2553,22 +2564,30 @@ def plan_launches(
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
+    launches: list[InstanceLaunch] = []
+    skipped_unusable_ctx: dict[WorkerRole, str] = {}
+    for plan in placement.instances:
+        launch = _launch_for(
+            plan,
+            model_refs[plan.role],
+            binary,
+            by_index,
+            unified_budget=unified_budget,
+            chat_reservation=reservation,
+            reserved_by_device=reserved_by_device,
+            est_vram_bytes=charged.get(plan.role, 0),
+        )
+        reason = _unusable_chat_ctx_reason(launch)
+        if reason is not None:
+            skipped_unusable_ctx[launch.role] = reason
+            log.warning(reason)
+            continue
+        launches.append(launch)
     return FleetPlan(
-        launches=tuple(
-            _launch_for(
-                plan,
-                model_refs[plan.role],
-                binary,
-                by_index,
-                unified_budget=unified_budget,
-                chat_reservation=reservation,
-                reserved_by_device=reserved_by_device,
-                est_vram_bytes=charged.get(plan.role, 0),
-            )
-            for plan in placement.instances
-        ),
+        launches=tuple(launches),
         co_tenants=placement.co_tenants,
         skipped_not_installed=skipped_not_installed,
+        skipped_unusable_ctx=skipped_unusable_ctx,
     )
 
 
