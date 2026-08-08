@@ -6136,12 +6136,17 @@ async def test_catalog_update_sort_label_swallows_missing_widget():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Awaited: an unawaited push leaves the screen un-mounted, so the
+            # NoMatches below would come from the screen rather than from the
+            # removed label.
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Remove the sort-label widget so the next call hits NoMatches.
-            screen.query_one("#sort-label", Static).remove()
+            # Awaited: the branch is only genuinely reached once the removal
+            # has completed.
+            await screen.query_one("#sort-label", Static).remove()
             await _pilot.pause()
             # Must not raise.
             screen._update_sort_label()
@@ -7722,7 +7727,7 @@ async def test_cmd_add_error_in_background(tmp_path):
             assert app.screen._sync_active is False
 
 
-def test_build_add_progress_callback_throttles_embed_updates() -> None:
+def test_build_add_progress_callback_throttles_embed_updates(monkeypatch) -> None:
     """Two EMBED events within ``_ADD_EMBED_THROTTLE_SECONDS`` collapse to one update.
 
     Without this the chat /add reporter would repaint hundreds of times a
@@ -7730,17 +7735,29 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
     """
     from unittest.mock import MagicMock
 
+    from lilbee.cli.tui.screens import chat_helpers
     from lilbee.cli.tui.screens.chat import build_add_progress_callback
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EmbedEvent, EventType
 
+    # Drive the throttle off a clock this test owns. Reading the real one made
+    # the window depend on how long two statements take, which a loaded runner
+    # can stretch past 0.15s.
+    clock = 1000.0
+    monkeypatch.setattr(chat_helpers.time, "monotonic", lambda: clock)
+
     reporter = MagicMock(spec=ProgressReporter)
     callback = build_add_progress_callback(reporter)
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=1, total_chunks=10))
-    # Second event arrives immediately; throttle returns early before reporter.update.
+    # Second event arrives inside the window; throttle returns early before update.
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=2, total_chunks=10))
-    # Only one update from the EMBED branch (the first call).
     assert reporter.update.call_count == 1
+
+    # Past the window the next event gets through, so the throttle delays
+    # updates rather than dropping every one after the first.
+    clock += chat_helpers._ADD_EMBED_THROTTLE_SECONDS * 2
+    callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=3, total_chunks=10))
+    assert reporter.update.call_count == 2
 
 
 def test_build_sync_progress_callback_routes_extract_event() -> None:
