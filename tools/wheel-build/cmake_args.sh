@@ -33,35 +33,41 @@ esac
 #                     runners would otherwise crash with "Illegal
 #                     instruction" on weaker pool members.
 #
-# Why we don't use GGML_CPU_ALL_VARIANTS + GGML_BACKEND_DL:
-#   The DL-based runtime variant dispatch builds correctly but
-#   llama-cpp-python's Python binding does not call
-#   ggml_backend_load_all_from_path at startup, so no CPU backend is
-#   registered at runtime and Llama(model_path=...) fails with
-#   "Failed to load model from file" (no compute device available).
-#   Confirmed in b443. The DL split is a llama.cpp-only mechanism;
-#   adopting it requires a llama-cpp-python upstream change.
-#
-# Instead: cap the single libggml-cpu.so at AVX baseline (Sandy Bridge
+# GPU cells cap the single libggml-cpu.so at AVX baseline (Sandy Bridge
 # 2011+). Explicitly disable AVX2 / FMA / F16C / BMI2 / AVX512 / VNNI
 # so ggml's CMake (which auto-enables those when GGML_NATIVE=OFF on a
 # build host that supports them) doesn't bake them in. The resulting
 # wheel runs on any x86_64 CPU from 2011 forward — a Sandy Bridge Xeon
-# E5-2609 included.
+# E5-2609 included. Those users are on GPU paths for chat and only hit
+# CPU for embedding fallback, where the AVX2 loss is negligible.
 #
-# Modern users (Haswell+) lose ~10–20% CPU perf vs. an AVX2-tuned wheel,
-# but they're typically on GPU paths (Vulkan / CUDA) for chat and only
-# hit CPU for embedding fallback, where the loss is negligible. Users
-# who want the absolute fastest CPU path can install from the per-CUDA
-# extra-index — those wheels target a specific GPU and don't care about
-# CPU portability.
+# The macOS x86_64 CPU cell instead builds GGML_CPU_ALL_VARIANTS +
+# GGML_BACKEND_DL: one libggml-cpu-<variant>.so per x86 feature level
+# (x64 through sapphirerapids) beside the binary, and libllama itself
+# calls ggml_backend_load_all() at backend init to pick the best one
+# at runtime. Chat runs entirely on CPU there, and the AVX cap
+# costs Haswell+ Macs ~2x prompt speed (measured on a Broadwell 2015
+# MBP: 14.6 -> 34.1 tok/s prompt, 11.7 -> 17.6 gen; the loader picked
+# the haswell variant). The x64/sse42 variants sit below the AVX cap,
+# so the pre-AVX compat tail is covered by the same bundle.
+#
+# An earlier GGML_CPU_ALL_VARIANTS attempt was reverted (44aea6bd1)
+# because the then-shipped llama-cpp-python binding never loads DL
+# backends. The engine runtime is llama-server now, which does. The
+# GPU cells stay single-variant: under GGML_BACKEND_DL the GPU
+# backends also become DL modules, and that bundling is unvalidated.
 #
 # arm64: NEON is mandatory in ARMv8 so a single baseline variant covers
 # every aarch64 system.
-# LLAMA_BUILD_UI=OFF: skip the npm/vite server-UI build (flaky on Windows
-# runners); assets fall back to the prebuilt HF bucket download.
-common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
-common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
+# LLAMA_BUILD_UI=OFF + LLAMA_USE_PREBUILT_UI=OFF: no npm/vite UI build
+# (flaky on Windows runners) and no HF-bucket asset download; the
+# bucket keeps only its newest revision, so the pinned fetch 404s on
+# any uncached rebuild (b1 is already gone). lilbee never serves the
+# web UI; the server builds with an empty asset table.
+ui_off="-DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF"
+common_x86="${ui_off} -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
+dispatch_x86="${ui_off} -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"
+common_arm="${ui_off} -DGGML_NATIVE=OFF"
 
 # Every AMD target lilbee wants to ship for: gfx906 (MI50), gfx908 (MI100),
 # gfx90a (MI200), gfx942 (MI300), gfx950 (MI350), gfx1030 (RDNA2), gfx1100/1101/1102
@@ -116,7 +122,7 @@ case "${backend}_${runner_os}" in
     if [ "${target_arch}" = "x86_64" ]; then
       # Disable OpenSSL find_package: arm64 runner has no x86_64 libssl,
       # so cpp-httplib's TLS code fails to link. We don't ship llama-server.
-      args="${common_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
+      args="${dispatch_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
     else
       args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
     fi

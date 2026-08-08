@@ -69,10 +69,12 @@ done
 # the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
-    # --include-package pulls the __init__.py and, on Linux, the .so libraries
-    # (Nuitka classifies a bare .so as an extension module and places it beside
-    # the binary). --include-package-data ships the executables (llama-server,
-    # llama-swap, gguf-parser) as data.
+    # --include-package pulls the __init__.py and every bin/*.so: the Linux
+    # ggml/llama libraries and the macOS libggml-cpu-<variant>.so CPU-dispatch
+    # modules (Nuitka classifies a bare .so as an extension module on both
+    # platforms and places it beside the binary verbatim).
+    # --include-package-data ships the executables (llama-server, llama-swap,
+    # gguf-parser) as data.
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
     LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
     # Platform gap: --include-package-data keeps the extensionless executables on
@@ -80,9 +82,9 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     # Windows .exe executables (Nuitka routes those through its DLL/program
     # handling, discarding what nothing it scans references) -- shipping a server
     # that cannot start or is not found. Force every engine file in verbatim with
-    # --include-data-files (rpath and exec bit preserved), EXCEPT Linux .so: those
-    # are Python extension modules Nuitka already includes via --include-package,
-    # and data-files-ing a .so FATALs with an extension/data conflict.
+    # --include-data-files (rpath and exec bit preserved), EXCEPT .so: those are
+    # already included via --include-package above, and data-files-ing a .so
+    # FATALs with an extension/data conflict.
     ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
     for _f in "${ENGINE_BIN}"/*; do
         [ -f "${_f}" ] || continue

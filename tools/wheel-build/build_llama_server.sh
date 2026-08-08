@@ -144,6 +144,20 @@ while IFS= read -r -d '' lib; do
 done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
+# The macOS x86_64 CPU cell builds GGML_CPU_ALL_VARIANTS (see cmake_args.sh). That
+# flag is a cached -D like any other: cmake ignores an unknown spelling instead of
+# failing, and the fallback single libggml-cpu would carry the AVX2 the build host
+# supports -- a SIGILL on the pre-Haswell Macs this cell exists for, invisible on
+# an AVX2 runner. Count the variant modules instead of trusting the flag.
+if [ "${backend}" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch:-$(uname -m)}" = "x86_64" ]; then
+  variant_count=$(find "${pkg_bin_dir}" -name 'libggml-cpu-*.so' | wc -l)
+  if [ "${variant_count}" -lt 2 ]; then
+    echo "found ${variant_count} libggml-cpu-<variant>.so in ${pkg_bin_dir}:" \
+      "GGML_CPU_ALL_VARIANTS did not take effect" >&2
+    exit 1
+  fi
+fi
+
 # A CUDA build links the CUDA 12 runtime dynamically, and those libraries live in the
 # toolkit, never in the build output copied above. Only libcuda / nvcuda comes from the
 # driver; cudart, cublas and cublasLt do not, so they ship beside the binary like every

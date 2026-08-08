@@ -145,8 +145,10 @@ jobs:
           # the Intel image can queue longer than the arm64 pool -- this asset must
           # never block the release fan-out. The install below pins wheel resolution
           # to the x86_64 target rather than the runner, so the deps come in at their
-          # oldest macOS build (pyarrow's 12.0 is the binding one) and the AVX
-          # baseline reaches every Ivy Bridge / Haswell Mac, which cap at macOS 12.
+          # oldest macOS build (pyarrow's 12.0 is the binding one) and reach every
+          # Ivy Bridge / Haswell Mac, which cap at macOS 12. The engine picks its
+          # CPU variant at runtime (see cmake_args.sh), so AVX2 Macs are not held
+          # to the deps' AVX floor.
           - os: macos-15-intel
             asset_name: lilbee-macos-x86_64
             backend: cpu
