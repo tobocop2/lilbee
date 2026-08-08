@@ -49,6 +49,7 @@ def test_call_from_thread_drops_when_the_node_has_no_reachable_app():
     attribute '_MessagePump__parent'", escaping a daemon thread and failing the
     run as a PytestUnhandledThreadExceptionWarning on both Linux and Windows.
     """
+
     class _NodeWithoutApp:
         """A real class, not a MagicMock: a mock's ``app`` resolves to a child
         mock whatever the type says, so the guarded branch is never reached and
