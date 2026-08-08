@@ -10227,8 +10227,13 @@ class TestWikiDraftsScreen:
 
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
-            screen.query_one("#wiki-drafts-search", TextualInput).value = "zzz"
-            await pilot.pause()
+            search = screen.query_one("#wiki-drafts-search", TextualInput)
+            search.focus()
+            # Typed rather than assigned: a key event carries the value change
+            # and its Changed handler through the pump in one awaited step,
+            # where an assignment leaves the refresh a pump cycle behind.
+            await pilot.press("z", "z", "z")
+            assert search.value == "zzz", "precondition: the keys reached the filter"
             diff = screen.query_one("#wiki-drafts-diff", Static)
             assert diff.content == msg.WIKI_DRAFTS_NO_MATCHES.format(filter="zzz")
 
