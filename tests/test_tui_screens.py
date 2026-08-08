@@ -14708,13 +14708,20 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Awaited: push_screen returns an AwaitMount, and an unawaited push
+            # leaves the container un-running on a slow runner, which makes the
+            # branch under test return early instead of mounting.
+            await app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
+            # The branch under test returns early unless the container is
+            # running; assert it so a regression reads as the precondition
+            # failing, not as a bare "no heading appeared".
+            assert screen._grid_container.is_running
             before = len(list(screen._grid_container.query(".section-heading")))
             screen._mount_remaining_grid_sections(screen._grid_container, sections, hf_count=1)
             await _pilot.pause()
