@@ -706,6 +706,14 @@ async def test_mouse_down_on_a_detached_session_row_does_not_crash(sessions, mon
         rows = list(drawer.query(".session-row-meta").results())
         assert rows, "the drawer rendered no session rows"
         target = rows[0]
+        # The drawer is mounted but not necessarily laid out: until it is, the
+        # row's region is empty and the point below lands on whatever occupies
+        # the top-left corner, so the hit-test asserts against the wrong widget.
+        for _ in range(10):
+            if target.region.size:
+                break
+            await pilot.pause()
+        assert target.region.size, "the session row was never laid out, so it has no hit area"
         x = target.region.offset.x + 2
         y = target.region.offset.y
 
