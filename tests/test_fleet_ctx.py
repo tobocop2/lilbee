@@ -132,3 +132,47 @@ class TestFitSplitCtx:
         monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
         result = _fit(Path("/m.gguf"), slots=1, per_device_free_bytes=[40000, 10000])
         assert result <= int(10000 * 0.9)
+
+    def test_a_tight_group_is_sized_per_device_not_as_one_card(self, monkeypatch) -> None:
+        # A tight placement launches with no ratio so the engine runs its own fit
+        # pass, and the estimator reads the ratio as its device count. Passing the
+        # emptiness on made it size the whole model as a single card, which no
+        # card's headroom holds, so every context down to the floor was rejected
+        # and a 70B on two 24 GiB cards was refused a window it measurably serves.
+        seen: list[tuple[int, ...]] = []
+
+        def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+            ratio: tuple[int, ...] = kw["tensor_split"]  # type: ignore[assignment]
+            seen.append(ratio)
+            # Weights split across the cards, plus KV proportional to the context.
+            per_device = tuple(20 * _GB + int(kw["ctx"]) * int(kw["slots"]) for _ in ratio)
+            return GgufVramEstimate(
+                vram_bytes=sum(per_device),
+                ram_bytes=0,
+                unified_bytes=0,
+                per_device_vram=per_device,
+            )
+
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        result = _fit(
+            Path("/m.gguf"), slots=1, ratio=(), per_device_free_bytes=[24 * _GB, 24 * _GB]
+        )
+        assert seen and all(len(r) == 2 for r in seen)
+        assert result > _DYNAMIC_CTX_FLOOR
+
+    def test_a_single_card_keeps_its_empty_ratio(self, monkeypatch) -> None:
+        # One card is not a split; deriving a ratio there would make the estimator
+        # report a breakdown the launch never asks for.
+        seen: list[tuple[int, ...]] = []
+
+        def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+            seen.append(kw["tensor_split"])  # type: ignore[arg-type]
+            return GgufVramEstimate(
+                vram_bytes=1, ram_bytes=0, unified_bytes=0, per_device_vram=(1,)
+            )
+
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 8192)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        _fit(Path("/m.gguf"), slots=1, ratio=(), per_device_free_bytes=[24 * _GB])
+        assert seen and all(r == () for r in seen)

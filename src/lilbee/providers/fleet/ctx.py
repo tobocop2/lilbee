@@ -12,16 +12,16 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
+from lilbee.providers.fleet.placement import _vram_proportional_split
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
 
 # Extra VRAM held back on the busiest card on top of the gguf-parser estimate.
 # In --split-mode layer, gguf-parser ignores --main-gpu and so under-models the
 # compute graph + logits that real llama.cpp concentrates on the main device.
-# Default 0 (trust the estimate); raise once measured on a multi-GPU pod. This
-# matters more than it used to: a split chat may now serve several full windows
-# where it once served one, so the unclaimed headroom that happened to cushion
-# this skew is what those extra windows are spending.
+# Measured on 2x4090 (70B Q4_K_M, ctx 5888): the main device lands 0.26 GiB over
+# its estimate, an order of magnitude inside the usable_vram_fraction already held
+# back per card, so the reserve stays 0.
 _MAIN_GPU_SKEW_RESERVE_BYTES = 0
 
 
@@ -52,6 +52,11 @@ def fit_split_ctx(
     the per-device check below against real free bytes, not the placement
     reserve. Falls to the floor when even the floor overflows; plan_launches
     refuses a chat launch left at a window below the minimum grounded prompt.
+
+    An empty *ratio* is the tight placement, which launches without one so the
+    engine runs its own fit pass. It is also the estimator's only device-count
+    signal, so size against a headroom-proportional one here: without it
+    gguf-parser reports the whole model as a single card and nothing fits.
     """
     headrooms = [
         int(free * usable_vram_fraction()) - _MAIN_GPU_SKEW_RESERVE_BYTES
@@ -59,6 +64,9 @@ def fit_split_ctx(
     ]
     if min(headrooms) <= 0:
         return _DYNAMIC_CTX_FLOOR
+    if not ratio and len(per_device_free_bytes) > 1:
+        by_position = {i: float(free) for i, free in enumerate(per_device_free_bytes)}
+        ratio = _vram_proportional_split(list(by_position), by_position)
     # Bound the per-slot search by the planned working context, not just the model's
     # trained max: filling VRAM to that max OOM'd large tensor-split models under
     # load (a 235B took the full 262144-token ctx and crashed). The caller passes the

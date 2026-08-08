@@ -17,6 +17,7 @@ from lilbee.providers.fleet.devices import (
     FleetDevice,
     visible_env,
 )
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -3421,3 +3422,69 @@ class TestDeviceProbeEmptyRetry:
         )
         planning_mod.resolve_devices(Path("/x"))
         assert calls["n"] == 1  # no GPU present, empty is authoritative
+
+
+class TestATightSplitSizesPerDeviceButLaunchesWithoutARatio:
+    """The tight group's two halves disagree on purpose.
+
+    The launch withholds ``--tensor-split`` so the engine runs its own fit pass
+    and can spill what does not fit (see test_tight_split_lets_the_engine_fit).
+    The estimate cannot: the ratio is its only device-count signal, and without
+    one gguf-parser sizes the whole model as a single card, so the context fit
+    rejects every window down to its floor and the chat launch is refused.
+    """
+
+    # 40 GiB of weights over two 23 GiB cards: one shard clears the 0.9 headroom,
+    # the whole model on one card does not. That gap is what the fit turns on.
+    _WEIGHTS = 40 * _GB
+    _KV_PER_TOKEN = 65536
+
+    @classmethod
+    def _tight_chat_launch(cls, monkeypatch) -> tuple[InstanceLaunch, list[tuple[int, ...]]]:
+        seen: list[tuple[int, ...]] = []
+
+        def _capture(_path, **kwargs) -> GgufVramEstimate:
+            ratio: tuple[int, ...] = kwargs.get("tensor_split", ())
+            seen.append(ratio)
+            # gguf-parser reports one entry per split proportion, and with no
+            # proportions it sizes the instance as a single device.
+            shards = len(ratio) or 1
+            kv = int(kwargs["ctx"]) * int(kwargs["slots"]) * cls._KV_PER_TOKEN
+            per_device = tuple((cls._WEIGHTS + kv) // shards for _ in range(shards))
+            return GgufVramEstimate(
+                vram_bytes=sum(per_device),
+                ram_bytes=0,
+                unified_bytes=sum(per_device),
+                per_device_vram=per_device,
+            )
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _capture)
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.estimate_instance_footprint", _capture)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 40 * _GB)
+        monkeypatch.setattr(
+            planning_mod.engine_params, "resolve_model_path", lambda _r: Path("/m/m.gguf")
+        )
+        by_index = {
+            0: FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB),
+            1: FleetDevice("CUDA", 1, "gpu", 24 * _GB, 23 * _GB),
+        }
+        # devices without a ratio is what _place_tight emits.
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=())
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), by_index)
+        return launch, seen
+
+    def test_the_estimate_gets_a_two_card_ratio(self, monkeypatch) -> None:
+        _launch, seen = self._tight_chat_launch(monkeypatch)
+        assert seen, "the context fit never estimated"
+        assert all(len(ratio) == 2 for ratio in seen), seen
+
+    def test_the_launch_still_withholds_the_flag(self, monkeypatch) -> None:
+        launch, _seen = self._tight_chat_launch(monkeypatch)
+        assert "--tensor-split" not in launch.argv
+
+    def test_the_window_clears_the_floor(self, monkeypatch) -> None:
+        from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR
+
+        launch, _seen = self._tight_chat_launch(monkeypatch)
+        assert launch.ctx > _DYNAMIC_CTX_FLOOR
