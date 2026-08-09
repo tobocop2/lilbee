@@ -796,7 +796,11 @@ class ChatScreen(Screen[None]):
         reg_result = register_sources(paths, force=force)
         registered = reg_result.registered
         for name in reg_result.skipped:
-            call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
+            call_from_thread(self, self.notify, msg.CMD_ADD_NAME_TAKEN.format(name=name))
+        if reg_result.tracked:
+            call_from_thread(
+                self, self.notify, msg.CMD_ADD_TRACKED.format(names=", ".join(reg_result.tracked))
+            )
         reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
 
         try:
