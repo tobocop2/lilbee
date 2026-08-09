@@ -422,6 +422,7 @@ async def add(
         "command": "add",
         "copied": reg_result.registered,
         "skipped": reg_result.skipped,
+        "tracked": reg_result.tracked,
         "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,

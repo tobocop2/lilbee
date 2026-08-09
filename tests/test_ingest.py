@@ -76,7 +76,13 @@ def mock_svc():
     store.delete_by_source.return_value = None
 
     def _remove_documents(names, **_kw):
-        return [_sources.pop(n, None) for n in names]
+        from lilbee.data.store.types import RemoveResult
+
+        removed = [n for n in names if n in _sources]
+        not_found = [n for n in names if n not in _sources]
+        for name in removed:
+            _sources.pop(name, None)
+        return RemoveResult(removed=removed, not_found=not_found)
 
     store.remove_documents.side_effect = _remove_documents
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -3904,6 +3910,78 @@ class TestRemoveDocumentsDurably:
         remove_documents_durably(["gone"])
         assert load_skip_markers(cfg.data_root) == {}
 
+    def test_marker_lands_under_the_active_config_data_root(self, isolated_env, mock_svc, tmp_path):
+        """A caller running against its own Config gets the marker where it reads it.
+
+        The library API removes inside a ``config_scope``; a marker written to the
+        process-global data root instead would leave that caller's next sync
+        re-ingesting the document it just removed.
+        """
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core.config.context import config_scope
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        scoped_root = tmp_path / "scoped"
+        (scoped_root / "documents").mkdir(parents=True)
+        (scoped_root / "documents" / "keep.txt").write_text("content", encoding="utf-8")
+        scoped = cfg.model_copy(
+            update={"data_root": scoped_root, "documents_dir": scoped_root / "documents"}
+        )
+        mock_svc.store.upsert_source("keep.txt", "hash", 1)
+
+        with config_scope(scoped):
+            remove_documents_durably(["keep.txt"])
+
+        assert "keep.txt" in load_skip_markers(scoped_root)
+        assert load_skip_markers(cfg.data_root) == {}
+
+
+class TestRemovalHoldsAcrossSyncs:
+    """A removal has to keep holding through syncs that cannot see the file."""
+
+    async def test_removal_survives_a_sync_with_the_root_unavailable(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """A root offline for one sync must not erase the markers holding its removals."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import detect_pending, sync
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        (ext / "a.txt").write_text("external content a", encoding="utf-8")
+        (ext / "b.txt").write_text("external content b", encoding="utf-8")
+        register_sources([ext])
+        await sync(quiet=True)
+
+        remove_documents_durably(["ext/a.txt"])
+        assert detect_pending() == 0
+
+        # The root goes away for one sync: an unmounted volume, a moved folder,
+        # a share that had not come back yet.
+        ext.rename(tmp_path / "ext-away")
+        await sync(quiet=True)
+        (tmp_path / "ext-away").rename(ext)
+
+        assert detect_pending() == 0
+
+    async def test_a_sync_keeps_the_reason_for_a_marker_it_did_not_touch(
+        self, isolated_env, mock_svc
+    ):
+        """The reasons sidecar must still explain every marker still in force."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_reasons
+
+        (isolated_env / "gone.txt").write_text("removed later", encoding="utf-8")
+        (isolated_env / "stay.txt").write_text("stays indexed", encoding="utf-8")
+        await sync(quiet=True)
+        remove_documents_durably(["gone.txt"])
+
+        (isolated_env / "new.txt").write_text("brand new", encoding="utf-8")
+        await sync(quiet=True)
+
+        assert "gone.txt" in load_skip_reasons(cfg.data_root)
+
 
 class TestOcrConfigSelection:
     """extraction_config picks the OCR backend from enable_ocr + vision_model."""
@@ -4401,7 +4479,8 @@ class TestRegisterSources:
         register_sources([corpus])
         result = register_sources([corpus])
         assert result.registered == []
-        assert result.skipped == ["corpus"]
+        assert result.tracked == ["corpus"]  # already tracked, not a collision
+        assert result.skipped == []
         assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
 
     def test_label_collision_needs_force(self, isolated_env, tmp_path):
@@ -4447,7 +4526,8 @@ class TestRegisterSources:
         inside.mkdir()
         result = register_sources([inside])
         assert result.registered == []
-        assert result.skipped == ["sub"]
+        assert result.tracked == ["sub"]  # owned by the documents dir already
+        assert result.skipped == []
         assert cfg.linked_roots == {}
 
     def test_registration_persists_to_config_toml(self, isolated_env, tmp_path):
@@ -4529,3 +4609,274 @@ class TestRegisterSources:
         assert result.registered == []
         assert result.skipped == ["reports"]
         assert cfg.linked_roots == {}
+
+
+def _indexed(services) -> set[str]:
+    """Source keys currently in the index."""
+    return {s["filename"] for s in services.store.get_sources()}
+
+
+# Removing a source then explicitly adding it back must re-index it. A removal
+# leaves a skip marker so discovery stops resurrecting the source; an ``add``
+# naming the path is the user asking for it back and outranks that marker. Every
+# surface that takes an explicit path gets the same round trip below.
+class TestRegisterSourcesClearsMarkers:
+    """The shared primitive every add surface funnels through."""
+
+    async def test_file_under_a_directory_root_comes_back(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import sync
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        (corpus / "stay.txt").write_text("kept", encoding="utf-8")
+        register_sources([corpus])
+        await sync(quiet=True)
+        remove_documents_durably(["corpus/gone.txt"])
+
+        register_sources([corpus])
+        await sync(quiet=True)
+
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+
+    async def test_owned_documents_file_comes_back(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import sync
+
+        doc = isolated_env / "notes.txt"
+        doc.write_text("notes", encoding="utf-8")
+        await sync(quiet=True)
+        remove_documents_durably(["notes.txt"])
+
+        register_sources([doc])
+        await sync(quiet=True)
+
+        assert "notes.txt" in _indexed(mock_svc)
+
+    async def test_single_file_root_comes_back(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        doc = tmp_path / "cv-manual.txt"
+        doc.write_text("a manual", encoding="utf-8")
+        register_sources([doc])
+        await sync(quiet=True)
+        # Mark it directly: a single-file root removed by its label un-registers
+        # instead of marking, so this is the shape reached when the root is still
+        # registered -- an extraction that yielded nothing, or a re-registered root.
+        mock_svc.store.remove_documents(["cv-manual.txt"])
+        write_skip_markers(cfg.data_root, {"cv-manual.txt": file_hash(doc)})
+
+        register_sources([doc])
+        await sync(quiet=True)
+
+        assert "cv-manual.txt" in _indexed(mock_svc)
+
+    async def test_markers_outside_the_named_paths_are_left_alone(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """An add clears the markers it covers, not the marker set."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        other = isolated_env / "elsewhere.txt"
+        other.write_text("also removed", encoding="utf-8")
+        register_sources([corpus])
+        await sync(quiet=True)
+        remove_documents_durably(["corpus/gone.txt", "elsewhere.txt"])
+
+        register_sources([corpus])
+
+        markers = load_skip_markers(cfg.data_root)
+        assert "corpus/gone.txt" not in markers
+        assert "elsewhere.txt" in markers
+
+    def test_re_adding_a_tracked_source_is_not_reported_as_a_collision(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """Re-adding the same path needs no --force, so it must not warn about one."""
+        from lilbee.app.ingest import register_sources
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        register_sources([corpus])
+
+        result = register_sources([corpus])
+
+        assert result.tracked == ["corpus"]
+        assert result.skipped == []
+        assert result.registered == []
+
+
+class TestCliSurface:
+    def test_add_paths_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
+        import asyncio
+
+        from rich.console import Console
+
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.cli.helpers import add_paths
+        from lilbee.data.ingest import sync
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        register_sources([corpus])
+        asyncio.run(sync(quiet=True))
+        remove_documents_durably(["corpus/gone.txt"])
+
+        add_paths([corpus], Console(), run_sync=lambda: asyncio.run(sync(quiet=True)))
+
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+
+    def test_registration_line_names_what_was_already_tracked(self):
+        from lilbee.app.ingest import RegisterResult
+        from lilbee.cli.helpers import describe_registration
+
+        line = describe_registration(RegisterResult(registered=[], tracked=["cv-manual.pdf"]))
+        assert "already tracked: cv-manual.pdf" in line
+        assert line != "Registered 0 source(s)"
+
+
+class TestPythonApiSurface:
+    def test_lilbee_add_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.api import Lilbee
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+
+        bee = Lilbee(config=cfg)
+        bee._services = mock_svc
+        bee.add([corpus])
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+
+        bee.remove("corpus/gone.txt")
+        assert "corpus/gone.txt" not in _indexed(mock_svc)
+
+        bee.add([corpus])
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+
+
+class TestMcpSurface:
+    async def test_add_tool_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.mcp_server import add as mcp_add
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        register_sources([corpus])
+        await sync(quiet=True)
+        remove_documents_durably(["corpus/gone.txt"])
+
+        result = await mcp_add([str(corpus)])
+
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+        assert result["tracked"] == ["corpus"]
+
+
+class TestHttpSurface:
+    async def test_add_handler_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        register_sources([corpus])
+        await sync(quiet=True)
+        remove_documents_durably(["corpus/gone.txt"])
+
+        summary = await _run_add(
+            paths=[str(corpus)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+        )
+
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+        assert summary.tracked == ["corpus"]
+
+
+class TestTuiSurface:
+    async def test_do_add_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
+        """The TUI's /add worker body, with the real registration primitive."""
+        import asyncio
+        import threading
+
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.data.ingest import sync
+        from tests._lilbee_app_test_host import await_chat, ready_services
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "gone.txt").write_text("removed", encoding="utf-8")
+        register_sources([corpus])
+        await sync(quiet=True)
+        remove_documents_durably(["corpus/gone.txt"])
+
+        with ready_services():
+            # ready_services binds its own container to release the startup gate;
+            # swap the stateful one back so the add actually ingests.
+            import lilbee.app.services as svc_mod
+
+            mock_svc.provider.role_ready.return_value = True
+            svc_mod.set_services(mock_svc)
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                screen = await await_chat(app, pilot)
+                assert screen is not None
+                errors: list[BaseException] = []
+
+                def _worker() -> None:
+                    try:
+                        # _do_add drives sync through the TUI's shared loop; run it
+                        # on a private one so the test's loop is not re-entered.
+                        with mock.patch(
+                            "lilbee.runtime.asyncio_loop.run",
+                            new=lambda coro: asyncio.run(coro),
+                        ):
+                            screen._do_add([corpus], MagicMock(spec=ProgressReporter))
+                    except BaseException as exc:  # pragma: no cover - surfaced below
+                        errors.append(exc)
+
+                thread = threading.Thread(target=_worker, daemon=True)
+                thread.start()
+                while thread.is_alive():
+                    await pilot.pause()
+                thread.join(timeout=5)
+                assert not errors, errors
+
+        assert "corpus/gone.txt" in _indexed(mock_svc)
+
+
+def test_every_add_surface_funnels_through_register_sources():
+    """The marker rule lives in register_sources; a surface bypassing it would drift.
+
+    Cheap guard against a sixth surface being added that registers roots its own
+    way and silently reinstates the veto this file exists to prevent.
+    """
+    import lilbee
+
+    package = Path(lilbee.__file__).parent
+    surfaces = [
+        "api.py",
+        "mcp_server.py",
+        "server/handlers/ingest.py",
+        "cli/helpers.py",
+        "cli/commands/ingest_sync.py",
+        "cli/tui/screens/chat.py",
+    ]
+    for name in surfaces:
+        assert "register_sources" in (package / name).read_text(encoding="utf-8"), name
