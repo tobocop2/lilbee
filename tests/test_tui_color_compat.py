@@ -159,7 +159,7 @@ class TestDetection:
 
 
 class TestTerminalIsResolvedOnce:
-    """Resolving the terminal costs a tmux subprocess, so it happens once per app.
+    """Resolving the terminal costs a tmux subprocess, so it happens up front.
 
     Textual calls get_line_filters per widget per repaint. Resolving inside it
     spawned `tmux show-environment` 542 times over one screen's paints, each with
@@ -167,7 +167,14 @@ class TestTerminalIsResolvedOnce:
     """
 
     @pytest.mark.asyncio
-    async def test_tmux_is_consulted_once_no_matter_how_many_repaints(self):
+    async def test_tmux_is_not_consulted_per_widget_or_per_repaint(self):
+        """Asserted as two invariants rather than an exact count.
+
+        How many apps a run_test session constructs is a Textual detail that
+        differs by platform, so pinning the count fails on one OS and not
+        another. Neither invariant holds if the lookup moves back into the
+        per-repaint path.
+        """
         from lilbee.cli.tui import color_compat
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
@@ -184,13 +191,16 @@ class TestTerminalIsResolvedOnce:
                     app.push_screen(CatalogScreen())
                     for _ in range(6):
                         await pilot.pause()
+                    painted = len(list(app.screen.query("*")))
+                    after_first_paints = run.call_count
                     app.refresh()
                     for _ in range(6):
                         await pilot.pause()
-                    painted = len(list(app.screen.query("*")))
+                    after_more_paints = run.call_count
 
         assert painted > 1, "no widgets painted, so no repaints were exercised"
-        assert run.call_count <= 1
+        assert after_first_paints < painted
+        assert after_more_paints == after_first_paints
 
 
 class TestSeeingThroughTmux:
