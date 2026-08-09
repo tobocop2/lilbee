@@ -195,7 +195,6 @@ async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
     app.settle_setup_state.side_effect = lambda: order.append("settle") or False
     app.reveal_chat.side_effect = lambda: order.append("reveal")
     monkeypatch.setattr(gate_mod, "peek_services", lambda: mock.MagicMock())
-    monkeypatch.setattr(gate_mod, "get_services", mock.Mock())
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),

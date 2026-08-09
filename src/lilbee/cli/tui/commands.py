@@ -97,7 +97,7 @@ class LilbeeCommandProvider(Provider):
             return
         if cmd.args_hint.startswith("<"):
             # Needs an argument: land in the chat prompt for Tab completion.
-            app.switch_view("Chat")
+            app.switch_view(msg.DEFAULT_VIEW)
             chat.insert_slash_command(cmd.name)
         else:
             # Complete as-is: dispatch like a submitted prompt. Handlers that
