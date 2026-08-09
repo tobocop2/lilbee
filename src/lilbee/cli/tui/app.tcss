@@ -125,6 +125,22 @@ Select > SelectOverlay {
     border: solid $border-blurred;
 }
 
+OptionList {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+}
+
+ToggleButton {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+}
+
 Select:focus > SelectCurrent {
     border: solid $border;
 }

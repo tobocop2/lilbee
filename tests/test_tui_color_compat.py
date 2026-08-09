@@ -274,8 +274,16 @@ class TestFilterInstallation:
 _PARTIAL_BLOCK_BORDERS = frozenset({"tall", "thick", "wide", "panel"})
 _BORDER_EDGES = ("border_top", "border_right", "border_bottom", "border_left")
 
+_DIALOG_KWARGS = {
+    "ConfirmDialog": {"title": "Delete model", "message": "This removes 17.3 GB from disk."},
+    "NoticeDialog": {"title": "Heads up", "message": "The engine is still warming."},
+}
+
+# Every screen and modal the TUI can put on the stack. Chat is pushed explicitly
+# like the rest: the test host skips the on_mount that installs it, so relying on
+# the default screen audits a bare Screen with no widgets on it at all.
 _SCREENS = [
-    pytest.param(None, None, id="chat"),
+    pytest.param("lilbee.cli.tui.screens.chat", "ChatScreen", id="chat"),
     pytest.param("lilbee.cli.tui.screens.catalog", "CatalogScreen", id="catalog"),
     pytest.param("lilbee.cli.tui.screens.settings", "SettingsScreen", id="settings"),
     pytest.param("lilbee.cli.tui.screens.task_center", "TaskCenter", id="tasks"),
@@ -286,7 +294,14 @@ _SCREENS = [
     pytest.param("lilbee.cli.tui.screens.wiki", "WikiScreen", id="wiki"),
     pytest.param("lilbee.cli.tui.screens.wiki_drafts", "WikiDraftsScreen", id="wiki-drafts"),
     pytest.param("lilbee.cli.tui.screens.setup", "SetupWizard", id="setup"),
+    pytest.param("lilbee.cli.tui.screens.startup_gate", "StartupGate", id="startup-gate"),
     pytest.param("lilbee.cli.tui.screens.command_palette", "LilbeeCommandPalette", id="palette"),
+    pytest.param("lilbee.cli.tui.widgets.confirm_dialog", "ConfirmDialog", id="confirm"),
+    pytest.param("lilbee.cli.tui.widgets.notice_dialog", "NoticeDialog", id="notice"),
+    pytest.param("lilbee.cli.tui.widgets.crawl_dialog", "CrawlDialog", id="crawl"),
+    pytest.param(
+        "lilbee.cli.tui.widgets.slash_command_catalog", "SlashCommandCatalog", id="slash-catalog"
+    ),
 ]
 
 
@@ -316,30 +331,53 @@ class TestNoPartialBlockBorders:
         }
         assert not missing
 
+    @staticmethod
+    def _offenders(screen) -> list[str]:
+        return [
+            f"{type(widget).__name__}.{edge}={border[0]}"
+            for widget in screen.query("*")
+            for edge in _BORDER_EDGES
+            if (border := getattr(widget.styles, edge, None))
+            and border[0] in _PARTIAL_BLOCK_BORDERS
+        ]
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("module", "cls_name"), _SCREENS)
-    async def test_screen_has_no_partial_block_border(
-        self, module: str | None, cls_name: str | None
-    ):
+    async def test_screen_has_no_partial_block_border(self, module: str, cls_name: str):
+        """Every tab is activated, not just the one the screen opens on.
+
+        Textual defers a TabPane's content until the pane is active, so auditing
+        the default view of Settings sees 104 widgets where all seven tabs hold
+        747. Two defects hid behind that and behind the unmounted modals: a
+        Checkbox in the crawl dialog and the chat completion list.
+        """
         import importlib
+
+        from textual.widgets import TabbedContent, TabPane
 
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
+        offenders: list[str] = []
         app = LilbeeAppHost()
         with ready_services():
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                if module is not None:
-                    app.push_screen(getattr(importlib.import_module(module), cls_name)())
+                cls = getattr(importlib.import_module(module), cls_name)
+                app.push_screen(cls(**_DIALOG_KWARGS.get(cls_name, {})))
                 for _ in range(4):
                     await pilot.pause()
-                offenders = [
-                    f"{type(widget).__name__}.{edge}={border[0]}"
-                    for widget in app.screen.query("*")
-                    for edge in _BORDER_EDGES
-                    if (border := getattr(widget.styles, edge, None))
-                    and border[0] in _PARTIAL_BLOCK_BORDERS
-                ]
+
+                assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
+
+                tabbed = list(app.screen.query(TabbedContent))
+                panes = [pane.id for pane in app.screen.query(TabPane)]
+                for pane_id in panes:
+                    tabbed[0].active = pane_id
+                    for _ in range(3):
+                        await pilot.pause()
+                    offenders += self._offenders(app.screen)
+                if not panes:
+                    offenders = self._offenders(app.screen)
         assert not offenders
 
 
