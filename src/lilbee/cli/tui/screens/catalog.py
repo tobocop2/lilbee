@@ -745,16 +745,34 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter installs the first visible match; falls through to a remote
-        HF search when nothing matches locally."""
-        if self._grid_view:
-            if any(grid.rows for grid in self._grid_container.query(ModelGrid)):
-                self._select_first_visible_grid_card()
-                return
-        elif self._list_widget.option_count:
-            self._select_first_visible_list_item()
-            return
+        """Enter submits the query: search the hub, then hand focus to the results.
+
+        It never installs. Enter is the reflex key for committing a search box,
+        every row here is a multi-gigabyte download, and the first row is
+        whichever one happened to sort first rather than one the user chose.
+        Installing is left to Enter on a focused card, where the target is the
+        row under the cursor.
+        """
         self._trigger_remote_search(self._get_search_text())
+        self._focus_first_result()
+
+    def _focus_first_result(self) -> None:
+        """Put the cursor on the first match so arrow keys pick up from there.
+
+        Focus only: the caller is Enter in the search box, and selecting here
+        would install whatever the filter happened to leave on top.
+        """
+        with contextlib.suppress(Exception):
+            if not self._grid_view:
+                if self._list_widget.option_count:
+                    self._list_widget.highlighted = 0
+                    self._list_widget.focus()
+                return
+            for grid in self._grid_container.query(ModelGrid):
+                if grid.rows:
+                    grid.focus()
+                    grid.highlighted = 0
+                    return
 
     def _trigger_remote_search(self, query: str) -> None:
         """Fire the HF search worker for the active task, unless one is in flight.
@@ -785,31 +803,6 @@ class CatalogScreen(Screen[None]):
     @on(Click, ".search-hf-cta")
     def _on_search_hf_cta_clicked(self) -> None:
         self._trigger_remote_search(self._get_search_text())
-
-    def _select_first_visible_grid_card(self) -> None:
-        """Focus the first grid with a visible match and trigger its install.
-
-        Without the "first visible" walk, focusing any grid with
-        ``highlighted = 0`` could land on a card the filter just hid,
-        and Enter would install the wrong model. Setting
-        ``highlighted`` to the first visible index guarantees the
-        install fires on what the user can actually see.
-        """
-        with contextlib.suppress(Exception):
-            for grid in self._grid_container.query(ModelGrid):
-                if grid.rows:
-                    grid.focus()
-                    grid.highlighted = 0
-                    grid.action_select()
-                    return
-
-    def _select_first_visible_list_item(self) -> None:
-        """List-view counterpart: highlight + select the first row."""
-        with contextlib.suppress(Exception):
-            if self._list_widget.option_count:
-                self._list_widget.highlighted = 0
-                self._list_widget.focus()
-                self._list_widget.action_select()
 
     def _fetch_hf_page_for_task(self, task: ModelTask) -> list[CatalogModel]:
         """Fetch one HF page for *task* at the task's own offset.

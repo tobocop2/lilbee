@@ -14149,68 +14149,50 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
             assert screen._sort_column == "Name"
 
 
-async def test_catalog_search_submit_installs_first_visible_match():
-    """Single Enter in search filters + queues install on the first visible card.
+async def test_catalog_search_submit_never_installs_a_model():
+    """Enter in the search box must not queue a download.
 
-    Regression test: previously Enter from the search Input only
-    refocused the grid (landing on the hidden default card), so users
-    had to press Enter twice: and the second press queued the wrong
-    (invisible) model.
+    Enter is the reflex key for committing a search box and every row is a
+    multi-gigabyte download, so submitting a filter used to start fetching
+    whichever model happened to sort first. Enter now runs the hub search and
+    moves the cursor onto the first match; installing takes a second,
+    deliberate Enter on the focused card.
     """
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            await app.push_screen(screen)
+            app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            for _ in range(20):
-                grids = list(screen.query("#grid-chat ModelGrid"))
-                if grids and len(grids[0].rows) >= 2:
-                    break
-                await _pilot.pause()
-            assert grids, "chat grid should mount at least one ModelGrid"
-            # Painting is done; from here a late worker landing repainting
-            # the grid would restore the full dataset over the trim below.
-            # _remount_grid_sections is reached only from here, so with this
-            # stubbed no further tail mount can be scheduled.
-            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
-            # The loop breaks without a pause, so the tail mount _refresh_grid
-            # already queued through call_after_refresh is still pending; it
-            # would land on the pause below the trim and remount a grid holding
-            # the full dataset. Drain it here instead, while nothing is trimmed
-            # yet. Stubbing the method cannot help: call_after_refresh captured
-            # the bound method when it was scheduled.
             for _ in range(3):
                 await _pilot.pause()
-            # Re-queried because the drained mount replaces the grid widgets.
-            grids = list(screen.query("#grid-chat ModelGrid"))
-            assert grids, "chat grid should survive the deferred tail mount"
-            grid = grids[0]
-            assert len(grid.rows) >= 2
-            # ModelGrid filters at the dataset level: set_rows replaces
-            # the visible set. Simulate "filter narrows to the second
-            # row" by trimming the dataset to that single row.
-            target_row = grid.rows[1]
-            grid.set_rows([target_row])
-            await _pilot.pause()
-            with patch.object(screen, "_select_row") as install:
-                screen._select_first_visible_grid_card()
+            grids = [g for g in screen.query("#grid-chat ModelGrid") if g.rows]
+            assert grids, "chat grid should mount at least one populated ModelGrid"
+
+            with (
+                patch.object(screen, "_select_row") as install,
+                patch.object(screen, "_trigger_remote_search") as search,
+            ):
+                screen._on_search_submitted(SimpleNamespace(value="qwen3"))
                 for _ in range(5):
                     await _pilot.pause()
-                assert install.called
-                row_arg = install.call_args.args[0]
-                assert row_arg is target_row
+
+            assert not install.called, "Enter in the search box queued a download"
+            assert search.called, "Enter should submit the query to the hub"
+            focused = screen._focused_grid()
+            assert isinstance(focused, ModelGrid), "the cursor should land on the results"
+            assert focused.highlighted == 0
 
 
-async def test_catalog_select_first_visible_list_item_installs_match():
-    """List-view counterpart: Enter in search installs the first visible row."""
+async def test_catalog_search_submit_never_installs_in_list_view():
+    """List-view counterpart: submitting the filter selects nothing."""
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -14227,13 +14209,18 @@ async def test_catalog_select_first_visible_list_item_installs_match():
             screen._grid_view = False
             screen._refresh_list()
             await _pilot.pause()
-            if screen._list_widget.option_count == 0:
-                return  # No rows to exercise
-            with patch.object(screen, "_select_row") as install:
-                screen._select_first_visible_list_item()
+            assert screen._list_widget.option_count, "need rows to prove nothing installs"
+
+            with (
+                patch.object(screen, "_select_row") as install,
+                patch.object(screen, "_trigger_remote_search"),
+            ):
+                screen._on_search_submitted(SimpleNamespace(value="qwen3"))
                 for _ in range(5):
                     await _pilot.pause()
-                assert install.called
+
+            assert not install.called
+            assert screen._list_widget.highlighted == 0
 
 
 async def test_catalog_focus_list_item_empty_is_noop():
