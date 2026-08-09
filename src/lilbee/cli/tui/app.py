@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sys
-from collections.abc import Callable
-from pathlib import Path
+from collections.abc import Callable, Sequence
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
+from textual.command import CommandPalette
 from textual.css.query import NoMatches
+from textual.filter import LineFilter
 from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
@@ -23,7 +27,14 @@ from lilbee.app.settings import apply_settings_update
 from lilbee.app.setup_state import is_fresh_install, models_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.color_compat import (
+    EightBitPalette,
+    draws_block_glyphs,
+    needs_eight_bit,
+    resolve_term_program,
+)
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
@@ -119,6 +130,9 @@ class LilbeeApp(App[None]):
 
     TITLE = "lilbee"
     CSS_PATH = Path(__file__).parent / "app.tcss"
+    # Restates Textual's own block-based borders in box-drawing. Loaded only
+    # where the terminal needs it; see __init__.
+    SAFE_CSS_PATH = Path(__file__).parent / "app_safe.tcss"
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
@@ -190,7 +204,22 @@ class LilbeeApp(App[None]):
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
-        super().__init__()
+        # Both terminal questions are answered once, here: resolve_term_program can
+        # shell out to tmux, and get_line_filters runs per widget per repaint. The
+        # glyph answer must also land before super() so the stylesheet list is
+        # complete when Textual reads it.
+        color_system = Console().color_system
+        term_program = resolve_term_program(os.environ)
+        self._plain_glyphs = not draws_block_glyphs(color_system, term_program)
+        # A terminal that cannot tile partial-block glyphs also gets the sheet
+        # restating Textual's own block borders.
+        self._eight_bit_filter = (
+            EightBitPalette() if needs_eight_bit(color_system, term_program) else None
+        )
+        css: list[str | PurePath] = [self.CSS_PATH]
+        if self._plain_glyphs:
+            css.append(self.SAFE_CSS_PATH)
+        super().__init__(css_path=css)
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
         # The view the user came from; go_back returns here so q/Escape mean
@@ -215,6 +244,36 @@ class LilbeeApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
+
+    def get_css_variables(self) -> dict[str, str]:
+        """Textual's variables, plus the border style the terminal can actually draw.
+
+        `tall` and `thick` are built from partial block glyphs, which segment in
+        fonts that do not draw them cell-exact. Carrying the style in a variable
+        keeps one switch here instead of a second copy of every rule: a capable
+        terminal keeps the block rails lilbee is drawn with, and only a terminal
+        that needs it falls back to box-drawing.
+        """
+        variables = super().get_css_variables()
+        variables["rail"] = "solid" if self._plain_glyphs else "tall"
+        variables["rail-heavy"] = "heavy" if self._plain_glyphs else "thick"
+        return variables
+
+    def get_line_filters(self) -> Sequence[LineFilter]:
+        """Textual's filters, plus the 256-color correction where the terminal needs it.
+
+        Added for a terminal that reduces to 256 colors, where Rich's own reduction
+        collapses the theme's dark surfaces, and for Terminal.app, which claims
+        truecolor it cannot render. See color_compat. A terminal that genuinely has
+        truecolor gets no filter and renders byte-identically to before.
+
+        Textual calls this per widget per repaint, so it only reads the decision
+        made in __init__.
+        """
+        filters = list(super().get_line_filters())
+        if self._eight_bit_filter is not None:
+            filters.append(self._eight_bit_filter)
+        return filters
 
     # Test seam: the TUI test fixtures subclass LilbeeApp and set this to True
     # so on_mount short-circuits before the heavyweight setup (model
@@ -663,7 +722,11 @@ class LilbeeApp(App[None]):
             if overlay is not None and overlay.is_visible:
                 screen.action_complete_prev()
                 return
-        super().action_command_palette()
+        # Textual's own action hard-codes its CommandPalette; the subclass carries
+        # lilbee's search icon. isinstance rather than CommandPalette.is_open,
+        # which is typed for App[object] and so rejects lilbee's own app type.
+        if self.use_command_palette and not isinstance(self.screen, CommandPalette):
+            self.push_screen(LilbeeCommandPalette(id="--command-palette"))
 
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.

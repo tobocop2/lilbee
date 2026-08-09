@@ -1,4 +1,4 @@
-"""Block-character progress bar renderables for the Task Center row.
+"""Progress bar renderables for the Task Center row.
 
 Returns plain strings so the enclosing Static's CSS colors the bar
 per task state (active / done / failed / cancelled). Using Rich Text
@@ -7,13 +7,14 @@ here would hard-code a palette and fight the theme.
 
 from __future__ import annotations
 
+from lilbee.cli.tui.messages import PROGRESS_BAR_FILL as _FULL
+from lilbee.cli.tui.messages import PROGRESS_BAR_TRACK as _EMPTY
+
 _BAR_WIDTH = 60
-_FULL = "█"
-_EMPTY = "░"
 
 
 def progress_cell(percent: float, width: int = _BAR_WIDTH) -> str:
-    """Render a 0-100 percent value as a block-character bar + trailing %."""
+    """Render a 0-100 percent value as a bar + trailing %."""
     pct = max(0.0, min(percent, 100.0))
     filled = int(width * pct / 100)
     bar = _FULL * filled + _EMPTY * (width - filled)
