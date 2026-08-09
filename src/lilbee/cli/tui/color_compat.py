@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 # already matches against the standard palette properly, and routing that through
 # 8-bit first only adds a rounding step, so "standard" is deliberately excluded.
 EIGHT_BIT_COLOR_SYSTEM = "256"
+TRUECOLOR_COLOR_SYSTEM = "truecolor"
 
 # macOS Terminal.app exports COLORTERM=truecolor but cannot render 24-bit SGR: it
 # reads "48;2;r;g;b" as separate codes, so #191724 turns cyan because the trailing
@@ -64,6 +65,23 @@ _TMUX_ENV_TIMEOUT_S = 1.0
 def needs_eight_bit(color_system: str | None, term_program: str | None) -> bool:
     """Whether truecolor styles must be resolved to the 256 palette before output."""
     return color_system == EIGHT_BIT_COLOR_SYSTEM or term_program == APPLE_TERMINAL
+
+
+def draws_block_glyphs(color_system: str | None, term_program: str | None) -> bool:
+    """Whether the terminal can be trusted to tile partial-block border glyphs.
+
+    A different question from needs_eight_bit, and with the opposite slope. That
+    one asks whether Rich's colour reduction needs correcting, and answers no for
+    a 16-colour terminal because Rich's standard-palette path is already nearest
+    neighbour. This asks whether the font draws U+2580..U+259F cell-exact, which
+    a 16-colour terminal is *less* likely to do, not more. Using the colour
+    predicate for both handed block rails to the weakest terminals.
+
+    There is no way to query font metrics, so this goes on terminal identity: the
+    terminals that advertise truecolor are the modern ones that ship a font which
+    tiles, minus Terminal.app, which advertises it falsely.
+    """
+    return color_system == TRUECOLOR_COLOR_SYSTEM and term_program != APPLE_TERMINAL
 
 
 def resolve_term_program(environ: Mapping[str, str]) -> str | None:

@@ -26,7 +26,12 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.color_compat import EightBitPalette, needs_eight_bit, resolve_term_program
+from lilbee.cli.tui.color_compat import (
+    EightBitPalette,
+    draws_block_glyphs,
+    needs_eight_bit,
+    resolve_term_program,
+)
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -200,7 +205,7 @@ class LilbeeApp(App[None]):
         # A terminal that cannot tile partial-block glyphs also gets the sheet
         # restating Textual's own block borders. Resolved before super() so the
         # stylesheet list is complete when Textual reads it.
-        self._plain_glyphs = needs_eight_bit(
+        self._plain_glyphs = not draws_block_glyphs(
             Console().color_system, resolve_term_program(os.environ)
         )
         css: list[str | PurePath] = [self.CSS_PATH]

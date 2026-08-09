@@ -443,18 +443,38 @@ class TestCapableTerminalsKeepTheBlockRails:
     """
 
     @staticmethod
-    def _rail_vars(term_program: str) -> tuple[str, str]:
+    def _rail_vars(term_program: str, color_system: str) -> tuple[str, str]:
         from lilbee.cli.tui.app import LilbeeApp
 
-        with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+        with (
+            mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}),
+            mock.patch("lilbee.cli.tui.app.Console") as console,
+        ):
+            console.return_value.color_system = color_system
             variables = LilbeeApp().get_css_variables()
         return variables["rail"], variables["rail-heavy"]
 
     def test_a_capable_terminal_keeps_the_block_rails(self):
-        assert self._rail_vars("iTerm.app") == ("tall", "thick")
+        assert self._rail_vars("iTerm.app", "truecolor") == ("tall", "thick")
 
     def test_terminal_app_falls_back_to_box_drawing(self):
-        assert self._rail_vars("Apple_Terminal") == ("solid", "heavy")
+        assert self._rail_vars("Apple_Terminal", "truecolor") == ("solid", "heavy")
+
+    @pytest.mark.parametrize(
+        ("color_system", "label"),
+        [
+            pytest.param("256", "xterm-256color, urxvt-256color, screen", id="256-colour"),
+            pytest.param("standard", "bare xterm, urxvt, the linux console", id="16-colour"),
+        ],
+    )
+    def test_lower_end_terminals_get_box_drawing(self, color_system: str, label: str):
+        """A weaker terminal is less likely to tile block glyphs, not more.
+
+        Gating this on the colour predicate handed block rails to exactly the
+        terminals least able to draw them, because that predicate answers no for
+        16 colours: Rich's standard-palette reduction is already correct there.
+        """
+        assert self._rail_vars("", color_system) == ("solid", "heavy"), label
 
     @pytest.mark.asyncio
     async def test_the_extra_stylesheet_loads_only_where_needed(self):
@@ -462,7 +482,11 @@ class TestCapableTerminalsKeepTheBlockRails:
         from lilbee.cli.tui.app import LilbeeApp
 
         for term_program, wanted in (("iTerm.app", False), ("Apple_Terminal", True)):
-            with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+            with (
+                mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}),
+                mock.patch("lilbee.cli.tui.app.Console") as console,
+            ):
+                console.return_value.color_system = "truecolor"
                 app = LilbeeApp()
             loaded = any(str(path).endswith("app_safe.tcss") for path in app.css_path)
             assert loaded is wanted, f"{term_program} loaded={loaded}"
