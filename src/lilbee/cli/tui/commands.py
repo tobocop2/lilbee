@@ -40,7 +40,7 @@ class LilbeeCommandProvider(Provider):
         app = self._app
         commands: list[tuple[str, str, Any]] = [
             ("Open chat", "Ask questions about your knowledge base", app.action_open_chat),
-            ("Open catalog", "Browse and install models", lambda: app.switch_view("Catalog")),
+            ("Open catalog", "Browse and install models", app.action_open_catalog),
             ("Run setup wizard", "Configure chat and embedding models", self._action_setup),
             ("Open status", "Knowledge base status", lambda: app.switch_view("Status")),
             ("Open settings", "View and change settings", lambda: app.switch_view("Settings")),

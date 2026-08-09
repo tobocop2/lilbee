@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import ProgressBar, Static
 from textual.worker import get_current_worker
 
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import peek_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.runtime.bee_logo import BEE_LINES
@@ -65,12 +65,10 @@ class StartupGate(Screen[None]):
     def start_boot(self) -> None:
         """Work out what the app can serve, off the UI thread, then hand over.
 
-        One path, even when the container is already built (a second TUI in the
-        same process, a test host): the setup answer decides whether the
-        handover goes to chat at all, so there is nothing to fast-path past.
-        The thread hop also keeps the screen switch out of the mount that
-        started it -- start_boot runs at the tail of the app's on_mount, and
-        switching screens from inside on_mount stalls Textual.
+        One path even when the container is already built (a second TUI in the
+        same process, a test host): the setup answer still decides whether the
+        handover happens. The thread hop also keeps the screen switch out of
+        on_mount, which stalls Textual.
         """
         self._boot_worker()
 
@@ -78,20 +76,14 @@ class StartupGate(Screen[None]):
     def _boot_worker(self) -> None:
         """Settle the refs, settle the setup answer, build the container, hand over.
 
-        Canonicalization runs first (it can swap a stale ref to a working
-        fallback, which decides whether setup is needed) and runs here rather
-        than on the mount path: its disk reads and server probes would sit
-        between the terminal handover and the TUI's first frame. An already
-        built container (a second TUI in the same process, a test host) has
-        nothing left to settle, so it skips straight to the setup answer.
+        Canonicalization runs first: it can swap a stale ref for a working one,
+        which decides the setup answer. An already built container skips it.
 
         ``settle_setup_state`` blocks until the app has recorded the answer, so
-        a handover can never read a readiness flag that has yet to be written.
+        the handover cannot read a readiness flag that has yet to be written.
 
-        Building the container is the reason this screen exists: it constructs
-        every singleton and spawns the role servers, so it belongs on this
-        thread, behind the loading bar. The app subscribes to the container it
-        gets back rather than reaching for one of its own on the mount path.
+        Building the container spawns the role servers, so it belongs on this
+        thread, behind the loading bar.
         """
         try:
             if peek_services() is None:
@@ -100,7 +92,7 @@ class StartupGate(Screen[None]):
                 # Setup owns the screen now, and the app has already routed
                 # there; handing over as well would land on top of it.
                 return
-            self.app.wire_worker_pool_notifications(get_services())
+            self.app.adopt_services()
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.

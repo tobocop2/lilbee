@@ -1060,7 +1060,7 @@ class ChatScreen(Screen[None]):
     def _cmd_catalog(self, _args: str) -> None:
         # switch_view already installs and navigates to the managed Catalog view;
         # a push_screen on top would stack a second, orphaned CatalogScreen.
-        self.app.switch_view("Catalog")
+        self.app.switch_view(msg.CATALOG_VIEW)
 
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""

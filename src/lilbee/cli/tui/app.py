@@ -18,7 +18,7 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services
+from lilbee.app.services import get_services, peek_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.app.setup_state import is_fresh_install, models_ready
 from lilbee.app.themes import DARK_THEMES
@@ -94,7 +94,7 @@ def _make_sessions() -> Screen:
 # has no factory). The active set + order + wiki gate come from msg.get_nav_views,
 # so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
 _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
-    "Catalog": _make_catalog,
+    msg.CATALOG_VIEW: _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
@@ -198,10 +198,8 @@ class LilbeeApp(App[None]):
         self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
-        # Whether a chat and an embedding model both resolve; the Chat view is
-        # only entered while this holds. The startup gate settles it before any
-        # screen is handed over, so the permissive default is only ever read by
-        # a host that never boots the gate.
+        # A chat and an embedding model both resolve; gates the Chat view.
+        # The startup gate settles it before handing over any screen.
         self.models_are_ready = True
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
@@ -295,9 +293,8 @@ class LilbeeApp(App[None]):
     def reveal_chat(self) -> None:
         """Swap the startup gate for the chat screen once the engine has settled.
 
-        No readiness guard here: the gate settles that answer before it hands
-        over, and routes to setup itself when there is setup to do, so this is
-        only ever reached for an app that can serve.
+        Reached only for an app that can serve: the gate settles readiness
+        first, and routes to setup itself when there is any.
         """
         self.switch_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
@@ -309,10 +306,9 @@ class LilbeeApp(App[None]):
     def settle_setup_state(self) -> bool:
         """Answer the setup questions, run setup if there is any, and say so.
 
-        Called from the startup gate's boot thread and blocking by design: the
-        answer decides whether the handover goes to chat at all, so the gate
-        settles it rather than racing it against a default. Returns whether
-        setup took the screen, which is the gate's cue not to hand over.
+        Blocks the calling thread until the answer is recorded on the UI
+        thread, so a handover ordered after it cannot read a stale flag.
+        Returns whether setup took the screen.
         """
         ready = models_ready()
         setup_to_do = not ready or is_fresh_install()
@@ -323,11 +319,24 @@ class LilbeeApp(App[None]):
     def refresh_models_ready(self) -> None:
         """Re-answer readiness off the UI thread, leaving the user where they are.
 
-        Only the boot probe presents the wizard: re-presenting it from the path
-        that runs when a model lands -- which is how the wizard is closed --
-        would be a trap.
+        Never presents the wizard: this runs when a model lands, which is how
+        the wizard is closed.
         """
-        call_from_thread(self, self._apply_setup_state, models_ready(), False)
+        ready = models_ready()
+        if ready and peek_services() is None:
+            # Setup finished after the gate stepped aside, so nothing has built
+            # the container yet and this thread is the one that should.
+            self.adopt_services()
+        call_from_thread(self, self._apply_setup_state, ready, False)
+
+    def adopt_services(self) -> None:
+        """Build the services container and subscribe this app to it.
+
+        Never call from the UI thread: building spawns the role servers. Two
+        workers can reach here at once during boot; the listeners only add to
+        and discard from a set, so a double subscription changes nothing.
+        """
+        self._wire_worker_pool_notifications(get_services())
 
     def _apply_setup_state(self, ready: bool, open_setup: bool) -> None:
         """Record the readiness answer, then run setup when the boot probe asked."""
@@ -338,22 +347,18 @@ class LilbeeApp(App[None]):
     def _recheck_models_on_model_change(self, payload: tuple[str, object]) -> None:
         """Re-answer readiness whenever a model role is reassigned.
 
-        Every write lands on the settings boundary, so this one subscription
-        covers the wizard, the catalog, the settings editor and ``/set``
-        alike -- including a download that assigns its model on completion,
-        long after the screen that started it went away.
+        Every model write lands on the settings boundary, a download included,
+        so one subscription covers every surface that assigns one.
         """
         key, _value = payload
         if key in MODEL_ROLE_FIELDS:
             self.refresh_models_ready()
 
     def open_setup(self) -> None:
-        """Show the setup wizard over the catalog, so closing it lands somewhere useful.
+        """Show the setup wizard over the catalog.
 
-        A dismissable wizard leaves the user on whatever is underneath it.
-        Underneath a first-run chat screen that is a prompt with no engine
-        behind it and no route back, so the catalog -- the other place models
-        are installed -- takes that spot.
+        The wizard is dismissable, so what sits under it is where Escape
+        lands: the catalog, never a chat screen with no engine behind it.
         """
         from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -361,16 +366,14 @@ class LilbeeApp(App[None]):
             return
         if self._switching:
             # switch_view drops a switch that arrives mid-transition, which
-            # would leave the wizard sitting on whatever screen the other
-            # switch was leaving. Retry on the next frame instead: paced by
-            # the display, so a transition that never settles costs a repaint
-            # rather than a spinning message pump.
+            # would leave the wizard over the screen that switch was leaving.
+            # Retrying on the next frame is paced by the display, not a spin.
             self.call_after_refresh(self.open_setup)
             return
         self.switch_view(msg.CATALOG_VIEW)
         self.push_screen(SetupWizard())
 
-    def wire_worker_pool_notifications(self, services: Services) -> None:
+    def _wire_worker_pool_notifications(self, services: Services) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
@@ -379,11 +382,8 @@ class LilbeeApp(App[None]):
         in-flight roles instead of one toast per role; the chat surface is
         for user content, not implementation detail.
 
-        Takes the container rather than reaching for it: the startup gate calls
-        this from its boot thread once it has one. Subscribing from the mount
-        path meant calling ``get_services()`` there, which built the whole
-        container on the UI thread ahead of the gate -- the exact work the gate
-        exists to move off it.
+        Takes the container instead of reaching for one: reaching for it builds
+        it, which is ``adopt_services``' job and never the UI thread's.
         """
 
         def _on_spawning(role: WorkerRole) -> None:
@@ -610,7 +610,7 @@ class LilbeeApp(App[None]):
             self._previous_view = self.active_view
 
         awaitable: AwaitComplete | None = None
-        if view_name == "Chat":
+        if view_name == msg.DEFAULT_VIEW:
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
@@ -724,7 +724,7 @@ class LilbeeApp(App[None]):
 
     def action_open_catalog(self) -> None:
         """Jump to the model catalog (m key)."""
-        self.switch_view("Catalog")
+        self.switch_view(msg.CATALOG_VIEW)
 
     def action_open_chat(self) -> None:
         """Jump to Chat (c key), the counterpart to t / m for the busiest view."""
@@ -840,7 +840,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         if not isinstance(self.screen, ChatScreen):
-            self.switch_view("Chat")
+            self.switch_view(msg.DEFAULT_VIEW)
         # Defer the prompt focus until after switch_view's call_later
         # _finish has updated active_view, so the chat input is mounted
         # and ready when we prefill it.
@@ -889,7 +889,7 @@ class LilbeeApp(App[None]):
                 chat._run_sync()
                 return
             if attempts > 0:
-                self.switch_view("Chat")
+                self.switch_view(msg.DEFAULT_VIEW)
                 self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)

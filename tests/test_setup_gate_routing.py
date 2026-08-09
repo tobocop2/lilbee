@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
@@ -133,13 +134,14 @@ async def test_navigating_to_chat_without_models_re_presents_setup() -> None:
                 "the catalog",
             )
 
-            app.switch_view("Chat")
+            # The user's own route into chat: the c key, not the method behind it.
+            await pilot.press("c")
             await _wait_for(
                 pilot,
                 lambda: isinstance(app.screen, SetupWizard),
                 "the setup wizard re-presenting",
             )
-            assert app.active_view != "Chat"
+            assert app.active_view != msg.DEFAULT_VIEW
             assert not any(isinstance(s, ChatScreen) for s in app.screen_stack)
 
 
@@ -245,3 +247,45 @@ def test_a_later_refresh_never_re_opens_the_wizard() -> None:
     ):
         body(app)
     assert marshal.call_args.args[2:] == (False, False)
+
+
+def test_models_landing_after_setup_builds_the_container_off_the_ui_thread() -> None:
+    """First run reaches chat with no container, and building one is not UI work."""
+    body = LilbeeApp.refresh_models_ready.__wrapped__
+    app = LilbeeApp()
+    with (
+        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.peek_services", return_value=None),
+        patch.object(LilbeeApp, "adopt_services") as adopt,
+        patch("lilbee.cli.tui.app.call_from_thread"),
+    ):
+        body(app)
+    adopt.assert_called_once_with()
+
+
+def test_a_container_that_already_exists_is_not_adopted_again() -> None:
+    """Swapping a model on a running app must not stack another subscription."""
+    body = LilbeeApp.refresh_models_ready.__wrapped__
+    app = LilbeeApp()
+    with (
+        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.peek_services", return_value=object()),
+        patch.object(LilbeeApp, "adopt_services") as adopt,
+        patch("lilbee.cli.tui.app.call_from_thread"),
+    ):
+        body(app)
+    adopt.assert_not_called()
+
+
+def test_a_model_that_still_does_not_resolve_builds_nothing() -> None:
+    """Half a setup is not a reason to spawn role servers."""
+    body = LilbeeApp.refresh_models_ready.__wrapped__
+    app = LilbeeApp()
+    with (
+        patch("lilbee.cli.tui.app.models_ready", return_value=False),
+        patch("lilbee.cli.tui.app.peek_services", return_value=None),
+        patch.object(LilbeeApp, "adopt_services") as adopt,
+        patch("lilbee.cli.tui.app.call_from_thread"),
+    ):
+        body(app)
+    adopt.assert_not_called()

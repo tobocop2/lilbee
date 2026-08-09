@@ -126,24 +126,21 @@ async def test_gate_releases_once_services_build_even_with_a_cold_engine(monkeyp
     first waits inside its own answer bubble. Holding the screen for the load
     would re-block every launch that the lazy path exists to unblock.
     """
-    from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-
-    provider = mock.MagicMock()
-    provider.role_ready.return_value = False  # engine is stone cold
-    services = mock.MagicMock()
-    services.provider = provider
-    monkeypatch.setattr(gate_mod, "get_services", lambda: services)
+    order: list[str] = []
+    app.adopt_services.side_effect = lambda: order.append("adopt")
+    app.reveal_chat.side_effect = lambda: order.append("reveal")
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
         StartupGate._boot_worker.__wrapped__(gate)
-    app.reveal_chat.assert_called_once_with()
-    provider.role_ready.assert_not_called()
+    # The container, then the handover -- nothing in between asks the engine
+    # whether it has finished loading.
+    assert order == ["adopt", "reveal"]
 
 
 async def test_gate_failure_surfaces_the_error_and_still_reveals_chat():
@@ -169,13 +166,10 @@ async def test_gate_hands_nothing_over_when_setup_takes_the_screen(monkeypatch):
     Chat is not reachable while setup is outstanding, and the container is not
     worth building against models that do not resolve.
     """
-    from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
     app.settle_setup_state.return_value = True
-    built = mock.Mock()
-    monkeypatch.setattr(gate_mod, "get_services", built)
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
@@ -183,7 +177,7 @@ async def test_gate_hands_nothing_over_when_setup_takes_the_screen(monkeypatch):
     ):
         StartupGate._boot_worker.__wrapped__(gate)
     app.reveal_chat.assert_not_called()
-    built.assert_not_called()
+    app.adopt_services.assert_not_called()
 
 
 async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
@@ -215,11 +209,10 @@ async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
 
 async def test_gate_surfaces_a_failure_to_build_services(monkeypatch):
     """A container that cannot be built must show the error, not hang the screen."""
-    from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-    monkeypatch.setattr(gate_mod, "get_services", mock.Mock(side_effect=OSError("disk gone")))
+    app.adopt_services.side_effect = OSError("disk gone")
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
@@ -315,13 +308,12 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
 
     from lilbee.app.services import peek_services, set_services
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
     from tests._async_wait import wait_until
 
     set_services(None)
     container = mock.MagicMock()
-    monkeypatch.setattr(gate_mod, "get_services", lambda: container)
+    monkeypatch.setattr("lilbee.cli.tui.app.get_services", lambda: container)
     # An app with nothing to set up, so the gate runs its whole boot.
     monkeypatch.setattr("lilbee.cli.tui.app.models_ready", lambda: True)
 

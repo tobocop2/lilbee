@@ -1,10 +1,9 @@
 """The two questions the TUI asks before it hands anyone a screen.
 
-``models_ready`` is what chat depends on; ``is_fresh_install`` is why a brand
-new lilbee still meets the setup wizard. They are kept apart because folding
-the data-dir check into the chat gate would lock chat behind an ingest that
-cannot be started from anywhere else. ``LilbeeApp.settle_setup_state`` composes
-them.
+``models_ready`` gates chat; ``is_fresh_install`` gates the first-run wizard.
+Folding the data dir into the chat gate would lock chat behind an ingest that
+only chat can start, so they stay apart. ``LilbeeApp.settle_setup_state``
+composes them.
 """
 
 from __future__ import annotations

@@ -368,5 +368,6 @@ def browse_cmd(
         raise typer.Exit(1)
 
     from lilbee.cli.tui import run_tui
+    from lilbee.cli.tui.messages import CATALOG_VIEW
 
-    run_tui(initial_view="Catalog")
+    run_tui(initial_view=CATALOG_VIEW)
