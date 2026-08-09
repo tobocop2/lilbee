@@ -103,7 +103,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
+        patch("lilbee.cli.tui.app.models_ready", return_value=True),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -3844,7 +3844,7 @@ async def test_chat_needs_setup_false_when_models_exist():
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
-    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
+    with patch("lilbee.cli.tui.app.models_ready", return_value=True):
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -6694,27 +6694,6 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
         app.screen.streaming = True
         app.screen.action_cancel_stream()
         assert app.screen.streaming is False
-
-
-async def test_chat_needs_setup_true_pushes_wizard():
-    """Verify needs_setup() returning True pushes SetupWizard on mount."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    class SetupTestApp(LilbeeAppHost):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    app = SetupTestApp()
-    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=True):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            assert isinstance(app.screen, SetupWizard)
 
 
 async def test_chat_on_input_submitted_slash():

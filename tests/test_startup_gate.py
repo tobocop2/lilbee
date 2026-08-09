@@ -243,31 +243,32 @@ async def test_stopping_is_true_when_the_worker_is_cancelled():
         assert gate._stopping() is True
 
 
+@pytest.mark.first_run
 async def test_first_run_hands_over_when_setup_is_required(tmp_path, monkeypatch):
     """Regression: an unmounted gate must not be mistaken for a torn-down one.
 
     ``push_screen`` returns an AwaitMount. Left unawaited, the boot worker could
     reach ``_stopping`` before the gate mounted, silently drop the handover, and
-    strand a first-run user on the loading screen forever.
+    strand a first-run user on the loading screen forever. A first run lands on
+    setup rather than on chat, so the assertion is that the gate steps aside at
+    all, not which screen takes its place.
     """
     import asyncio
     import time
 
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "missing")  # forces needs_setup
-    revealed = mock.MagicMock()
-    monkeypatch.setattr(LilbeeApp, "reveal_chat", revealed)
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not revealed.called:
+        while time.monotonic() < deadline and isinstance(app.screen, StartupGate):
             await pilot.pause()
             await asyncio.sleep(0.02)
-
-    revealed.assert_called_once_with()
+        assert not isinstance(app.screen, StartupGate)
 
 
 async def test_gate_composes_and_styles_its_widgets(monkeypatch):

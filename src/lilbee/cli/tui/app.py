@@ -20,6 +20,7 @@ from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
+from lilbee.app.setup_state import is_fresh_install, models_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
@@ -196,6 +197,11 @@ class LilbeeApp(App[None]):
         self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
+        # Whether a chat and an embedding model both resolve. Chat is only
+        # entered while this holds; it is answered off the UI thread (the
+        # probe reads disk and can call a local model server), so it starts
+        # permissive and the boot check corrects it.
+        self.models_are_ready = True
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
         # so Footer / signal / worker wiring runs once per session.
@@ -223,6 +229,7 @@ class LilbeeApp(App[None]):
         # test observe app-level signals without booting the startup gate, whose
         # wait is a timing window that wedges loaded CI runners.
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
+        self.settings_changed_signal.subscribe(self, self._recheck_models_on_model_change)
         if self._test_skip_auto_init:
             return
         # Paint the gate before any other work so the terminal is never blank
@@ -244,6 +251,10 @@ class LilbeeApp(App[None]):
         self._sync_theme_index_to_current()
 
         self._wire_worker_pool_notifications()
+        # Started here rather than from the chat screen's mount: the answer
+        # decides whether chat is entered at all, so it must not depend on
+        # chat having been entered first.
+        self.refresh_models_ready(present_setup=True)
         # Chat's import graph is the TUI's heaviest; loading it here would hold
         # the first frame back for seconds on a cold disk, leaving the terminal
         # blank exactly where the gate should be. Paint first, then load.
@@ -287,12 +298,69 @@ class LilbeeApp(App[None]):
 
     def reveal_chat(self) -> None:
         """Swap the startup gate for the chat screen once the engine has settled."""
+        if not self.models_are_ready:
+            self.open_setup()
+            return
         self.switch_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
         self.task_bar.start_detect_pending()
+
+    @work(thread=True, name="models_ready", exit_on_error=False)
+    def refresh_models_ready(self, *, present_setup: bool = False) -> None:
+        """Re-answer whether chat has models to run, off the UI thread.
+
+        ``present_setup`` also opens the wizard when there is setup to do,
+        which is what the first launch of a lilbee wants. Every other caller
+        only refreshes the answer: re-opening the wizard from the path that
+        runs when it closes would be a trap.
+        """
+        ready = models_ready()
+        show = present_setup and (not ready or is_fresh_install())
+        call_from_thread(self, self._apply_models_ready, ready, show)
+
+    def _apply_models_ready(self, ready: bool, present_setup: bool) -> None:
+        """Record the readiness answer and, on the first launch, run setup."""
+        self.models_are_ready = ready
+        if present_setup:
+            self.open_setup()
+
+    def _recheck_models_on_model_change(self, payload: tuple[str, object]) -> None:
+        """Re-answer readiness whenever a model role is reassigned.
+
+        Every write lands on the settings boundary, so this one subscription
+        covers the wizard, the catalog, the settings editor and ``/set``
+        alike -- including a download that assigns its model on completion,
+        long after the screen that started it went away.
+        """
+        key, _value = payload
+        if key in MODEL_ROLE_FIELDS:
+            self.refresh_models_ready()
+
+    def open_setup(self) -> None:
+        """Show the setup wizard over the catalog, so closing it lands somewhere useful.
+
+        A dismissable wizard leaves the user on whatever is underneath it.
+        Underneath a first-run chat screen that is a prompt with no engine
+        behind it and no route back, so the catalog -- the other place models
+        are installed -- takes that spot.
+        """
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        if isinstance(self.screen, SetupWizard):
+            return
+        if self._switching:
+            # switch_view drops a switch that arrives mid-transition, which
+            # would leave the wizard sitting on whatever screen the other
+            # switch was leaving. Retry on the next frame instead: paced by
+            # the display, so a transition that never settles costs a repaint
+            # rather than a spinning message pump.
+            self.call_after_refresh(self.open_setup)
+            return
+        self.switch_view(msg.CATALOG_VIEW)
+        self.push_screen(SetupWizard())
 
     def _wire_worker_pool_notifications(self) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
@@ -338,8 +406,8 @@ class LilbeeApp(App[None]):
             reason = canon.reason or msg.MODEL_REASON_DEFAULT
 
             if canon.original == canon.effective:
-                # Nothing to fall back to: keep the ref and let the chat screen's
-                # needs_setup open the SetupWizard, which is the single voice for
+                # Nothing to fall back to: keep the ref and let the readiness
+                # check open the SetupWizard, which is the single voice for
                 # "pick a model." A toast here just duplicates the wizard (on first
                 # launch the default refs aren't downloaded yet), so log the reason
                 # as a breadcrumb but don't surface it.
@@ -500,6 +568,20 @@ class LilbeeApp(App[None]):
             return
         self.exit()
 
+    def _view_is_refused(self, view_name: str) -> bool:
+        """True when *view_name* cannot be entered now, having handled the refusal."""
+        if view_name == msg.DEFAULT_VIEW and not self.models_are_ready:
+            # Chat with no model behind it is a prompt that cannot answer, so
+            # the Chat route is a route into setup until one resolves.
+            self.open_setup()
+            return True
+        if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
+            # The tab stays visible so the feature is discoverable, but opening it
+            # while off shows why rather than an empty list.
+            self._notify_sessions_disabled()
+            return True
+        return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
+
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
 
@@ -507,14 +589,7 @@ class LilbeeApp(App[None]):
         keypresses can't corrupt the screen stack. ``active_view`` is updated
         after the switch completes.
         """
-        if self._switching:
-            return
-        if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
-            # The tab stays visible so the feature is discoverable, but opening it
-            # while off shows why rather than an empty list.
-            self._notify_sessions_disabled()
-            return
-        if view_name != "Chat" and get_views().get(view_name) is None:
+        if self._switching or self._view_is_refused(view_name):
             return
         self._switching = True
         if view_name != self.active_view:

@@ -10,17 +10,26 @@ from lilbee.providers.model_ref import parse_model_ref
 log = logging.getLogger(__name__)
 
 
-def needs_setup() -> bool:
-    """True when the setup wizard should run: fresh data dir or unresolved models.
+def is_fresh_install() -> bool:
+    """True when this lilbee has no data directory yet, so nothing has run here."""
+    if cfg.lancedb_dir.is_dir():
+        return False
+    log.debug("fresh install: lancedb_dir missing (%s)", cfg.lancedb_dir)
+    return True
 
-    Remote-prefixed refs (ollama/lm_studio/API) are validated against current
-    state instead of probed on disk: an ``ollama/`` ref whose litellm extra is
-    missing or whose server is down is unusable and must route the user to
-    setup, not be assumed live.
+
+def models_ready() -> bool:
+    """True when the chat and embedding refs both resolve to something usable now.
+
+    This is the question chat depends on: without both, there is no engine to
+    answer a prompt. Remote-prefixed refs (ollama/lm_studio/API) are validated
+    against current state instead of probed on disk: an ``ollama/`` ref whose
+    litellm extra is missing or whose server is down is unusable and must route
+    the user to setup, not be assumed live.
+
+    Does disk reads and, for local-server refs, an HTTP probe, so callers run it
+    off the UI thread.
     """
-    if not cfg.lancedb_dir.is_dir():
-        log.debug("needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
-        return True
     from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
@@ -28,12 +37,17 @@ def needs_setup() -> bool:
     for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
         if parse_model_ref(model).is_remote:
             if validate_persisted_model(model) != ValidationResult.OK:
-                log.debug("needs_setup: remote %s model %r not usable", label, model)
-                return True
+                log.debug("models_ready: remote %s model %r not usable", label, model)
+                return False
             continue
         try:
             resolve_model_path(model)
         except (ProviderError, KeyError, ValueError) as exc:
-            log.debug("needs_setup: %s model %r unresolved: %s", label, model, exc)
-            return True
-    return False
+            log.debug("models_ready: %s model %r unresolved: %s", label, model, exc)
+            return False
+    return True
+
+
+def needs_setup() -> bool:
+    """True when the setup wizard should run: fresh data dir or unresolved models."""
+    return is_fresh_install() or not models_ready()

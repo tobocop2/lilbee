@@ -6,8 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.setup_state import needs_setup
-from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.app.setup_state import models_ready, needs_setup
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat
 
@@ -38,20 +37,23 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
         resolve.assert_not_called()
 
 
-def test_push_setup_wizard_no_op_when_unmounted():
-    """``_push_setup_wizard`` short-circuits when the screen is no longer mounted.
+def test_models_ready_ignores_a_fresh_data_dir(isolated_data_dir):
+    """A fresh lilbee whose models resolve can still chat.
 
-    The setup-check worker may race a view switch: by the time the worker
-    finishes, the chat screen is already gone. Ensure the push is gated
-    on ``is_mounted`` so we don't push onto whatever screen is now on top.
+    ``models_ready`` is what keeps the user out of the chat screen, so it must
+    answer only the question chat depends on. Folding the fresh-data-dir check
+    into it would lock chat behind an ingest that cannot be run from anywhere
+    but chat. The wizard still runs on a fresh dir -- that is ``needs_setup``.
     """
-    screen = ChatScreen.__new__(ChatScreen)
-    ChatScreen.is_mounted = property(lambda self: False)
-    try:
-        # If the guard breaks, this would AttributeError on ``self.app``.
-        screen._push_setup_wizard()
-    finally:
-        del ChatScreen.is_mounted
+    assert not cfg.lancedb_dir.exists()
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
+    with mock.patch(
+        "lilbee.providers.engine_params.resolve_model_path",
+        return_value="/some/resolved/path",
+    ):
+        assert models_ready() is True
+        assert needs_setup() is True
 
 
 def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir):
@@ -163,8 +165,8 @@ async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_serv
 
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.needs_setup",
-            return_value=False,
+            "lilbee.cli.tui.app.models_ready",
+            return_value=True,
         ),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
