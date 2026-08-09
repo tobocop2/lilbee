@@ -8,8 +8,12 @@ here would hard-code a palette and fight the theme.
 from __future__ import annotations
 
 _BAR_WIDTH = 60
-_FULL = "█"
-_EMPTY = "░"
+# Bars are box-drawing, not block elements: the shade blocks these used to use
+# (U+2591 for the track) are dither patterns, which render as sparse dashes
+# rather than a track wherever the font does not draw them cell-exact, and the
+# full block seams per cell. Measured in macOS Terminal.app.
+_FULL = "━"
+_EMPTY = "─"
 
 
 def progress_cell(percent: float, width: int = _BAR_WIDTH) -> str:

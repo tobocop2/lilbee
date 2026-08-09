@@ -28,8 +28,12 @@ log = logging.getLogger(__name__)
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
 
 # Bar render constants.
-_BAR_FILL = "█"  # full block
-_BAR_TRACK = "░"  # light-shade block (empty track)
+# Bars are box-drawing, not block elements: the shade blocks these used to use
+# (U+2591 for the track) are dither patterns, which render as sparse dashes
+# rather than a track wherever the font does not draw them cell-exact, and the
+# full block seams per cell. Measured in macOS Terminal.app.
+_BAR_FILL = "━"
+_BAR_TRACK = "─"
 _BAR_WIDTH = 16  # cells per bar
 _BULLET = "●"  # colored dot before card label
 

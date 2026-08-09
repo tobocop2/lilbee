@@ -36,8 +36,8 @@ _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
 
 # Warm progress bar: filled/track glyphs and width, matching the fleet panel bars.
-_WARM_BAR_FILL = "▓"
-_WARM_BAR_TRACK = "░"
+_WARM_BAR_FILL = "━"
+_WARM_BAR_TRACK = "─"
 _WARM_BAR_WIDTH = 12
 
 
