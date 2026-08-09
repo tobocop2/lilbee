@@ -2508,8 +2508,17 @@ class ChatScreen(Screen[None]):
         self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
-        """Re-scan installed models and refresh the model bar."""
-        self.query_one("#model-bar", ModelBar).refresh_models()
+        """Re-scan installed models and refresh the model bar.
+
+        Show can arrive before the prompt area's descendants have mounted, and
+        on a slow runner it does. A bar that is not in the DOM yet scans on its
+        own mount, so a missing bar means the scan is already coming, not that
+        it was skipped -- the re-scan here is what re-entering the screen needs.
+        Querying regardless raised NoMatches out of the show handler, which
+        Textual re-raises as an app crash.
+        """
+        for bar in self.query("#model-bar").results(ModelBar):
+            bar.refresh_models()
 
     def action_vim_scroll_down(self) -> None:
         """Vim j: scroll down in normal mode."""

@@ -28,8 +28,8 @@ log = logging.getLogger(__name__)
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
 
 # Bar render constants.
-_BAR_FILL = "█"  # full block
-_BAR_TRACK = "░"  # light-shade block (empty track)
+_BAR_FILL = msg.PROGRESS_BAR_FILL
+_BAR_TRACK = msg.PROGRESS_BAR_TRACK
 _BAR_WIDTH = 16  # cells per bar
 _BULLET = "●"  # colored dot before card label
 

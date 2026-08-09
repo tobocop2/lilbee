@@ -3323,7 +3323,7 @@ class TestSetupWizardGrid:
                 focused_border = highlighted[0].styles.border_top
                 baseline_border = others[0].styles.border_top
                 assert focused_border is not None
-                assert focused_border[0] == "tall"
+                assert focused_border[0] == "solid"
                 # The focus rule paints a visible color; baseline is transparent.
                 assert focused_border[1] != baseline_border[1]
 
@@ -3333,7 +3333,7 @@ class TestSetupWizardGrid:
 
         After bb-2rzb the wizard is required to share its card styling
         with the catalog browser; the focused + selected state therefore
-        collapses into the same ``border: tall $accent`` rule the catalog
+        collapses into the same ``border: solid $accent`` rule the catalog
         uses on hover/highlight."""
         from lilbee.cli.tui.screens.setup import SetupWizard
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -3358,7 +3358,7 @@ class TestSetupWizardGrid:
                 assert cards[0].has_class("-selected")
                 border_top = cards[0].styles.border_top
                 assert border_top is not None
-                assert border_top[0] == "tall"
+                assert border_top[0] == "solid"
 
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""

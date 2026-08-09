@@ -6,7 +6,7 @@ NoticeDialog > Vertical {
     width: 60;
     height: auto;
     max-height: 14;
-    border: thick $primary;
+    border: $rail-heavy $primary;
     background: $surface;
     padding: 1 2;
 }
