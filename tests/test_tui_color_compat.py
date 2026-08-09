@@ -407,27 +407,65 @@ class TestNoPartialBlockBorders:
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
         offenders: list[str] = []
-        app = LilbeeAppHost()
-        with ready_services():
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                cls = getattr(importlib.import_module(module), cls_name)
-                app.push_screen(cls(**_screen_kwargs(cls_name)))
-                for _ in range(4):
+        # Force the reduced-glyph path: a capable terminal deliberately keeps the
+        # block rails, so asserting against them there would assert the opposite
+        # of what the app is for.
+        with mock.patch.dict(os.environ, {"TERM_PROGRAM": "Apple_Terminal"}):
+            app = LilbeeAppHost()
+            with ready_services():
+                async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
-
-                assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
-
-                tabbed = list(app.screen.query(TabbedContent))
-                panes = [pane.id for pane in app.screen.query(TabPane)]
-                for pane_id in panes:
-                    tabbed[0].active = pane_id
-                    for _ in range(3):
+                    cls = getattr(importlib.import_module(module), cls_name)
+                    app.push_screen(cls(**_screen_kwargs(cls_name)))
+                    for _ in range(4):
                         await pilot.pause()
-                    offenders += self._offenders(app.screen)
-                if not panes:
-                    offenders = self._offenders(app.screen)
+
+                    assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
+
+                    tabbed = list(app.screen.query(TabbedContent))
+                    panes = [pane.id for pane in app.screen.query(TabPane)]
+                    for pane_id in panes:
+                        tabbed[0].active = pane_id
+                        for _ in range(3):
+                            await pilot.pause()
+                        offenders += self._offenders(app.screen)
+                    if not panes:
+                        offenders = self._offenders(app.screen)
         assert not offenders
+
+
+class TestCapableTerminalsKeepTheBlockRails:
+    """The reduced look is for terminals that need it, not for everyone.
+
+    lilbee is drawn with `tall` rails. Converting them outright cost every capable
+    terminal the look it renders perfectly well, so the style is carried in a CSS
+    variable and only swapped where the glyphs do not tile.
+    """
+
+    @staticmethod
+    def _rail_vars(term_program: str) -> tuple[str, str]:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+            variables = LilbeeApp().get_css_variables()
+        return variables["rail"], variables["rail-heavy"]
+
+    def test_a_capable_terminal_keeps_the_block_rails(self):
+        assert self._rail_vars("iTerm.app") == ("tall", "thick")
+
+    def test_terminal_app_falls_back_to_box_drawing(self):
+        assert self._rail_vars("Apple_Terminal") == ("solid", "heavy")
+
+    @pytest.mark.asyncio
+    async def test_the_extra_stylesheet_loads_only_where_needed(self):
+        """Textual's own block borders are restated in a sheet, not in the base one."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        for term_program, wanted in (("iTerm.app", False), ("Apple_Terminal", True)):
+            with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+                app = LilbeeApp()
+            loaded = any(str(path).endswith("app_safe.tcss") for path in app.css_path)
+            assert loaded is wanted, f"{term_program} loaded={loaded}"
 
 
 class TestNoEmoji:

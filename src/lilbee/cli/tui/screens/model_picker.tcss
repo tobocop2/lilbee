@@ -9,7 +9,7 @@ ModelPickerModal {
     max-width: 90;
     max-height: 30;
     background: $surface;
-    border: heavy $primary;
+    border: $rail-heavy $primary;
     padding: 1;
 }
 
@@ -21,7 +21,7 @@ ModelPickerModal {
 
 #picker-search {
     height: 3;
-    border: solid $primary;
+    border: $rail $primary;
     margin: 0 0 1 0;
 }
 

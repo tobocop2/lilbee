@@ -103,28 +103,28 @@ SettingsScreen {
         height: 3;
         background: $boost;
         color: $text;
-        border: solid $surface-lighten-2;
+        border: $rail $surface-lighten-2;
         text-style: bold;
 
         &:focus {
-            border: solid $primary;
+            border: $rail $primary;
         }
     }
 
     Input, Select SelectCurrent, Checkbox {
-        border: solid $surface-lighten-2;
+        border: $rail $surface-lighten-2;
 
         &:focus {
-            border: solid $primary;
+            border: $rail $primary;
         }
     }
 
     Select:focus > SelectCurrent {
-        border: solid $primary;
+        border: $rail $primary;
     }
 
     Input.-invalid {
-        border: solid $error 60%;
+        border: $rail $error 60%;
     }
 
     .setting-list-editor {
@@ -139,7 +139,7 @@ SettingsScreen {
         margin-bottom: 1;
 
         &:focus-within {
-            border: solid $primary;
+            border: $rail $primary;
         }
     }
 

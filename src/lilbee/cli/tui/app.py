@@ -7,9 +7,10 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
@@ -122,6 +123,9 @@ class LilbeeApp(App[None]):
 
     TITLE = "lilbee"
     CSS_PATH = Path(__file__).parent / "app.tcss"
+    # Restates Textual's own block-based borders in box-drawing. Loaded only
+    # where the terminal needs it; see __init__.
+    SAFE_CSS_PATH = Path(__file__).parent / "app_safe.tcss"
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
@@ -193,7 +197,16 @@ class LilbeeApp(App[None]):
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
-        super().__init__()
+        # A terminal that cannot tile partial-block glyphs also gets the sheet
+        # restating Textual's own block borders. Resolved before super() so the
+        # stylesheet list is complete when Textual reads it.
+        self._plain_glyphs = needs_eight_bit(
+            Console().color_system, resolve_term_program(os.environ)
+        )
+        css: list[str | PurePath] = [self.CSS_PATH]
+        if self._plain_glyphs:
+            css.append(self.SAFE_CSS_PATH)
+        super().__init__(css_path=css)
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
         # The view the user came from; go_back returns here so q/Escape mean
@@ -215,6 +228,20 @@ class LilbeeApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
+
+    def get_css_variables(self) -> dict[str, str]:
+        """Textual's variables, plus the border style the terminal can actually draw.
+
+        `tall` and `thick` are built from partial block glyphs, which segment in
+        fonts that do not draw them cell-exact. Carrying the style in a variable
+        keeps one switch here instead of a second copy of every rule: a capable
+        terminal keeps the block rails lilbee is drawn with, and only a terminal
+        that needs it falls back to box-drawing.
+        """
+        variables = super().get_css_variables()
+        variables["rail"] = "solid" if self._plain_glyphs else "tall"
+        variables["rail-heavy"] = "heavy" if self._plain_glyphs else "thick"
+        return variables
 
     def get_line_filters(self) -> Sequence[LineFilter]:
         """Textual's filters, plus the 256-color correction where the terminal needs it.

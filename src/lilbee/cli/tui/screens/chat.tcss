@@ -93,9 +93,9 @@ Markdown {
 #chat-prompt-area {
     height: auto;
     padding: 0 1;
-    border: solid transparent;
+    border: $rail transparent;
 }
 
 #chat-prompt-area:focus-within {
-    border: solid $primary;
+    border: $rail $primary;
 }

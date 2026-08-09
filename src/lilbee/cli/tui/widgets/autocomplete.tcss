@@ -3,7 +3,7 @@ CompletionOverlay {
     max-height: 10;
     width: 100%;
     background: $surface;
-    border: solid $primary;
+    border: $rail $primary;
     display: none;
 }
 

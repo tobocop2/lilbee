@@ -6,16 +6,16 @@
 Button.-style-default:focus {
     text-style: bold;
     background-tint: $foreground 10%;
-    border-top: solid $primary;
-    border-bottom: solid $primary;
+    border-top: $rail $primary;
+    border-bottom: $rail $primary;
 }
 
 /* A $primary rail is invisible on the $primary face, so the primary variant
  * signals focus with a stronger lift plus its light rail on both edges. */
 Button.-style-default.-primary:focus {
     background-tint: $foreground 25%;
-    border-top: solid $primary-lighten-3;
-    border-bottom: solid $primary-lighten-3;
+    border-top: $rail $primary-lighten-3;
+    border-bottom: $rail $primary-lighten-3;
 }
 
 ListView {
@@ -96,109 +96,9 @@ HelpPanel #widget-help MarkdownBlock:last-child {
     margin-left: 50;
 }
 
-/* Textual's own Input, Select overlay and Button draw their borders with the
- * partial-block `tall` style, which does not tile in every terminal font: in
- * macOS Terminal.app the left edge renders as disconnected blocks and the rails
- * as broken dashes. lilbee's stylesheets use box-drawing everywhere, so restate
- * these three in `solid`, keeping Textual's own colors.
- *
- * The colors are copied from textual/widgets/_input.py, _select.py and
- * _button.py. TestNoPartialBlockBorders asserts the style, not the color, so a
- * Textual upgrade that retints these diverges here silently. */
-Input {
-    border: solid $border-blurred;
-
-    &:focus {
-        border: solid $border;
-    }
-
-    &.-invalid {
-        border: solid $error 60%;
-    }
-
-    &.-invalid:focus {
-        border: solid $error;
-    }
-}
-
-Select > SelectOverlay {
-    border: solid $border-blurred;
-}
-
-OptionList {
-    border: solid $border-blurred;
-
-    &:focus {
-        border: solid $border;
-    }
-}
-
-ToggleButton {
-    border: solid $border-blurred;
-
-    &:focus {
-        border: solid $border;
-    }
-}
-
-Select:focus > SelectCurrent {
-    border: solid $border;
-}
-
-Button.-style-default {
-    border-top: solid $surface-lighten-1;
-    border-bottom: solid $surface-darken-1;
-
-    &:hover {
-        border-top: solid $surface;
-    }
-
-    &.-active {
-        border-top: solid $surface-darken-1;
-        border-bottom: solid $surface-lighten-1;
-    }
-}
-
-/* Textual's Toast draws its severity rail with `outer`, which is built from
- * block glyphs (U+259B and friends) and segments in the same fonts `tall` does.
- * heavy is the box-drawing equivalent and is what task_center already uses for
- * a rail. Colours mirror textual/widgets/_toast.py. */
-Toast.-information {
-    border-left: heavy $success;
-}
-
-Toast.-warning {
-    border-left: heavy $warning;
-}
-
-Toast.-error {
-    border-left: heavy $error;
-}
-
-/* The footer's command-palette cell separates itself with `vkey`, a pair of
- * one-eighth block glyphs (U+258F, U+2595) that segment like every other block
- * border. It sits on the footer, so it is on every screen. Colour mirrors
- * textual/widgets/_footer.py. */
-FooterKey.-command-palette {
-    border-left: solid $foreground 20%;
-}
-
-/* `hkey` is a pair of one-eighth block rails (U+2594, U+2581) and segments like
- * the rest. Collapsible uses it for its separator, and the command palette for
- * the input frame, the result list and the loading indicator. Colours mirror
- * textual/widgets/_collapsible.py and textual/command.py. */
-Collapsible {
-    border-top: solid $background;
-}
-
-CommandPalette #--input {
-    border: solid black 50%;
-}
-
-CommandList {
-    border-bottom: solid black;
-}
-
-CommandPalette LoadingIndicator {
-    border-bottom: solid $border;
+/* Textual hardcodes `color: #000` on the palette's search icon, with a comment
+ * saying its snapshot tests need it, so the mark comes out black on every theme.
+ * Not terminal-specific: it is wrong everywhere. */
+SearchIcon {
+    color: $primary;
 }

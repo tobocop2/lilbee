@@ -37,12 +37,12 @@
 
 ModelCard.-selected {
     background: transparent;
-    border: solid $accent 50%;
+    border: $rail $accent 50%;
 }
 
 GridSelect:focus ModelCard.-highlight.-selected {
     background: $primary 30%;
-    border: solid $accent;
+    border: $rail $accent;
 }
 
 .section-heading {
@@ -63,7 +63,7 @@ GridSelect {
     &:focus * {
         &.-highlight {
             background: $primary 30%;
-            border: solid $accent;
+            border: $rail $accent;
         }
     }
 }
