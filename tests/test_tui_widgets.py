@@ -6364,6 +6364,43 @@ class TestModelGridUtilityMethods:
         assert message.control is grid
         assert message.row is rows[0]
 
+    def test_action_select_posts_the_row_under_the_cursor(self) -> None:
+        """Enter on a focused card selects that card, not the first one.
+
+        This is the only way a model gets installed from the grid now that
+        submitting the search box focuses without selecting, so the row the
+        message carries has to be the highlighted one.
+        """
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row("a"), _vgrid_row("b"), _vgrid_row("c")]
+        grid = ModelGrid(rows)
+        # Set the cursor first: highlighted is a reactive whose watcher posts
+        # its own Highlighted message, which would land in the recorder too.
+        grid.highlighted = 1
+        posted: list[object] = []
+        grid.post_message = posted.append  # type: ignore[method-assign]
+
+        grid.action_select()
+
+        assert len(posted) == 1
+        message = posted[0]
+        assert isinstance(message, ModelGrid.Selected)
+        assert message.row is rows[1]
+
+    def test_action_select_ignores_an_out_of_range_cursor(self) -> None:
+        """A cursor left past the end by a shrinking filter must post nothing."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid.highlighted = 5
+        posted: list[object] = []
+        grid.post_message = posted.append  # type: ignore[method-assign]
+
+        grid.action_select()
+
+        assert not posted
+
     def test_columns_for_width_zero_returns_default(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _DEFAULT_COLUMNS, ModelGrid
 

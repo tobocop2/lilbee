@@ -6,7 +6,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from textual import getters, on, work
 from textual.app import ComposeResult
@@ -38,6 +38,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
+    flatten_sections,
     for_you_by_role,
     group_frontier_rows,
     group_rows_for_grid,
@@ -89,14 +90,14 @@ from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
 
-# Models fetched per task per page. We make one /api/models call per
-# task (chat / embedding / vision / rerank), so the user-visible page
-# size is _HF_PAGE_SIZE * 4. Small pages keep each HF round-trip well
-# under a second on a typical connection and keep the freshly-rendered
-# row count low so layout reflow stays cheap.
-_HF_PAGE_SIZE = 4
+# Rows per browse page for the active task. Must exceed one viewport (about
+# five cards a row, four rows) or the grid paints part-empty under the
+# "keep scrolling" hint.
+_HF_PAGE_SIZE = 24
+# Rows per search page. Wider than a browse page: matches are spread across
+# the hub rather than sitting at one offset.
+_HF_SEARCH_LIMIT = 50
 _HF_LOAD_MORE_TRIGGER = 4
-_NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
 # Which config model-role field a selected model is assigned to, keyed by its task.
@@ -154,6 +155,14 @@ class _RowCacheEntry:
 
     key: _RowCacheKey
     rows: list[LocalCatalogRow]
+
+
+class _GridCacheKey(NamedTuple):
+    """Per-tab identity of a painted grid; equal keys mean nothing to repaint."""
+
+    data_version: int
+    rows: tuple[tuple[str, bool], ...]
+    search: str
 
 
 class CatalogScreen(Screen[None]):
@@ -301,9 +310,14 @@ class CatalogScreen(Screen[None]):
         self._loading_more: bool = False
         # Per-tab grid/list cache keys. Each tab tracks its own last-rendered
         # shape; switching between already-populated tabs is a no-op refresh.
-        self._grid_cache_keys: dict[str, tuple] = {}
+        self._grid_cache_keys: dict[str, _GridCacheKey] = {}
         self._list_cache_keys: dict[str, tuple] = {}
         self._search_in_flight: bool = False
+        # Remote-search pagination, keyed on the query the offset belongs to.
+        # Distinct from the per-task browse offsets, which page unfiltered rows.
+        self._searched_query: str = ""
+        self._search_offset: int = 0
+        self._search_has_more: bool = False
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
         # invalidate even when collection lengths happen to coincide.
@@ -314,6 +328,7 @@ class CatalogScreen(Screen[None]):
         self._view_switching: bool = False
         self._frontier_refresh_timer: Timer | None = None
         self._search_filter_timer: Timer | None = None
+        self._remote_search_timer: Timer | None = None
         self._scroll_prefetch_armed_at: float = 0.0
         self._spinner_timer: Timer | None = None
         self._spinner_frame: int = 0
@@ -615,11 +630,15 @@ class CatalogScreen(Screen[None]):
     def _active_task_has_more(self) -> bool:
         """True iff the active task tab has another HF page available.
 
-        Discover and Library tabs return False; neither paginates.
+        Discover and Library tabs return False; neither paginates. Under an
+        active search this is the search's own flag, so the hint describes the
+        result set on screen.
         """
         task = self._active_task()
         if task is None:
             return False
+        if self._get_search_text():
+            return self._search_has_more
         return self._hf_has_more_by_task.get(task, False)
 
     def _hf_fetched_any(self) -> bool:
@@ -691,21 +710,40 @@ class CatalogScreen(Screen[None]):
         self.set_focus(self._search_input)
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
+    # The remote leg is a round trip, not a repaint, so it waits for a real
+    # pause in typing.
+    _REMOTE_SEARCH_DEBOUNCE_SECONDS = 0.45
 
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Schedule a filter pass after a short debounce.
+        """Schedule a filter pass, and a hub search behind a longer debounce.
 
         Each keystroke triggers a grid re-render or a list redraw, both of
         which Textual treats as layout invalidations. Without the debounce
         a 5-char term produces 5 full passes; with it, typing collapses
         to a single pass once the user pauses.
+
+        The filter only narrows models already fetched, so a term the catalog
+        has not paged to would otherwise read as "no such model".
         """
         if self._search_filter_timer is not None:
             self._search_filter_timer.stop()
         self._search_filter_timer = self.set_timer(
             self._SEARCH_FILTER_DEBOUNCE_SECONDS,
             self._apply_search_filter,
+        )
+        if self._remote_search_timer is not None:
+            self._remote_search_timer.stop()
+        # The Input already holds the new value when this fires.
+        if not self._get_search_text():
+            # Cleared: the next search starts its own result set.
+            self._searched_query = ""
+            self._search_offset = 0
+            self._search_has_more = False
+            return
+        self._remote_search_timer = self.set_timer(
+            self._REMOTE_SEARCH_DEBOUNCE_SECONDS,
+            lambda: self._trigger_remote_search(self._get_search_text()),
         )
 
     def _apply_search_filter(self) -> None:
@@ -721,16 +759,37 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter installs the first visible match; falls through to a remote
-        HF search when nothing matches locally."""
-        if self._grid_view:
-            if any(grid.rows for grid in self._grid_container.query(ModelGrid)):
-                self._select_first_visible_grid_card()
+        """Enter dismisses the search box and puts the cursor on the results.
+
+        Typing already runs the filter and the hub search, so there is no query
+        left to submit. It must not install: every row is a multi-gigabyte
+        download and the top row is whichever one sorted first. Installing is a
+        deliberate Enter on the focused card.
+        """
+        self._focus_first_result()
+
+    def _focus_first_result(self) -> None:
+        """Move the cursor to the first match. Focus only, never selection."""
+        with contextlib.suppress(Exception):
+            if not self._grid_view:
+                self._focus_first_list_row()
                 return
-        elif self._list_widget.option_count:
-            self._select_first_visible_list_item()
+            self._focus_first_grid_card()
+
+    def _focus_first_list_row(self) -> None:
+        """Put the list cursor on the first row, if there is one."""
+        if not self._list_widget.option_count:
             return
-        self._trigger_remote_search(self._get_search_text())
+        self._list_widget.highlighted = 0
+        self._list_widget.focus()
+
+    def _focus_first_grid_card(self) -> None:
+        """Put the grid cursor on the first card of the first populated grid."""
+        for grid in self._grid_container.query(ModelGrid):
+            if grid.rows:
+                grid.focus()
+                grid.highlighted = 0
+                return
 
     def _trigger_remote_search(self, query: str) -> None:
         """Fire the HF search worker for the active task, unless one is in flight.
@@ -745,41 +804,32 @@ class CatalogScreen(Screen[None]):
         active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
         if active_task is None:
             return
+        # A new term starts its own result set; only _load_more advances the
+        # offset, and only for the query it was fetched under.
+        if query != self._searched_query:
+            self._searched_query = query
+            self._search_offset = 0
+            self._search_has_more = False
         self._search_in_flight = True
         self._update_sort_label()
+        # The toolbar spinner carries this in both views. No toast: typing
+        # fires this, so one per pause would stack up over a single term.
         self._sync_loading_spinner()
-        # Sort label is hidden in grid view, so the toast is the only feedback there.
-        self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
-        self._fetch_hf_search(query, active_task)
+        self._fetch_hf_search(query, active_task, self._search_offset)
+
+    def _resume_search_if_term_moved_on(self) -> None:
+        """Re-run the hub search when the box moved on during the last one.
+
+        ``_trigger_remote_search`` drops a request that arrives mid-flight, so
+        the term typed during a round trip would otherwise never reach the hub.
+        """
+        query = self._get_search_text()
+        if query and query != self._searched_query:
+            self._trigger_remote_search(query)
 
     @on(Click, ".search-hf-cta")
     def _on_search_hf_cta_clicked(self) -> None:
         self._trigger_remote_search(self._get_search_text())
-
-    def _select_first_visible_grid_card(self) -> None:
-        """Focus the first grid with a visible match and trigger its install.
-
-        Without the "first visible" walk, focusing any grid with
-        ``highlighted = 0`` could land on a card the filter just hid,
-        and Enter would install the wrong model. Setting
-        ``highlighted`` to the first visible index guarantees the
-        install fires on what the user can actually see.
-        """
-        with contextlib.suppress(Exception):
-            for grid in self._grid_container.query(ModelGrid):
-                if grid.rows:
-                    grid.focus()
-                    grid.highlighted = 0
-                    grid.action_select()
-                    return
-
-    def _select_first_visible_list_item(self) -> None:
-        """List-view counterpart: highlight + select the first row."""
-        with contextlib.suppress(Exception):
-            if self._list_widget.option_count:
-                self._list_widget.highlighted = 0
-                self._list_widget.focus()
-                self._list_widget.action_select()
 
     def _fetch_hf_page_for_task(self, task: ModelTask) -> list[CatalogModel]:
         """Fetch one HF page for *task* at the task's own offset.
@@ -858,16 +908,22 @@ class CatalogScreen(Screen[None]):
         return self._fetch_hf_page_for_task(task)
 
     @work(thread=True, name=_WORKER_FETCH_SEARCH, exit_on_error=False)
-    def _fetch_hf_search(self, query: str, task: ModelTask) -> list[CatalogModel]:
-        """Fetch HF models matching *query* for *task* only (worker thread)."""
+    def _fetch_hf_search(self, query: str, task: ModelTask, offset: int) -> list[CatalogModel]:
+        """Fetch one page of HF models matching *query* for *task* (worker thread).
+
+        Writes ``_search_has_more`` from the worker thread the same way
+        ``_fetch_hf_page_for_task`` writes the per-task flag: the assignment is
+        GIL-atomic and the main thread only reads it.
+        """
         existing_repos = {m.hf_repo for m in self._hf_models}
         result = get_catalog(
             task=task,
             featured=False,
             search=query,
-            limit=_HF_PAGE_SIZE,
-            offset=0,
+            limit=_HF_SEARCH_LIMIT,
+            offset=offset,
         )
+        self._search_has_more = result.has_more
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -935,6 +991,7 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+            self._resume_search_if_term_moved_on()
         if name == _WORKER_FETCH_FAMILIES:
             self._families_in_flight = False
         self._sync_loading_spinner()
@@ -958,6 +1015,7 @@ class CatalogScreen(Screen[None]):
             self._hf_models.extend(result)
             self._search_in_flight = False
             self._update_sort_label()
+            self._resume_search_if_term_moved_on()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         elif name == _WORKER_FETCH_FRONTIER:
@@ -1239,7 +1297,12 @@ class CatalogScreen(Screen[None]):
         if prep is None:
             self._update_sort_label()
             return
-        sections, hf_count = prep
+        sections, hf_count, filter_changed = prep
+        if filter_changed:
+            # The offset belongs to the previous result set. Keeping it parks
+            # the viewport past the end of a shorter one (Textual clamps to the
+            # new max), so the matches render above the visible area.
+            self._grid_container.scroll_to(y=0, animate=False)
         if not sections:
             self._grid_container.remove_children()
             self._mount_grid_ctas(hf_count=hf_count)
@@ -1250,8 +1313,11 @@ class CatalogScreen(Screen[None]):
         self._remount_grid_sections(sections, hf_count)
         self._update_sort_label()
 
-    def _prepare_grid_refresh(self) -> tuple[list[GridSection], int] | None:
+    def _prepare_grid_refresh(self) -> tuple[list[GridSection], int, bool] | None:
         """Build sections + cache them. Returns None when the cache is hot.
+
+        Third element is True when the search text changed since the last
+        paint, which the caller uses to reset the scroll offset.
 
         On the None branch the caller refreshes the sort label so the
         cached path still picks up sort-toggle clicks.
@@ -1275,7 +1341,7 @@ class CatalogScreen(Screen[None]):
         # (name, installed), so a worker landing that changes rendered state
         # the signature misses (frontier key_status, fit, compat) must still
         # repaint rather than read as cache-hot.
-        row_key = (
+        row_key = _GridCacheKey(
             self._data_version,
             tuple(row_cache_signature(r) for r in tab_rows),
             search,
@@ -1283,9 +1349,11 @@ class CatalogScreen(Screen[None]):
         # Per-tab cache key: switching back to an already-rendered tab
         # is a no-op refresh; only sort-label refreshes. Keyed by
         # active_tab so other tabs' caches survive in-place.
-        if self._grid_cache_keys.get(active_tab) == row_key:
+        previous_key = self._grid_cache_keys.get(active_tab)
+        if previous_key == row_key:
             return None
         self._grid_cache_keys[active_tab] = row_key
+        filter_changed = previous_key is not None and previous_key.search != search
         if active_tab in TASK_TAB_IDS:
             active_task = TAB_ID_TO_TASK[active_tab]
             task_label = active_task.value.capitalize()
@@ -1301,7 +1369,11 @@ class CatalogScreen(Screen[None]):
         else:
             sections = [s for s in group_rows_for_grid(local_tab_rows) if s.rows]
             hf_count = len(hf_rows)
-        return sections, hf_count
+        if search:
+            # A filtered catalog is one result set, not a taxonomy: matches
+            # render flat so the viewport holds cards instead of headings.
+            sections = flatten_sections(sections, msg.HEADING_MATCHES)
+        return sections, hf_count, filter_changed
 
     def _extend_grid_sections_in_place(self, sections: list[GridSection], hf_count: int) -> bool:
         """Update existing ModelGrids in place when section count matches.
@@ -1921,9 +1993,14 @@ class CatalogScreen(Screen[None]):
 
         Pagination is per-task: only the active tab's offset advances, only
         the active tab's task is fetched. Discover and Library short-circuit
-        because they have no associated task and can't paginate.
+        because they have no associated task and can't paginate. While a
+        search is active the search's own offset advances instead; paging the
+        browse offset there would fetch models the filter then discards.
         """
         if self._loading_more:
+            return
+        if self._get_search_text():
+            self._load_more_search_results()
             return
         task = self._active_task()
         if task is None or not self._hf_has_more_by_task.get(task, False):
@@ -1932,6 +2009,25 @@ class CatalogScreen(Screen[None]):
         self._sync_loading_spinner()
         self._hf_offset_by_task[task] += _HF_PAGE_SIZE
         self._fetch_more_hf_for_task(task)
+
+    def _load_more_search_results(self) -> None:
+        """Advance the active search by one page.
+
+        Guarded on the query the offset was fetched under, so a term edited
+        mid-flight cannot append matches for a term nobody typed.
+        """
+        query = self._get_search_text()
+        if self._search_in_flight or not self._search_has_more:
+            return
+        if query != self._searched_query:
+            return
+        active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
+        if active_task is None:
+            return
+        self._search_offset += _HF_SEARCH_LIMIT
+        self._search_in_flight = True
+        self._sync_loading_spinner()
+        self._fetch_hf_search(query, active_task, self._search_offset)
 
     def action_load_more(self) -> None:
         """Keyboard trigger (``n``) so users can page without scrolling."""
