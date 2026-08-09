@@ -817,6 +817,16 @@ class CatalogScreen(Screen[None]):
         self._sync_loading_spinner()
         self._fetch_hf_search(query, active_task, self._search_offset)
 
+    def _resume_search_if_term_moved_on(self) -> None:
+        """Re-run the hub search when the box moved on during the last one.
+
+        ``_trigger_remote_search`` drops a request that arrives mid-flight, so
+        the term typed during a round trip would otherwise never reach the hub.
+        """
+        query = self._get_search_text()
+        if query and query != self._searched_query:
+            self._trigger_remote_search(query)
+
     @on(Click, ".search-hf-cta")
     def _on_search_hf_cta_clicked(self) -> None:
         self._trigger_remote_search(self._get_search_text())
@@ -981,6 +991,7 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+            self._resume_search_if_term_moved_on()
         if name == _WORKER_FETCH_FAMILIES:
             self._families_in_flight = False
         self._sync_loading_spinner()
@@ -1004,6 +1015,7 @@ class CatalogScreen(Screen[None]):
             self._hf_models.extend(result)
             self._search_in_flight = False
             self._update_sort_label()
+            self._resume_search_if_term_moved_on()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         elif name == _WORKER_FETCH_FRONTIER:

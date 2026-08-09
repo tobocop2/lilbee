@@ -5310,6 +5310,68 @@ class TestCatalogSearchFetchesAWholeResultSet:
                 assert not fetch.called, why
                 assert screen._search_offset == offset
 
+    async def test_a_term_typed_during_a_search_still_reaches_the_hub(self):
+        """Typing through an in-flight search must not lose the final term.
+
+        _trigger_remote_search drops a request that arrives mid-flight, so with
+        typing driving the searches, "qwen" then "3" during that round trip left
+        the hub never seeing "qwen3": the filter narrowed the rows already
+        fetched and the extra matches never arrived.
+        """
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                # A search for "qwen" is out; the box has since moved to "qwen3".
+                screen._searched_query = "qwen"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._apply_worker_result(_WORKER_FETCH_SEARCH, [])
+
+                fetch.assert_called_once_with("qwen3", ModelTask.CHAT, 0)
+
+    async def test_a_failed_search_still_resumes_the_term_typed_during_it(self):
+        """A search that errors or is cancelled releases the latch too.
+
+        Without the resume on this path a failed round trip strands the term
+        the user typed while it was out: the latch clears and nothing retries.
+        """
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._handle_worker_error_or_cancel(_WORKER_FETCH_SEARCH)
+
+                fetch.assert_called_once_with("qwen3", ModelTask.CHAT, 0)
+
+    async def test_a_settled_search_does_not_refire_for_the_same_term(self):
+        """The resume must not loop: a completion for the live term is the end."""
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen3"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._apply_worker_result(_WORKER_FETCH_SEARCH, [])
+
+                assert not fetch.called
+
     async def test_a_new_term_restarts_its_result_set(self):
         """Editing the term resets the offset; otherwise page 2 of the old
         query is appended as though it matched the new one."""
