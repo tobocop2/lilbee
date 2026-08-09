@@ -14,6 +14,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat, shown_footer_keys
 from tests.conftest import make_mock_services
 
@@ -54,6 +55,24 @@ async def _open_drawer(app, pilot) -> SessionsDrawer:
     app.action_toggle_sessions()
     await pilot.pause()
     return screen.query_one(SessionsDrawer)
+
+
+async def _hittable_row(pilot, drawer):
+    """Return the drawer's first session row once it owns a hit area.
+
+    The drawer mounts before it lays out, and one pause covers the mount but
+    not the layout. Until the row has a region, every point derived from it is
+    the origin, so the event lands on whatever occupies the top-left corner --
+    the drawer itself -- and the test asserts against the wrong widget. That is
+    the whole of this file's windows-runner failure history, so the wait lives
+    here once rather than inline at each hit-test.
+    """
+    rows = list(drawer.query(".session-row-meta").results())
+    assert rows, "the drawer rendered no session rows"
+    row = rows[0]
+    await wait_until(pilot, lambda: bool(row.region.size))
+    assert row.region.size, "the session row was never laid out, so it has no hit area"
+    return row
 
 
 # --- drawer ---------------------------------------------------------------
@@ -660,16 +679,20 @@ async def test_clicking_a_session_row_never_starts_a_text_selection(sessions, mo
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
-        rows = list(drawer.query(".session-row-meta").results())
-        assert rows, "the drawer rendered no session rows to click"
+        row = await _hittable_row(pilot, drawer)
         assert app.screen._select_state is None
 
         # mouse_down, not click: a full click is down-then-up, and MouseUp calls
         # clear_selection(), so _select_state reads None afterwards either way.
         # MouseDown is also the event in the reported traceback.
-        await pilot.mouse_down(rows[0])
+        landed = await pilot.mouse_down(row)
         await pilot.pause()
 
+        # Pilot reports whether the final event reached the widget it was
+        # given. Asserting it keeps a miss reading as a miss instead of as a
+        # clean row: an event that lands elsewhere leaves the row's selection
+        # state untouched, which is indistinguishable from the fix working.
+        assert landed, "the MouseDown never reached the session row"
         assert app.screen._select_state is None, (
             "MouseDown on a session row started a text selection, which is the "
             "path that crashes on an unparented row"
@@ -703,17 +726,7 @@ async def test_mouse_down_on_a_detached_session_row_does_not_crash(sessions, mon
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
-        rows = list(drawer.query(".session-row-meta").results())
-        assert rows, "the drawer rendered no session rows"
-        target = rows[0]
-        # The drawer is mounted but not necessarily laid out: until it is, the
-        # row's region is empty and the point below lands on whatever occupies
-        # the top-left corner, so the hit-test asserts against the wrong widget.
-        for _ in range(10):
-            if target.region.size:
-                break
-            await pilot.pause()
-        assert target.region.size, "the session row was never laid out, so it has no hit area"
+        target = await _hittable_row(pilot, drawer)
         x = target.region.offset.x + 2
         y = target.region.offset.y
 

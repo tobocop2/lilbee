@@ -15127,6 +15127,16 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            # The screen's own first paint queues a tail mount through
+            # call_after_refresh. Left pending, it lands on the pause below the
+            # mount and reaches _remount_grid_sections, which clears the
+            # container's children before remounting the real sections -- so the
+            # section mounted here disappears and the count reads unchanged.
+            # Drain it now, while nothing has been counted yet. Stubbing the
+            # method cannot help: call_after_refresh captured the bound method
+            # when it scheduled.
+            for _ in range(3):
+                await _pilot.pause()
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]
