@@ -197,10 +197,10 @@ class LilbeeApp(App[None]):
         self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
-        # Whether a chat and an embedding model both resolve. Chat is only
-        # entered while this holds; it is answered off the UI thread (the
-        # probe reads disk and can call a local model server), so it starts
-        # permissive and the boot check corrects it.
+        # Whether a chat and an embedding model both resolve; the Chat view is
+        # only entered while this holds. The startup gate settles it before any
+        # screen is handed over, so the permissive default is only ever read by
+        # a host that never boots the gate.
         self.models_are_ready = True
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
@@ -251,10 +251,6 @@ class LilbeeApp(App[None]):
         self._sync_theme_index_to_current()
 
         self._wire_worker_pool_notifications()
-        # Started here rather than from the chat screen's mount: the answer
-        # decides whether chat is entered at all, so it must not depend on
-        # chat having been entered first.
-        self.refresh_models_ready(present_setup=True)
         # Chat's import graph is the TUI's heaviest; loading it here would hold
         # the first frame back for seconds on a cold disk, leaving the terminal
         # blank exactly where the gate should be. Paint first, then load.
@@ -297,10 +293,12 @@ class LilbeeApp(App[None]):
         gate.start_boot()
 
     def reveal_chat(self) -> None:
-        """Swap the startup gate for the chat screen once the engine has settled."""
-        if not self.models_are_ready:
-            self.open_setup()
-            return
+        """Swap the startup gate for the chat screen once the engine has settled.
+
+        No readiness guard here: the gate settles that answer before it hands
+        over, and routes to setup itself when there is setup to do, so this is
+        only ever reached for an app that can serve.
+        """
         self.switch_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
@@ -308,23 +306,33 @@ class LilbeeApp(App[None]):
         # initiates sync explicitly via S or the command palette.
         self.task_bar.start_detect_pending()
 
-    @work(thread=True, name="models_ready", exit_on_error=False)
-    def refresh_models_ready(self, *, present_setup: bool = False) -> None:
-        """Re-answer whether chat has models to run, off the UI thread.
+    def settle_setup_state(self) -> bool:
+        """Answer the setup questions, run setup if there is any, and say so.
 
-        ``present_setup`` also opens the wizard when there is setup to do,
-        which is what the first launch of a lilbee wants. Every other caller
-        only refreshes the answer: re-opening the wizard from the path that
-        runs when it closes would be a trap.
+        Called from the startup gate's boot thread and blocking by design: the
+        answer decides whether the handover goes to chat at all, so the gate
+        settles it rather than racing it against a default. Returns whether
+        setup took the screen, which is the gate's cue not to hand over.
         """
         ready = models_ready()
-        show = present_setup and (not ready or is_fresh_install())
-        call_from_thread(self, self._apply_models_ready, ready, show)
+        setup_to_do = not ready or is_fresh_install()
+        call_from_thread(self, self._apply_setup_state, ready, setup_to_do)
+        return setup_to_do
 
-    def _apply_models_ready(self, ready: bool, present_setup: bool) -> None:
-        """Record the readiness answer and, on the first launch, run setup."""
+    @work(thread=True, name="setup_state", exit_on_error=False)
+    def refresh_models_ready(self) -> None:
+        """Re-answer readiness off the UI thread, leaving the user where they are.
+
+        Only the boot probe presents the wizard: re-presenting it from the path
+        that runs when a model lands -- which is how the wizard is closed --
+        would be a trap.
+        """
+        call_from_thread(self, self._apply_setup_state, models_ready(), False)
+
+    def _apply_setup_state(self, ready: bool, open_setup: bool) -> None:
+        """Record the readiness answer, then run setup when the boot probe asked."""
         self.models_are_ready = ready
-        if present_setup:
+        if open_setup:
             self.open_setup()
 
     def _recheck_models_on_model_change(self, payload: tuple[str, object]) -> None:

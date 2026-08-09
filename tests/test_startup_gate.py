@@ -98,6 +98,9 @@ def _gate_with_app():
     app = mock.MagicMock()
     app.call_from_thread.side_effect = lambda fn, *a: fn(*a)
     app.screen = gate  # the gate owns the screen, as it does in production
+    # An app with nothing to set up, so the gate reaches its handover. Tests
+    # about the setup route say so by flipping this.
+    app.settle_setup_state.return_value = False
     return gate, app
 
 
@@ -127,7 +130,6 @@ async def test_gate_releases_once_services_build_even_with_a_cold_engine(monkeyp
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
 
     provider = mock.MagicMock()
     provider.role_ready.return_value = False  # engine is stone cold
@@ -161,13 +163,17 @@ async def test_gate_failure_surfaces_the_error_and_still_reveals_chat():
     app.reveal_chat.assert_called_once_with()
 
 
-async def test_gate_reveals_chat_when_setup_is_required(monkeypatch):
-    """With no models installed the wizard owns the flow, so the gate steps aside."""
+async def test_gate_hands_nothing_over_when_setup_takes_the_screen(monkeypatch):
+    """Setup owns the screen, so the gate must not hand over on top of it.
+
+    Chat is not reachable while setup is outstanding, and the container is not
+    worth building against models that do not resolve.
+    """
     from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-    monkeypatch.setattr(gate_mod, "needs_setup", lambda: True)
+    app.settle_setup_state.return_value = True
     built = mock.Mock()
     monkeypatch.setattr(gate_mod, "get_services", built)
     with (
@@ -176,8 +182,35 @@ async def test_gate_reveals_chat_when_setup_is_required(monkeypatch):
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
         StartupGate._boot_worker.__wrapped__(gate)
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_chat.assert_not_called()
     built.assert_not_called()
+
+
+async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
+    """An already built container still waits on the setup answer.
+
+    The container is built on the app's mount path, so this is the path every
+    launch takes. Handing over first and asking afterwards flashes up the very
+    chat screen the answer exists to withhold.
+    """
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate, app = _gate_with_app()
+    order: list[str] = []
+    app.settle_setup_state.side_effect = lambda: order.append("settle") or False
+    app.reveal_chat.side_effect = lambda: order.append("reveal")
+    monkeypatch.setattr(gate_mod, "peek_services", lambda: mock.MagicMock())
+    monkeypatch.setattr(gate_mod, "get_services", mock.Mock())
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "query_one"),
+        mock.patch.object(StartupGate, "_stopping", return_value=False),
+    ):
+        StartupGate._boot_worker.__wrapped__(gate)
+    assert order == ["settle", "reveal"]
+    # Nothing to settle in the refs: that work belongs to the build it skipped.
+    app.canonicalize_persisted_models.assert_not_called()
 
 
 async def test_gate_surfaces_a_failure_to_build_services(monkeypatch):
@@ -186,7 +219,6 @@ async def test_gate_surfaces_a_failure_to_build_services(monkeypatch):
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
     monkeypatch.setattr(gate_mod, "get_services", mock.Mock(side_effect=OSError("disk gone")))
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
@@ -260,7 +292,7 @@ async def test_first_run_hands_over_when_setup_is_required(tmp_path, monkeypatch
     from lilbee.cli.tui.screens.startup_gate import StartupGate
     from lilbee.core.config import cfg
 
-    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "missing")  # forces needs_setup
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "missing")  # a fresh install
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -351,45 +383,33 @@ async def test_gate_hands_over_when_it_still_owns_the_screen():
     app.reveal_chat.assert_called_once_with()
 
 
-async def test_built_services_defer_the_handover_off_on_mount(monkeypatch):
+@pytest.mark.parametrize("container", [None, "built"])
+async def test_start_boot_always_takes_the_worker(monkeypatch, container):
     """Regression: switching screens inside on_mount stalled Textual.
 
-    start_boot runs at the tail of LilbeeApp.on_mount. Calling reveal_chat straight
-    from there switches screens mid-mount; defer it a frame instead.
+    start_boot runs at the tail of LilbeeApp.on_mount, so it must not hand over
+    inline. There is no longer a fast path for an already built container
+    either: the setup answer decides whether the handover happens at all, and
+    it is not a question the UI thread can afford to ask.
     """
     from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate = StartupGate()
-    monkeypatch.setattr(gate_mod, "peek_services", lambda: mock.MagicMock())
+    services = None if container is None else mock.MagicMock()
+    monkeypatch.setattr(gate_mod, "peek_services", lambda: services)
 
+    worker_calls: list = []
     deferred: list = []
     released: list = []
+    monkeypatch.setattr(gate, "_boot_worker", lambda: worker_calls.append(True), raising=False)
     monkeypatch.setattr(gate, "call_after_refresh", deferred.append, raising=False)
     monkeypatch.setattr(gate, "_release", lambda: released.append(True), raising=False)
 
     gate.start_boot()
 
-    assert released == [], "the handover must not run inside on_mount"
-    assert deferred == [gate._release]
-
-
-async def test_start_boot_builds_services_when_none_exist(monkeypatch):
-    """Without a container the gate takes the worker path, not the fast path."""
-    from lilbee.cli.tui.screens import startup_gate as gate_mod
-    from lilbee.cli.tui.screens.startup_gate import StartupGate
-
-    gate = StartupGate()
-    monkeypatch.setattr(gate_mod, "peek_services", lambda: None)
-
-    worker_calls: list = []
-    deferred: list = []
-    monkeypatch.setattr(gate, "_boot_worker", lambda: worker_calls.append(True), raising=False)
-    monkeypatch.setattr(gate, "call_after_refresh", deferred.append, raising=False)
-
-    gate.start_boot()
-
     assert worker_calls == [True]
+    assert released == [], "the handover must not run inside on_mount"
     assert deferred == []
 
 
@@ -401,8 +421,9 @@ async def test_boot_worker_canonicalizes_before_the_setup_check(monkeypatch):
 
     gate, app = _gate_with_app()
     order: list[str] = []
+    monkeypatch.setattr(gate_mod, "peek_services", lambda: None)
     app.canonicalize_persisted_models.side_effect = lambda: order.append("canonicalize")
-    monkeypatch.setattr(gate_mod, "needs_setup", lambda: order.append("setup") or True)
+    app.settle_setup_state.side_effect = lambda: order.append("setup") or True
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
@@ -419,7 +440,7 @@ async def test_boot_worker_surfaces_a_canonicalization_failure(monkeypatch):
 
     gate, app = _gate_with_app()
     app.canonicalize_persisted_models.side_effect = OSError("registry unreadable")
-    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
+    monkeypatch.setattr(gate_mod, "peek_services", lambda: None)
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),

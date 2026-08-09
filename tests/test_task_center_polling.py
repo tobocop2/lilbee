@@ -232,7 +232,7 @@ async def test_cursor_actions_move_focus() -> None:
 async def test_go_back_switches_to_chat_on_lilbee_app() -> None:
     """go-back returns to chat, so this one needs the real app with a chat screen.
 
-    ready_services + needs_setup=False make the startup gate hand over to chat
+    ready_services pins readiness True, so the startup gate hands over to chat
     deterministically, without the setup wizard racing the pushed TaskCenter.
     """
     from lilbee.cli.tui.app import LilbeeApp

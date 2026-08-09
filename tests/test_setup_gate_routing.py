@@ -59,6 +59,38 @@ async def _wait_for(pilot, predicate, what: str):
 
 
 @pytest.mark.asyncio
+async def test_the_handover_waits_for_the_readiness_answer() -> None:
+    """The gate must not hand over to chat while the answer is still outstanding.
+
+    The probe reads disk and can call a local model server, so it takes real
+    time. A handover that races it reads whatever the readiness flag happened
+    to hold and flashes up the very chat screen this gate exists to prevent,
+    before the wizard replaces it. Sample the stack the whole way through:
+    chat must never appear on it, not merely be gone by the end.
+    """
+    seen: set[str] = set()
+
+    def _slow_probe() -> bool:
+        time.sleep(0.5)
+        return False
+
+    app = LilbeeApp()
+    with (
+        patch("lilbee.cli.tui.app.models_ready", side_effect=_slow_probe),
+        _patch_setup_scan(),
+        _patch_setup_ram(),
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+
+            def _sample_until_wizard() -> bool:
+                seen.update(type(screen).__name__ for screen in app.screen_stack)
+                return isinstance(app.screen, SetupWizard)
+
+            await _wait_for(pilot, _sample_until_wizard, "the setup wizard")
+    assert ChatScreen.__name__ not in seen, f"chat was on screen during boot: {sorted(seen)}"
+
+
+@pytest.mark.asyncio
 async def test_escaping_the_wizard_lands_on_the_catalog_not_a_dead_chat() -> None:
     """Escape must leave a surface that works, never a chat with no engine."""
     app = LilbeeApp()
@@ -112,13 +144,22 @@ async def test_navigating_to_chat_without_models_re_presents_setup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reveal_chat_hands_the_first_run_to_setup() -> None:
-    """The gate's handover is a route into chat, so it answers to the same gate."""
+async def test_settling_runs_setup_before_it_returns_to_the_gate() -> None:
+    """The answer is recorded and acted on before the gate is told what to do.
+
+    Driven from a worker thread, as the gate drives it: the marshalled apply
+    has to have landed by the time the call returns, or the gate could hand
+    over against a flag nobody has written yet.
+    """
     app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)):
-        app.models_are_ready = False
-        with patch.object(LilbeeApp, "open_setup") as open_setup:
-            app.reveal_chat()
+        with (
+            patch("lilbee.cli.tui.app.models_ready", return_value=False),
+            patch.object(LilbeeApp, "open_setup") as open_setup,
+        ):
+            took_the_screen = await asyncio.to_thread(app.settle_setup_state)
+        assert took_the_screen is True
+        assert app.models_are_ready is False
         open_setup.assert_called_once_with()
 
 
@@ -176,9 +217,8 @@ async def test_a_model_reassignment_re_answers_readiness() -> None:
             refresh.assert_not_called()
 
 
-def test_readiness_worker_presents_setup_only_when_there_is_setup_to_do() -> None:
-    """The probe runs off the UI thread; the answer decides whether setup shows."""
-    body = LilbeeApp.refresh_models_ready.__wrapped__
+def test_settling_runs_setup_only_when_there_is_setup_to_do() -> None:
+    """A brand new lilbee sees the wizard even when its models already resolve."""
     for ready, fresh, expected in (
         (True, False, (True, False)),  # nothing to do
         (False, False, (False, True)),  # no models: show the wizard
@@ -190,12 +230,12 @@ def test_readiness_worker_presents_setup_only_when_there_is_setup_to_do() -> Non
             patch("lilbee.cli.tui.app.is_fresh_install", return_value=fresh),
             patch("lilbee.cli.tui.app.call_from_thread") as marshal,
         ):
-            body(app, present_setup=True)
+            assert app.settle_setup_state() is expected[1]
         assert marshal.call_args.args[2:] == expected
 
 
-def test_readiness_worker_only_refreshes_when_setup_is_not_being_presented() -> None:
-    """The path that runs when the wizard closes must never re-open it."""
+def test_a_later_refresh_never_re_opens_the_wizard() -> None:
+    """The refresh path runs when a model lands, which is how the wizard closes."""
     body = LilbeeApp.refresh_models_ready.__wrapped__
     app = LilbeeApp()
     with (

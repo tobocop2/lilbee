@@ -1,4 +1,4 @@
-"""Tests for needs_setup: the wizard shows on fresh data dirs."""
+"""Tests for the two setup questions: is this lilbee new, and can it serve chat."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.setup_state import models_ready, needs_setup
+from lilbee.app.setup_state import is_fresh_install, models_ready
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat
 
@@ -26,15 +26,16 @@ def isolated_data_dir(tmp_path):
             setattr(cfg, field_name, getattr(snapshot, field_name))
 
 
-def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
-    """Fresh data dir must trigger the wizard even when models resolve globally."""
+def test_a_missing_lancedb_dir_is_a_fresh_install(isolated_data_dir):
+    """A fresh data dir means the wizard runs, whatever the models say."""
     assert not cfg.lancedb_dir.exists()
-    with mock.patch(
-        "lilbee.providers.engine_params.resolve_model_path",
-        return_value="/some/resolved/path",
-    ) as resolve:
-        assert needs_setup() is True
-        resolve.assert_not_called()
+    assert is_fresh_install() is True
+
+
+def test_an_existing_lancedb_dir_is_not_a_fresh_install(isolated_data_dir):
+    """A lilbee that has already stored something must not re-run first-run setup."""
+    cfg.lancedb_dir.mkdir(parents=True)
+    assert is_fresh_install() is False
 
 
 def test_models_ready_ignores_a_fresh_data_dir(isolated_data_dir):
@@ -43,7 +44,7 @@ def test_models_ready_ignores_a_fresh_data_dir(isolated_data_dir):
     ``models_ready`` is what keeps the user out of the chat screen, so it must
     answer only the question chat depends on. Folding the fresh-data-dir check
     into it would lock chat behind an ingest that cannot be run from anywhere
-    but chat. The wizard still runs on a fresh dir -- that is ``needs_setup``.
+    but chat. The wizard still runs on a fresh dir -- that is is_fresh_install.
     """
     assert not cfg.lancedb_dir.exists()
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
@@ -53,11 +54,11 @@ def test_models_ready_ignores_a_fresh_data_dir(isolated_data_dir):
         return_value="/some/resolved/path",
     ):
         assert models_ready() is True
-        assert needs_setup() is True
+        assert is_fresh_install() is True
 
 
-def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir):
-    """Initialized data dir plus resolvable native models skips the wizard."""
+def test_models_ready_when_the_native_refs_resolve(isolated_data_dir):
+    """Resolvable native chat and embedding refs mean chat has an engine."""
     cfg.lancedb_dir.mkdir(parents=True)
     # Explicit native refs so the check is deterministic regardless of the
     # developer's loaded config.toml (which may hold remote refs).
@@ -67,11 +68,11 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
-        assert needs_setup() is False
+        assert models_ready() is True
 
 
-def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
-    """Unresolvable native chat/embedding model still triggers the wizard."""
+def test_models_not_ready_when_a_native_ref_is_missing(isolated_data_dir):
+    """An unresolvable native chat/embedding ref leaves chat with no engine."""
     from lilbee.providers.base import ProviderError
 
     cfg.lancedb_dir.mkdir(parents=True)
@@ -81,10 +82,10 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
         "lilbee.providers.engine_params.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
     ):
-        assert needs_setup() is True
+        assert models_ready() is False
 
 
-def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_dir):
+def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data_dir):
     """ollama/ and API-prefixed models bypass the llama-cpp registry check.
 
     The native resolver only knows about GGUFs, so a usable remote ref
@@ -103,11 +104,11 @@ def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_d
         ),
         mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve,
     ):
-        assert needs_setup() is False
+        assert models_ready() is True
         resolve.assert_not_called()
 
 
-def test_needs_setup_true_when_remote_model_unusable(isolated_data_dir):
+def test_models_not_ready_when_a_remote_ref_is_unusable(isolated_data_dir):
     """An unusable remote ref (litellm missing, server down, no key) opens the wizard.
 
     Regression: this used to be skipped on the assumption that remote refs
@@ -123,20 +124,16 @@ def test_needs_setup_true_when_remote_model_unusable(isolated_data_dir):
         "lilbee.modelhub.model_manager.validate_persisted_model",
         return_value=ValidationResult.UNKNOWN,
     ):
-        assert needs_setup() is True
+        assert models_ready() is False
 
 
-def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
+def test_a_file_at_the_lancedb_path_is_a_fresh_install(isolated_data_dir):
     """A stray file at the lancedb path is not a real data directory."""
     cfg.lancedb_dir.parent.mkdir(parents=True, exist_ok=True)
     cfg.lancedb_dir.write_text("not a directory")
     assert cfg.lancedb_dir.exists()
     assert not cfg.lancedb_dir.is_dir()
-    with mock.patch(
-        "lilbee.providers.engine_params.resolve_model_path",
-        return_value="/some/resolved/path",
-    ):
-        assert needs_setup() is True
+    assert is_fresh_install() is True
 
 
 @pytest.fixture
