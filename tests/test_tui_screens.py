@@ -8908,21 +8908,7 @@ class TestWikiStubs:
 
     @staticmethod
     def _index(tmp_path, slug="ford", sources=("a.md",)):
-        from lilbee.wiki.entity_extractor import EntityKind
-        from lilbee.wiki.stubs import WikiStub, save_stub_index
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        stub = WikiStub(
-            slug=slug,
-            label=slug.title(),
-            kind=EntityKind.ENTITY,
-            type_hint="PERSON",
-            source_mentions=tuple((s, 1) for s in sources),
-            chunk_refs=tuple((s, 0) for s in sources),
-        )
-        save_stub_index({slug: stub})
-        return stub
+        return _save_wiki_stubs(tmp_path, [slug.title()], sources=sources)[0]
 
     async def test_a_stub_is_listed_and_marked(self, tmp_path):
         self._index(tmp_path)
@@ -9310,6 +9296,62 @@ class TestWikiRootShortcuts:
             assert "Log" not in top_labels
 
 
+def _save_wiki_stubs(tmp_path, labels, sources=("a.md",)):
+    """Write a stub index naming *labels*, and return the stubs in that order."""
+    from lilbee.wiki.entity_extractor import EntityKind
+    from lilbee.wiki.stubs import WikiStub, save_stub_index
+
+    cfg.wiki = True
+    cfg.data_root = tmp_path
+    stubs = {
+        label.lower().replace(" ", "-"): WikiStub(
+            slug=label.lower().replace(" ", "-"),
+            label=label,
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            source_mentions=tuple((s, 1) for s in sources),
+            chunk_refs=tuple((s, 0) for s in sources),
+        )
+        for label in labels
+    }
+    save_stub_index(stubs)
+    return list(stubs.values())
+
+
+def _laid_out_leaves(tree) -> list[str]:
+    """Labels of the page/stub lines actually inside the tree's viewport.
+
+    Counts what the reader can see, so a match parked behind a collapsed
+    group or above the scroll offset does not read as rendered.
+    """
+    top = tree.scroll_offset.y
+    labels = []
+    for line_no in range(top, top + tree.size.height):
+        node = tree.get_node_at_line(line_no)
+        if node is None:
+            break
+        if isinstance(node.data, str):
+            labels.append(str(node.label))
+    return labels
+
+
+async def _apply_wiki_filter(screen, pilot, text: str, until_gone: str) -> None:
+    """Type *text* into the wiki search and wait for the debounced filter pass.
+
+    Polls rather than pausing a fixed span: the debounce is 0.12 s and a fixed
+    wait starves under xdist parallel load. *until_gone* is a slug the filter
+    must drop, which is what makes the pass observable.
+    """
+    from textual.widgets import Input as TextualInput
+
+    screen.query_one("#wiki-search", TextualInput).value = text
+    for _ in range(20):
+        await pilot.pause(0.1)
+        if until_gone not in screen._page_slugs:
+            return
+    raise AssertionError(f"filter {text!r} never dropped {until_gone!r}")
+
+
 class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
@@ -9401,6 +9443,98 @@ class TestWikiScreenSearch:
             await pilot.press("escape")
             await pilot.pause()
             assert search.value == ""
+
+
+class TestWikiSearchFillsTheSidebar:
+    """A search must spend the sidebar on matches, not on chrome it filtered past.
+
+    Each failure here was measured on the laid-out tree, not on the slug list:
+    the pages the filter selected were in ``_page_slugs`` all along and still
+    never reached the screen.
+    """
+
+    async def test_matching_stubs_are_not_hidden_behind_a_collapsed_group(self, tmp_path):
+        """Stubs collapse by default; under a filter that buries the whole result set.
+
+        On a lazy wiki most entries are stubs, so a search matching 40 of them
+        rendered a single "Not written yet" line and an otherwise empty sidebar.
+        """
+        _save_wiki_stubs(tmp_path, [f"Brake Assembly {i}" for i in range(40)])
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "brake-overview", "Brake Overview")
+        _create_wiki_page(wiki_root, "summaries", "clutch-overview", "Clutch Overview")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            screen = app.screen
+            await _apply_wiki_filter(screen, pilot, "brake", "summaries/clutch-overview")
+
+            tree = screen.query_one("#wiki-page-list", Tree)
+            visible = _laid_out_leaves(tree)
+            # One heading for the page group and one for the stubs is all the
+            # chrome the matches pay for; the rest of the sidebar holds matches.
+            assert len(visible) >= tree.size.height - 2
+            assert any("Brake Assembly" in label for label in visible)
+
+    async def test_root_shortcuts_follow_the_filter(self, tmp_path):
+        """Index and Log are pages like any other: they match a term or they don't."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "brake-overview", "Brake Overview")
+        _create_wiki_page(wiki_root, "summaries", "clutch-overview", "Clutch Overview")
+        (wiki_root / "index.md").write_text("---\ntitle: Index\n---\nbody\n", encoding="utf-8")
+        (wiki_root / "log.md").write_text("---\ntitle: Log\n---\nbody\n", encoding="utf-8")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            from lilbee.cli.tui import messages as m
+
+            screen = app.screen
+            tree = screen.query_one("#wiki-page-list", Tree)
+            assert {m.WIKI_INDEX_LABEL, m.WIKI_LOG_LABEL} <= set(_laid_out_leaves(tree))
+
+            await _apply_wiki_filter(screen, pilot, "brake", "summaries/clutch-overview")
+            labels = _laid_out_leaves(tree)
+            assert m.WIKI_INDEX_LABEL not in labels
+            assert m.WIKI_LOG_LABEL not in labels
+
+            # And they stay reachable by name rather than being filtered out of
+            # existence: searching for one is the only way to reach it by search.
+            await _apply_wiki_filter(screen, pilot, "log", "summaries/brake-overview")
+            assert m.WIKI_LOG_LABEL in _laid_out_leaves(tree)
+
+    async def test_search_after_scrolling_starts_at_the_top(self, tmp_path):
+        """A filter pass must not inherit the scroll offset of the unfiltered tree.
+
+        Textual clamps the stale offset to the shorter result set's maximum, so
+        a search run after any scrolling opened at the *end* of the matches.
+        """
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        for i in range(200):
+            _create_wiki_page(wiki_root, "summaries", f"page-{i:03d}", f"Page {i:03d}")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            screen = app.screen
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.scroll_to(y=120, animate=False)
+            await pilot.pause()
+            assert tree.scroll_offset.y > 0
+
+            # "Page 1" keeps 1, 10-19 and 100-199: still taller than the sidebar.
+            await _apply_wiki_filter(screen, pilot, "Page 1", "summaries/page-000")
+
+            assert tree.max_scroll_y > 0, "the result set is taller than the sidebar"
+            assert tree.scroll_offset.y == 0
 
 
 class TestWikiScreenNavigation:
