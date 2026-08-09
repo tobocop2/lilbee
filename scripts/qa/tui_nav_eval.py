@@ -78,7 +78,7 @@ def _isolated_env(tmp: Path):
     set_services(mock_svc)
     try:
         with (
-            mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
+            mock.patch("lilbee.cli.tui.app.models_ready", return_value=True),
             mock.patch(
                 "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True
             ),

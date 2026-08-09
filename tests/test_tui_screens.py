@@ -70,8 +70,8 @@ def _isolated_cfg(tmp_path):
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     cfg.chunk_size = 512
-    # Simulate "already-initialized" state so needs_setup()
-    # doesn't push the SetupWizard during tests that exercise chat.
+    # Simulate "already-initialized" state so the app does not read this as
+    # a fresh install and open the SetupWizard over tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for name in type(cfg).model_fields:
@@ -103,7 +103,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
+        patch("lilbee.cli.tui.app.models_ready", return_value=True),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -3839,12 +3839,12 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
         assert inp.has_focus
 
 
-async def test_chat_needs_setup_false_when_models_exist():
+async def test_chat_stays_up_when_models_exist():
     """Resolvable models must leave the chat screen up, with no setup wizard."""
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
-    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
+    with patch("lilbee.cli.tui.app.models_ready", return_value=True):
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -5152,7 +5152,7 @@ async def test_catalog_search_scoped_to_active_task():
             screen._active_tab_id_cache = "embed"
             with patch.object(screen, "_fetch_hf_search") as fetch:
                 screen._trigger_remote_search("llama")
-                fetch.assert_called_once_with("llama", ModelTask.EMBEDDING)
+                fetch.assert_called_once_with("llama", ModelTask.EMBEDDING, 0)
 
 
 async def test_catalog_search_skips_non_task_tab():
@@ -5199,6 +5199,210 @@ async def test_catalog_action_load_more_triggers_fetch():
             with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen.action_load_more()
                 assert fetch.called
+
+
+class TestCatalogSearchFetchesAWholeResultSet:
+    """A search is a query, not a browse page.
+
+    The rendering fix put every match that reached the screen on screen; these
+    pin how many ever reach it. Fixtures that preload ``_hf_models`` cannot see
+    this -- they supply the rows the fetch caps -- so each of these drives the
+    fetch itself.
+    """
+
+    @staticmethod
+    async def _screen(app, pilot, tab="chat"):
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._active_tab_id_cache = tab
+        screen._activation_settled = True
+        screen._refresh_view = lambda: None  # type: ignore[method-assign]
+        screen._loading_more = False
+        screen._search_in_flight = False
+        return screen
+
+    async def test_a_search_asks_for_more_than_one_browse_page(self):
+        """The query goes out at the search limit, not the browse page size.
+
+        At the browse page size a term matching hundreds of repos returned four
+        rows, so the grid showed the bundled picks and little else.
+        """
+        from lilbee.catalog.models import CatalogResult
+        from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, _HF_SEARCH_LIMIT
+
+        assert _HF_SEARCH_LIMIT > _HF_PAGE_SIZE
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                with patch(
+                    "lilbee.cli.tui.screens.catalog.get_catalog",
+                    return_value=CatalogResult(
+                        total=0, limit=_HF_SEARCH_LIMIT, offset=0, models=[], has_more=True
+                    ),
+                ) as get:
+                    screen._fetch_hf_search("qwen3", ModelTask.CHAT, 0)
+                    await screen.workers.wait_for_complete()
+                assert get.call_args.kwargs["limit"] == _HF_SEARCH_LIMIT
+                assert get.call_args.kwargs["search"] == "qwen3"
+
+    async def test_paging_a_search_advances_the_search_not_the_browse_offset(self):
+        """Scrolling a filtered grid must page the query the user typed.
+
+        Paging the browse offset fetched models the filter then discarded, so
+        "keep scrolling for more" added nothing to a search.
+        """
+        from lilbee.cli.tui.screens.catalog import _HF_SEARCH_LIMIT
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+                screen._searched_query = "qwen3"
+                screen._search_has_more = True
+                screen._hf_has_more_by_task[ModelTask.CHAT] = True
+                browse_offset = screen._hf_offset_by_task[ModelTask.CHAT]
+
+                with (
+                    patch.object(screen, "_fetch_hf_search") as search,
+                    patch.object(screen, "_fetch_more_hf_for_task") as browse,
+                ):
+                    screen._load_more()
+
+                search.assert_called_once_with("qwen3", ModelTask.CHAT, _HF_SEARCH_LIMIT)
+                assert not browse.called
+                assert screen._hf_offset_by_task[ModelTask.CHAT] == browse_offset
+
+    @pytest.mark.parametrize(
+        ("state", "why"),
+        [
+            ({"_search_in_flight": True}, "a page is already in flight"),
+            ({"_search_has_more": False}, "the hub has no more matches"),
+            ({"_searched_query": "llama"}, "the offset belongs to another term"),
+            ({"_active_tab_id_cache": "library"}, "the tab has no task to search"),
+        ],
+    )
+    async def test_paging_a_search_is_refused_when(self, state, why):
+        """Each guard keeps a page request off the wire, and the offset unmoved.
+
+        An offset that advances on a refused page silently skips a page of
+        matches the next real request would have returned.
+        """
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+                screen._searched_query = "qwen3"
+                screen._search_has_more = True
+                for attr, value in state.items():
+                    setattr(screen, attr, value)
+                offset = screen._search_offset
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._load_more_search_results()
+
+                assert not fetch.called, why
+                assert screen._search_offset == offset
+
+    async def test_a_term_typed_during_a_search_still_reaches_the_hub(self):
+        """Typing through an in-flight search must not lose the final term.
+
+        _trigger_remote_search drops a request that arrives mid-flight, so with
+        typing driving the searches, "qwen" then "3" during that round trip left
+        the hub never seeing "qwen3": the filter narrowed the rows already
+        fetched and the extra matches never arrived.
+        """
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                # A search for "qwen" is out; the box has since moved to "qwen3".
+                screen._searched_query = "qwen"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._apply_worker_result(_WORKER_FETCH_SEARCH, [])
+
+                fetch.assert_called_once_with("qwen3", ModelTask.CHAT, 0)
+
+    async def test_a_failed_search_still_resumes_the_term_typed_during_it(self):
+        """A search that errors or is cancelled releases the latch too.
+
+        Without the resume on this path a failed round trip strands the term
+        the user typed while it was out: the latch clears and nothing retries.
+        """
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._handle_worker_error_or_cancel(_WORKER_FETCH_SEARCH)
+
+                fetch.assert_called_once_with("qwen3", ModelTask.CHAT, 0)
+
+    async def test_a_settled_search_does_not_refire_for_the_same_term(self):
+        """The resume must not loop: a completion for the live term is the end."""
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen3"
+                screen._search_in_flight = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._apply_worker_result(_WORKER_FETCH_SEARCH, [])
+
+                assert not fetch.called
+
+    async def test_a_new_term_restarts_its_result_set(self):
+        """Editing the term resets the offset; otherwise page 2 of the old
+        query is appended as though it matched the new one."""
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen3"
+                screen._search_offset = 100
+                screen._search_has_more = True
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._trigger_remote_search("llama")
+
+                fetch.assert_called_once_with("llama", ModelTask.CHAT, 0)
+                assert screen._search_offset == 0
+
+    async def test_the_footer_hint_tracks_the_search_not_the_browse_page(self):
+        """ "More available" under a filter must describe the result set on
+        screen, not the unfiltered page sitting behind it."""
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._hf_has_more_by_task[ModelTask.CHAT] = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                screen._search_has_more = False
+                assert screen._active_task_has_more() is False
+                screen._search_has_more = True
+                assert screen._active_task_has_more() is True
 
 
 async def test_catalog_keyboard_nav_near_end_triggers_load_more():
@@ -5535,7 +5739,7 @@ async def test_catalog_grid_hf_count_is_per_active_task():
             screen._hf_fetched_tasks.update({ModelTask.CHAT, ModelTask.EMBEDDING})
             prep = screen._prepare_grid_refresh()
             assert prep is not None
-            _sections, hf_count = prep
+            _sections, hf_count, _filter_changed = prep
             assert hf_count == len(chat_models)
 
 
@@ -6189,7 +6393,7 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._hf_models = []
             screen._remote_models = []
             # Invalidate the grid cache so _refresh_grid() rebuilds from scratch.
-            screen._grid_cache_keys["chat"] = ()
+            screen._grid_cache_keys.pop("chat", None)
             screen._refresh_grid()
             screen._refresh_list()
             # Pin _focused_grid to None so a slow worker that left a stale
@@ -6694,27 +6898,6 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
         app.screen.streaming = True
         app.screen.action_cancel_stream()
         assert app.screen.streaming is False
-
-
-async def test_chat_needs_setup_true_pushes_wizard():
-    """Verify needs_setup() returning True pushes SetupWizard on mount."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    class SetupTestApp(LilbeeAppHost):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    app = SetupTestApp()
-    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=True):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            assert isinstance(app.screen, SetupWizard)
 
 
 async def test_chat_on_input_submitted_slash():
@@ -7436,7 +7619,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
             await screen.workers.wait_for_complete()
             screen._hf_fetched_tasks.add(ModelTask.CHAT)
             screen._families = []
-            screen._grid_cache_keys["chat"] = ()
+            screen._grid_cache_keys.pop("chat", None)
             with patch.object(
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
@@ -8904,21 +9087,7 @@ class TestWikiStubs:
 
     @staticmethod
     def _index(tmp_path, slug="ford", sources=("a.md",)):
-        from lilbee.wiki.entity_extractor import EntityKind
-        from lilbee.wiki.stubs import WikiStub, save_stub_index
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        stub = WikiStub(
-            slug=slug,
-            label=slug.title(),
-            kind=EntityKind.ENTITY,
-            type_hint="PERSON",
-            source_mentions=tuple((s, 1) for s in sources),
-            chunk_refs=tuple((s, 0) for s in sources),
-        )
-        save_stub_index({slug: stub})
-        return stub
+        return _save_wiki_stubs(tmp_path, [slug.title()], sources=sources)[0]
 
     async def test_a_stub_is_listed_and_marked(self, tmp_path):
         self._index(tmp_path)
@@ -9306,6 +9475,62 @@ class TestWikiRootShortcuts:
             assert "Log" not in top_labels
 
 
+def _save_wiki_stubs(tmp_path, labels, sources=("a.md",)):
+    """Write a stub index naming *labels*, and return the stubs in that order."""
+    from lilbee.wiki.entity_extractor import EntityKind
+    from lilbee.wiki.stubs import WikiStub, save_stub_index
+
+    cfg.wiki = True
+    cfg.data_root = tmp_path
+    stubs = {
+        label.lower().replace(" ", "-"): WikiStub(
+            slug=label.lower().replace(" ", "-"),
+            label=label,
+            kind=EntityKind.ENTITY,
+            type_hint="PERSON",
+            source_mentions=tuple((s, 1) for s in sources),
+            chunk_refs=tuple((s, 0) for s in sources),
+        )
+        for label in labels
+    }
+    save_stub_index(stubs)
+    return list(stubs.values())
+
+
+def _laid_out_leaves(tree) -> list[str]:
+    """Labels of the page/stub lines actually inside the tree's viewport.
+
+    Counts what the reader can see, so a match parked behind a collapsed
+    group or above the scroll offset does not read as rendered.
+    """
+    top = tree.scroll_offset.y
+    labels = []
+    for line_no in range(top, top + tree.size.height):
+        node = tree.get_node_at_line(line_no)
+        if node is None:
+            break
+        if isinstance(node.data, str):
+            labels.append(str(node.label))
+    return labels
+
+
+async def _apply_wiki_filter(screen, pilot, text: str, until_gone: str) -> None:
+    """Type *text* into the wiki search and wait for the debounced filter pass.
+
+    Polls rather than pausing a fixed span: the debounce is 0.12 s and a fixed
+    wait starves under xdist parallel load. *until_gone* is a slug the filter
+    must drop, which is what makes the pass observable.
+    """
+    from textual.widgets import Input as TextualInput
+
+    screen.query_one("#wiki-search", TextualInput).value = text
+    for _ in range(20):
+        await pilot.pause(0.1)
+        if until_gone not in screen._page_slugs:
+            return
+    raise AssertionError(f"filter {text!r} never dropped {until_gone!r}")
+
+
 class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
@@ -9397,6 +9622,98 @@ class TestWikiScreenSearch:
             await pilot.press("escape")
             await pilot.pause()
             assert search.value == ""
+
+
+class TestWikiSearchFillsTheSidebar:
+    """A search must spend the sidebar on matches, not on chrome it filtered past.
+
+    Each failure here was measured on the laid-out tree, not on the slug list:
+    the pages the filter selected were in ``_page_slugs`` all along and still
+    never reached the screen.
+    """
+
+    async def test_matching_stubs_are_not_hidden_behind_a_collapsed_group(self, tmp_path):
+        """Stubs collapse by default; under a filter that buries the whole result set.
+
+        On a lazy wiki most entries are stubs, so a search matching 40 of them
+        rendered a single "Not written yet" line and an otherwise empty sidebar.
+        """
+        _save_wiki_stubs(tmp_path, [f"Brake Assembly {i}" for i in range(40)])
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "brake-overview", "Brake Overview")
+        _create_wiki_page(wiki_root, "summaries", "clutch-overview", "Clutch Overview")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            screen = app.screen
+            await _apply_wiki_filter(screen, pilot, "brake", "summaries/clutch-overview")
+
+            tree = screen.query_one("#wiki-page-list", Tree)
+            visible = _laid_out_leaves(tree)
+            # One heading for the page group and one for the stubs is all the
+            # chrome the matches pay for; the rest of the sidebar holds matches.
+            assert len(visible) >= tree.size.height - 2
+            assert any("Brake Assembly" in label for label in visible)
+
+    async def test_root_shortcuts_follow_the_filter(self, tmp_path):
+        """Index and Log are pages like any other: they match a term or they don't."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "brake-overview", "Brake Overview")
+        _create_wiki_page(wiki_root, "summaries", "clutch-overview", "Clutch Overview")
+        (wiki_root / "index.md").write_text("---\ntitle: Index\n---\nbody\n", encoding="utf-8")
+        (wiki_root / "log.md").write_text("---\ntitle: Log\n---\nbody\n", encoding="utf-8")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            from lilbee.cli.tui import messages as m
+
+            screen = app.screen
+            tree = screen.query_one("#wiki-page-list", Tree)
+            assert {m.WIKI_INDEX_LABEL, m.WIKI_LOG_LABEL} <= set(_laid_out_leaves(tree))
+
+            await _apply_wiki_filter(screen, pilot, "brake", "summaries/clutch-overview")
+            labels = _laid_out_leaves(tree)
+            assert m.WIKI_INDEX_LABEL not in labels
+            assert m.WIKI_LOG_LABEL not in labels
+
+            # And they stay reachable by name rather than being filtered out of
+            # existence: searching for one is the only way to reach it by search.
+            await _apply_wiki_filter(screen, pilot, "log", "summaries/brake-overview")
+            assert m.WIKI_LOG_LABEL in _laid_out_leaves(tree)
+
+    async def test_search_after_scrolling_starts_at_the_top(self, tmp_path):
+        """A filter pass must not inherit the scroll offset of the unfiltered tree.
+
+        Textual clamps the stale offset to the shorter result set's maximum, so
+        a search run after any scrolling opened at the *end* of the matches.
+        """
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        for i in range(200):
+            _create_wiki_page(wiki_root, "summaries", f"page-{i:03d}", f"Page {i:03d}")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            screen = app.screen
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.scroll_to(y=120, animate=False)
+            await pilot.pause()
+            assert tree.scroll_offset.y > 0
+
+            # "Page 1" keeps 1, 10-19 and 100-199: still taller than the sidebar.
+            await _apply_wiki_filter(screen, pilot, "Page 1", "summaries/page-000")
+
+            assert tree.max_scroll_y > 0, "the result set is taller than the sidebar"
+            assert tree.scroll_offset.y == 0
 
 
 class TestWikiScreenNavigation:
@@ -13901,15 +14218,18 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
             assert screen._sort_column == "Name"
 
 
-async def test_catalog_search_submit_installs_first_visible_match():
-    """Single Enter in search filters + queues install on the first visible card.
+async def test_catalog_typing_searches_the_hub_not_just_the_cache():
+    """The box has to search what the user thinks it searches.
 
-    Regression test: previously Enter from the search Input only
-    refocused the grid (landing on the hidden default card), so users
-    had to press Enter twice: and the second press queued the wrong
-    (invisible) model.
+    The filter alone narrows models already fetched, so a term the catalog has
+    not paged to reads as "no such model" -- which is how a search for a term
+    with hundreds of hub matches came back with the bundled picks. Typing now
+    schedules the hub query too, behind its own slower debounce so a 5-char
+    term is one round trip rather than five.
     """
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
+
+    from textual.widgets import Input as TextualInput
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -13917,52 +14237,100 @@ async def test_catalog_search_submit_installs_first_visible_match():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            await app.push_screen(screen)
+            app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen.query_one("#catalog-search", TextualInput).value = "qwen3"
+
+            scheduled = []
+
+            def _fake_set_timer(delay, callback):
+                scheduled.append((delay, callback))
+                return MagicMock()
+
+            with (
+                patch.object(screen, "set_timer", side_effect=_fake_set_timer),
+                patch.object(screen, "_trigger_remote_search") as search,
+            ):
+                screen._on_search_changed(SimpleNamespace())
+                # The repaint pass and the hub query are scheduled apart, and
+                # the network leg waits longer than the repaint leg.
+                assert len(scheduled) == 2
+                assert scheduled[1][0] > scheduled[0][0]
+                scheduled[1][1]()
+
+            assert search.called, "typing should reach the hub"
+
+
+async def test_catalog_clearing_the_search_restarts_the_result_set():
+    """A cleared box drops the offset; otherwise retyping a term resumes
+    mid-way through its results and the first page never comes back."""
+    from unittest.mock import MagicMock, patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._searched_query = "qwen3"
+            screen._search_offset = 100
+            screen._search_has_more = True
+
+            with patch.object(screen, "set_timer", side_effect=lambda *_: MagicMock()):
+                screen._on_search_changed(SimpleNamespace())
+
+            assert screen._searched_query == ""
+            assert screen._search_offset == 0
+            assert screen._search_has_more is False
+
+
+async def test_catalog_search_submit_never_installs_a_model():
+    """Enter in the search box must not queue a download.
+
+    Enter is the reflex key for committing a search box and every row is a
+    multi-gigabyte download, so submitting a filter used to start fetching
+    whichever model happened to sort first. Enter now runs the hub search and
+    moves the cursor onto the first match; installing takes a second,
+    deliberate Enter on the focused card.
+    """
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            for _ in range(20):
-                grids = list(screen.query("#grid-chat ModelGrid"))
-                if grids and len(grids[0].rows) >= 2:
-                    break
-                await _pilot.pause()
-            assert grids, "chat grid should mount at least one ModelGrid"
-            # Painting is done; from here a late worker landing repainting
-            # the grid would restore the full dataset over the trim below.
-            # _remount_grid_sections is reached only from here, so with this
-            # stubbed no further tail mount can be scheduled.
-            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
-            # The loop breaks without a pause, so the tail mount _refresh_grid
-            # already queued through call_after_refresh is still pending; it
-            # would land on the pause below the trim and remount a grid holding
-            # the full dataset. Drain it here instead, while nothing is trimmed
-            # yet. Stubbing the method cannot help: call_after_refresh captured
-            # the bound method when it was scheduled.
             for _ in range(3):
                 await _pilot.pause()
-            # Re-queried because the drained mount replaces the grid widgets.
-            grids = list(screen.query("#grid-chat ModelGrid"))
-            assert grids, "chat grid should survive the deferred tail mount"
-            grid = grids[0]
-            assert len(grid.rows) >= 2
-            # ModelGrid filters at the dataset level: set_rows replaces
-            # the visible set. Simulate "filter narrows to the second
-            # row" by trimming the dataset to that single row.
-            target_row = grid.rows[1]
-            grid.set_rows([target_row])
-            await _pilot.pause()
-            with patch.object(screen, "_select_row") as install:
-                screen._select_first_visible_grid_card()
+            grids = [g for g in screen.query("#grid-chat ModelGrid") if g.rows]
+            assert grids, "chat grid should mount at least one populated ModelGrid"
+
+            with (
+                patch.object(screen, "_select_row") as install,
+                patch.object(screen, "_trigger_remote_search") as search,
+            ):
+                screen._on_search_submitted(SimpleNamespace(value="qwen3"))
                 for _ in range(5):
                     await _pilot.pause()
-                assert install.called
-                row_arg = install.call_args.args[0]
-                assert row_arg is target_row
+
+            assert not install.called, "Enter in the search box queued a download"
+            assert not search.called, "typing already searched; Enter must not refire it"
+            focused = screen._focused_grid()
+            assert isinstance(focused, ModelGrid), "the cursor should land on the results"
+            assert focused.highlighted == 0
 
 
-async def test_catalog_select_first_visible_list_item_installs_match():
-    """List-view counterpart: Enter in search installs the first visible row."""
+async def test_catalog_search_submit_never_installs_in_list_view():
+    """List-view counterpart: submitting the filter selects nothing."""
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -13979,13 +14347,15 @@ async def test_catalog_select_first_visible_list_item_installs_match():
             screen._grid_view = False
             screen._refresh_list()
             await _pilot.pause()
-            if screen._list_widget.option_count == 0:
-                return  # No rows to exercise
+            assert screen._list_widget.option_count, "need rows to prove nothing installs"
+
             with patch.object(screen, "_select_row") as install:
-                screen._select_first_visible_list_item()
+                screen._on_search_submitted(SimpleNamespace(value="qwen3"))
                 for _ in range(5):
                     await _pilot.pause()
-                assert install.called
+
+            assert not install.called
+            assert screen._list_widget.highlighted == 0
 
 
 async def test_catalog_focus_list_item_empty_is_noop():

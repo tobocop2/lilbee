@@ -270,6 +270,7 @@ EMBEDDING_MISSING = (
 )
 THEME_SET = "Theme: {name}"
 HEADING_INSTALLED = "Installed"
+HEADING_MATCHES = "Matches"
 CATALOG_TAB_LOCAL = "Local"
 CATALOG_TAB_FRONTIER = "Frontier"
 CATALOG_TAB_DISCOVER = "Discover"
@@ -560,6 +561,7 @@ COMPAT_MODAL_BODY = (
     "so loading after download will probably fail. Pull anyway?"
 )
 DEFAULT_VIEW = "Chat"
+CATALOG_VIEW = "Catalog"
 WIKI_VIEW = "Wiki"
 FLEET_VIEW = "Fleet"
 SESSIONS_VIEW = "Sessions"
@@ -624,7 +626,7 @@ FLEET_HELP_TOOLTIP = (
 # factory map from get_nav_views().
 ALL_NAV_VIEWS: tuple[str, ...] = (
     DEFAULT_VIEW,
-    "Catalog",
+    CATALOG_VIEW,
     "Status",
     "Settings",
     "Tasks",

@@ -376,14 +376,15 @@ async def test_handle_worker_more_hf_in_list_view_appends_to_list() -> None:
             mock_append.assert_called_once()
 
 
-async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> None:
-    """Empty grid result + Enter submits a remote HF search via _trigger_remote_search.
+async def test_search_submit_does_not_refire_the_hub_search() -> None:
+    """Enter is not a second trip to HuggingFace.
 
-    Exercises the on_search_submitted fall-through path: in grid view, if
-    no ModelGrid has any rows, the search text is sent to HF via the
-    remote-search worker.
+    Typing already schedules the hub query, so Enter has nothing left to
+    submit; it only moves the cursor onto the results. Firing again here would
+    put a redundant round trip on the key users press out of reflex, including
+    the empty-result case this file used to cover as a fall-through.
     """
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
 
     from textual.widgets import Input as _Input
 
@@ -393,16 +394,19 @@ async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> Non
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        from unittest.mock import MagicMock
 
         empty_container = MagicMock()
         empty_container.query.return_value = []
         screen._grid_for_tab = lambda *_args, **_kw: empty_container  # type: ignore[method-assign]
         inp = screen.query_one("#catalog-search", _Input)
         inp.value = "qwen3-nonexistent"
-        with patch.object(screen, "_trigger_remote_search") as mock_trigger:
+        with (
+            patch.object(screen, "_trigger_remote_search") as mock_trigger,
+            patch.object(screen, "_select_row") as install,
+        ):
             screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
-            mock_trigger.assert_called_once_with("qwen3-nonexistent")
+            assert not mock_trigger.called
+            assert not install.called
 
 
 def test_local_lines_renders_remote_backend_pill() -> None:

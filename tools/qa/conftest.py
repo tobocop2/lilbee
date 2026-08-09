@@ -463,10 +463,10 @@ def tui_with_models(
     corpus so the TUI skips the setup wizard and lands on the chat screen
     with a live model bar.
 
-    ``ChatScreen._needs_setup()`` returns True when the LanceDB dir is
-    missing *or* a configured model can't be resolved. ``lilbee_env_with_models``
-    covers the second case; seeding + ``sync`` covers the first (it creates
-    and populates the LanceDB dir), so the wizard never fires.
+    The app opens the wizard when the LanceDB dir is missing *or* a configured
+    model can't be resolved. ``lilbee_env_with_models`` covers the second case;
+    seeding + ``sync`` covers the first (it creates and populates the LanceDB
+    dir), so the wizard never fires.
     """
     seed_fixture_corpus(lilbee_data)
     sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)

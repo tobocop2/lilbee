@@ -452,9 +452,9 @@ def _seeded_models(monkeypatch):
     monkeypatch.setattr(cfg, "embedding_model", "fake/embed-model")
     monkeypatch.setattr(cfg, "vision_model", "")
     monkeypatch.setattr(cfg, "reranker_model", "")
-    from lilbee.cli.tui.screens import chat as chat_screen_mod
+    from lilbee.cli.tui import app as app_mod
 
-    monkeypatch.setattr(chat_screen_mod, "needs_setup", lambda: False)
+    monkeypatch.setattr(app_mod, "models_ready", lambda: True)
 
 
 async def test_chat_screen_mounts_with_bar_present(_seeded_models) -> None:
