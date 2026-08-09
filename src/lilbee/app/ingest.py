@@ -11,7 +11,7 @@ from pathlib import Path
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
-from lilbee.core.config import active_config, cfg
+from lilbee.core.config import active_config
 from lilbee.data.store.types import RemoveResult
 
 
@@ -243,14 +243,15 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
         write_skip_reasons,
     )
 
+    config = active_config()
     if targets is None:
         targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
     if not result.removed:
         return result
     unregistered = unregister_roots(names)
-    markers = load_skip_markers(cfg.data_root)
-    reasons = load_skip_reasons(cfg.data_root)
+    markers = load_skip_markers(config.data_root)
+    reasons = load_skip_reasons(config.data_root)
     for name in result.removed:
         if any(name == root or name.startswith(root + "/") for root in unregistered):
             continue  # the root is gone; discovery won't resurrect these
@@ -260,8 +261,8 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
         if path.exists():
             markers[name] = file_hash(path)
             reasons[name] = _REMOVED_SKIP_REASON
-    write_skip_markers(cfg.data_root, markers)
-    write_skip_reasons(cfg.data_root, reasons)
+    write_skip_markers(config.data_root, markers)
+    write_skip_reasons(config.data_root, reasons)
     _forget_removed_from_wiki_index(list(result.removed))
     return result
 
@@ -273,7 +274,7 @@ def _forget_removed_from_wiki_index(removed: list[str]) -> None:
     revisit their entries and the tree would keep offering pages the library
     can no longer support. Best effort: the removal itself already succeeded.
     """
-    if not cfg.wiki or not removed:
+    if not active_config().wiki or not removed:
         return
     from lilbee.wiki.stubs import drop_sources_from_index
 

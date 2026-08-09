@@ -76,7 +76,13 @@ def mock_svc():
     store.delete_by_source.return_value = None
 
     def _remove_documents(names, **_kw):
-        return [_sources.pop(n, None) for n in names]
+        from lilbee.data.store.types import RemoveResult
+
+        removed = [n for n in names if n in _sources]
+        not_found = [n for n in names if n not in _sources]
+        for name in removed:
+            _sources.pop(name, None)
+        return RemoveResult(removed=removed, not_found=not_found)
 
     store.remove_documents.side_effect = _remove_documents
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -3903,6 +3909,78 @@ class TestRemoveDocumentsDurably:
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
         remove_documents_durably(["gone"])
         assert load_skip_markers(cfg.data_root) == {}
+
+    def test_marker_lands_under_the_active_config_data_root(self, isolated_env, mock_svc, tmp_path):
+        """A caller running against its own Config gets the marker where it reads it.
+
+        The library API removes inside a ``config_scope``; a marker written to the
+        process-global data root instead would leave that caller's next sync
+        re-ingesting the document it just removed.
+        """
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core.config.context import config_scope
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        scoped_root = tmp_path / "scoped"
+        (scoped_root / "documents").mkdir(parents=True)
+        (scoped_root / "documents" / "keep.txt").write_text("content", encoding="utf-8")
+        scoped = cfg.model_copy(
+            update={"data_root": scoped_root, "documents_dir": scoped_root / "documents"}
+        )
+        mock_svc.store.upsert_source("keep.txt", "hash", 1)
+
+        with config_scope(scoped):
+            remove_documents_durably(["keep.txt"])
+
+        assert "keep.txt" in load_skip_markers(scoped_root)
+        assert load_skip_markers(cfg.data_root) == {}
+
+
+class TestRemovalHoldsAcrossSyncs:
+    """A removal has to keep holding through syncs that cannot see the file."""
+
+    async def test_removal_survives_a_sync_with_the_root_unavailable(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """A root offline for one sync must not erase the markers holding its removals."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest import detect_pending, sync
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        (ext / "a.txt").write_text("external content a", encoding="utf-8")
+        (ext / "b.txt").write_text("external content b", encoding="utf-8")
+        register_sources([ext])
+        await sync(quiet=True)
+
+        remove_documents_durably(["ext/a.txt"])
+        assert detect_pending() == 0
+
+        # The root goes away for one sync: an unmounted volume, a moved folder,
+        # a share that had not come back yet.
+        ext.rename(tmp_path / "ext-away")
+        await sync(quiet=True)
+        (tmp_path / "ext-away").rename(ext)
+
+        assert detect_pending() == 0
+
+    async def test_a_sync_keeps_the_reason_for_a_marker_it_did_not_touch(
+        self, isolated_env, mock_svc
+    ):
+        """The reasons sidecar must still explain every marker still in force."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_reasons
+
+        (isolated_env / "gone.txt").write_text("removed later", encoding="utf-8")
+        (isolated_env / "stay.txt").write_text("stays indexed", encoding="utf-8")
+        await sync(quiet=True)
+        remove_documents_durably(["gone.txt"])
+
+        (isolated_env / "new.txt").write_text("brand new", encoding="utf-8")
+        await sync(quiet=True)
+
+        assert "gone.txt" in load_skip_reasons(cfg.data_root)
 
 
 class TestOcrConfigSelection:
