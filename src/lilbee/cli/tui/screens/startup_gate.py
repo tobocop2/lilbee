@@ -82,11 +82,16 @@ class StartupGate(Screen[None]):
         fallback, which decides whether setup is needed) and runs here rather
         than on the mount path: its disk reads and server probes would sit
         between the terminal handover and the TUI's first frame. An already
-        built container has nothing left to settle, so it skips straight to the
-        setup answer.
+        built container (a second TUI in the same process, a test host) has
+        nothing left to settle, so it skips straight to the setup answer.
 
         ``settle_setup_state`` blocks until the app has recorded the answer, so
         a handover can never read a readiness flag that has yet to be written.
+
+        Building the container is the reason this screen exists: it constructs
+        every singleton and spawns the role servers, so it belongs on this
+        thread, behind the loading bar. The app subscribes to the container it
+        gets back rather than reaching for one of its own on the mount path.
         """
         try:
             if peek_services() is None:
@@ -95,7 +100,7 @@ class StartupGate(Screen[None]):
                 # Setup owns the screen now, and the app has already routed
                 # there; handing over as well would land on top of it.
                 return
-            get_services()
+            self.app.wire_worker_pool_notifications(get_services())
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.

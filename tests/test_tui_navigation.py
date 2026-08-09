@@ -633,9 +633,10 @@ async def test_switching_guard_blocks_concurrent_switch():
         app._switching = False
 
 
-async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
-    """``on_mount`` calls ``Services.add_pool_listener`` so server spawn
-    lifecycle surfaces as Textual notifications. Verified by replacing the
+async def test_lilbee_app_wires_worker_pool_notifications_behind_the_gate() -> None:
+    """The gate hands the app the container it built, and the app calls
+    ``Services.add_pool_listener`` on it so server spawn lifecycle surfaces as
+    Textual notifications. Verified by replacing the
     Services singleton with a provider whose ``add_spawn_listener`` records the
     callbacks, then firing them from a worker thread (call_from_thread requires a
     different thread) so their notify() bodies execute against the live app."""

@@ -31,6 +31,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
+    from lilbee.app.services import Services
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
@@ -250,7 +251,6 @@ class LilbeeApp(App[None]):
         self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
         self._sync_theme_index_to_current()
 
-        self._wire_worker_pool_notifications()
         # Chat's import graph is the TUI's heaviest; loading it here would hold
         # the first frame back for seconds on a cold disk, leaving the terminal
         # blank exactly where the gate should be. Paint first, then load.
@@ -370,7 +370,7 @@ class LilbeeApp(App[None]):
         self.switch_view(msg.CATALOG_VIEW)
         self.push_screen(SetupWizard())
 
-    def _wire_worker_pool_notifications(self) -> None:
+    def wire_worker_pool_notifications(self, services: Services) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
@@ -378,6 +378,12 @@ class LilbeeApp(App[None]):
         before mutating controller state. A single TaskBar hint covers all
         in-flight roles instead of one toast per role; the chat surface is
         for user content, not implementation detail.
+
+        Takes the container rather than reaching for it: the startup gate calls
+        this from its boot thread once it has one. Subscribing from the mount
+        path meant calling ``get_services()`` there, which built the whole
+        container on the UI thread ahead of the gate -- the exact work the gate
+        exists to move off it.
         """
 
         def _on_spawning(role: WorkerRole) -> None:
@@ -386,7 +392,7 @@ class LilbeeApp(App[None]):
         def _on_spawned(role: WorkerRole) -> None:
             self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
 
-        get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
+        services.add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
     def canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback, persist, and log once.

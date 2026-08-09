@@ -189,9 +189,9 @@ async def test_gate_hands_nothing_over_when_setup_takes_the_screen(monkeypatch):
 async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
     """An already built container still waits on the setup answer.
 
-    The container is built on the app's mount path, so this is the path every
-    launch takes. Handing over first and asking afterwards flashes up the very
-    chat screen the answer exists to withhold.
+    Nothing is left to build for a second TUI in the same process, which is the
+    one case that used to skip the worker entirely. Handing over first and
+    asking afterwards flashes up the very chat screen the answer withholds.
     """
     from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
@@ -301,6 +301,58 @@ async def test_first_run_hands_over_when_setup_is_required(tmp_path, monkeypatch
             await pilot.pause()
             await asyncio.sleep(0.02)
         assert not isinstance(app.screen, StartupGate)
+
+
+async def test_the_container_is_built_behind_the_gate(monkeypatch):
+    """The app must not build the services container on its mount path.
+
+    ``get_services`` constructs every singleton and spawns the role servers.
+    Building it from ``on_mount`` blocks the first frame with the work the gate
+    exists to hide, and leaves the gate with nothing to wait for: its boot
+    worker, and the canonicalization that only runs there, never run at all.
+    """
+    import threading
+
+    from lilbee.app.services import peek_services, set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from tests._async_wait import wait_until
+
+    set_services(None)
+    container = mock.MagicMock()
+    monkeypatch.setattr(gate_mod, "get_services", lambda: container)
+    # An app with nothing to set up, so the gate runs its whole boot.
+    monkeypatch.setattr("lilbee.cli.tui.app.models_ready", lambda: True)
+
+    at_start_boot: list[object] = []
+    real_start_boot = StartupGate.start_boot
+
+    def _spy_start_boot(self):
+        at_start_boot.append(peek_services())
+        return real_start_boot(self)
+
+    monkeypatch.setattr(StartupGate, "start_boot", _spy_start_boot)
+
+    canonicalized: list[str] = []
+    monkeypatch.setattr(
+        LilbeeApp,
+        "canonicalize_persisted_models",
+        lambda self: canonicalized.append(threading.current_thread().name),
+    )
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(
+            pilot,
+            lambda: bool(canonicalized) and container.add_pool_listener.called,
+            max_pauses=200,
+        )
+
+    assert at_start_boot == [None], "the mount path built the container ahead of the gate"
+    assert canonicalized, "the gate's boot worker never ran, so the refs were never settled"
+    assert canonicalized[0] != threading.main_thread().name, "boot work ran on the UI thread"
+    assert container.add_pool_listener.called, "the app subscribed to some other container"
 
 
 async def test_gate_composes_and_styles_its_widgets(monkeypatch):
