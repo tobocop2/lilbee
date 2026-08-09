@@ -2,7 +2,7 @@ SearchHFCtaItem {
     height: auto;
     padding: 0 1;
     margin: 1 0 0 0;
-    border-left: thick transparent;
+    border-left: $rail-heavy transparent;
     pointer: pointer;
     color: $accent;
     text-style: bold;
@@ -12,7 +12,7 @@ SearchHFCtaItem {
     }
 
     &:focus {
-        border-left: thick $accent;
+        border-left: $rail-heavy $accent;
         background: $surface;
     }
 

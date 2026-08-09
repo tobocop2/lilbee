@@ -446,24 +446,18 @@ class TaskBarController:
 
         The dropdowns are built once on mount from the registry; without
         this nudge, a freshly-downloaded model only appears after the
-        user reopens the screen. NoMatches and similar query errors are
-        silently skipped so a transient "bar not mounted yet" doesn't
-        crash the finalize path; anything else is logged so a real
-        failure surfaces in debug output.
+        user reopens the screen. A bar that is not mounted yet is no longer
+        this caller's problem: refresh_model_bar is a no-op until the bar
+        exists, and the bar scans on its own mount.
         """
         # Late import to avoid a circular (ChatScreen imports this module).
-        from textual.css.query import QueryError
-
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         for screen in self.app.screen_stack:
             # screen_stack is typed Screen[Any]; narrow at runtime to
             # locate the one screen that owns the ModelBar.
             if isinstance(screen, ChatScreen):
-                try:
-                    screen.refresh_model_bar()
-                except QueryError:
-                    log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
+                screen.refresh_model_bar()
                 break
 
     def reload_wiki_screens(self) -> None:

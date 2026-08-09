@@ -1,0 +1,106 @@
+/* Loaded only for a terminal that cannot tile partial-block glyphs.
+
+Textual's own widgets set block-based borders in their DEFAULT_CSS: `tall` on
+Input, Select and Button, `outer` on the Toast severity rail, `vkey` on the
+footer's palette cell and `hkey` on Collapsible and the command palette. On a
+capable terminal those render correctly and lilbee leaves them alone; here they
+are restated in box-drawing. Colours mirror the Textual modules they come from.
+*/
+
+Input {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+
+    &.-invalid {
+        border: solid $error 60%;
+    }
+
+    &.-invalid:focus {
+        border: solid $error;
+    }
+}
+
+Select > SelectOverlay {
+    border: solid $border-blurred;
+}
+
+OptionList {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+}
+
+ToggleButton {
+    border: solid $border-blurred;
+
+    &:focus {
+        border: solid $border;
+    }
+}
+
+Select:focus > SelectCurrent {
+    border: solid $border;
+}
+
+Button.-style-default {
+    border-top: solid $surface-lighten-1;
+    border-bottom: solid $surface-darken-1;
+
+    &:hover {
+        border-top: solid $surface;
+    }
+
+    &.-active {
+        border-top: solid $surface-darken-1;
+        border-bottom: solid $surface-lighten-1;
+    }
+}
+
+/* Textual's Toast draws its severity rail with `outer`, which is built from
+ * block glyphs (U+259B and friends) and segments in the same fonts `tall` does.
+ * heavy is the box-drawing equivalent and is what task_center already uses for
+ * a rail. Colours mirror textual/widgets/_toast.py. */
+Toast.-information {
+    border-left: heavy $success;
+}
+
+Toast.-warning {
+    border-left: heavy $warning;
+}
+
+Toast.-error {
+    border-left: heavy $error;
+}
+
+/* The footer's command-palette cell separates itself with `vkey`, a pair of
+ * one-eighth block glyphs (U+258F, U+2595) that segment like every other block
+ * border. It sits on the footer, so it is on every screen. Colour mirrors
+ * textual/widgets/_footer.py. */
+FooterKey.-command-palette {
+    border-left: solid $foreground 20%;
+}
+
+/* `hkey` is a pair of one-eighth block rails (U+2594, U+2581) and segments like
+ * the rest. Collapsible uses it for its separator, and the command palette for
+ * the input frame, the result list and the loading indicator. Colours mirror
+ * textual/widgets/_collapsible.py and textual/command.py. */
+Collapsible {
+    border-top: solid $background;
+}
+
+CommandPalette #--input {
+    border: solid black 50%;
+}
+
+CommandList {
+    border-bottom: solid black;
+}
+
+CommandPalette LoadingIndicator {
+    border-bottom: solid $border;
+}

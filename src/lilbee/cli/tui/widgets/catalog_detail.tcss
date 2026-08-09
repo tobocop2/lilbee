@@ -1,7 +1,7 @@
 CatalogDetailDrawer {
     width: 36;
     background: $panel;
-    border-left: thick $accent;
+    border-left: $rail-heavy $accent;
     padding: 1 1 0 1;
     overflow-y: auto;
 }

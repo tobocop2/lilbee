@@ -3863,6 +3863,28 @@ async def test_chat_refresh_model_bar():
             mock_refresh.assert_called_once()
 
 
+async def test_chat_show_before_the_model_bar_mounts_does_not_crash():
+    """Show can land before the prompt area's descendants are in the DOM.
+
+    on_show refreshes the bar, and a bare query_one for it raised NoMatches
+    straight out of the show handler, which Textual re-raises as an app crash.
+    Reported from the windows runner, where the mount is slow enough to lose
+    the race; the bar scans on its own mount, so there is nothing to refresh
+    until it exists.
+
+    The absence is injected rather than raced, the way the detached-row test
+    does it: the pilot cannot time a show against a pending mount, and removing
+    the bar builds the identical state.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        await app.screen.query_one("#model-bar", ModelBar).remove()
+        assert not app.screen.query("#model-bar"), "the bar is still mounted; nothing to test"
+        app.screen.on_show()
+
+
 async def test_model_bar_refreshes_on_chat_model_signal():
     """bb-q6zh: external activations (Catalog, /set chat_model, settings UI) publish on
     settings_changed_signal; the rail's chat picker must repaint without a
@@ -8314,25 +8336,21 @@ async def test_action_command_palette_falls_through_when_overlay_missing():
     CompletionOverlay isn't queryable, fall through to super() instead of
     raising. Covers the ``except NoMatches: overlay = None`` branch."""
     from textual.css.query import NoMatches
-    from textual.widgets import Static
 
-    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Force query_one for the overlay to raise NoMatches; mock super()
-        # so we just assert the fall-through happened, not the platform's
-        # native palette behaviour.
-        with (
-            patch.object(app.screen, "query_one", side_effect=NoMatches("test")),
-            patch.object(LilbeeApp.__bases__[0], "action_command_palette") as super_palette,
-        ):
-            _ = Static  # silence "imported but unused"
+        # Assert the palette actually opens rather than that a particular super()
+        # was called: the app pushes its own CommandPalette subclass, so the call
+        # it makes is not the base class's.
+        with patch.object(app.screen, "query_one", side_effect=NoMatches("test")):
             app.action_command_palette()
-            super_palette.assert_called()
+            await pilot.pause()
+        assert isinstance(app.screen, LilbeeCommandPalette)
 
 
 async def test_chat_action_complete_prev_noop_when_input_unfocused():
@@ -15135,6 +15153,16 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            # The screen's own first paint queues a tail mount through
+            # call_after_refresh. Left pending, it lands on the pause below the
+            # mount and reaches _remount_grid_sections, which clears the
+            # container's children before remounting the real sections -- so the
+            # section mounted here disappears and the count reads unchanged.
+            # Drain it now, while nothing has been counted yet. Stubbing the
+            # method cannot help: call_after_refresh captured the bound method
+            # when it scheduled.
+            for _ in range(3):
+                await _pilot.pause()
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]

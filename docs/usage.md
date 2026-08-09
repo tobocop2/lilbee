@@ -49,12 +49,17 @@ can take is reachable from one of those three.
 
 ### Terminal recommendations
 
-The TUI is a full-screen Textual app, so it looks its best in a terminal with
-24-bit "true color" and a monospaced font that covers box-drawing and
-block/braille glyphs. Anything current handles both: iTerm2, kitty, WezTerm,
-Alacritty, or Ghostty on macOS and Linux; Windows Terminal on Windows; the
-built-in GNOME and KDE terminals. An 8/256-color terminal still runs everything,
-just with a flatter palette.
+The TUI is a full-screen Textual app. It runs everywhere, including macOS
+Terminal.app, plain xterm and over SSH: every screen, panel and key works the
+same, and nothing is hidden on a lesser terminal.
+
+Two things adapt to what the terminal can do, both detected automatically.
+Panel edges are drawn with partial-block glyphs, which only tile seamlessly in
+fonts that draw them cell-exact, so a terminal that does not gets box-drawing
+edges instead. And a terminal with 24-bit "true color" shows the themes as
+designed, while a 256-color one has no dark tinted colors to offer, so surfaces
+come out as neutral greys and the tint shows only in the accents. Layout,
+contrast and layering are the same either way.
 
 - **Give it room.** The model bar and layout want about 100 columns; narrower
   and panels start to wrap.
@@ -65,9 +70,17 @@ just with a flatter palette.
   avoid: two multiplexers fight over the same escape sequences and mangle
   box-drawing and the cursor. Attach to the remote session directly, or start
   lilbee outside the inner tmux.
-- **Colors look washed out?** The terminal is probably in 256-color mode. Pick a
-  truecolor `TERM` such as `xterm-256color`; most terminals then export
-  `COLORTERM=truecolor` and the full palette comes back.
+- **Want the full palette over SSH?** SSH does not forward `COLORTERM`, so a
+  remote lilbee uses 256 colors even when you are sitting in a truecolor
+  terminal. If your local terminal really does render 24-bit color (iTerm2,
+  kitty, WezTerm, Ghostty, Windows Terminal), forward it: `SendEnv COLORTERM` in
+  `~/.ssh/config` plus `AcceptEnv COLORTERM` in the server's `sshd_config`.
+
+  Do not do this from macOS Terminal.app. It sets `COLORTERM=truecolor` while
+  being unable to draw 24-bit color, and lilbee only knows to ignore that claim
+  by reading `TERM_PROGRAM`, which SSH does not forward either. Forwarding
+  `COLORTERM` from Terminal.app tells the remote to send color the terminal
+  will render as garbage. Left alone, SSH from Terminal.app is already correct.
 
 ### First run
 

@@ -6,16 +6,16 @@
 Button.-style-default:focus {
     text-style: bold;
     background-tint: $foreground 10%;
-    border-top: tall $primary;
-    border-bottom: tall $primary;
+    border-top: $rail $primary;
+    border-bottom: $rail $primary;
 }
 
 /* A $primary rail is invisible on the $primary face, so the primary variant
  * signals focus with a stronger lift plus its light rail on both edges. */
 Button.-style-default.-primary:focus {
     background-tint: $foreground 25%;
-    border-top: tall $primary-lighten-3;
-    border-bottom: tall $primary-lighten-3;
+    border-top: $rail $primary-lighten-3;
+    border-bottom: $rail $primary-lighten-3;
 }
 
 ListView {
@@ -94,4 +94,11 @@ HelpPanel #widget-help MarkdownBlock:last-child {
 .sessions-open TopBars,
 .sessions-open BottomBars {
     margin-left: 50;
+}
+
+/* Textual hardcodes `color: #000` on the palette's search icon, with a comment
+ * saying its snapshot tests need it, so the mark comes out black on every theme.
+ * Not terminal-specific: it is wrong everywhere. */
+SearchIcon {
+    color: $primary;
 }

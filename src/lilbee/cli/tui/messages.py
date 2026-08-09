@@ -314,6 +314,14 @@ CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask…   /  commands   ?  keys   F2  all commands"
+# Replaces Textual's default magnifying-glass emoji, which the system emoji font
+# draws in its own colors and at double width. Single cell, and distinct from the
+# task list's ▶ so the two never read as the same mark.
+COMMAND_PALETTE_ICON = "✦"
+# Box-drawing, not block elements: shade blocks are dither patterns that draw as
+# sparse dashes and full blocks seam per cell wherever the font is not cell-exact.
+PROGRESS_BAR_FILL = "━"
+PROGRESS_BAR_TRACK = "─"
 SLASH_CATALOG_TITLE = "Slash Commands"
 SLASH_CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
 SLASH_CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"

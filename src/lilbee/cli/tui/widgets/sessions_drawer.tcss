@@ -5,6 +5,6 @@ SessionsDrawer {
     width: 50;
     height: 100%;
     background: $surface;
-    border-right: thick $primary;
+    border-right: $rail-heavy $primary;
     padding: 0 1;
 }

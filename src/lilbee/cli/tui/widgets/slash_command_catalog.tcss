@@ -7,7 +7,7 @@ SlashCommandCatalog #catalog-root {
     max-width: 90%;
     height: auto;
     max-height: 80%;
-    border: thick $primary;
+    border: $rail-heavy $primary;
     background: $surface;
     padding: 1 2;
 }
