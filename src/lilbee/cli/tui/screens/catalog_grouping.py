@@ -145,10 +145,8 @@ def group_task_rows_with_picks(
 def flatten_sections(sections: list[GridSection], heading: str) -> list[GridSection]:
     """Collapse *sections* into a single section, preserving row order.
 
-    Used while a search filter is active. Every mounted section costs a
-    heading plus a whole card row even when it holds one match, so a
-    filtered grid spent most of the viewport on chrome rather than
-    matches.
+    Used while a search filter is active: every mounted section costs a heading
+    plus a whole card row even when it holds one match.
     """
     rows = [row for section in sections for row in section.rows]
     if not rows:

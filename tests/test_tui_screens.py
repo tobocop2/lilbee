@@ -14149,6 +14149,75 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
             assert screen._sort_column == "Name"
 
 
+async def test_catalog_typing_searches_the_hub_not_just_the_cache():
+    """The box has to search what the user thinks it searches.
+
+    The filter alone narrows models already fetched, so a term the catalog has
+    not paged to reads as "no such model" -- which is how a search for a term
+    with hundreds of hub matches came back with the bundled picks. Typing now
+    schedules the hub query too, behind its own slower debounce so a 5-char
+    term is one round trip rather than five.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from textual.widgets import Input as TextualInput
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen.query_one("#catalog-search", TextualInput).value = "qwen3"
+
+            scheduled = []
+
+            def _fake_set_timer(delay, callback):
+                scheduled.append((delay, callback))
+                return MagicMock()
+
+            with (
+                patch.object(screen, "set_timer", side_effect=_fake_set_timer),
+                patch.object(screen, "_trigger_remote_search") as search,
+            ):
+                screen._on_search_changed(SimpleNamespace())
+                # The repaint pass and the hub query are scheduled apart, and
+                # the network leg waits longer than the repaint leg.
+                assert len(scheduled) == 2
+                assert scheduled[1][0] > scheduled[0][0]
+                scheduled[1][1]()
+
+            assert search.called, "typing should reach the hub"
+
+
+async def test_catalog_clearing_the_search_restarts_the_result_set():
+    """A cleared box drops the offset; otherwise retyping a term resumes
+    mid-way through its results and the first page never comes back."""
+    from unittest.mock import MagicMock, patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._searched_query = "qwen3"
+            screen._search_offset = 100
+            screen._search_has_more = True
+
+            with patch.object(screen, "set_timer", side_effect=lambda *_: MagicMock()):
+                screen._on_search_changed(SimpleNamespace())
+
+            assert screen._searched_query == ""
+            assert screen._search_offset == 0
+            assert screen._search_has_more is False
+
+
 async def test_catalog_search_submit_never_installs_a_model():
     """Enter in the search box must not queue a download.
 
@@ -14185,7 +14254,7 @@ async def test_catalog_search_submit_never_installs_a_model():
                     await _pilot.pause()
 
             assert not install.called, "Enter in the search box queued a download"
-            assert search.called, "Enter should submit the query to the hub"
+            assert not search.called, "typing already searched; Enter must not refire it"
             focused = screen._focused_grid()
             assert isinstance(focused, ModelGrid), "the cursor should land on the results"
             assert focused.highlighted == 0
@@ -14211,10 +14280,7 @@ async def test_catalog_search_submit_never_installs_in_list_view():
             await _pilot.pause()
             assert screen._list_widget.option_count, "need rows to prove nothing installs"
 
-            with (
-                patch.object(screen, "_select_row") as install,
-                patch.object(screen, "_trigger_remote_search"),
-            ):
+            with patch.object(screen, "_select_row") as install:
                 screen._on_search_submitted(SimpleNamespace(value="qwen3"))
                 for _ in range(5):
                     await _pilot.pause()

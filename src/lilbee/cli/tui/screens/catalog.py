@@ -90,19 +90,14 @@ from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
 
-# Models fetched per page for the active task; only that task is fetched,
-# so this is the page size the user actually sees. A page has to outrun the
-# viewport -- roughly five cards a row and four rows on a normal terminal --
-# or the grid mounts a part-filled screen under a "keep scrolling" hint and
-# reads as empty. One /api/models call costs the same round trip at 4 as at
-# 24, so the old value bought nothing and cost a screen.
+# Rows per browse page for the active task. Must exceed one viewport (about
+# five cards a row, four rows) or the grid paints part-empty under the
+# "keep scrolling" hint.
 _HF_PAGE_SIZE = 24
-# A search is a query, not a browse page: it is judged on its first screen,
-# and the matches are spread across the hub rather than sitting at an offset.
-# Fetching wide once beats paging a filter the user is already narrowing.
+# Rows per search page. Wider than a browse page: matches are spread across
+# the hub rather than sitting at one offset.
 _HF_SEARCH_LIMIT = 50
 _HF_LOAD_MORE_TRIGGER = 4
-_NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
 # Which config model-role field a selected model is assigned to, keyed by its task.
@@ -319,8 +314,7 @@ class CatalogScreen(Screen[None]):
         self._list_cache_keys: dict[str, tuple] = {}
         self._search_in_flight: bool = False
         # Remote-search pagination, keyed on the query the offset belongs to.
-        # Separate from the per-task browse offsets: paging a search has to
-        # advance the search, not fall through to the unfiltered next page.
+        # Distinct from the per-task browse offsets, which page unfiltered rows.
         self._searched_query: str = ""
         self._search_offset: int = 0
         self._search_has_more: bool = False
@@ -334,6 +328,7 @@ class CatalogScreen(Screen[None]):
         self._view_switching: bool = False
         self._frontier_refresh_timer: Timer | None = None
         self._search_filter_timer: Timer | None = None
+        self._remote_search_timer: Timer | None = None
         self._scroll_prefetch_armed_at: float = 0.0
         self._spinner_timer: Timer | None = None
         self._spinner_frame: int = 0
@@ -636,8 +631,8 @@ class CatalogScreen(Screen[None]):
         """True iff the active task tab has another HF page available.
 
         Discover and Library tabs return False; neither paginates. Under an
-        active search the answer is the search's own flag, so the footer hint
-        describes the result set on screen rather than the browse page behind it.
+        active search this is the search's own flag, so the hint describes the
+        result set on screen.
         """
         task = self._active_task()
         if task is None:
@@ -715,21 +710,40 @@ class CatalogScreen(Screen[None]):
         self.set_focus(self._search_input)
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
+    # The remote leg is a round trip, not a repaint, so it waits for a real
+    # pause in typing.
+    _REMOTE_SEARCH_DEBOUNCE_SECONDS = 0.45
 
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Schedule a filter pass after a short debounce.
+        """Schedule a filter pass, and a hub search behind a longer debounce.
 
         Each keystroke triggers a grid re-render or a list redraw, both of
         which Textual treats as layout invalidations. Without the debounce
         a 5-char term produces 5 full passes; with it, typing collapses
         to a single pass once the user pauses.
+
+        The filter only narrows models already fetched, so a term the catalog
+        has not paged to would otherwise read as "no such model".
         """
         if self._search_filter_timer is not None:
             self._search_filter_timer.stop()
         self._search_filter_timer = self.set_timer(
             self._SEARCH_FILTER_DEBOUNCE_SECONDS,
             self._apply_search_filter,
+        )
+        if self._remote_search_timer is not None:
+            self._remote_search_timer.stop()
+        # The Input already holds the new value when this fires.
+        if not self._get_search_text():
+            # Cleared: the next search starts its own result set.
+            self._searched_query = ""
+            self._search_offset = 0
+            self._search_has_more = False
+            return
+        self._remote_search_timer = self.set_timer(
+            self._REMOTE_SEARCH_DEBOUNCE_SECONDS,
+            lambda: self._trigger_remote_search(self._get_search_text()),
         )
 
     def _apply_search_filter(self) -> None:
@@ -745,34 +759,37 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter submits the query: search the hub, then hand focus to the results.
+        """Enter dismisses the search box and puts the cursor on the results.
 
-        It never installs. Enter is the reflex key for committing a search box,
-        every row here is a multi-gigabyte download, and the first row is
-        whichever one happened to sort first rather than one the user chose.
-        Installing is left to Enter on a focused card, where the target is the
-        row under the cursor.
+        Typing already runs the filter and the hub search, so there is no query
+        left to submit. It must not install: every row is a multi-gigabyte
+        download and the top row is whichever one sorted first. Installing is a
+        deliberate Enter on the focused card.
         """
-        self._trigger_remote_search(self._get_search_text())
         self._focus_first_result()
 
     def _focus_first_result(self) -> None:
-        """Put the cursor on the first match so arrow keys pick up from there.
-
-        Focus only: the caller is Enter in the search box, and selecting here
-        would install whatever the filter happened to leave on top.
-        """
+        """Move the cursor to the first match. Focus only, never selection."""
         with contextlib.suppress(Exception):
             if not self._grid_view:
-                if self._list_widget.option_count:
-                    self._list_widget.highlighted = 0
-                    self._list_widget.focus()
+                self._focus_first_list_row()
                 return
-            for grid in self._grid_container.query(ModelGrid):
-                if grid.rows:
-                    grid.focus()
-                    grid.highlighted = 0
-                    return
+            self._focus_first_grid_card()
+
+    def _focus_first_list_row(self) -> None:
+        """Put the list cursor on the first row, if there is one."""
+        if not self._list_widget.option_count:
+            return
+        self._list_widget.highlighted = 0
+        self._list_widget.focus()
+
+    def _focus_first_grid_card(self) -> None:
+        """Put the grid cursor on the first card of the first populated grid."""
+        for grid in self._grid_container.query(ModelGrid):
+            if grid.rows:
+                grid.focus()
+                grid.highlighted = 0
+                return
 
     def _trigger_remote_search(self, query: str) -> None:
         """Fire the HF search worker for the active task, unless one is in flight.
@@ -795,9 +812,9 @@ class CatalogScreen(Screen[None]):
             self._search_has_more = False
         self._search_in_flight = True
         self._update_sort_label()
+        # The toolbar spinner carries this in both views. No toast: typing
+        # fires this, so one per pause would stack up over a single term.
         self._sync_loading_spinner()
-        # Sort label is hidden in grid view, so the toast is the only feedback there.
-        self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query, active_task, self._search_offset)
 
     @on(Click, ".search-hf-cta")
@@ -1984,9 +2001,8 @@ class CatalogScreen(Screen[None]):
     def _load_more_search_results(self) -> None:
         """Advance the active search by one page.
 
-        Guarded on the query the offset was fetched under: a term edited while
-        a page was in flight resets the offset in ``_trigger_remote_search``,
-        and paging the old one would append matches for a term nobody typed.
+        Guarded on the query the offset was fetched under, so a term edited
+        mid-flight cannot append matches for a term nobody typed.
         """
         query = self._get_search_text()
         if self._search_in_flight or not self._search_has_more:

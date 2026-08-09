@@ -50,8 +50,7 @@ def _wiki_root() -> Path:
 def _root_shortcuts() -> list[tuple[str, str]]:
     """The auto-generated root pages that exist, as ``(slug, label)`` pairs.
 
-    Returned rather than mounted so the caller can filter them alongside the
-    pages: a search that excludes them is a search they did not match.
+    Returned rather than mounted so the caller filters them alongside the pages.
     """
     return [
         (slug, label)
@@ -143,8 +142,8 @@ class WikiScreen(Screen[None]):
         self._stubs: dict[str, WikiStub] = {}
         self._load_error: str | None = None
         self._search_filter_timer: Timer | None = None
-        # Last filter a paint ran under, so a filter change can drop the scroll
-        # offset without a plain reload (screen resume, task-bar refresh) doing so.
+        # Filter the last paint ran under. Only a change to it drops the scroll
+        # offset; a plain reload keeps the reader's place.
         self._painted_filter: str = ""
 
     def compose(self) -> ComposeResult:
@@ -261,9 +260,8 @@ class WikiScreen(Screen[None]):
             return
 
         self._populate_tree(tree, pages, shortcuts)
-        # A filtered stub is a match the reader asked for by name, so it opens
-        # expanded; unfiltered they stay collapsed so they cannot bury the
-        # written pages, which on a lazy wiki they outnumber.
+        # Under a filter every stub in the group is a match, so it opens.
+        # Unfiltered it stays collapsed; stubs outnumber the written pages.
         self._add_stub_group(tree, stubs, expand=bool(needle))
 
     def _populate_tree(
