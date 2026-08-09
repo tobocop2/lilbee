@@ -3863,6 +3863,28 @@ async def test_chat_refresh_model_bar():
             mock_refresh.assert_called_once()
 
 
+async def test_chat_show_before_the_model_bar_mounts_does_not_crash():
+    """Show can land before the prompt area's descendants are in the DOM.
+
+    on_show refreshes the bar, and a bare query_one for it raised NoMatches
+    straight out of the show handler, which Textual re-raises as an app crash.
+    Reported from the windows runner, where the mount is slow enough to lose
+    the race; the bar scans on its own mount, so there is nothing to refresh
+    until it exists.
+
+    The absence is injected rather than raced, the way the detached-row test
+    does it: the pilot cannot time a show against a pending mount, and removing
+    the bar builds the identical state.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        await app.screen.query_one("#model-bar", ModelBar).remove()
+        assert not app.screen.query("#model-bar"), "the bar is still mounted; nothing to test"
+        app.screen.on_show()
+
+
 async def test_model_bar_refreshes_on_chat_model_signal():
     """bb-q6zh: external activations (Catalog, /set chat_model, settings UI) publish on
     settings_changed_signal; the rail's chat picker must repaint without a
