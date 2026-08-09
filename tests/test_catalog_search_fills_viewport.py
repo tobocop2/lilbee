@@ -12,6 +12,7 @@ from unittest import mock
 import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat
 
@@ -225,3 +226,26 @@ async def test_search_after_scrolling_starts_at_the_top(_mock_resolve):
 
             assert container.scroll_y == 0
             assert container.max_scroll_y > 0, "the result set is taller than the viewport"
+
+
+async def test_a_search_matching_nothing_mounts_no_result_section(_mock_resolve):
+    """Zero matches must reach the empty-grid CTAs, not an empty "Matches" heading.
+
+    Flattening runs on whatever survived the filter, so the no-match case hands
+    it an empty section list; without its own guard it would mount a heading
+    over nothing and the CTA branch would never be reached.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    with _mock_catalog_deps(_featured_families(6)), _mock_remote_models():
+        app = LilbeeApp()
+        async with app.run_test(size=_TERMINAL_SIZE) as pilot:
+            screen = await _open_catalog_chat_grid(app, pilot)
+
+            await _type_search(pilot, "zzzznotamodel")
+
+            container = screen._grid_container
+            assert not list(container.query(ModelGrid))
+            headings = [str(h.renderable) for h in container.query(".section-heading")]
+            assert msg.HEADING_MATCHES not in headings
