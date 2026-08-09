@@ -5278,6 +5278,38 @@ class TestCatalogSearchFetchesAWholeResultSet:
                 assert not browse.called
                 assert screen._hf_offset_by_task[ModelTask.CHAT] == browse_offset
 
+    @pytest.mark.parametrize(
+        ("state", "why"),
+        [
+            ({"_search_in_flight": True}, "a page is already in flight"),
+            ({"_search_has_more": False}, "the hub has no more matches"),
+            ({"_searched_query": "llama"}, "the offset belongs to another term"),
+            ({"_active_tab_id_cache": "library"}, "the tab has no task to search"),
+        ],
+    )
+    async def test_paging_a_search_is_refused_when(self, state, why):
+        """Each guard keeps a page request off the wire, and the offset unmoved.
+
+        An offset that advances on a refused page silently skips a page of
+        matches the next real request would have returned.
+        """
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+                screen._searched_query = "qwen3"
+                screen._search_has_more = True
+                for attr, value in state.items():
+                    setattr(screen, attr, value)
+                offset = screen._search_offset
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._load_more_search_results()
+
+                assert not fetch.called, why
+                assert screen._search_offset == offset
+
     async def test_a_new_term_restarts_its_result_set(self):
         """Editing the term resets the offset; otherwise page 2 of the old
         query is appended as though it matched the new one."""
