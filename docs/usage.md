@@ -49,15 +49,17 @@ can take is reachable from one of those three.
 
 ### Terminal recommendations
 
-The TUI is a full-screen Textual app and needs a monospaced font that covers
-box-drawing and block/braille glyphs, which any current terminal has. It runs
-the same everywhere, including macOS Terminal.app and plain xterm; there is no
-reduced mode and nothing is hidden on a lesser terminal.
+The TUI is a full-screen Textual app. It runs everywhere, including macOS
+Terminal.app, plain xterm and over SSH: every screen, panel and key works the
+same, and nothing is hidden on a lesser terminal.
 
-A terminal with 24-bit "true color" shows the themes as designed. On a
-256-color terminal the palette has no dark tinted colors to offer, so surfaces
-come out as neutral greys and the theme's tint shows only in the accents. The
-layout, contrast and layering are the same either way.
+Two things adapt to what the terminal can do, both detected automatically.
+Panel edges are drawn with partial-block glyphs, which only tile seamlessly in
+fonts that draw them cell-exact, so a terminal that does not gets box-drawing
+edges instead. And a terminal with 24-bit "true color" shows the themes as
+designed, while a 256-color one has no dark tinted colors to offer, so surfaces
+come out as neutral greys and the tint shows only in the accents. Layout,
+contrast and layering are the same either way.
 
 - **Give it room.** The model bar and layout want about 100 columns; narrower
   and panels start to wrap.

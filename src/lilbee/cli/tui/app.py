@@ -202,11 +202,17 @@ class LilbeeApp(App[None]):
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
+        # Both terminal questions are answered once, here: resolve_term_program can
+        # shell out to tmux, and get_line_filters runs per widget per repaint. The
+        # glyph answer must also land before super() so the stylesheet list is
+        # complete when Textual reads it.
+        color_system = Console().color_system
+        term_program = resolve_term_program(os.environ)
+        self._plain_glyphs = not draws_block_glyphs(color_system, term_program)
         # A terminal that cannot tile partial-block glyphs also gets the sheet
-        # restating Textual's own block borders. Resolved before super() so the
-        # stylesheet list is complete when Textual reads it.
-        self._plain_glyphs = not draws_block_glyphs(
-            Console().color_system, resolve_term_program(os.environ)
+        # restating Textual's own block borders.
+        self._eight_bit_filter = (
+            EightBitPalette() if needs_eight_bit(color_system, term_program) else None
         )
         css: list[str | PurePath] = [self.CSS_PATH]
         if self._plain_glyphs:
@@ -255,10 +261,13 @@ class LilbeeApp(App[None]):
         collapses the theme's dark surfaces, and for Terminal.app, which claims
         truecolor it cannot render. See color_compat. A terminal that genuinely has
         truecolor gets no filter and renders byte-identically to before.
+
+        Textual calls this per widget per repaint, so it only reads the decision
+        made in __init__.
         """
         filters = list(super().get_line_filters())
-        if needs_eight_bit(self.console.color_system, resolve_term_program(os.environ)):
-            filters.append(EightBitPalette())
+        if self._eight_bit_filter is not None:
+            filters.append(self._eight_bit_filter)
         return filters
 
     # Test seam: the TUI test fixtures subclass LilbeeApp and set this to True
@@ -624,9 +633,9 @@ class LilbeeApp(App[None]):
             if overlay is not None and overlay.is_visible:
                 screen.action_complete_prev()
                 return
-        # Not super(): Textual hard-codes its own CommandPalette, and the subclass
-        # is what replaces the emoji search icon. isinstance rather than Textual's
-        # is_open, which is typed for App[object] and rejects App[None].
+        # Textual's own action hard-codes its CommandPalette; the subclass carries
+        # lilbee's search icon. isinstance rather than CommandPalette.is_open,
+        # which is typed for App[object] and so rejects lilbee's own app type.
         if self.use_command_palette and not isinstance(self.screen, CommandPalette):
             self.push_screen(LilbeeCommandPalette(id="--command-palette"))
 

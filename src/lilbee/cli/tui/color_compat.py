@@ -70,16 +70,14 @@ def needs_eight_bit(color_system: str | None, term_program: str | None) -> bool:
 def draws_block_glyphs(color_system: str | None, term_program: str | None) -> bool:
     """Whether the terminal can be trusted to tile partial-block border glyphs.
 
-    A different question from needs_eight_bit, and with the opposite slope. That
-    one asks whether Rich's colour reduction needs correcting, and answers no for
-    a 16-colour terminal because Rich's standard-palette path is already nearest
-    neighbour. This asks whether the font draws U+2580..U+259F cell-exact, which
-    a 16-colour terminal is *less* likely to do, not more. Using the colour
-    predicate for both handed block rails to the weakest terminals.
+    Not the same question as needs_eight_bit, and not the same slope: a 16-colour
+    terminal needs no colour correction, because Rich's standard-palette path is
+    already nearest neighbour, but it is *less* likely to draw U+2580..U+259F
+    cell-exact, not more.
 
-    There is no way to query font metrics, so this goes on terminal identity: the
-    terminals that advertise truecolor are the modern ones that ship a font which
-    tiles, minus Terminal.app, which advertises it falsely.
+    Font metrics cannot be queried, so this goes on terminal identity: the
+    terminals that advertise truecolor ship a font that tiles, minus Terminal.app,
+    which advertises it falsely.
     """
     return color_system == TRUECOLOR_COLOR_SYSTEM and term_program != APPLE_TERMINAL
 

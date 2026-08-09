@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 from rich._palettes import EIGHT_BIT_PALETTE
 from rich.cells import cell_len
-from rich.color import Color, ColorSystem, ColorType
+from rich.color import Color, ColorType
 from rich.segment import Segment
 from rich.style import Style
 from textual.color import Color as TextualColor
@@ -25,12 +25,6 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.task_queue import STATUS_ICONS
-
-_COLOR_SYSTEMS = {
-    "standard": ColorSystem.STANDARD,
-    "256": ColorSystem.EIGHT_BIT,
-    "truecolor": ColorSystem.TRUECOLOR,
-}
 
 # The surfaces that must stay visually distinct: without them, every panel edge
 # and every card lift disappears into a single flat fill.
@@ -164,6 +158,41 @@ class TestDetection:
         assert needs_eight_bit("truecolor", "Apple_Terminal")
 
 
+class TestTerminalIsResolvedOnce:
+    """Resolving the terminal costs a tmux subprocess, so it happens once per app.
+
+    Textual calls get_line_filters per widget per repaint. Resolving inside it
+    spawned `tmux show-environment` 542 times over one screen's paints, each with
+    a one-second timeout, on the tmux-over-SSH path this branch exists to serve.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tmux_is_consulted_once_no_matter_how_many_repaints(self):
+        from lilbee.cli.tui import color_compat
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        with (
+            mock.patch.dict(os.environ, {"TERM_PROGRAM": "tmux"}),
+            mock.patch.object(
+                color_compat.subprocess, "run", wraps=color_compat.subprocess.run
+            ) as run,
+        ):
+            app = LilbeeAppHost()
+            with ready_services():
+                async with app.run_test(size=(120, 40)) as pilot:
+                    app.push_screen(CatalogScreen())
+                    for _ in range(6):
+                        await pilot.pause()
+                    app.refresh()
+                    for _ in range(6):
+                        await pilot.pause()
+                    painted = len(list(app.screen.query("*")))
+
+        assert painted > 1, "no widgets painted, so no repaints were exercised"
+        assert run.call_count <= 1
+
+
 class TestSeeingThroughTmux:
     """tmux hides the real terminal, and a tmux inside Terminal.app hit the same bug.
 
@@ -250,13 +279,16 @@ class TestFilterInstallation:
     async def _filters_for(color_system: str, term_program: str) -> list[str]:
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
-        with mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}):
+        with (
+            mock.patch.dict(os.environ, {"TERM_PROGRAM": term_program}),
+            mock.patch("lilbee.cli.tui.app.Console") as console,
+        ):
+            console.return_value.color_system = color_system
             app = LilbeeAppHost()
-            with ready_services():
-                async with app.run_test(size=(80, 24)) as pilot:
-                    app.console._color_system = _COLOR_SYSTEMS[color_system]
-                    await pilot.pause()
-                    return [type(line_filter).__name__ for line_filter in app.get_line_filters()]
+        with ready_services():
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                return [type(line_filter).__name__ for line_filter in app.get_line_filters()]
 
     @pytest.mark.asyncio
     async def test_installed_on_a_256_color_terminal(self):
@@ -431,6 +463,38 @@ class TestNoPartialBlockBorders:
                         offenders += self._offenders(app.screen)
                     if not panes:
                         offenders = self._offenders(app.screen)
+        assert not offenders
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("severity", ["information", "warning", "error"])
+    async def test_toast_has_no_partial_block_border(self, severity: str):
+        """Toasts never sit on the screen stack, so the screen sweep cannot see them.
+
+        Textual draws the severity rail with `outer`, and every severity carries
+        its own rule, so one case per severity.
+        """
+        from textual.widgets._toast import Toast
+
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        with mock.patch.dict(os.environ, {"TERM_PROGRAM": "Apple_Terminal"}):
+            app = LilbeeAppHost()
+            with ready_services():
+                # run_test defaults notifications off, which leaves the screen with
+                # no ToastRack and nothing to audit.
+                async with app.run_test(size=(120, 40), notifications=True) as pilot:
+                    app.notify("Engine is still warming.", severity=severity)
+                    for _ in range(4):
+                        await pilot.pause()
+                    toasts = list(app.query(Toast))
+                    assert toasts, f"{severity} toast did not mount, so nothing was audited"
+                    offenders = [
+                        f"{type(toast).__name__}.{edge}={border[0]}"
+                        for toast in toasts
+                        for edge in _BORDER_EDGES
+                        if (border := getattr(toast.styles, edge, None))
+                        and border[0] in _PARTIAL_BLOCK_BORDERS
+                    ]
         assert not offenders
 
 
