@@ -47,6 +47,18 @@ def _wiki_root() -> Path:
     return cfg.data_root / cfg.wiki_dir
 
 
+def _root_shortcuts() -> list[tuple[str, str]]:
+    """The auto-generated root pages that exist, as ``(slug, label)`` pairs.
+
+    Returned rather than mounted so the caller filters them alongside the pages.
+    """
+    return [
+        (slug, label)
+        for slug, label in (("index", msg.WIKI_INDEX_LABEL), ("log", msg.WIKI_LOG_LABEL))
+        if (_wiki_root() / f"{slug}.md").is_file()
+    ]
+
+
 def _safe_float(value: object) -> float | None:
     """Coerce an untyped frontmatter value to float, or None if not numeric."""
     try:
@@ -130,6 +142,9 @@ class WikiScreen(Screen[None]):
         self._stubs: dict[str, WikiStub] = {}
         self._load_error: str | None = None
         self._search_filter_timer: Timer | None = None
+        # Filter the last paint ran under. Only a change to it drops the scroll
+        # offset; a plain reload keeps the reader's place.
+        self._painted_filter: str = ""
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -222,6 +237,13 @@ class WikiScreen(Screen[None]):
             self._show_load_failure(self._load_error)
             return
         tree = self._empty_tree()
+        filter_changed = filter_text != self._painted_filter
+        self._painted_filter = filter_text
+        if filter_changed:
+            # The offset belongs to the previous result set. Keeping it parks
+            # the sidebar past the end of a shorter one (Textual clamps to the
+            # new max), so the matches render above the visible area.
+            tree.scroll_to(y=0, animate=False)
         if not self._pages and not self._stubs:
             tree.root.add_leaf(msg.wiki_empty_state_leaf())
             self._show_placeholder()
@@ -230,25 +252,35 @@ class WikiScreen(Screen[None]):
         needle = filter_text.lower()
         pages = [p for p in self._pages if needle in p.title.lower()]
         stubs = [s for s in self._stubs.values() if needle in s.label.lower()]
-        if not pages and not stubs:
+        shortcuts = [(slug, label) for slug, label in _root_shortcuts() if needle in label.lower()]
+        if not pages and not stubs and not shortcuts:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
             tree.root.add_leaf(msg.WIKI_NO_MATCHES.format(filter=filter_text))
             return
 
-        self._populate_tree(tree, pages)
-        self._add_stub_group(tree, stubs)
+        self._populate_tree(tree, pages, shortcuts)
+        # Under a filter every stub in the group is a match, so it opens.
+        # Unfiltered it stays collapsed; stubs outnumber the written pages.
+        self._add_stub_group(tree, stubs, expand=bool(needle))
 
-    def _populate_tree(self, tree: Tree[str | None], pages: list[WikiPageInfo]) -> None:
+    def _populate_tree(
+        self,
+        tree: Tree[str | None],
+        pages: list[WikiPageInfo],
+        shortcuts: list[tuple[str, str]],
+    ) -> None:
         """Build the sidebar tree from a flat list of wiki pages.
 
         Slugs like ``summaries/cv-manual/01-brakes/page-0042`` become nested
         branches under their page-type group, with leaves for leaf pages and
-        expandable branches for intermediate heading folders. ``index.md``
-        and ``log.md`` at the wiki root are surfaced as top-level leaves.
+        expandable branches for intermediate heading folders. *shortcuts* are
+        the auto-generated root pages (``index.md``, ``log.md``) that survived
+        the caller's filter, surfaced as top-level leaves.
         """
-        self._add_root_shortcut(tree, "index", msg.WIKI_INDEX_LABEL)
-        self._add_root_shortcut(tree, "log", msg.WIKI_LOG_LABEL)
+        for slug, label in shortcuts:
+            tree.root.add_leaf(label, data=slug)
+            self._page_slugs.append(slug)
         grouped = _group_pages(pages)
         branches: dict[str, TreeNode[str | None]] = {}
         for page_type, group_pages in grouped:
@@ -258,26 +290,22 @@ class WikiScreen(Screen[None]):
                 self._page_slugs.append(page.slug)
                 self._insert_page(group_node, page, branches)
 
-    def _add_stub_group(self, tree: Tree[str | None], stubs: list[WikiStub]) -> None:
+    def _add_stub_group(
+        self, tree: Tree[str | None], stubs: list[WikiStub], *, expand: bool
+    ) -> None:
         """List the pages the corpus names but nothing has written yet.
 
         Rendered distinctly, following the red-link convention: a reader must
         never wonder whether a page is blank because nothing was written or
-        because generation failed.
+        because generation failed. *expand* opens the group; the caller sets it
+        while a filter is active, when every stub in it is a match.
         """
         if not stubs:
             return
-        group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=False)
+        group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=expand)
         for stub in stubs:
             group.add_leaf(msg.WIKI_STUB_LABEL.format(title=stub.label), data=stub.wiki_slug)
             self._page_slugs.append(stub.wiki_slug)
-
-    def _add_root_shortcut(self, tree: Tree[str | None], slug: str, label: str) -> None:
-        """Add a top-level leaf for an auto-generated page (index.md, log.md)."""
-        if not (_wiki_root() / f"{slug}.md").is_file():
-            return
-        tree.root.add_leaf(label, data=slug)
-        self._page_slugs.append(slug)
 
     def _insert_page(
         self,
