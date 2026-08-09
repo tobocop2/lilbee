@@ -299,8 +299,12 @@ class TestAdd:
         assert result.exit_code == 0
         assert cfg.ingest_processes == 2
 
-    def test_add_warns_on_existing(self, isolated_env, tmp_path):
-        """Re-adding a source that is already registered warns."""
+    def test_add_reports_a_source_it_already_tracks(self, isolated_env, tmp_path):
+        """Re-adding the same path is not a collision: it says so and re-syncs it.
+
+        The old copy warned "already exists (use --force to overwrite)", which
+        pointed the user at a flag that would have changed nothing.
+        """
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
         src_file.write_text("Original content")
@@ -310,8 +314,24 @@ class TestAdd:
         src_file.write_text("New content")
         result = runner.invoke(app, ["add", str(src_file)])
         assert result.exit_code == 0
+        assert "already tracked: manual.txt" in result.output
+        assert "Warning" not in result.output
+
+    def test_add_warns_when_the_name_is_taken_by_another_source(self, isolated_env, tmp_path):
+        """A different source holding the label is the case --force is for."""
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        (one / "doc.txt").write_text("content", encoding="utf-8")
+        runner.invoke(app, ["add", str(one)])
+
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+        (two / "other.txt").write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(two)])
+
+        assert result.exit_code == 0
         assert "Warning" in result.output
-        assert "already exists" in result.output
+        assert "is taken by another source" in result.output
 
 
 class TestAddIgnoresDirs:
@@ -695,6 +715,7 @@ class TestAddPathsBackground:
     def test_add_paths_background_mode(self, isolated_env, tmp_path) -> None:
         from rich.console import Console
 
+        from lilbee.app.ingest import RegisterResult
         from lilbee.cli.helpers import add_paths
 
         src = tmp_path / "source" / "test.txt"
@@ -703,7 +724,10 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
-            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
+            mock.patch(
+                "lilbee.cli.helpers.register_paths",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
         ):
             add_paths([src], con, background=True)
             mock_bg.assert_called_once()
@@ -711,6 +735,7 @@ class TestAddPathsBackground:
     def test_add_paths_chat_mode_prints(self, isolated_env, tmp_path, capsys) -> None:
         from rich.console import Console
 
+        from lilbee.app.ingest import RegisterResult
         from lilbee.cli.helpers import add_paths
 
         src = tmp_path / "source" / "test.txt"
@@ -719,7 +744,10 @@ class TestAddPathsBackground:
         con = Console()
         with (
             mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
-            mock.patch("lilbee.cli.helpers.register_paths", return_value=[src.name]),
+            mock.patch(
+                "lilbee.cli.helpers.register_paths",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
         ):
             add_paths([src], con, chat_mode=True)
             captured = capsys.readouterr()
