@@ -41,8 +41,8 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    # Simulate "already-initialized" state so needs_setup()
-    # doesn't push the SetupWizard during tests that exercise chat.
+    # Simulate "already-initialized" state so the app does not read this as
+    # a fresh install and open the SetupWizard over tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for field_name in type(snapshot).model_fields:
@@ -67,8 +67,8 @@ def _mock_services():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.needs_setup",
-            return_value=False,
+            "lilbee.cli.tui.app.models_ready",
+            return_value=True,
         ),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
@@ -633,9 +633,10 @@ async def test_switching_guard_blocks_concurrent_switch():
         app._switching = False
 
 
-async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
-    """``on_mount`` calls ``Services.add_pool_listener`` so server spawn
-    lifecycle surfaces as Textual notifications. Verified by replacing the
+async def test_lilbee_app_wires_worker_pool_notifications_behind_the_gate() -> None:
+    """The gate hands the app the container it built, and the app calls
+    ``Services.add_pool_listener`` on it so server spawn lifecycle surfaces as
+    Textual notifications. Verified by replacing the
     Services singleton with a provider whose ``add_spawn_listener`` records the
     callbacks, then firing them from a worker thread (call_from_thread requires a
     different thread) so their notify() bodies execute against the live app."""

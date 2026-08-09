@@ -641,9 +641,9 @@ class TestAppCanonicalizeFallbackNotice:
         and the reason is logged, but no toast fires.
 
         This is the first-launch case: the default refs aren't downloaded
-        yet and there's nothing to fall back to. The chat screen's
-        ``needs_setup`` keys off the same unresolved state and opens the
-        SetupWizard, which is the single voice for "pick a model." A toast
+        yet and there's nothing to fall back to. The app's readiness check
+        keys off the same unresolved state and opens the SetupWizard, which
+        is the single voice for "pick a model." A toast
         here just duplicates the wizard (its text literally says "Opening
         setup"), so it's suppressed; the WARNING log stays as a breadcrumb.
         """
