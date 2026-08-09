@@ -158,3 +158,47 @@ Button.-style-default {
         border-bottom: solid $surface-lighten-1;
     }
 }
+
+/* Textual's Toast draws its severity rail with `outer`, which is built from
+ * block glyphs (U+259B and friends) and segments in the same fonts `tall` does.
+ * heavy is the box-drawing equivalent and is what task_center already uses for
+ * a rail. Colours mirror textual/widgets/_toast.py. */
+Toast.-information {
+    border-left: heavy $success;
+}
+
+Toast.-warning {
+    border-left: heavy $warning;
+}
+
+Toast.-error {
+    border-left: heavy $error;
+}
+
+/* The footer's command-palette cell separates itself with `vkey`, a pair of
+ * one-eighth block glyphs (U+258F, U+2595) that segment like every other block
+ * border. It sits on the footer, so it is on every screen. Colour mirrors
+ * textual/widgets/_footer.py. */
+FooterKey.-command-palette {
+    border-left: solid $foreground 20%;
+}
+
+/* `hkey` is a pair of one-eighth block rails (U+2594, U+2581) and segments like
+ * the rest. Collapsible uses it for its separator, and the command palette for
+ * the input frame, the result list and the loading indicator. Colours mirror
+ * textual/widgets/_collapsible.py and textual/command.py. */
+Collapsible {
+    border-top: solid $background;
+}
+
+CommandPalette #--input {
+    border: solid black 50%;
+}
+
+CommandList {
+    border-bottom: solid black;
+}
+
+CommandPalette LoadingIndicator {
+    border-bottom: solid $border;
+}

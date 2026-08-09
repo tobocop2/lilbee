@@ -47,7 +47,7 @@ TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
 # Every icon is one cell wide. An emoji here is double-width and shifts its row
 # out of the column the other statuses share.
 STATUS_ICONS: dict[TaskStatus, str] = {
-    TaskStatus.QUEUED: "○",
+    TaskStatus.QUEUED: "⋯",
     TaskStatus.ACTIVE: "▶",
     TaskStatus.DONE: "✓",
     TaskStatus.FAILED: "✗",

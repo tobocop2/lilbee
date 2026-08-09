@@ -271,7 +271,23 @@ class TestFilterInstallation:
         assert EightBitPalette.__name__ not in await self._filters_for("truecolor", "iTerm.app")
 
 
-_PARTIAL_BLOCK_BORDERS = frozenset({"tall", "thick", "wide", "panel"})
+def _block_based_border_styles() -> frozenset[str]:
+    """Border styles Textual draws from block glyphs, read from its own table.
+
+    Hardcoding the list missed six of the ten, including `outer`, which is what
+    Textual's Toast uses for its severity rail. Deriving it means a new Textual
+    border style is covered the day it lands.
+    """
+    from textual._border import BORDER_CHARS
+
+    return frozenset(
+        name
+        for name, rows in BORDER_CHARS.items()
+        if any(0x2580 <= ord(char) <= 0x259F for row in rows for char in row)
+    )
+
+
+_PARTIAL_BLOCK_BORDERS = _block_based_border_styles()
 _BORDER_EDGES = ("border_top", "border_right", "border_bottom", "border_left")
 
 
