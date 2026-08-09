@@ -5296,7 +5296,7 @@ class TestCatalogSearchFetchesAWholeResultSet:
                 assert screen._search_offset == 0
 
     async def test_the_footer_hint_tracks_the_search_not_the_browse_page(self):
-        """"More available" under a filter must describe the result set on
+        """ "More available" under a filter must describe the result set on
         screen, not the unfiltered page sitting behind it."""
         app = CatalogTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
