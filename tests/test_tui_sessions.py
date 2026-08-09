@@ -57,22 +57,26 @@ async def _open_drawer(app, pilot) -> SessionsDrawer:
     return screen.query_one(SessionsDrawer)
 
 
-async def _hittable_row(pilot, drawer):
-    """Return the drawer's first session row once it owns a hit area.
+async def _laid_out(pilot, widget):
+    """Return *widget* once it owns a hit area.
 
     The drawer mounts before it lays out, and one pause covers the mount but
-    not the layout. Until the row has a region, every point derived from it is
+    not the layout. Until a widget has a region, every point derived from it is
     the origin, so the event lands on whatever occupies the top-left corner --
     the drawer itself -- and the test asserts against the wrong widget. That is
     the whole of this file's windows-runner failure history, so the wait lives
     here once rather than inline at each hit-test.
     """
+    await wait_until(pilot, lambda: bool(widget.region.size))
+    assert widget.region.size, "the widget was never laid out, so it has no hit area"
+    return widget
+
+
+async def _hittable_row(pilot, drawer):
+    """Return the drawer's first session row once it owns a hit area."""
     rows = list(drawer.query(".session-row-meta").results())
     assert rows, "the drawer rendered no session rows"
-    row = rows[0]
-    await wait_until(pilot, lambda: bool(row.region.size))
-    assert row.region.size, "the session row was never laid out, so it has no hit area"
-    return row
+    return await _laid_out(pilot, rows[0])
 
 
 # --- drawer ---------------------------------------------------------------
@@ -260,10 +264,13 @@ async def test_clicking_a_row_resumes_it(sessions, count):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _open_drawer(app, pilot)
-        row = screen.query(SessionRow)[0]
+        row = await _laid_out(pilot, screen.query(SessionRow)[0])
         clicked_id = row.meta.id
-        await pilot.click(row)
+        landed = await pilot.click(row)
         await pilot.pause()
+        # Without this the same miss reads as "resuming a session is broken",
+        # which is what made this class take eight rounds to name.
+        assert landed, "the click never reached the session row"
         assert app.chat_screen().session_id == clicked_id
         assert not screen.query(SessionsDrawer)
 
