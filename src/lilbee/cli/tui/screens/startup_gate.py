@@ -12,8 +12,7 @@ from textual.screen import Screen
 from textual.widgets import ProgressBar, Static
 from textual.worker import get_current_worker
 
-from lilbee.app.services import get_services, peek_services
-from lilbee.app.setup_state import needs_setup
+from lilbee.app.services import peek_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.runtime.bee_logo import BEE_LINES
@@ -64,34 +63,36 @@ class StartupGate(Screen[None]):
         self.refresh()
 
     def start_boot(self) -> None:
-        """Reveal chat at once when services already exist, else build them off-thread.
+        """Work out what the app can serve, off the UI thread, then hand over.
 
-        A container that is already built (a second TUI in the same process, a
-        test host) has nothing to wait for, so painting a loading screen would be
-        a lie. The handover is deferred a frame because start_boot runs at the
-        tail of the app's on_mount, and switching screens from inside on_mount
-        stalls Textual.
+        One path even when the container is already built (a second TUI in the
+        same process, a test host): the setup answer still decides whether the
+        handover happens. The thread hop also keeps the screen switch out of
+        on_mount, which stalls Textual.
         """
-        if peek_services() is not None:
-            self.call_after_refresh(self._release)
-            return
         self._boot_worker()
 
     @work(thread=True, name="startup_gate", exit_on_error=False)
     def _boot_worker(self) -> None:
-        """Settle the model refs, build the services container, then hand over.
+        """Settle the refs, settle the setup answer, build the container, hand over.
 
-        Canonicalization runs first (it can swap a stale ref to a working
-        fallback, which decides whether setup is needed) and runs here rather
-        than on the mount path: its disk reads and server probes would sit
-        between the terminal handover and the TUI's first frame.
+        Canonicalization runs first: it can swap a stale ref for a working one,
+        which decides the setup answer. An already built container skips it.
+
+        ``settle_setup_state`` blocks until the app has recorded the answer, so
+        the handover cannot read a readiness flag that has yet to be written.
+
+        Building the container spawns the role servers, so it belongs on this
+        thread, behind the loading bar.
         """
         try:
-            self.app.canonicalize_persisted_models()
-            if needs_setup():
-                self._marshal(self._release)
+            if peek_services() is None:
+                self.app.canonicalize_persisted_models()
+            if self.app.settle_setup_state():
+                # Setup owns the screen now, and the app has already routed
+                # there; handing over as well would land on top of it.
                 return
-            get_services()
+            self.app.adopt_services()
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.
