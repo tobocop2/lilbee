@@ -330,19 +330,24 @@ async def test_notify_model_installed_refreshes_chat_screen() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notify_model_installed_swallows_query_error() -> None:
-    """If ``refresh_model_bar`` raises QueryError (bar not mounted) we don't crash."""
-    from textual.css.query import NoMatches
+async def test_notify_model_installed_with_no_bar_mounted() -> None:
+    """A finalize that lands before the bar mounts must not crash.
 
+    This used to be a caller-side ``except QueryError`` around the refresh,
+    pinned by a test that raised the error from a mock. The refresh is a no-op
+    until the bar exists, so the real state is built here instead of simulated:
+    remove the bar and drive the same finalize path.
+    """
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with ready_services():
         app = LilbeeApp()
         async with app.run_test() as pilot:
             screen = await await_chat(app, pilot)
-            # NoMatches is a QueryError subclass; simulates the query miss path.
-            with patch.object(screen, "refresh_model_bar", side_effect=NoMatches("no bar")):
-                app.task_bar._notify_model_installed()  # must not raise
+            await screen.query_one("#model-bar", ModelBar).remove()
+            assert not screen.query("#model-bar"), "the bar is still mounted; nothing to test"
+            app.task_bar._notify_model_installed()  # must not raise
 
 
 @pytest.mark.asyncio
