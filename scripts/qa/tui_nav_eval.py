@@ -64,6 +64,11 @@ def _isolated_env(tmp: Path):
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     cfg.wiki = False
+    # Redirecting the store is not enough: linked_roots points at the operator's
+    # real source documents, so any key that reaches a sync walks and re-extracts
+    # them. Writes land in the temp store, but the reads and the extraction work
+    # are real.
+    cfg.linked_roots = {}
     for d in (cfg.data_dir, cfg.documents_dir, cfg.models_dir, cfg.lancedb_dir):
         d.mkdir(parents=True, exist_ok=True)
 

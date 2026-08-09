@@ -69,9 +69,16 @@ layout, contrast and layering are the same either way.
   box-drawing and the cursor. Attach to the remote session directly, or start
   lilbee outside the inner tmux.
 - **Want the full palette over SSH?** SSH does not forward `COLORTERM`, so a
-  remote lilbee falls back to 256 colors even from a truecolor terminal. Add
-  `SendEnv COLORTERM` to your `~/.ssh/config` and `AcceptEnv COLORTERM` to the
-  server's `sshd_config`, or just export `COLORTERM=truecolor` on the remote.
+  remote lilbee uses 256 colors even when you are sitting in a truecolor
+  terminal. If your local terminal really does render 24-bit color (iTerm2,
+  kitty, WezTerm, Ghostty, Windows Terminal), forward it: `SendEnv COLORTERM` in
+  `~/.ssh/config` plus `AcceptEnv COLORTERM` in the server's `sshd_config`.
+
+  Do not do this from macOS Terminal.app. It sets `COLORTERM=truecolor` while
+  being unable to draw 24-bit color, and lilbee only knows to ignore that claim
+  by reading `TERM_PROGRAM`, which SSH does not forward either. Forwarding
+  `COLORTERM` from Terminal.app tells the remote to send color the terminal
+  will render as garbage. Left alone, SSH from Terminal.app is already correct.
 
 ### First run
 
