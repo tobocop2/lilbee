@@ -274,10 +274,41 @@ class TestFilterInstallation:
 _PARTIAL_BLOCK_BORDERS = frozenset({"tall", "thick", "wide", "panel"})
 _BORDER_EDGES = ("border_top", "border_right", "border_bottom", "border_left")
 
-_DIALOG_KWARGS = {
-    "ConfirmDialog": {"title": "Delete model", "message": "This removes 17.3 GB from disk."},
-    "NoticeDialog": {"title": "Heads up", "message": "The engine is still warming."},
-}
+
+def _catalog_row():
+    """One installed row, the shape ModelInfoModal renders."""
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+    return LocalCatalogRow(
+        name="Qwen3 0.6B",
+        task=ModelTask.CHAT,
+        params="0.6B",
+        size="0.5 GB",
+        quant="Q4_K_M",
+        downloads="--",
+        featured=False,
+        installed=True,
+        sort_downloads=0,
+        sort_size=0.5,
+        ref="Qwen/Qwen3-0.6B-GGUF",
+    )
+
+
+def _screen_kwargs(cls_name: str) -> dict:
+    """Constructor arguments for the surfaces that take them."""
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+    return {
+        "ConfirmDialog": {"title": "Delete model", "message": "This removes 17.3 GB from disk."},
+        "NoticeDialog": {"title": "Heads up", "message": "The engine is still warming."},
+        "ModelInfoModal": {"row": _catalog_row()},
+        "ModelPickerModal": {
+            "scope": "chat",
+            "options": [ModelOption("Qwen3 0.6B", "Qwen/Qwen3-0.6B-GGUF")],
+        },
+    }.get(cls_name, {})
+
 
 # Every screen and modal the TUI can put on the stack. Chat is pushed explicitly
 # like the rest: the test host skips the on_mount that installs it, so relying on
@@ -302,6 +333,8 @@ _SCREENS = [
     pytest.param(
         "lilbee.cli.tui.widgets.slash_command_catalog", "SlashCommandCatalog", id="slash-catalog"
     ),
+    pytest.param("lilbee.cli.tui.screens.model_info", "ModelInfoModal", id="model-info"),
+    pytest.param("lilbee.cli.tui.screens.model_picker", "ModelPickerModal", id="model-picker"),
 ]
 
 
@@ -363,7 +396,7 @@ class TestNoPartialBlockBorders:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 cls = getattr(importlib.import_module(module), cls_name)
-                app.push_screen(cls(**_DIALOG_KWARGS.get(cls_name, {})))
+                app.push_screen(cls(**_screen_kwargs(cls_name)))
                 for _ in range(4):
                     await pilot.pause()
 
