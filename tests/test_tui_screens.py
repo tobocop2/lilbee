@@ -5152,7 +5152,7 @@ async def test_catalog_search_scoped_to_active_task():
             screen._active_tab_id_cache = "embed"
             with patch.object(screen, "_fetch_hf_search") as fetch:
                 screen._trigger_remote_search("llama")
-                fetch.assert_called_once_with("llama", ModelTask.EMBEDDING)
+                fetch.assert_called_once_with("llama", ModelTask.EMBEDDING, 0)
 
 
 async def test_catalog_search_skips_non_task_tab():
@@ -5199,6 +5199,116 @@ async def test_catalog_action_load_more_triggers_fetch():
             with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen.action_load_more()
                 assert fetch.called
+
+
+class TestCatalogSearchFetchesAWholeResultSet:
+    """A search is a query, not a browse page.
+
+    The rendering fix put every match that reached the screen on screen; these
+    pin how many ever reach it. Fixtures that preload ``_hf_models`` cannot see
+    this -- they supply the rows the fetch caps -- so each of these drives the
+    fetch itself.
+    """
+
+    @staticmethod
+    async def _screen(app, pilot, tab="chat"):
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._active_tab_id_cache = tab
+        screen._activation_settled = True
+        screen._refresh_view = lambda: None  # type: ignore[method-assign]
+        screen._loading_more = False
+        screen._search_in_flight = False
+        return screen
+
+    async def test_a_search_asks_for_more_than_one_browse_page(self):
+        """The query goes out at the search limit, not the browse page size.
+
+        At the browse page size a term matching hundreds of repos returned four
+        rows, so the grid showed the bundled picks and little else.
+        """
+        from lilbee.catalog.models import CatalogResult
+        from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, _HF_SEARCH_LIMIT
+
+        assert _HF_SEARCH_LIMIT > _HF_PAGE_SIZE
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                with patch(
+                    "lilbee.cli.tui.screens.catalog.get_catalog",
+                    return_value=CatalogResult(
+                        total=0, limit=_HF_SEARCH_LIMIT, offset=0, models=[], has_more=True
+                    ),
+                ) as get:
+                    screen._fetch_hf_search("qwen3", ModelTask.CHAT, 0)
+                    await screen.workers.wait_for_complete()
+                assert get.call_args.kwargs["limit"] == _HF_SEARCH_LIMIT
+                assert get.call_args.kwargs["search"] == "qwen3"
+
+    async def test_paging_a_search_advances_the_search_not_the_browse_offset(self):
+        """Scrolling a filtered grid must page the query the user typed.
+
+        Paging the browse offset fetched models the filter then discarded, so
+        "keep scrolling for more" added nothing to a search.
+        """
+        from lilbee.cli.tui.screens.catalog import _HF_SEARCH_LIMIT
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+                screen._searched_query = "qwen3"
+                screen._search_has_more = True
+                screen._hf_has_more_by_task[ModelTask.CHAT] = True
+                browse_offset = screen._hf_offset_by_task[ModelTask.CHAT]
+
+                with (
+                    patch.object(screen, "_fetch_hf_search") as search,
+                    patch.object(screen, "_fetch_more_hf_for_task") as browse,
+                ):
+                    screen._load_more()
+
+                search.assert_called_once_with("qwen3", ModelTask.CHAT, _HF_SEARCH_LIMIT)
+                assert not browse.called
+                assert screen._hf_offset_by_task[ModelTask.CHAT] == browse_offset
+
+    async def test_a_new_term_restarts_its_result_set(self):
+        """Editing the term resets the offset; otherwise page 2 of the old
+        query is appended as though it matched the new one."""
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen3"
+                screen._search_offset = 100
+                screen._search_has_more = True
+
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._trigger_remote_search("llama")
+
+                fetch.assert_called_once_with("llama", ModelTask.CHAT, 0)
+                assert screen._search_offset == 0
+
+    async def test_the_footer_hint_tracks_the_search_not_the_browse_page(self):
+        """"More available" under a filter must describe the result set on
+        screen, not the unfiltered page sitting behind it."""
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._hf_has_more_by_task[ModelTask.CHAT] = True
+                screen._get_search_text = lambda: "qwen3"  # type: ignore[method-assign]
+
+                screen._search_has_more = False
+                assert screen._active_task_has_more() is False
+                screen._search_has_more = True
+                assert screen._active_task_has_more() is True
 
 
 async def test_catalog_keyboard_nav_near_end_triggers_load_more():

@@ -90,12 +90,17 @@ from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
 
-# Models fetched per task per page. We make one /api/models call per
-# task (chat / embedding / vision / rerank), so the user-visible page
-# size is _HF_PAGE_SIZE * 4. Small pages keep each HF round-trip well
-# under a second on a typical connection and keep the freshly-rendered
-# row count low so layout reflow stays cheap.
-_HF_PAGE_SIZE = 4
+# Models fetched per page for the active task; only that task is fetched,
+# so this is the page size the user actually sees. A page has to outrun the
+# viewport -- roughly five cards a row and four rows on a normal terminal --
+# or the grid mounts a part-filled screen under a "keep scrolling" hint and
+# reads as empty. One /api/models call costs the same round trip at 4 as at
+# 24, so the old value bought nothing and cost a screen.
+_HF_PAGE_SIZE = 24
+# A search is a query, not a browse page: it is judged on its first screen,
+# and the matches are spread across the hub rather than sitting at an offset.
+# Fetching wide once beats paging a filter the user is already narrowing.
+_HF_SEARCH_LIMIT = 50
 _HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
@@ -313,6 +318,12 @@ class CatalogScreen(Screen[None]):
         self._grid_cache_keys: dict[str, _GridCacheKey] = {}
         self._list_cache_keys: dict[str, tuple] = {}
         self._search_in_flight: bool = False
+        # Remote-search pagination, keyed on the query the offset belongs to.
+        # Separate from the per-task browse offsets: paging a search has to
+        # advance the search, not fall through to the unfiltered next page.
+        self._searched_query: str = ""
+        self._search_offset: int = 0
+        self._search_has_more: bool = False
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
         # invalidate even when collection lengths happen to coincide.
@@ -624,11 +635,15 @@ class CatalogScreen(Screen[None]):
     def _active_task_has_more(self) -> bool:
         """True iff the active task tab has another HF page available.
 
-        Discover and Library tabs return False; neither paginates.
+        Discover and Library tabs return False; neither paginates. Under an
+        active search the answer is the search's own flag, so the footer hint
+        describes the result set on screen rather than the browse page behind it.
         """
         task = self._active_task()
         if task is None:
             return False
+        if self._get_search_text():
+            return self._search_has_more
         return self._hf_has_more_by_task.get(task, False)
 
     def _hf_fetched_any(self) -> bool:
@@ -754,12 +769,18 @@ class CatalogScreen(Screen[None]):
         active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
         if active_task is None:
             return
+        # A new term starts its own result set; only _load_more advances the
+        # offset, and only for the query it was fetched under.
+        if query != self._searched_query:
+            self._searched_query = query
+            self._search_offset = 0
+            self._search_has_more = False
         self._search_in_flight = True
         self._update_sort_label()
         self._sync_loading_spinner()
         # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
-        self._fetch_hf_search(query, active_task)
+        self._fetch_hf_search(query, active_task, self._search_offset)
 
     @on(Click, ".search-hf-cta")
     def _on_search_hf_cta_clicked(self) -> None:
@@ -867,16 +888,22 @@ class CatalogScreen(Screen[None]):
         return self._fetch_hf_page_for_task(task)
 
     @work(thread=True, name=_WORKER_FETCH_SEARCH, exit_on_error=False)
-    def _fetch_hf_search(self, query: str, task: ModelTask) -> list[CatalogModel]:
-        """Fetch HF models matching *query* for *task* only (worker thread)."""
+    def _fetch_hf_search(self, query: str, task: ModelTask, offset: int) -> list[CatalogModel]:
+        """Fetch one page of HF models matching *query* for *task* (worker thread).
+
+        Writes ``_search_has_more`` from the worker thread the same way
+        ``_fetch_hf_page_for_task`` writes the per-task flag: the assignment is
+        GIL-atomic and the main thread only reads it.
+        """
         existing_repos = {m.hf_repo for m in self._hf_models}
         result = get_catalog(
             task=task,
             featured=False,
             search=query,
-            limit=_HF_PAGE_SIZE,
-            offset=0,
+            limit=_HF_SEARCH_LIMIT,
+            offset=offset,
         )
+        self._search_has_more = result.has_more
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -1944,9 +1971,14 @@ class CatalogScreen(Screen[None]):
 
         Pagination is per-task: only the active tab's offset advances, only
         the active tab's task is fetched. Discover and Library short-circuit
-        because they have no associated task and can't paginate.
+        because they have no associated task and can't paginate. While a
+        search is active the search's own offset advances instead; paging the
+        browse offset there would fetch models the filter then discards.
         """
         if self._loading_more:
+            return
+        if self._get_search_text():
+            self._load_more_search_results()
             return
         task = self._active_task()
         if task is None or not self._hf_has_more_by_task.get(task, False):
@@ -1955,6 +1987,26 @@ class CatalogScreen(Screen[None]):
         self._sync_loading_spinner()
         self._hf_offset_by_task[task] += _HF_PAGE_SIZE
         self._fetch_more_hf_for_task(task)
+
+    def _load_more_search_results(self) -> None:
+        """Advance the active search by one page.
+
+        Guarded on the query the offset was fetched under: a term edited while
+        a page was in flight resets the offset in ``_trigger_remote_search``,
+        and paging the old one would append matches for a term nobody typed.
+        """
+        query = self._get_search_text()
+        if self._search_in_flight or not self._search_has_more:
+            return
+        if query != self._searched_query:
+            return
+        active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
+        if active_task is None:
+            return
+        self._search_offset += _HF_SEARCH_LIMIT
+        self._search_in_flight = True
+        self._sync_loading_spinner()
+        self._fetch_hf_search(query, active_task, self._search_offset)
 
     def action_load_more(self) -> None:
         """Keyboard trigger (``n``) so users can page without scrolling."""
