@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console, RenderableType
 from rich.table import Table
 
-from lilbee.app.ingest import register_sources
+from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
@@ -133,15 +133,37 @@ def render_status(con: Console) -> None:
         con.print(renderable)
 
 
-def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
-    """Register *paths* as source roots. Returns the labels registered."""
+NAME_TAKEN_WARNING = "The name {name} is taken by another source (use --force to overwrite)."
+"""Said when a label belongs to a different source, the one case --force fixes.
+
+The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``);
+the two surfaces do not share a string because ``cli.tui.messages`` pulls the
+fleet and wiki import chains that a plain CLI command has no reason to pay for.
+"""
+
+
+def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:
+    """Register *paths* as source roots, reporting what happened to each."""
     result = register_sources(paths, force=force)
     for name in result.skipped:
-        con.print(
-            f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {name} already exists in knowledge base "
-            f"(use --force to overwrite)"
-        )
-    return result.registered
+        warning = NAME_TAKEN_WARNING.format(name=name)
+        con.print(f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {warning}")
+    return result
+
+
+def describe_registration(result: RegisterResult) -> str:
+    """One line saying what ``add`` did with the paths it was given.
+
+    A bare count reads as a failure when the answer is "already tracked, and
+    the sync below covers it" -- which is what re-adding a source lilbee
+    already knows about does.
+    """
+    parts = []
+    if result.registered:
+        parts.append(f"Registered {len(result.registered)} source(s)")
+    if result.tracked:
+        parts.append(f"already tracked: {', '.join(result.tracked)}")
+    return ", ".join(parts) if parts else "Registered 0 source(s)"
 
 
 def add_paths(
@@ -160,11 +182,11 @@ def add_paths(
     overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
     runner); it defaults to a plain ``asyncio.run(sync())``.
     """
-    registered = register_paths(paths, con, force=force)
+    summary = describe_registration(register_paths(paths, con, force=force))
     if chat_mode:
-        print(f"Registered {len(registered)} source(s)")
+        print(summary)
     else:
-        con.print(f"[{theme.MUTED}]Registered {len(registered)} source(s)[/{theme.MUTED}]")
+        con.print(f"[{theme.MUTED}]{summary}[/{theme.MUTED}]")
 
     if background:
         from lilbee.cli.sync import run_sync_background

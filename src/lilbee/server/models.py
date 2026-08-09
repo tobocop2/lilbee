@@ -407,6 +407,13 @@ class AddSummary(BaseModel):
     copied: list[str]
     skipped: list[str]
     errors: list[str]
+    tracked: list[str] = []
+    """Named sources the knowledge base already tracks, so nothing was registered.
+
+    Distinct from ``skipped``, which is what could not be registered because the
+    name is held by a different source. These need no action from the caller:
+    the sync in the same request covers them.
+    """
     sync: SyncSummary | None = None
     already_ingesting: list[str] = []
     """Sources another ingest held a lock on, so this run never attempted them.

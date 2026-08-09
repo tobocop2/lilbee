@@ -34,9 +34,9 @@ class TestRegisterPaths:
         (src / "doc.txt").write_text("content")
         con = Console()
 
-        registered = register_paths([src], con)
+        result = register_paths([src], con)
 
-        assert registered == ["corpus"]
+        assert result.registered == ["corpus"]
         assert cfg.linked_roots == {"corpus": str(src.resolve())}
 
     def test_prints_warning_for_skipped(self, tmp_path):
@@ -52,8 +52,23 @@ class TestRegisterPaths:
         con = Console(quiet=True)
 
         with mock.patch.object(con, "print") as mock_print:
-            registered = register_paths([two], con)
+            result = register_paths([two], con)
 
-        assert registered == []
+        assert result.registered == []
+        assert result.skipped == ["corpus"]
         mock_print.assert_called_once()
-        assert "already exists" in str(mock_print.call_args)
+        assert "is taken by another source" in str(mock_print.call_args)
+
+    def test_re_adding_the_same_path_is_tracked_not_warned(self, tmp_path):
+        """--force would change nothing here, so the collision warning must not fire."""
+        src = tmp_path / "corpus"
+        src.mkdir()
+        con = Console(quiet=True)
+        register_paths([src], con)
+
+        with mock.patch.object(con, "print") as mock_print:
+            result = register_paths([src], con)
+
+        assert result.tracked == ["corpus"]
+        assert result.skipped == []
+        mock_print.assert_not_called()

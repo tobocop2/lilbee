@@ -7863,7 +7863,9 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
+            from lilbee.app.ingest import RegisterResult
+
+            mock_register.return_value = RegisterResult(registered=[test_file.name])
 
             def _run_worker() -> None:
                 app.screen._do_add([test_file], reporter)
@@ -7918,7 +7920,9 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
             patch("lilbee.app.ingest.register_sources") as mock_register,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
-            mock_register.return_value = SimpleNamespace(registered=[test_file.name], skipped=[])
+            from lilbee.app.ingest import RegisterResult
+
+            mock_register.return_value = RegisterResult(registered=[test_file.name])
             thread = threading.Thread(target=_run_worker)
             thread.start()
             thread.join(timeout=5)

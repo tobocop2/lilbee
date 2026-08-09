@@ -21,6 +21,15 @@ class RegisterResult:
 
     registered: list[str] = field(default_factory=list)  # labels newly registered
     skipped: list[str] = field(default_factory=list)
+    tracked: list[str] = field(default_factory=list)
+    """Named sources the knowledge base already tracks, so nothing was registered.
+
+    Either the path already lives under ``documents_dir`` or this exact source is
+    already registered under that label. Split from ``skipped`` because there is
+    nothing wrong to report and ``--force`` would change nothing: the sync that
+    follows covers them. ``skipped`` is only what could not be registered -- a
+    label held by a different source, or an overlap that would double-index.
+    """
 
 
 def _resolve_label(
@@ -112,11 +121,11 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         for p in paths:
             src = p.resolve()
             if src == docs_resolved or docs_resolved in src.parents:
-                result.skipped.append(p.name)  # already owned by the knowledge base
+                result.tracked.append(p.name)  # already owned by the knowledge base
                 continue
             already = by_target.get(str(src))
             if already is not None:
-                result.skipped.append(already)  # this exact source is already registered
+                result.tracked.append(already)  # this exact source is already registered
                 continue
             if _overlaps_existing(src, docs_resolved, roots):
                 result.skipped.append(p.name)  # nests under/over another root; would double-index
@@ -131,7 +140,58 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         config.linked_roots = roots  # refresh the in-process view (picks up merges)
         return roots, result
 
-    return settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    _unmark_sources_under(paths)
+    return result
+
+
+def _unmark_sources_under(paths: list[Path]) -> None:
+    """Drop the skip markers and reasons for every source *paths* covers.
+
+    A marker exists to stop *discovery* from resurrecting a source the user
+    removed, or from re-paying the extract cost on a file that yielded nothing.
+    Naming the path outranks it: ``add`` is the user asking for that source
+    back, so the marker goes and the sync that follows ingests the file again.
+    Without this a removal would be permanent, undoable only by
+    ``retry-skipped`` or ``rebuild``, neither of which the user has any reason
+    to reach for after typing the path they want.
+
+    Runs after the registry update so a root this call registered resolves.
+    """
+    from lilbee.data.ingest.skip_marker import (
+        load_skip_markers,
+        load_skip_reasons,
+        write_skip_markers,
+        write_skip_reasons,
+    )
+
+    config = active_config()
+    markers = load_skip_markers(config.data_root)
+    covered = _markers_covering(markers, paths)
+    if not covered:
+        return
+    write_skip_markers(config.data_root, {k: v for k, v in markers.items() if k not in covered})
+    reasons = load_skip_reasons(config.data_root)
+    write_skip_reasons(config.data_root, {k: v for k, v in reasons.items() if k not in covered})
+
+
+def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
+    """Marker keys whose file is one of *paths* or lives beneath one.
+
+    Each key is resolved back to the file it tracks -- the same mapping
+    discovery keyed it by -- so an owned ``documents_dir`` entry, a file under a
+    registered root, and a single-file root are all matched by the one rule
+    instead of three shape-specific ones.
+    """
+    from lilbee.data.ingest.discovery import resolve_source_path
+
+    named = [p.resolve() for p in paths]
+    covered = set()
+    for name in markers:
+        tracked = resolve_source_path(name).resolve(strict=False)
+        if any(tracked == path or path in tracked.parents for path in named):
+            covered.add(name)
+    return covered
 
 
 _REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
