@@ -443,7 +443,7 @@ class WikiCitationRecord(BaseModel):
 
 
 class WikiEntityCandidateResponse(BaseModel):
-    """One NER entity candidate returned by a build dry run."""
+    """One NER entity candidate, with the evidence a page would be built from."""
 
     slug: str
     label: str = ""

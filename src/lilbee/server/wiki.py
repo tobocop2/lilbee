@@ -63,6 +63,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
+from lilbee.wiki.stubs import WikiStub, load_stub_index, ungenerated_stubs
 
 
 def _wiki_root() -> Path:
@@ -265,6 +266,37 @@ async def wiki_index_route() -> WikiIndexResult:
 
     stubs = await asyncio.to_thread(refresh_stub_index, svc_mod.get_services().store)
     return WikiIndexResult(entries=len(stubs))
+
+
+@get("/api/wiki/stubs")
+async def wiki_stubs_route() -> list[WikiEntityCandidateResponse]:
+    """List the pages the corpus names that nothing has written yet.
+
+    The other half of the browse tree: ``GET /api/wiki`` walks written pages,
+    this lists the ones a client can ask for. Entries whose page now exists are
+    left out, so a client never offers to regenerate a live page. Costs no LLM
+    call, and ``slug`` is what ``POST /api/wiki/generate/{slug}`` takes.
+    """
+    _require_wiki()
+    # Reading the index stats every candidate's page and draft; offload like
+    # the page listing.
+    stubs = await asyncio.to_thread(_ungenerated_stubs)
+    return [
+        WikiEntityCandidateResponse(
+            slug=stub.slug,
+            label=stub.label,
+            kind=stub.kind,
+            type_hint=stub.type_hint,
+            mentions=stub.mentions,
+            sources=list(stub.sources),
+        )
+        for stub in stubs
+    ]
+
+
+def _ungenerated_stubs() -> list[WikiStub]:
+    """The indexed subjects with no page yet, in slug order."""
+    return ungenerated_stubs(load_stub_index(), _wiki_root())
 
 
 @post("/api/wiki/generate/{slug:path}")
