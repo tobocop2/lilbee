@@ -110,12 +110,18 @@ async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     return await handlers.delete_documents(data.names)
 
 
-@get("/api/export")
+@get("/api/export", media_type="application/octet-stream")
 async def export_route(
     fmt: Annotated[str, QueryParameter(name="format")] = "",
     source: FromQuery[str] = "",
 ) -> Response[bytes]:
-    """Download the per-page text dataset as a file (parquet by default)."""
+    """Download the per-page text dataset as a file (parquet by default).
+
+    The media type is declared on the decorator as well as on the returned
+    Response for the same reason the streaming routes declare theirs: litestar
+    documents the content type from the decorator, so without it the schema
+    promises JSON and a generated client parses a parquet file as text.
+    """
     from lilbee.app.dataset import DatasetError, export_to_bytes
 
     try:

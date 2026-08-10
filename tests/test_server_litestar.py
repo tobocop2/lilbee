@@ -1183,6 +1183,17 @@ class TestOpenAPISchema:
         ]
         assert streamed == ["text/event-stream"]
 
+    def test_export_publishes_the_octet_stream_media_type(self, client):
+        """/api/export answers with a parquet or jsonl body. It set its media
+        type on the returned Response only, so the schema promised JSON and a
+        generated client would have parsed the bytes as text. The error arm
+        stays JSON, which is what the exception handler is for."""
+        responses = client.get("/schema/openapi.json").json()["paths"]["/api/export"]["get"][
+            "responses"
+        ]
+        assert set(responses["200"]["content"]) == {"application/octet-stream"}
+        assert set(responses["400"]["content"]) == {"application/json"}
+
     def test_schema_serializes_to_json(self):
         """A ResponseSpec generates examples whatever create_examples says, and
         polyfactory fills them with live pydantic instances, which stdlib json
