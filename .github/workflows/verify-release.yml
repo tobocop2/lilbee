@@ -147,6 +147,38 @@ jobs:
             sleep 60
           done
 
+  # The contract clients pin. Checked here because the schema is one small file
+  # from one small job: a dropped artifact, or a schema that stopped naming its
+  # SSE routes, would otherwise ship silently.
+  verify-openapi:
+    needs: [resolve]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: The published schema parses and declares its streaming routes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'openapi.json' --dir schema/
+          python3 - <<'PY'
+          import json, pathlib, sys
+          schema = json.loads(pathlib.Path("schema/openapi.json").read_text())
+          streamed = {
+              path
+              for path, ops in schema["paths"].items()
+              for op in ops.values()
+              for response in op.get("responses", {}).values()
+              if "text/event-stream" in (response.get("content") or {})
+          }
+          missing = {"/api/ask/stream", "/api/chat/stream", "/api/sync"} - streamed
+          if missing:
+              sys.exit(f"published schema documents these as JSON, not SSE: {sorted(missing)}")
+          print(f"{len(schema['paths'])} paths, {len(streamed)} streaming")
+          PY
+
   verify-executables:
     needs: [resolve]
     timeout-minutes: 45

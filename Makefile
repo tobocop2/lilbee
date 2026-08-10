@@ -97,12 +97,7 @@ engine-archs:  ## Regenerate the supported-architecture list from the pinned eng
 	uv run python tools/gen_supported_archs.py
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
-	uv run python -c "\
-	from lilbee.server.app import create_app; \
-	import json; \
-	app = create_app(); \
-	schema = app.openapi_schema.to_schema(); \
-	open('openapi.json', 'w').write(json.dumps(schema, indent=2))"
+	uv run python tools/gen_openapi.py openapi.json
 	npx --yes @redocly/cli build-docs openapi.json -o site/api/index.html
 	rm -f openapi.json
 
