@@ -14,7 +14,9 @@ from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.server import auth as _auth_mod
+from lilbee.wiki.entity_extractor import EntityKind
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
+from lilbee.wiki.stubs import WikiStub, save_stub_index
 
 
 def _h() -> dict[str, str]:
@@ -75,6 +77,25 @@ def _on_the_event_loop() -> bool:
     except RuntimeError:
         return False
     return True
+
+
+def _stub(
+    slug: str, label: str, mentions: tuple[tuple[str, int], ...] = (("cars.txt", 2),)
+) -> WikiStub:
+    """One indexed entity, with the per-source evidence a page would cite."""
+    return WikiStub(
+        slug=slug,
+        label=label,
+        kind=EntityKind.ENTITY,
+        type_hint="ORG",
+        source_mentions=mentions,
+        chunk_refs=tuple((source, 0) for source, _ in mentions),
+    )
+
+
+def _save_stubs(*stubs: WikiStub) -> None:
+    """Write the stub index the browse routes read."""
+    save_stub_index({stub.slug: stub for stub in stubs})
 
 
 def _make_wiki_page(wiki_root: Path, subdir: str, name: str, content: str = "") -> Path:
@@ -147,6 +168,11 @@ class TestWikiDisabled:
     async def test_prune_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_stubs_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/stubs", headers=_h())
         assert resp.status_code == 404
 
     async def test_wipe_still_answers(self, monkeypatch: pytest.MonkeyPatch):
@@ -515,6 +541,64 @@ class TestWikiEnabled:
         monkeypatch.setattr(stubs_mod, "refresh_stub_index", fake_refresh)
         async with AsyncTestClient(_create_app()) as client:
             await client.post("/api/wiki/index", headers=_h())
+        assert on_loop == [False]
+
+    async def test_stubs_list_the_pages_the_corpus_could_have(self, isolated_env: Path):
+        _save_stubs(_stub("ford", "Ford", mentions=(("cars.txt", 4), ("usa.txt", 2))))
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/stubs", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {
+                "slug": "ford",
+                "label": "Ford",
+                "kind": "entity",
+                "type_hint": "ORG",
+                "mentions": 6,
+                "sources": ["cars.txt", "usa.txt"],
+            }
+        ]
+
+    async def test_stubs_leave_out_subjects_that_already_have_a_page(self, isolated_env: Path):
+        """Listing a written page as unwritten invites regenerating it, for
+        another LLM call, over a page that is already there."""
+        _save_stubs(_stub("ford", "Ford"), _stub("gm", "GM"))
+        _make_wiki_page(isolated_env / "wiki", "entities", "ford")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/stubs", headers=_h())
+        assert [row["slug"] for row in resp.json()] == ["gm"]
+
+    async def test_stubs_are_empty_without_an_index(self):
+        """A corpus nobody has indexed yet browses to nothing, not an error."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/stubs", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_the_page_catch_all_does_not_swallow_the_stubs_route(self, isolated_env: Path):
+        """``/api/wiki/{slug:path}`` is greedy, so a page named stubs.md would
+        answer this path if the literal route lost."""
+        (isolated_env / "wiki").mkdir(parents=True, exist_ok=True)
+        (isolated_env / "wiki" / "stubs.md").write_text("# Not the index\n", encoding="utf-8")
+        _save_stubs(_stub("ford", "Ford"))
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/stubs", headers=_h())
+        assert resp.status_code == 200
+        assert [row["slug"] for row in resp.json()] == ["ford"]
+
+    async def test_stubs_run_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """Reading the index stats every candidate's page and draft."""
+        from lilbee.server import wiki as wiki_route_mod
+
+        on_loop: list[bool] = []
+
+        def fake_load(config=None):
+            on_loop.append(_on_the_event_loop())
+            return {}
+
+        monkeypatch.setattr(wiki_route_mod, "load_stub_index", fake_load)
+        async with AsyncTestClient(_create_app()) as client:
+            await client.get("/api/wiki/stubs", headers=_h())
         assert on_loop == [False]
 
     async def test_generate_writes_one_page(self, monkeypatch: pytest.MonkeyPatch):

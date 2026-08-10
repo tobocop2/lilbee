@@ -25,7 +25,12 @@ from conftest import (
     serve_lilbee_with,
 )
 
-_WIKI_READ_PATHS = ("/api/wiki", "/api/wiki/drafts", "/api/wiki/this-page-does-not-exist")
+_WIKI_READ_PATHS = (
+    "/api/wiki",
+    "/api/wiki/drafts",
+    "/api/wiki/stubs",
+    "/api/wiki/this-page-does-not-exist",
+)
 
 
 class WikiServer(NamedTuple):
@@ -44,7 +49,7 @@ def wiki_server(lane: Lane, lilbee_data: Path) -> Iterator[WikiServer]:
 
 
 @pytest.mark.http
-@pytest.mark.parametrize("path", ["/api/wiki", "/api/wiki/drafts"])
+@pytest.mark.parametrize("path", ["/api/wiki", "/api/wiki/drafts", "/api/wiki/stubs"])
 def test_wiki_reads_on_empty_store_return_empty_lists(wiki_server: WikiServer, path: str) -> None:
     """An enabled wiki with no generated pages lists nothing, and says so with a 200."""
     response = httpx.get(
