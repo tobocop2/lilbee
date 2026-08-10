@@ -678,7 +678,7 @@ class TestWikiEnabled:
         assert payload["stats"]["citation_verify_rate"] == 2 / 3
 
     async def test_build_dry_run_returns_candidates_as_json(self, monkeypatch):
-        """dry_run answers with the entity candidates, not an SSE stream."""
+        """dry_run answers 200 with the entity candidates, not a 201 SSE stream."""
 
         def build_boom(*a, **kw):
             raise AssertionError("dry_run must not build")
@@ -699,7 +699,7 @@ class TestWikiEnabled:
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/build?dry_run=true", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         payload = resp.json()
         assert payload["dry_run"] is True
         assert payload["count"] == 1

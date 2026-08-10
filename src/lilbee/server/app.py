@@ -9,8 +9,10 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
-from litestar import Litestar
+from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
+from litestar.exceptions import HTTPException
+from litestar.exceptions.responses import create_exception_response
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
@@ -232,6 +234,17 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
             svc.provider.shutdown()
 
 
+def _json_error_response(request: Request, exc: Exception) -> Response:
+    """Answer errors as JSON even on a route whose success media type is SSE.
+
+    Litestar builds an error response with the route handler's media type, so a
+    streaming route would label a JSON error body text/event-stream.
+    """
+    response = create_exception_response(request, exc)
+    response.media_type = MediaType.JSON
+    return response
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -244,6 +257,7 @@ def create_app() -> Litestar:
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
         middleware=[DefineMiddleware(AuthMiddleware)],
+        exception_handlers={HTTPException: _json_error_response},
         route_handlers=[
             mcp_route,
             health_route,

@@ -16,13 +16,14 @@ from litestar.exceptions import ClientException, NotFoundException
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import FromPath, FromQuery
 from litestar.response import Stream
-from litestar.status_codes import HTTP_409_CONFLICT
+from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.data.store import Store
 from lilbee.server import handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     DraftInfoResponse,
     WikiBuildDryRunResult,
@@ -312,9 +313,12 @@ async def wiki_wipe_route() -> WikiWipeResult:
 
 @post(
     "/api/wiki/build",
+    media_type=SSE_MEDIA_TYPE,
     responses={
-        201: ResponseSpec(
+        HTTP_200_OK: ResponseSpec(
             data_container=WikiBuildDryRunResult,
+            media_type=MediaType.JSON,
+            generate_examples=False,
             description="Entity candidates a build would cover, when dry_run=true.",
         )
     },
@@ -325,21 +329,20 @@ async def wiki_build_route(
     """Build the concept and entity wiki across all ingested sources.
 
     A build issues per-source LLM calls and embeddings and can run for a long
-    time, so the response is an SSE stream: wiki_phase and wiki_page events
-    while it runs, then a done event carrying the summary. The work runs in a
-    worker thread and holds the wiki build mutex, so a second request streams
-    its own progress only once the first run finishes.
+    time, so the response is 201 with an SSE stream: wiki_phase and wiki_page
+    events while it runs, then a done event carrying the summary. The work runs
+    in a worker thread and holds the wiki build mutex, so a second request
+    streams its own progress only once the first run finishes.
 
-    ``dry_run=true`` answers with plain JSON instead: the NER entity candidates
-    a build would cover, with no LLM call made. The dry run returns a Response
-    carrying its own media type, and the annotation says so: a union of Stream
-    and a bare model resolves the whole route to JSON, which breaks every SSE
-    client on the streaming arm.
+    ``dry_run=true`` creates nothing, so it answers 200 with plain JSON: the
+    NER entity candidates a build would cover, with no LLM call made. The two
+    arms carry different content types, so each is declared under its own
+    status code.
     """
     _require_wiki()
     if dry_run:
         return await _build_dry_run()
-    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
+    return Stream(handlers.wiki_build_stream(), media_type=SSE_MEDIA_TYPE)
 
 
 async def _build_dry_run() -> Response[WikiBuildDryRunResult]:
@@ -352,20 +355,20 @@ async def _build_dry_run() -> Response[WikiBuildDryRunResult]:
         count=len(rows),
         note=DRY_RUN_CONCEPT_NOTE,
     )
-    return Response(result, media_type=MediaType.JSON)
+    return Response(result, media_type=MediaType.JSON, status_code=HTTP_200_OK)
 
 
-@patch("/api/wiki/update")
+@patch("/api/wiki/update", media_type=SSE_MEDIA_TYPE)
 async def wiki_update_route() -> Stream:
     """Refresh the concept and entity wiki after an ingest.
 
     A full rebuild, streamed like /api/wiki/build.
     """
     _require_wiki()
-    return Stream(handlers.wiki_build_stream(), media_type="text/event-stream")
+    return Stream(handlers.wiki_build_stream(), media_type=SSE_MEDIA_TYPE)
 
 
-@post("/api/wiki/synthesize")
+@post("/api/wiki/synthesize", media_type=SSE_MEDIA_TYPE)
 async def wiki_synthesize_route() -> Stream:
     """Generate synthesis pages for concept clusters spanning 3+ sources.
 
@@ -373,7 +376,7 @@ async def wiki_synthesize_route() -> Stream:
     can't race a build over the same on-disk wiki tree.
     """
     _require_wiki()
-    return Stream(handlers.wiki_synthesize_stream(), media_type="text/event-stream")
+    return Stream(handlers.wiki_synthesize_stream(), media_type=SSE_MEDIA_TYPE)
 
 
 @get("/api/wiki/status")

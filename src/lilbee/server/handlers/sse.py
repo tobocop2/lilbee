@@ -26,6 +26,10 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 
 log = logging.getLogger(__name__)
 
+# Litestar documents a response's content type from the route decorator, so a
+# streaming route passes this to both the decorator and the Stream it returns.
+SSE_MEDIA_TYPE = "text/event-stream"
+
 # Machine-readable ``code`` on an SSE error event. Load-time failures use
 # SseErrorCode; failed provider calls reuse ProviderErrorKind directly; the
 # RAG chat stream reuses the wire-layer CompletionsErrorCode for typed
