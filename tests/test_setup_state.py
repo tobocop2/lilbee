@@ -1,4 +1,4 @@
-"""Tests for the two setup questions: is this lilbee new, and can it serve chat."""
+"""Tests for per-role readiness: can each model role serve right now."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.setup_state import is_fresh_install, models_ready
+from lilbee.app.setup_state import chat_ready, embedding_ready, is_fresh_install
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat
 
@@ -38,51 +38,69 @@ def test_an_existing_lancedb_dir_is_not_a_fresh_install(isolated_data_dir):
     assert is_fresh_install() is False
 
 
-def test_models_ready_ignores_a_fresh_data_dir(isolated_data_dir):
-    """A fresh lilbee whose models resolve can still chat.
+def test_empty_refs_are_not_ready_and_say_nothing(isolated_data_dir, caplog):
+    """Unconfigured roles are a state, not an error: False with no log noise."""
+    import logging
 
-    ``models_ready`` is what keeps the user out of the chat screen, so it must
-    answer only the question chat depends on. Folding the fresh-data-dir check
-    into it would lock chat behind an ingest that cannot be run from anywhere
-    but chat. The wizard still runs on a fresh dir -- that is is_fresh_install.
+    cfg.chat_model = ""
+    cfg.embedding_model = ""
+    with caplog.at_level(logging.DEBUG):
+        assert chat_ready() is False
+        assert embedding_ready() is False
+    assert not caplog.records
+
+
+def test_roles_are_independent(isolated_data_dir):
+    """A resolvable chat ref makes chat ready while the embedder stays unconfigured."""
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = ""
+    with mock.patch(
+        "lilbee.providers.engine_params.resolve_model_path",
+        return_value="/some/resolved/path",
+    ):
+        assert chat_ready() is True
+        assert embedding_ready() is False
+
+
+def test_readiness_ignores_a_fresh_data_dir(isolated_data_dir):
+    """A fresh lilbee whose chat model resolves can still chat.
+
+    Folding the fresh-data-dir check into readiness would lock chat behind an
+    ingest that cannot be run from anywhere but chat.
     """
     assert not cfg.lancedb_dir.exists()
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
-    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
-        assert models_ready() is True
-        assert is_fresh_install() is True
+        assert chat_ready() is True
 
 
-def test_models_ready_when_the_native_refs_resolve(isolated_data_dir):
-    """Resolvable native chat and embedding refs mean chat has an engine."""
+def test_embedding_ready_when_the_native_ref_resolves(isolated_data_dir):
+    """A resolvable native embedding ref means search has an engine."""
     cfg.lancedb_dir.mkdir(parents=True)
-    # Explicit native refs so the check is deterministic regardless of the
+    # Explicit native ref so the check is deterministic regardless of the
     # developer's loaded config.toml (which may hold remote refs).
-    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
     cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
-        assert models_ready() is True
+        assert embedding_ready() is True
 
 
-def test_models_not_ready_when_a_native_ref_is_missing(isolated_data_dir):
-    """An unresolvable native chat/embedding ref leaves chat with no engine."""
+def test_not_ready_when_the_native_ref_is_missing(isolated_data_dir):
+    """An unresolvable native ref leaves the role with no engine."""
     from lilbee.providers.base import ProviderError
 
     cfg.lancedb_dir.mkdir(parents=True)
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
-    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
         "lilbee.providers.engine_params.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
     ):
-        assert models_ready() is False
+        assert chat_ready() is False
 
 
 def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data_dir):
@@ -96,7 +114,6 @@ def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data
 
     cfg.lancedb_dir.mkdir(parents=True)
     cfg.chat_model = "ollama/qwen3:0.6b"
-    cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
     with (
         mock.patch(
             "lilbee.modelhub.model_manager.validate_persisted_model",
@@ -104,27 +121,26 @@ def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data
         ),
         mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve,
     ):
-        assert models_ready() is True
+        assert chat_ready() is True
         resolve.assert_not_called()
 
 
-def test_models_not_ready_when_a_remote_ref_is_unusable(isolated_data_dir):
-    """An unusable remote ref (litellm missing, server down, no key) opens the wizard.
+def test_not_ready_when_a_remote_ref_is_unusable(isolated_data_dir):
+    """An unusable remote ref (litellm missing, server down, no key) is not ready.
 
     Regression: this used to be skipped on the assumption that remote refs
     always resolve at call time, leaving a user with an unservable
-    ``ollama/`` model stuck in a broken app instead of setup.
+    ``ollama/`` model stuck in a broken app.
     """
     from lilbee.modelhub.model_manager import ValidationResult
 
     cfg.lancedb_dir.mkdir(parents=True)
-    cfg.chat_model = "ollama/qwen3:0.6b"
     cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
     with mock.patch(
         "lilbee.modelhub.model_manager.validate_persisted_model",
         return_value=ValidationResult.UNKNOWN,
     ):
-        assert models_ready() is False
+        assert embedding_ready() is False
 
 
 def test_a_file_at_the_lancedb_path_is_a_fresh_install(isolated_data_dir):

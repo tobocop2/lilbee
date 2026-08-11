@@ -1,10 +1,4 @@
-"""The two questions the TUI asks before it hands anyone a screen.
-
-``models_ready`` gates chat; ``is_fresh_install`` gates the first-run wizard.
-Folding the data dir into the chat gate would lock chat behind an ingest that
-only chat can start, so they stay apart. ``LilbeeApp.settle_setup_state``
-composes them.
-"""
+"""Per-role model readiness: can each configured model role serve right now."""
 
 from __future__ import annotations
 
@@ -24,31 +18,43 @@ def is_fresh_install() -> bool:
     return True
 
 
-def models_ready() -> bool:
-    """True when the chat and embedding refs both resolve to something usable now.
+def chat_ready() -> bool:
+    """True when the chat ref resolves to something usable now."""
+    return _role_ready(cfg.chat_model)
 
-    This is the question chat depends on: without both, there is no engine to
-    answer a prompt. Remote-prefixed refs (ollama/lm_studio/API) are validated
-    against current state instead of probed on disk: an ``ollama/`` ref whose
-    litellm extra is missing or whose server is down is unusable and must route
-    the user to setup, not be assumed live.
 
-    Does disk reads and, for local-server refs, an HTTP probe, so callers run it
-    off the UI thread.
+def embedding_ready() -> bool:
+    """True when the embedding ref resolves to something usable now."""
+    return _role_ready(cfg.embedding_model)
+
+
+def _role_ready(model: str) -> bool:
+    """Whether *model* can serve. Empty means unconfigured: not ready, not an error.
+
+    Remote-prefixed refs (ollama/lm_studio/API) are validated against current
+    state instead of probed on disk: an ``ollama/`` ref whose litellm extra is
+    missing or whose server is down is unusable. Does disk reads and, for
+    local-server refs, an HTTP probe, so callers run it off the UI thread.
     """
     from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
 
-    for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
-        if parse_model_ref(model).is_remote:
-            if validate_persisted_model(model) != ValidationResult.OK:
-                log.debug("models_ready: remote %s model %r not usable", label, model)
-                return False
-            continue
-        try:
-            resolve_model_path(model)
-        except (ProviderError, KeyError, ValueError) as exc:
-            log.debug("models_ready: %s model %r unresolved: %s", label, model, exc)
+    if not model:
+        return False
+    if parse_model_ref(model).is_remote:
+        if validate_persisted_model(model) != ValidationResult.OK:
+            log.debug("role_ready: remote model %r not usable", model)
             return False
+        return True
+    try:
+        resolve_model_path(model)
+    except (ProviderError, KeyError, ValueError) as exc:
+        log.debug("role_ready: model %r unresolved: %s", model, exc)
+        return False
     return True
+
+
+def models_ready() -> bool:
+    """True when both the chat and embedding refs resolve to something usable now."""
+    return chat_ready() and embedding_ready()
