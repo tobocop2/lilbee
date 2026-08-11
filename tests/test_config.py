@@ -1217,13 +1217,19 @@ class TestConceptAllowedEntTypes:
 
     def test_default_includes_core_wiki_types(self):
         c = Config()
-        for label in ("PERSON", "ORG", "GPE", "PRODUCT", "FAC", "NORP"):
+        for label in ("PERSON", "ORG", "GPE", "PRODUCT", "FAC", "EVENT"):
             assert label in c.concept_allowed_ent_types
 
     def test_default_excludes_quantitative_types(self):
         c = Config()
         for label in ("QUANTITY", "CARDINAL", "DATE", "TIME", "MONEY", "PERCENT"):
             assert label not in c.concept_allowed_ent_types
+
+    def test_default_excludes_norp(self):
+        """NORP surfaces are adjectival (Saturnian, American) and make poor
+        page subjects; a corpus that wants them opts back in via the env
+        override."""
+        assert "NORP" not in Config().concept_allowed_ent_types
 
     def test_env_override_replaces_defaults(self):
         # Replace-semantics: narrowing the set should NOT re-union with
