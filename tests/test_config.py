@@ -33,8 +33,8 @@ def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     return env
 
 
-_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
-_DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+_SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 
 class TestFromEnvDefaults:
@@ -47,8 +47,8 @@ class TestFromEnvDefaults:
             ),
         ):
             c = Config()
-            assert c.chat_model == _DEFAULT_CHAT_REF
-            assert c.embedding_model == _DEFAULT_EMBED_REF
+            assert c.chat_model == ""
+            assert c.embedding_model == ""
             assert c.embedding_dim == 768
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
@@ -293,14 +293,17 @@ class TestOcrLanguage:
         cfg.vision_model = ""
         assert cfg.vision_model == ""
 
-    def test_normalize_model_tag_blank_chat_rejected(self):
-        """Required roles (chat_model, embedding_model) reject blank strings."""
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError, match="chat_model must not be blank"):
+    def test_normalize_model_tag_blank_clears_role(self):
+        """A blank ref normalizes to empty: the role is unconfigured, not invalid."""
+        original_chat, original_embed = cfg.chat_model, cfg.embedding_model
+        try:
             cfg.chat_model = "   "
-        with pytest.raises(ValidationError, match="embedding_model must not be blank"):
             cfg.embedding_model = "\t"
+            assert cfg.chat_model == ""
+            assert cfg.embedding_model == ""
+        finally:
+            cfg.chat_model = original_chat or ""
+            cfg.embedding_model = original_embed or ""
 
     def test_fusion_config_fields_enforce_their_bounds(self):
         """The new fusion/expansion knobs reject out-of-range values, so a bad
@@ -387,7 +390,7 @@ class TestTomlConfigFile:
     def test_no_toml_uses_defaults(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == _DEFAULT_CHAT_REF
+            assert c.chat_model == ""
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -396,7 +399,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == _DEFAULT_CHAT_REF
+            assert c.chat_model == ""
 
     def test_embedding_model_from_toml(self, tmp_path):
         ref = "ollama/my-embed:latest"
@@ -480,7 +483,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == _DEFAULT_CHAT_REF
+            assert c.chat_model == ""
 
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -1257,45 +1260,27 @@ class TestConceptAllowedEntTypes:
 
 
 class TestEmptyStringValidation:
-    def test_empty_chat_model_rejected(self, tmp_path):
-        with pytest.raises(Exception, match="at least 1 character"):
-            Config(
-                data_root=tmp_path,
-                documents_dir=tmp_path / "docs",
-                data_dir=tmp_path / "data",
-                lancedb_dir=tmp_path / "data" / "lancedb",
-                models_dir=tmp_path / "models",
-                chat_model="",
-                embedding_model=_DEFAULT_EMBED_REF,
-                embedding_dim=768,
-                chunk_size=512,
-                chunk_overlap=100,
-                max_embed_chars=2000,
-                top_k=10,
-                max_distance=0.7,
-                rag_system_prompt="You are helpful.",
-                ignore_dirs=frozenset(),
-            )
-
-    def test_empty_embedding_model_rejected(self, tmp_path):
-        with pytest.raises(Exception, match="at least 1 character"):
-            Config(
-                data_root=tmp_path,
-                documents_dir=tmp_path / "docs",
-                data_dir=tmp_path / "data",
-                lancedb_dir=tmp_path / "data" / "lancedb",
-                models_dir=tmp_path / "models",
-                chat_model=_DEFAULT_CHAT_REF,
-                embedding_model="",
-                embedding_dim=768,
-                chunk_size=512,
-                chunk_overlap=100,
-                max_embed_chars=2000,
-                top_k=10,
-                max_distance=0.7,
-                rag_system_prompt="You are helpful.",
-                ignore_dirs=frozenset(),
-            )
+    def test_empty_model_roles_accepted(self, tmp_path):
+        """Empty means "not configured" for both model roles, like vision_model."""
+        c = Config(
+            data_root=tmp_path,
+            documents_dir=tmp_path / "docs",
+            data_dir=tmp_path / "data",
+            lancedb_dir=tmp_path / "data" / "lancedb",
+            models_dir=tmp_path / "models",
+            chat_model="",
+            embedding_model="",
+            embedding_dim=768,
+            chunk_size=512,
+            chunk_overlap=100,
+            max_embed_chars=2000,
+            top_k=10,
+            max_distance=0.7,
+            rag_system_prompt="You are helpful.",
+            ignore_dirs=frozenset(),
+        )
+        assert c.chat_model == ""
+        assert c.embedding_model == ""
 
     def test_empty_rag_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
@@ -1305,8 +1290,8 @@ class TestEmptyStringValidation:
                 data_dir=tmp_path / "data",
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
-                chat_model=_DEFAULT_CHAT_REF,
-                embedding_model=_DEFAULT_EMBED_REF,
+                chat_model=_SAMPLE_CHAT_REF,
+                embedding_model=_SAMPLE_EMBED_REF,
                 embedding_dim=768,
                 chunk_size=512,
                 chunk_overlap=100,
@@ -1325,8 +1310,8 @@ class TestEmptyStringValidation:
             data_dir=tmp_path / "data",
             lancedb_dir=tmp_path / "data" / "lancedb",
             models_dir=tmp_path / "models",
-            chat_model=_DEFAULT_CHAT_REF,
-            embedding_model=_DEFAULT_EMBED_REF,
+            chat_model=_SAMPLE_CHAT_REF,
+            embedding_model=_SAMPLE_EMBED_REF,
             embedding_dim=768,
             chunk_size=512,
             chunk_overlap=100,
@@ -1596,7 +1581,7 @@ class TestPlainEnvSourceSkipsEmpty:
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.chat_model == _DEFAULT_CHAT_REF  # default, not empty
+        assert c.chat_model == ""  # default, not empty
 
 
 @pytest.fixture()
@@ -1782,8 +1767,8 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is not None
         assert "must be a HuggingFace ref" in str(error)
-        # Falls back to defaults: chat_model is the featured Qwen3 ref.
-        assert built_cfg.chat_model.endswith(".gguf")
+        # Falls back to defaults: the role comes back unconfigured.
+        assert built_cfg.chat_model == ""
 
     def test_returns_none_error_on_clean_load(self, tmp_path):
         from lilbee.core.config.model import _build_cfg

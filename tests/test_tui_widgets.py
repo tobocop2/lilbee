@@ -7329,6 +7329,11 @@ class TestAppTitleSingleSource:
 
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
 
+    def test_app_title_without_model_is_bare(self):
+        from lilbee.cli.tui import messages as msg
+
+        assert msg.app_title("") == "lilbee"
+
 
 class TestClampedOptionList:
     async def test_zero_width_measurement_does_not_crash(self) -> None:

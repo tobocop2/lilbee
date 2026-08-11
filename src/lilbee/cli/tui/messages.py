@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 def app_title(model: str) -> str:
     """The window title showing the active chat model. Single source so every
     code path that sets the title uses the same format."""
-    return f"lilbee: {model}"
+    return f"lilbee: {model}" if model else "lilbee"
 
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
