@@ -27,9 +27,9 @@ log = logging.getLogger(__name__)
 
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
 
-# Bar render constants.
-_BAR_FILL = msg.PROGRESS_BAR_FILL
-_BAR_TRACK = msg.PROGRESS_BAR_TRACK
+# Bar render constants. Fill/track glyphs come from msg.progress_bar_glyphs()
+# at render time: block elements where the terminal tiles them, box-drawing
+# elsewhere.
 _BAR_WIDTH = 16  # cells per bar
 _BULLET = "●"  # colored dot before card label
 
@@ -75,9 +75,10 @@ def _heat_color(utilization_pct: int, theme: dict[str, str]) -> str:
 
 def _bar(fraction: float, width: int, fill_color: str, track_color: str) -> str:
     """Render a filled bar with a track for the remainder."""
+    fill, track = msg.progress_bar_glyphs()
     clamped = max(0.0, min(1.0, fraction))
     filled = round(clamped * width)
-    return f"[{fill_color}]{_BAR_FILL * filled}[/][{track_color}]{_BAR_TRACK * (width - filled)}[/]"
+    return f"[{fill_color}]{fill * filled}[/][{track_color}]{track * (width - filled)}[/]"
 
 
 def _badge_role_markup(badge: str, secondary: str, muted: str) -> str:
@@ -118,7 +119,7 @@ def _render_row(
         util_pct = f"[{heat}]{s.utilization_pct:>3}%[/]"
     else:
         dot_color = muted
-        util_bar = f"[{panel_color}]{_BAR_TRACK * _BAR_WIDTH}[/]"
+        util_bar = f"[{panel_color}]{msg.progress_bar_glyphs()[1] * _BAR_WIDTH}[/]"
         util_pct = f"[{muted}]{_UTIL_DASH}[/]"
 
     vram_bar = _bar(vram_frac, _BAR_WIDTH, vram_color, panel_color)

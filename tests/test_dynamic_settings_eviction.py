@@ -368,7 +368,11 @@ def test_protocol_defaults_for_drop_and_role_ready():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.app.models_ready",
+            "lilbee.cli.tui.app.chat_ready",
+            return_value=True,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.app.embedding_ready",
             return_value=True,
         ),
         mock.patch(

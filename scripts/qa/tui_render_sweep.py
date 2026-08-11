@@ -55,7 +55,6 @@ SURFACES: dict[str, tuple[str, str]] = {
     "status": ("lilbee.cli.tui.screens.status", "StatusScreen"),
     "wiki": ("lilbee.cli.tui.screens.wiki", "WikiScreen"),
     "wiki-drafts": ("lilbee.cli.tui.screens.wiki_drafts", "WikiDraftsScreen"),
-    "setup": ("lilbee.cli.tui.screens.setup", "SetupWizard"),
     "startup-gate": ("lilbee.cli.tui.screens.startup_gate", "StartupGate"),
     "palette": ("lilbee.cli.tui.screens.command_palette", "LilbeeCommandPalette"),
     "confirm": ("lilbee.cli.tui.widgets.confirm_dialog", "ConfirmDialog"),

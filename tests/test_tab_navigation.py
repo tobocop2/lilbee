@@ -73,7 +73,11 @@ def _mock_services() -> Any:
 def _patch_chat_setup() -> Any:
     with (
         mock.patch(
-            "lilbee.cli.tui.app.models_ready",
+            "lilbee.cli.tui.app.chat_ready",
+            return_value=True,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.app.embedding_ready",
             return_value=True,
         ),
         mock.patch(

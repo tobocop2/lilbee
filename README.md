@@ -94,7 +94,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line; when the answer isn't in your library, lilbee says so instead of inventing one.
 - **It works, and the demos prove it.** Every GIF and reel here is recorded live on real hardware, nothing staged, backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
-- **One command to running.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
+- **One command to running.** Install, run `lilbee`, pick a model that fits your machine from the catalog, and you're chatting.
 - **Reads almost anything:** [90+ formats and 150+ languages](#supported-formats) across documents, scanned pages, spreadsheets, ebooks, web pages, and source code.
 - **Chunks that stand on their own.** [Prose and code are split differently](#documents-code-and-scanned-images) so each piece keeps its meaning, which is where most of the retrieval quality lives.
 - **A real [search engine](docs/architecture.md#search-pipeline) on top,** ranking every result by how well it answers you, with 50+ [tunable knobs](docs/usage.md#settings-screen) and sane defaults.
@@ -361,7 +361,7 @@ You can also place it by hand. The placement editor pins each role to the cards 
 
 ## TUI
 
-`lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the generated wiki. Type `/` for the command list; tab completion works everywhere.
+`lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, and the generated wiki. Type `/` for the command list; tab completion works everywhere.
 
 ![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
 

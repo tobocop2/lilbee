@@ -45,7 +45,8 @@ def _warming_services():
     services.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.READING_WEIGHTS)
     set_services(services)
     with (
-        mock.patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
     ):
         yield services
@@ -284,5 +285,32 @@ def test_active_chat_warm_progress_is_none_once_the_role_is_ready():
     set_services(services)
     try:
         assert active_chat_warm_progress() is None
+    finally:
+        set_services(None)
+
+
+@pytest.mark.asyncio
+async def test_chat_without_a_model_shows_the_empty_state() -> None:
+    """No chat model means a disabled input that says why, not a dead prompt."""
+    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
+    services = make_mock_services()
+    set_services(services)
+    try:
+        app = _ChatHost()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.chat_is_ready = False
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            assert inp.disabled
+            assert inp.placeholder == msg.CHAT_INPUT_NO_MODEL
+            welcome = app.screen.query_one("#chat-welcome")
+            assert msg.CHAT_WELCOME_NO_MODEL_HINT in str(welcome.render())
+
+            app.chat_is_ready = True
+            await pilot.pause()
+            assert not inp.disabled
+            assert inp.placeholder == msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+            assert msg.CHAT_WELCOME_HINT in str(welcome.render())
     finally:
         set_services(None)

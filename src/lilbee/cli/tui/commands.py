@@ -41,7 +41,6 @@ class LilbeeCommandProvider(Provider):
         commands: list[tuple[str, str, Any]] = [
             ("Open chat", "Ask questions about your knowledge base", app.action_open_chat),
             ("Open catalog", "Browse and install models", app.action_open_catalog),
-            ("Run setup wizard", "Configure chat and embedding models", self._action_setup),
             ("Open status", "Knowledge base status", lambda: app.switch_view("Status")),
             ("Open settings", "View and change settings", lambda: app.switch_view("Settings")),
             ("Open task center", "Monitor background tasks", lambda: app.switch_view("Tasks")),
@@ -159,11 +158,6 @@ class LilbeeCommandProvider(Provider):
         from lilbee.app.version import get_version
 
         self.screen.app.notify(f"lilbee {get_version()}")
-
-    def _action_setup(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        self.screen.app.push_screen(SetupWizard())
 
     def _action_open_wiki(self) -> None:
         self._app.switch_view("Wiki")

@@ -193,11 +193,19 @@ class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
 
     def __init__(self, *, id: str | None = None) -> None:
+        super().__init__(self._body(msg.CHAT_WELCOME_HINT), id=id)
+
+    @staticmethod
+    def _body(hint_text: str) -> Content:
         title = Content.styled(msg.CHAT_WELCOME_TITLE, "bold $primary")
         tagline = Content.styled(msg.CHAT_WELCOME_TAGLINE, "$text-muted")
-        hint = Content.styled(msg.CHAT_WELCOME_HINT, "$text-muted")
-        body = Content.assemble(title, "\n", tagline, "\n\n", hint)
-        super().__init__(body, id=id)
+        hint = Content.styled(hint_text, "$text-muted")
+        return Content.assemble(title, "\n", tagline, "\n\n", hint)
+
+    def set_no_model(self, no_model: bool) -> None:
+        """Swap the hint line between "just ask" and the route to a chat model."""
+        hint = msg.CHAT_WELCOME_NO_MODEL_HINT if no_model else msg.CHAT_WELCOME_HINT
+        self.update(self._body(hint))
 
 
 class PromptArea(Vertical):
@@ -303,7 +311,6 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("s", "cycle_scope", "Scope", show=False),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
-        Binding("f5", "open_setup", "Setup", show=False),
         # A function key, not a letter: the four role pickers are worth
         # reaching mid-sentence, and a focused input consumes printable keys
         # before any binding fires. Tab reaches the bar too, but only from
@@ -413,6 +420,9 @@ class ChatScreen(Screen[None]):
     def on_mount(self) -> None:
         self._update_input_style()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        # init=True paints the empty state on first mount when the gate landed
+        # the app on the catalog and the user navigated here without a model.
+        self.watch(self.app, "chat_is_ready", self._on_chat_ready_changed, init=True)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -435,20 +445,16 @@ class ChatScreen(Screen[None]):
         """Quick check if the embedding model resolves (no network calls)."""
         return is_model_available(cfg.embedding_model, get_services().provider)
 
-    def _on_setup_complete(self, result: str | None) -> None:
-        """Called when wizard completes or is skipped."""
-        # Re-detect after setup so a freshly-set-up vault gets the hint.
-        self.app.task_bar.start_detect_pending()
-        self.refresh_model_bar()
-
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _value = payload
         if key in {"chat_mode", "embedding_model"}:
             self.refresh_model_bar()
 
-    def action_open_setup(self) -> None:
-        """Open the setup wizard."""
-        self._cmd_setup("")
+    def _on_chat_ready_changed(self, ready: bool) -> None:
+        """Paint or clear the no-model empty state as readiness changes."""
+        with contextlib.suppress(NoMatches):
+            self.query_one("#chat-welcome", ChatWelcome).set_no_model(not ready)
+        self._apply_input_busy_state()
 
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
@@ -1371,11 +1377,6 @@ class ChatScreen(Screen[None]):
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")
 
-    def _cmd_setup(self, _args: str) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        self.app.push_screen(SetupWizard(), self._on_setup_complete)
-
     def _cmd_remember(self, args: str) -> None:
         """Run /remember in a worker so embedding the text never blocks the UI."""
         self._cmd_remember_worker(args)
@@ -2102,11 +2103,14 @@ class ChatScreen(Screen[None]):
         or a bubbled message) after the user navigated away and the input is no
         longer mounted.
         """
-        busy = self.swapping_model or self.reloading_placement
+        no_model = not self.app.chat_is_ready
+        busy = self.swapping_model or self.reloading_placement or no_model
         with contextlib.suppress(NoMatches):
             inp = self._chat_input
             inp.disabled = busy
-            if self.swapping_model:
+            if no_model:
+                inp.placeholder = msg.CHAT_INPUT_NO_MODEL
+            elif self.swapping_model:
                 from lilbee.catalog.formatting import display_label_for_ref
 
                 inp.placeholder = msg.CHAT_INPUT_SWITCHING.format(

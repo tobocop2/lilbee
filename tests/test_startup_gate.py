@@ -98,14 +98,11 @@ def _gate_with_app():
     app = mock.MagicMock()
     app.call_from_thread.side_effect = lambda fn, *a: fn(*a)
     app.screen = gate  # the gate owns the screen, as it does in production
-    # An app with nothing to set up, so the gate reaches its handover. Tests
-    # about the setup route say so by flipping this.
-    app.settle_setup_state.return_value = False
     return gate, app
 
 
 async def test_gate_release_reveals_chat():
-    """A built container hands the screen to chat."""
+    """A built container hands the screen to the landing view."""
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate = StartupGate()
@@ -116,7 +113,7 @@ async def test_gate_release_reveals_chat():
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
     ):
         gate._release()
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
 async def test_gate_releases_once_services_build_even_with_a_cold_engine(monkeypatch):
@@ -131,7 +128,7 @@ async def test_gate_releases_once_services_build_even_with_a_cold_engine(monkeyp
     gate, app = _gate_with_app()
     order: list[str] = []
     app.adopt_services.side_effect = lambda: order.append("adopt")
-    app.reveal_chat.side_effect = lambda: order.append("reveal")
+    app.reveal_landing.side_effect = lambda: order.append("reveal")
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
@@ -157,27 +154,28 @@ async def test_gate_failure_surfaces_the_error_and_still_reveals_chat():
         gate._fail("no such file")
     notified = [c.args[0] for c in app.notify.call_args_list if c.args]
     assert msg.STARTUP_FAILED.format(error="no such file") in notified
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
-async def test_gate_hands_nothing_over_when_setup_takes_the_screen(monkeypatch):
-    """Setup owns the screen, so the gate must not hand over on top of it.
+async def test_gate_builds_the_container_even_with_nothing_configured(monkeypatch):
+    """An unconfigured app still gets its container and its handover.
 
-    Chat is not reachable while setup is outstanding, and the container is not
-    worth building against models that do not resolve.
+    The catalog landing needs the container (HF client, downloads), and the
+    per-role empty states are the voice for "pick a model" -- withholding the
+    handover would strand the user on the gate.
     """
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate, app = _gate_with_app()
-    app.settle_setup_state.return_value = True
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
         StartupGate._boot_worker.__wrapped__(gate)
-    app.reveal_chat.assert_not_called()
-    app.adopt_services.assert_not_called()
+    app.settle_landing.assert_called_once_with()
+    app.adopt_services.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
 async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
@@ -192,8 +190,8 @@ async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
 
     gate, app = _gate_with_app()
     order: list[str] = []
-    app.settle_setup_state.side_effect = lambda: order.append("settle") or False
-    app.reveal_chat.side_effect = lambda: order.append("reveal")
+    app.settle_landing.side_effect = lambda: order.append("settle")
+    app.reveal_landing.side_effect = lambda: order.append("reveal")
     monkeypatch.setattr(gate_mod, "peek_services", lambda: mock.MagicMock())
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
@@ -220,7 +218,7 @@ async def test_gate_surfaces_a_failure_to_build_services(monkeypatch):
         StartupGate._boot_worker.__wrapped__(gate)
     notified = [c.args[0] for c in app.notify.call_args_list if c.args]
     assert msg.STARTUP_FAILED.format(error="disk gone") in notified
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
 async def test_marshal_skips_the_ui_hop_once_the_app_is_tearing_down():
@@ -235,7 +233,7 @@ async def test_marshal_skips_the_ui_hop_once_the_app_is_tearing_down():
     ):
         gate._marshal(gate._release)
     app.call_from_thread.assert_not_called()
-    app.reveal_chat.assert_not_called()
+    app.reveal_landing.assert_not_called()
 
 
 async def test_stopping_is_true_when_the_gate_is_unmounted():
@@ -267,24 +265,24 @@ async def test_stopping_is_true_when_the_worker_is_cancelled():
         assert gate._stopping() is True
 
 
-@pytest.mark.first_run
-async def test_first_run_hands_over_when_setup_is_required(tmp_path, monkeypatch):
+async def test_first_run_hands_over_when_nothing_resolves(tmp_path, monkeypatch):
     """Regression: an unmounted gate must not be mistaken for a torn-down one.
 
     ``push_screen`` returns an AwaitMount. Left unawaited, the boot worker could
     reach ``_stopping`` before the gate mounted, silently drop the handover, and
     strand a first-run user on the loading screen forever. A first run lands on
-    setup rather than on chat, so the assertion is that the gate steps aside at
-    all, not which screen takes its place.
+    the catalog rather than on chat, so the assertion is that the gate steps
+    aside at all, not which screen takes its place.
     """
     import asyncio
     import time
 
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.startup_gate import StartupGate
-    from lilbee.core.config import cfg
 
-    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "missing")  # a fresh install
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: False)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: False)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -314,7 +312,8 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
     container = mock.MagicMock()
     monkeypatch.setattr("lilbee.cli.tui.app.get_services", lambda: container)
     # An app with nothing to set up, so the gate runs its whole boot.
-    monkeypatch.setattr("lilbee.cli.tui.app.models_ready", lambda: True)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: True)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: True)
 
     at_start_boot: list[object] = []
     real_start_boot = StartupGate.start_boot
@@ -385,7 +384,7 @@ async def test_gate_composes_and_styles_its_widgets(monkeypatch):
 
 
 async def test_gate_does_not_steal_a_screen_pushed_over_it(monkeypatch):
-    """Regression: reveal_chat switches the *current* screen, whichever it is.
+    """Regression: reveal_landing switches the *current* screen, whichever it is.
 
     A slow build let another screen open above the gate; when the build finished
     the gate replaced that screen instead of itself, throwing the user out of it.
@@ -408,7 +407,7 @@ async def test_gate_does_not_steal_a_screen_pushed_over_it(monkeypatch):
         mock.patch.object(StartupGate, "query_one"),
     ):
         gate._release()
-    app.reveal_chat.assert_not_called()
+    app.reveal_landing.assert_not_called()
 
 
 async def test_gate_hands_over_when_it_still_owns_the_screen():
@@ -423,7 +422,7 @@ async def test_gate_hands_over_when_it_still_owns_the_screen():
         mock.patch.object(StartupGate, "query_one"),
     ):
         gate._release()
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
 @pytest.mark.parametrize("container", [None, "built"])
@@ -466,7 +465,7 @@ async def test_boot_worker_canonicalizes_before_the_setup_check(monkeypatch):
     order: list[str] = []
     monkeypatch.setattr(gate_mod, "peek_services", lambda: None)
     app.canonicalize_persisted_models.side_effect = lambda: order.append("canonicalize")
-    app.settle_setup_state.side_effect = lambda: order.append("setup") or True
+    app.settle_landing.side_effect = lambda: order.append("setup")
     with (
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
@@ -492,7 +491,7 @@ async def test_boot_worker_surfaces_a_canonicalization_failure(monkeypatch):
         StartupGate._boot_worker.__wrapped__(gate)
     notified = [c.args[0] for c in app.notify.call_args_list if c.args]
     assert msg.STARTUP_FAILED.format(error="registry unreadable") in notified
-    app.reveal_chat.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
 
 
 async def test_gate_mount_retires_the_splash_then_repaints(monkeypatch):

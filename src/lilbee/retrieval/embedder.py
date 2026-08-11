@@ -135,6 +135,11 @@ class Embedder:
         """
         if self.embedding_available():
             return True
+        if not self._config.embedding_model:
+            # Unconfigured is a state, not a failure: nothing was chosen, so
+            # there is nothing to warn about. One INFO line for the curious.
+            log.info("No embedding model configured; embedding is off until one is set.")
+            return False
         log.warning(
             "Embedding model %r is not available; embedding will fail. "
             "Pull it or set a different embedding_model.",
