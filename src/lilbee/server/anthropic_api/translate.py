@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.anthropic_api.models import (
@@ -14,6 +14,7 @@ from lilbee.server.anthropic_api.models import (
     AnthropicTool,
     AnthropicToolChoice,
     AnthropicUsage,
+    ContentBlockParam,
     ImageBlockParam,
     MessagesRequest,
     MessagesResponse,
@@ -100,33 +101,40 @@ def _canonical_messages_for(msg: AnthropicMessage) -> list[CanonicalMessage]:
 
     Tool results become their own ``role: "tool"`` messages, emitted before
     the user's text so the provider sees results adjacent to the calls they
-    answer. Unknown blocks (replayed thinking) are dropped.
+    answer. Unknown blocks (replayed thinking) are dropped. A mid-conversation
+    ``system`` message becomes a system-reminder user turn -- Anthropic's own
+    documented degradation for models without the operator channel, and it
+    keeps the canonical layer's role set unchanged.
     """
+    if msg.role == "system":
+        text = _message_text(msg)
+        if not text:
+            return []
+        return [
+            CanonicalMessage.from_string(
+                role="user", text=f"<system-reminder>\n{text}\n</system-reminder>"
+            )
+        ]
     if isinstance(msg.content, str):
         if not msg.content:
             return []
         return [CanonicalMessage.from_string(role=msg.role, text=msg.content)]
+    return _block_messages(msg.role, msg.content)
 
+
+def _block_messages(
+    role: Literal["user", "assistant"], content: list[ContentBlockParam]
+) -> list[CanonicalMessage]:
+    """Canonical messages for a block-form user or assistant message."""
     tool_messages: list[CanonicalMessage] = []
     blocks: list[ContentBlock] = []
-    for block in msg.content:
+    for block in content:
         if isinstance(block, TextBlockParam):
             blocks.append(TextBlock(text=block.text))
         elif isinstance(block, ToolUseBlockParam):
             blocks.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
         elif isinstance(block, ToolResultBlockParam):
-            tool_messages.append(
-                CanonicalMessage(
-                    role="tool",
-                    content=[
-                        ToolResultBlock(
-                            tool_use_id=block.tool_use_id,
-                            content=_tool_result_content(block),
-                            is_error=block.is_error,
-                        )
-                    ],
-                )
-            )
+            tool_messages.append(_tool_result_message(block))
         elif isinstance(block, ImageBlockParam):
             raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
         elif isinstance(block, UnknownBlockParam):
@@ -134,8 +142,28 @@ def _canonical_messages_for(msg: AnthropicMessage) -> list[CanonicalMessage]:
 
     out = tool_messages
     if blocks:
-        out = [*tool_messages, CanonicalMessage(role=msg.role, content=blocks)]
+        out = [*tool_messages, CanonicalMessage(role=role, content=blocks)]
     return out
+
+
+def _tool_result_message(block: ToolResultBlockParam) -> CanonicalMessage:
+    return CanonicalMessage(
+        role="tool",
+        content=[
+            ToolResultBlock(
+                tool_use_id=block.tool_use_id,
+                content=_tool_result_content(block),
+                is_error=block.is_error,
+            )
+        ],
+    )
+
+
+def _message_text(msg: AnthropicMessage) -> str:
+    """The concatenated text of a message, ignoring non-text blocks."""
+    if isinstance(msg.content, str):
+        return msg.content
+    return "".join(b.text for b in msg.content if isinstance(b, TextBlockParam))
 
 
 def _tool_result_content(block: ToolResultBlockParam) -> list[ContentBlock]:

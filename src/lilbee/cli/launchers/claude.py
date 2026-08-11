@@ -111,7 +111,11 @@ class ClaudeLauncher:
             # assumes a frontier-sized context.
             env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(ctx)
 
-        extra_args = ["--model", model_id]
+        # Project-scoped settings only: the user's global plugins and skills
+        # add tens of thousands of prompt tokens (a measured ~50K baseline
+        # with a populated ~/.claude), which no local model's window absorbs.
+        # Project-level CLAUDE.md and .claude/ still load.
+        extra_args = ["--model", model_id, "--setting-sources", "project,local"]
         if self._include_mcp:
             if not confirm_first_run_setup(
                 marker_name=_SETUP_MARKER_NAME,
@@ -122,7 +126,11 @@ class ClaudeLauncher:
                 raise typer.Exit(0)
             block = claude_mcp_config(base_url=base_url, api_key=_TOKEN_REF)
             config_file.atomic_write_text(_mcp_config_path(), json.dumps(block, indent=2))
-            extra_args.extend(["--mcp-config", str(_mcp_config_path())])
+            # --strict-mcp-config keeps the session to lilbee's one MCP server.
+            # Without it, every server in the user's own Claude Code config
+            # loads too, and their tool schemas alone can overflow a local
+            # model's context before the first turn.
+            extra_args.extend(["--mcp-config", str(_mcp_config_path()), "--strict-mcp-config"])
             install_bundled_skill(_claude_skill_dest())
         return (extra_args, env)
 

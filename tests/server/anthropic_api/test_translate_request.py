@@ -223,3 +223,52 @@ def test_tool_result_image_content_raises():
                 ]
             )
         )
+
+
+def test_mid_conversation_system_message_becomes_system_reminder_user_turn():
+    """Claude Code sends role:"system" entries mid-conversation; a 400 there
+    breaks every session after the first such turn."""
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {"role": "user", "content": "go"},
+                {"role": "system", "content": "Terse mode enabled."},
+            ]
+        )
+    )
+    assert [m.role for m in req.messages] == ["user", "user"]
+    reminder = req.messages[1].content[0]
+    assert isinstance(reminder, TextBlock)
+    assert reminder.text == "<system-reminder>\nTerse mode enabled.\n</system-reminder>"
+
+
+def test_system_message_with_text_blocks_concatenates():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {"role": "user", "content": "go"},
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ]
+        )
+    )
+    reminder = req.messages[1].content[0]
+    assert isinstance(reminder, TextBlock)
+    assert "ab" in reminder.text
+
+
+def test_empty_system_message_is_dropped():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {"role": "user", "content": "go"},
+                {"role": "system", "content": ""},
+            ]
+        )
+    )
+    assert [m.role for m in req.messages] == ["user"]

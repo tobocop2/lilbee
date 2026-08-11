@@ -100,9 +100,14 @@ ContentBlockParam = Annotated[
 
 
 class AnthropicMessage(_AnthropicModel):
-    """One entry in the request ``messages`` list."""
+    """One entry in the request ``messages`` list.
 
-    role: Literal["user", "assistant"]
+    ``system`` is Anthropic's mid-conversation operator channel; Claude Code
+    sends it routinely (mode switches, injected context), so rejecting it
+    breaks every session after the first such turn.
+    """
+
+    role: Literal["user", "assistant", "system"]
     content: str | list[ContentBlockParam]
 
 

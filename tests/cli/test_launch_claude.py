@@ -140,6 +140,9 @@ def test_launch_claude_writes_mcp_config_with_env_ref(tmp_path):
     mcp_path = cfg.data_dir / "launchers" / "claude-mcp.json"
     assert "--mcp-config" in argv
     assert argv[argv.index("--mcp-config") + 1] == str(mcp_path)
+    # Without strict mode the user's own MCP servers load too and their tool
+    # schemas can overflow a local model's context before the first turn.
+    assert "--strict-mcp-config" in argv
     config = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = config["mcpServers"]["lilbee"]
     assert server["type"] == "http"
@@ -164,6 +167,7 @@ def test_launch_claude_no_mcp_skips_config_skill_and_gate(tmp_path):
     assert result.exit_code == 0
     argv = run.call_args.args[0]
     assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" not in argv  # the user's own MCP config applies
     assert not (cfg.data_dir / "launchers" / "claude-mcp.json").exists()
     assert not (tmp_path / ".claude" / "skills" / "lilbee-mcp").exists()
     assert "First-time Claude Code setup" not in result.stdout
