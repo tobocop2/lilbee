@@ -131,12 +131,18 @@ class FakeBackend:
 
 @pytest.fixture(autouse=True)
 def _reset_chat_model() -> Iterator[None]:
-    """Preserve model, json-mode, and local-server URL config per test."""
+    """Pin parseable model refs per test and restore the config after.
+
+    The suite's subject is SDK dispatch, not model selection, so every test
+    runs against explicit sample refs instead of the (unconfigured) defaults.
+    """
     chat_snapshot = cfg.chat_model
     embed_snapshot = cfg.embedding_model
     json_snapshot = cfg.json_mode
     ollama_snapshot = cfg.ollama_base_url
     lm_studio_snapshot = cfg.lm_studio_base_url
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     yield
     cfg.chat_model = chat_snapshot
     cfg.embedding_model = embed_snapshot

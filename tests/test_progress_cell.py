@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
+from lilbee.cli.tui.messages import (
+    PROGRESS_BAR_FILL,
+    PROGRESS_BAR_FILL_BLOCK,
+    PROGRESS_BAR_TRACK,
+    PROGRESS_BAR_TRACK_BLOCK,
+    progress_bar_glyphs,
+)
 from lilbee.cli.tui.widgets.progress_cell import (
     _BAR_WIDTH,
-    _EMPTY,
-    _FULL,
     frozen_indeterminate_cell,
     indeterminate_cell,
     progress_cell,
 )
+
+# Whatever pair the running terminal selects; the bar must be built from it.
+_FULL, _EMPTY = progress_bar_glyphs()
 
 
 def test_progress_cell_renders_bar_and_percent() -> None:
@@ -82,3 +92,23 @@ def test_frozen_indeterminate_cell_drops_trailing_dots() -> None:
 def test_frozen_indeterminate_cell_respects_custom_width() -> None:
     rendered = frozen_indeterminate_cell(width=8)
     assert rendered == _FULL * 8
+
+
+def test_glyphs_are_blocks_only_where_the_terminal_tiles_them() -> None:
+    with mock.patch("lilbee.cli.tui.color_compat.draws_block_bars", return_value=True):
+        assert progress_bar_glyphs() == (PROGRESS_BAR_FILL_BLOCK, PROGRESS_BAR_TRACK_BLOCK)
+    with mock.patch("lilbee.cli.tui.color_compat.draws_block_bars", return_value=False):
+        assert progress_bar_glyphs() == (PROGRESS_BAR_FILL, PROGRESS_BAR_TRACK)
+
+
+def test_progress_cell_uses_the_selected_pair_in_both_modes() -> None:
+    for block, fill, track in (
+        (True, PROGRESS_BAR_FILL_BLOCK, PROGRESS_BAR_TRACK_BLOCK),
+        (False, PROGRESS_BAR_FILL, PROGRESS_BAR_TRACK),
+    ):
+        with mock.patch("lilbee.cli.tui.color_compat.draws_block_bars", return_value=block):
+            rendered = progress_cell(50, width=10)
+            assert rendered.count(fill) == 5
+            assert rendered.count(track) == 5
+            assert frozen_indeterminate_cell(width=4) == fill * 4
+            assert track in indeterminate_cell(0, width=8)

@@ -35,8 +35,8 @@ _POLL_INTERVAL_IDLE_S = 1.0
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
 
-_WARM_BAR_FILL = msg.PROGRESS_BAR_FILL
-_WARM_BAR_TRACK = msg.PROGRESS_BAR_TRACK
+# Warm bar width; fill/track glyphs come from msg.progress_bar_glyphs() at
+# render time, matching the fleet panel bars.
 _WARM_BAR_WIDTH = 12
 
 
@@ -49,16 +49,18 @@ _WARM_SWEEP_WIDTH = 3
 
 def _progress_bar(fraction: float) -> str:
     """A determinate fill bar for the byte-progress (reading-weights) phase."""
+    fill, track = msg.progress_bar_glyphs()
     filled = round(max(0.0, min(1.0, fraction)) * _WARM_BAR_WIDTH)
-    return _WARM_BAR_FILL * filled + _WARM_BAR_TRACK * (_WARM_BAR_WIDTH - filled)
+    return fill * filled + track * (_WARM_BAR_WIDTH - filled)
 
 
 def _sweep_bar(tick: int) -> str:
     """An indeterminate bar with a lit window of fixed width walking (and wrapping)
     across the track, keyed to *tick*, so it always shows motion, never a blank."""
+    fill, track = msg.progress_bar_glyphs()
     start = tick % _WARM_BAR_WIDTH
     lit = {(start + offset) % _WARM_BAR_WIDTH for offset in range(_WARM_SWEEP_WIDTH)}
-    return "".join(_WARM_BAR_FILL if i in lit else _WARM_BAR_TRACK for i in range(_WARM_BAR_WIDTH))
+    return "".join(fill if i in lit else track for i in range(_WARM_BAR_WIDTH))
 
 
 def _warm_detail(progress: WarmProgress | None, tick: int = 0) -> str | None:

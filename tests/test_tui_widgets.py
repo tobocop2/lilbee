@@ -562,23 +562,25 @@ class TestTaskBar:
 
     def test_warm_detail_phases(self) -> None:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_FILL, _warm_detail
+        from lilbee.cli.tui.widgets.task_bar import _warm_detail
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        _warm_bar_fill = msg.progress_bar_glyphs()[0]
 
         assert _warm_detail(None) is None
         assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
         # Indeterminate phases carry a moving sweep bar plus the phase word: a
         # multi-second load has to read as working, not stalled.
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
-        assert msg.TASKBAR_WARM_STARTING in starting and _WARM_BAR_FILL in starting
+        assert msg.TASKBAR_WARM_STARTING in starting and _warm_bar_fill in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert msg.TASKBAR_WARM_LOADING in loading and _WARM_BAR_FILL in loading
+        assert msg.TASKBAR_WARM_LOADING in loading and _warm_bar_fill in loading
         # Reading weights: a determinate byte bar, then the phase word with %.
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
         assert "reading weights 42%" in reading
-        assert reading.startswith(_WARM_BAR_FILL * 5)  # round(0.42 * 12) = 5 filled cells
+        assert reading.startswith(_warm_bar_fill * 5)  # round(0.42 * 12) = 5 filled cells
         # No total yet: percent floors to 0 instead of dividing by zero.
         zero = _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS))
         assert "reading weights 0%" in zero
@@ -587,7 +589,10 @@ class TestTaskBar:
         from unittest import mock
 
         from lilbee.app.services import set_services
-        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_FILL, TaskBar
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        _warm_bar_fill = msg.progress_bar_glyphs()[0]
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         services = mock.MagicMock()
@@ -604,17 +609,19 @@ class TestTaskBar:
             warm = bar._warm_line()
             # model_ref is None here, so the line uses the fallback name.
             assert "warming up chat · " in warm
-            assert "reading weights 25%" in warm and _WARM_BAR_FILL in warm
+            assert "reading weights 25%" in warm and _warm_bar_fill in warm
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
 
     def test_sweep_bar_animates_and_keeps_width(self) -> None:
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.task_bar import (
-            _WARM_BAR_FILL,
             _WARM_BAR_WIDTH,
             _sweep_bar,
         )
+
+        _WARM_BAR_FILL = msg.progress_bar_glyphs()[0]
 
         frames = [_sweep_bar(t) for t in range(_WARM_BAR_WIDTH + 4)]
         assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
@@ -3605,200 +3612,6 @@ class TestCompletionOverlayCyclePrev:
             assert overlay.cycle_prev() is None
 
 
-class _SetupApp(LilbeeAppHost):
-    def compose(self) -> ComposeResult:
-        yield Static("bg")
-
-
-class TestSetupWizard:
-    def test_creates(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        wizard = SetupWizard()
-        assert wizard._selected_chat is None
-        assert wizard._selected_embed is None
-
-    async def test_compose_mounts(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
-
-    async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
-        """action_cancel returns 'skipped' only when the user picked nothing."""
-        from lilbee.catalog.types import ModelTask
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = _SetupApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
-            await pilot.pause()
-            # Clear the RAM-based preselection so action_cancel treats it as empty.
-            app.screen._selections[ModelTask.CHAT] = (None, None)
-            app.screen._selections[ModelTask.EMBEDDING] = (None, None)
-            app.screen.action_cancel()
-            await pilot.pause()
-        assert "skipped" in results
-
-    async def test_action_cancel_dismisses_completed_when_any_selection(self) -> None:
-        """action_cancel returns 'completed' if any model was picked."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = _SetupApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
-            await pilot.pause()
-            # Preselected chat+embed survive; action_cancel should return completed.
-            with mock.patch("lilbee.app.services.reset_services"):
-                app.screen.action_cancel()
-            await pilot.pause()
-        assert "completed" in results
-
-    def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
-        from lilbee.cli.tui.screens.setup import _scan_installed_models
-
-        cfg.models_dir = tmp_path / "nonexistent"
-        chat, embed = _scan_installed_models()
-        assert chat == []
-        assert embed == []
-
-    def test_scan_installed_models_uses_registry(self, tmp_path) -> None:
-        from lilbee.cli.tui.screens.setup import _scan_installed_models
-
-        cfg.models_dir = tmp_path / "models"
-        cfg.models_dir.mkdir()
-        with mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry:
-            MockRegistry.return_value.list_installed.return_value = []
-            chat, embed = _scan_installed_models()
-        assert chat == []
-        assert embed == []
-
-    def test_installed_name_to_row(self) -> None:
-        from lilbee.cli.tui.screens.setup import _installed_name_to_row
-
-        row = _installed_name_to_row("test-model:latest", "chat")
-        assert row.name == "test-model:latest"
-        assert row.task == "chat"
-        assert row.installed is True
-        assert row.featured is False
-        assert row.backend == ""
-
-    def test_installed_name_to_row_cleans_native_gguf_ref(self) -> None:
-        """Native GGUF refs should render as a clean label, not the raw filename."""
-        from lilbee.cli.tui.screens.setup import _installed_name_to_row
-
-        ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
-        row = _installed_name_to_row(ref, "embedding")
-        assert row.name == "Embeddinggemma 300M"
-        assert row.quant == "Q8_0"
-        assert row.ref == ref
-
-    def test_model_card_from_table_row(self) -> None:
-        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-
-        model = _make_model("Test 8B", task="chat", featured=True)
-        row = catalog_to_row(model, installed=False)
-        card = ModelCard(row)
-        assert card.row is row
-        assert card.row.featured is True
-        assert card.row.task == "chat"
-        assert card.row.backend == "native"
-
-    def test_pick_recommended_picks_largest_fitting_not_first(self) -> None:
-        """Default pick is the biggest-size-gb model whose min_ram_gb fits."""
-        from lilbee.cli.tui.screens import setup as setup_mod
-
-        tiny = _make_model("Tiny", size_gb=0.4, min_ram_gb=0.5, featured=True)
-        small = _make_model("Small", size_gb=2.5, min_ram_gb=4, featured=True)
-        medium = _make_model("Medium", size_gb=5.0, min_ram_gb=8, featured=True)
-        large = _make_model("Large", size_gb=18.0, min_ram_gb=16, featured=True)
-        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
-        chat_picks = (tiny, small, medium, large)
-
-        # 64 GB: everything fits, largest wins.
-        chat, picked_embed = setup_mod._pick_recommended(64.0, chat_picks, (embed,))
-        assert chat is large
-        assert picked_embed is embed
-        # 16 GB: large just fits, still wins.
-        assert setup_mod._pick_recommended(16.0, chat_picks, (embed,))[0] is large
-        # 8 GB: medium is the largest that fits.
-        assert setup_mod._pick_recommended(8.0, chat_picks, (embed,))[0] is medium
-        # 4 GB: small is the largest that fits.
-        assert setup_mod._pick_recommended(4.0, chat_picks, (embed,))[0] is small
-        # 1 GB: only tiny fits.
-        assert setup_mod._pick_recommended(1.0, chat_picks, (embed,))[0] is tiny
-
-    def test_pick_recommended_offers_nothing_when_nothing_fits(self) -> None:
-        """No fallback to a model the machine cannot run; offer no recommendation."""
-        from lilbee.cli.tui.screens import setup as setup_mod
-
-        big = _make_model("BigOnly", size_gb=40.0, min_ram_gb=64, featured=True)
-        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
-        assert setup_mod._pick_recommended(4.0, (big,), (embed,))[0] is None
-
-    def test_pick_recommended_skips_an_unsupported_architecture(self) -> None:
-        """A pick the bundled engine cannot load is never recommended, even if it fits."""
-        from lilbee.catalog.types import ModelCompat
-        from lilbee.cli.tui.screens import setup as setup_mod
-
-        runnable = _make_model("Runnable", size_gb=2.0, min_ram_gb=4, featured=True)
-        bigger_but_unsupported = _make_model(
-            "Exotic", size_gb=8.0, min_ram_gb=8, featured=True, compat=ModelCompat.UNSUPPORTED
-        )
-        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
-        chat, _ = setup_mod._pick_recommended(64.0, (runnable, bigger_but_unsupported), (embed,))
-        assert chat is runnable
-
-    def test_build_section_marks_installed_catalog_cards(self) -> None:
-        """Catalog cards whose hf_repo is already installed come back with
-        ``installed=True`` so the Enter-to-install hint stays hidden."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        a = _make_model(
-            "Qwen3 0.6B",
-            featured=True,
-            size_gb=0.6,
-            hf_repo="Qwen/Qwen3-0.6B-GGUF",
-        )
-        b = _make_model(
-            "Qwen3 4B",
-            featured=True,
-            size_gb=2.5,
-            hf_repo="Qwen/Qwen3-4B-GGUF",
-        )
-        wizard = SetupWizard.__new__(SetupWizard)
-        widgets: list = []
-        cards = SetupWizard._build_section(
-            wizard, "Chat", (a, b), {"Qwen/Qwen3-0.6B-GGUF"}, widgets
-        )
-        assert cards[0].row.installed is True
-        assert cards[1].row.installed is False
-
-    def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
-        """_scan_installed_models output must be usable as installed refs for the
-        catalog grid so the same model never appears with a phantom download."""
-        from lilbee.catalog.types import ModelTask
-        from lilbee.cli.tui.screens.setup import _scan_installed_models
-
-        cfg.models_dir = tmp_path / "models"
-        cfg.models_dir.mkdir()
-        chat_ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
-        embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-        fake_chat = mock.Mock(ref=chat_ref, task=ModelTask.CHAT)
-        fake_embed = mock.Mock(ref=embed_ref, task=ModelTask.EMBEDDING)
-        with mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry:
-            MockRegistry.return_value.list_installed.return_value = [fake_chat, fake_embed]
-            chat, embed = _scan_installed_models()
-        assert chat_ref in chat
-        assert embed_ref in embed
-
-
 class TestAllTasksFetched:
     def test_all_tasks_constant(self) -> None:
         from lilbee.cli.tui.screens.catalog import _ALL_TASKS
@@ -4594,6 +4407,18 @@ class TestModelCardSelected:
         assert card.selected is False
         card.selected = True
         assert card.selected is True
+
+    def test_model_card_from_table_row(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.row is row
+        assert card.row.featured is True
+        assert card.row.task == "chat"
+        assert card.row.backend == "native"
 
     def _make_row(self, **overrides: Any) -> LocalCatalogRow:
         defaults: dict[str, Any] = {
@@ -7328,6 +7153,11 @@ class TestAppTitleSingleSource:
         from lilbee.cli.tui import messages as msg
 
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
+
+    def test_app_title_without_model_is_bare(self):
+        from lilbee.cli.tui import messages as msg
+
+        assert msg.app_title("") == "lilbee"
 
 
 class TestClampedOptionList:

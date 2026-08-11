@@ -152,10 +152,11 @@ def with_configured_remote_chat(refs: list[str], configured: str) -> list[str]:
     A remote-configured chat model (``ollama/...``, ``openai/...``) is served
     through known-model resolution without appearing in the native registry;
     prepending it keeps a model listing truthful and puts the model lilbee
-    actually serves first. *configured* must parse; ``cfg.chat_model`` is
-    validated and canonicalized at the write boundary.
+    actually serves first. A non-empty *configured* must parse; ``cfg.chat_model``
+    is validated and canonicalized at the write boundary, and empty means the
+    role is unconfigured.
     """
-    if configured in refs or not parse_model_ref(configured).is_remote:
+    if not configured or configured in refs or not parse_model_ref(configured).is_remote:
         return list(refs)
     return [configured, *refs]
 

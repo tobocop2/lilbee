@@ -1294,8 +1294,8 @@ def _server_model_inputs(
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if roles is not None and role not in roles:
             return
-        # chat/embed are always configured; reranker_model/vision_model may be ""
-        # (unconfigured) -> skipped, so that role has no server.
+        # Any role may be "" (unconfigured) -> skipped, so that role has no
+        # server and no not-installed complaint.
         ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
         if not ref:
             return  # unconfigured optional role -> no server
