@@ -1277,14 +1277,17 @@ class TestWikiIndexAndGenerate:
         monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2, "c": 3})
         assert wiki_index()["entries"] == 3
 
-    def test_generate_returns_the_path(self, mock_svc, monkeypatch):
-        from pathlib import Path
-
+    def test_generate_returns_the_path_and_the_read_slug(self, mock_svc, monkeypatch):
+        """The slug must be the sectioned form the read surfaces accept, not
+        the bare form the caller sent."""
         from lilbee.wiki import lazy as lazy_mod
 
         cfg.wiki = True
-        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("w/ford.md"))
-        assert wiki_generate("ford")["path"] == "w/ford.md"
+        page = cfg.data_root / cfg.wiki_dir / "entities" / "ford.md"
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: page)
+        result = wiki_generate("ford")
+        assert result["path"] == page.as_posix()
+        assert result["slug"] == "entities/ford"
 
     def test_generate_reports_an_unknown_slug_as_an_error(self, mock_svc, monkeypatch):
         from lilbee.wiki import lazy as lazy_mod
