@@ -10,12 +10,12 @@ from lilbee.wiki.browse import (
     WikiPageInfo,
     _extract_h1_title,
     _page_type_from_path,
-    _slug_from_path,
     build_page_info,
     find_page,
     list_draft_pages,
     list_md_files,
     list_pages,
+    page_slug,
     read_page,
 )
 
@@ -113,12 +113,17 @@ class TestPageTypeFromPath:
         assert _page_type_from_path(other / "x.md", tmp_path) == "unknown"
 
 
-class TestSlugFromPath:
+class TestPageSlug:
     def test_subdir_file(self, tmp_path: Path):
-        assert _slug_from_path(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
+        assert page_slug(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
 
     def test_stem_only(self, tmp_path: Path):
-        assert _slug_from_path(tmp_path / "top.md", tmp_path) == "top"
+        assert page_slug(tmp_path / "top.md", tmp_path) == "top"
+
+    def test_a_quarantined_draft_keeps_its_drafts_prefix(self, tmp_path: Path):
+        """The faithfulness gate can land a generated page under drafts/, and
+        the slug handed back to a client must read that page, not a 404."""
+        assert page_slug(tmp_path / "drafts" / "ford.md", tmp_path) == "drafts/ford"
 
 
 class TestBuildPageInfo:

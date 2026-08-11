@@ -601,43 +601,67 @@ class TestWikiEnabled:
             await client.get("/api/wiki/stubs", headers=_h())
         assert on_loop == [False]
 
-    async def test_generate_writes_one_page(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_generate_streams_progress_then_the_written_page(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The model call runs for minutes on slow hardware, so the route
+        streams wiki_phase/wiki_page like a build; the done event carries the
+        slug the read route accepts, not the bare form the caller sent."""
+        from lilbee.runtime.progress import EventType, WikiPhase, WikiPhaseEvent
         from lilbee.wiki import lazy as lazy_mod
 
-        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: Path("wiki/e/ford.md"))
+        _save_stubs(_stub("ford", "Ford"))
+        page = isolated_env / "wiki" / "entities" / "ford.md"
+
+        def fake_generate(slug, store, *, on_progress, cancel):
+            on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=1))
+            return page
+
+        monkeypatch.setattr(lazy_mod, "generate_stub_page", fake_generate)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/ford", headers=_h())
         assert resp.status_code == 201
-        assert resp.json()["path"] == "wiki/e/ford.md"
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        events = _sse_events(resp.text)
+        assert ("wiki_phase", {"phase": "generate", "total": 1}) in events
+        assert events[-1] == ("done", {"slug": "entities/ford", "path": page.as_posix()})
 
-    async def test_generate_404s_an_unknown_slug(self, monkeypatch: pytest.MonkeyPatch):
-        from lilbee.wiki import lazy as lazy_mod
-
-        def boom(slug, store):
-            raise lazy_mod.UnknownStubError("no indexed page named 'nope'")
-
-        monkeypatch.setattr(lazy_mod, "generate_stub_page", boom)
+    async def test_generate_404s_an_unknown_slug_before_streaming(self):
+        """A client must tell "never heard of it" from a failed run, so the
+        unknown slug stays a real 404 status, not an event mid-stream."""
+        _save_stubs()
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/nope", headers=_h())
         assert resp.status_code == 404
 
-    async def test_generate_409s_a_stale_index_entry(self, monkeypatch: pytest.MonkeyPatch):
-        """A client has to tell "never heard of it" from "nothing to write it from"."""
+    async def test_generate_reports_a_stale_index_entry_as_a_stream_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         from lilbee.wiki import lazy as lazy_mod
 
-        monkeypatch.setattr(lazy_mod, "generate_stub_page", lambda s, store: None)
+        _save_stubs(_stub("ford", "Ford"))
+        monkeypatch.setattr(
+            lazy_mod, "generate_stub_page", lambda s, store, *, on_progress, cancel: None
+        )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/ford", headers=_h())
-        assert resp.status_code == 409
+        events = _sse_events(resp.text)
+        assert len(events) == 1
+        event, data = events[0]
+        assert event == "error"
+        assert "stale" in data["message"]
 
-    async def test_generate_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_generate_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from lilbee.wiki import lazy as lazy_mod
 
+        _save_stubs(_stub("ford", "Ford"))
         on_loop: list[bool] = []
 
-        def fake_generate(slug, store):
+        def fake_generate(slug, store, *, on_progress, cancel):
             on_loop.append(_on_the_event_loop())
-            return Path("wiki/e/ford.md")
+            return isolated_env / "wiki" / "entities" / "ford.md"
 
         monkeypatch.setattr(lazy_mod, "generate_stub_page", fake_generate)
         async with AsyncTestClient(_create_app()) as client:
@@ -1204,9 +1228,9 @@ class TestHelpers:
         assert _page_type_from_path(other / "x.md", tmp_path) == "unknown"
 
     def test_slug_from_path(self, tmp_path: Path):
-        from lilbee.wiki.browse import _slug_from_path
+        from lilbee.wiki.browse import page_slug
 
-        assert _slug_from_path(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
+        assert page_slug(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
 
     def test_list_md_files_empty(self, tmp_path: Path):
         from lilbee.wiki.browse import list_md_files

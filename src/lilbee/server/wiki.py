@@ -33,7 +33,6 @@ from lilbee.server.models import (
     WikiDraftDiffResponse,
     WikiDraftRejectResponse,
     WikiEntityCandidateResponse,
-    WikiGenerateResult,
     WikiIndexResult,
     WikiLintIssueItem,
     WikiLintResult,
@@ -300,30 +299,24 @@ def _ungenerated_stubs() -> list[WikiStub]:
     return ungenerated_stubs(load_stub_index(), _wiki_root())
 
 
-@post("/api/wiki/generate/{slug:path}")
-async def wiki_generate_route(slug: FromPath[str]) -> WikiGenerateResult:
-    """Generate one indexed page. Costs a single LLM call.
+@post("/api/wiki/generate/{slug:path}", media_type=SSE_MEDIA_TYPE)
+async def wiki_generate_route(slug: FromPath[str]) -> Stream:
+    """Generate one indexed page, streaming progress. Costs a single LLM call.
 
-    404 when the slug names nothing in the index, 409 when the index entry is
-    stale and its sources are gone, so a client can tell "never heard of it"
-    from "nothing left to write it from".
+    One model call takes long enough to look hung, so the response is an SSE
+    stream like /api/wiki/build: wiki_phase and wiki_page events, then a done
+    event carrying the slug the read route accepts. 404 when the slug names
+    nothing in the index; an entry whose sources are gone surfaces as an
+    error event, since the run discovers it after the stream has started.
     """
     _require_wiki()
     slug = slug.lstrip("/")
-    from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+    from lilbee.wiki.lazy import resolve_stub
 
-    store = svc_mod.get_services().store
-    try:
-        # One LLM call plus embeddings, and it takes the wiki mutex.
-        path = await asyncio.to_thread(generate_stub_page, slug, store)
-    except UnknownStubError as exc:
-        raise NotFoundException(detail=str(exc)) from exc
-    if path is None:
-        raise ClientException(
-            detail=f"index entry for {slug} is stale; its sources are gone",
-            status_code=HTTP_409_CONFLICT,
-        )
-    return WikiGenerateResult(slug=slug, path=path.as_posix())
+    # Resolving reads the index file; offload like the stub listing.
+    if await asyncio.to_thread(resolve_stub, slug) is None:
+        raise NotFoundException(detail=f"no indexed page named {slug!r}")
+    return Stream(handlers.wiki_generate_stream(slug), media_type=SSE_MEDIA_TYPE)
 
 
 @delete("/api/wiki", status_code=200)
