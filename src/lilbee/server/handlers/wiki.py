@@ -1,15 +1,18 @@
-"""Wiki build and synthesis handlers (SSE-streamed)."""
+"""Wiki build, synthesis, and single-page generation handlers (SSE-streamed)."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
 from collections.abc import AsyncGenerator, Callable
+from functools import partial
 from typing import Any
 
+from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import DetailedProgressCallback
 from lilbee.server.handlers.sse import SseStream
+from lilbee.server.models import WikiGenerateResult
 from lilbee.wiki import run_full_build, run_full_synthesize
 
 _Summary = dict[str, Any]
@@ -58,3 +61,31 @@ async def wiki_synthesize_stream() -> AsyncGenerator[str, None]:
         "Wiki synthesize stream",
     ):
         yield event
+
+
+async def wiki_generate_stream(slug: str) -> AsyncGenerator[str, None]:
+    """Generate one indexed page, streaming progress.
+
+    The done event carries the written page's read slug and path; a stale
+    index entry surfaces as an error event.
+    """
+    async for event in _wiki_run_stream(partial(_generate_one_page, slug), "Wiki generate stream"):
+        yield event
+
+
+def _generate_one_page(
+    slug: str, on_progress: DetailedProgressCallback, cancel: threading.Event
+) -> _Summary:
+    """Write one indexed page and shape the done payload for the wire."""
+    from lilbee.wiki.browse import page_slug
+    from lilbee.wiki.lazy import generate_stub_page
+
+    path = generate_stub_page(
+        slug, svc_mod.get_services().store, on_progress=on_progress, cancel=cancel
+    )
+    if path is None:
+        raise RuntimeError(f"index entry for {slug} is stale; its sources are gone")
+    result = WikiGenerateResult(
+        slug=page_slug(path, cfg.data_root / cfg.wiki_dir), path=path.as_posix()
+    )
+    return result.model_dump()
