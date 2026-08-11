@@ -1149,7 +1149,60 @@ class TestDocumentsRemoveRoute:
         assert resp.json()["removed"] == ["a.md"]
 
 
+SSE_ROUTES = [
+    ("get", "/api/warm/stream"),
+    ("get", "/api/gpus/stream"),
+    ("post", "/api/ask/stream"),
+    ("post", "/api/chat/stream"),
+    ("post", "/api/sync"),
+    ("post", "/api/add"),
+    ("post", "/api/add/upload"),
+    ("post", "/api/import"),
+    ("post", "/api/models/pull"),
+    ("post", "/api/crawl"),
+    ("post", "/setup/crawler"),
+    ("post", "/api/wiki/build"),
+    ("post", "/api/wiki/synthesize"),
+    ("patch", "/api/wiki/update"),
+]
+
+
 class TestOpenAPISchema:
+    @pytest.mark.parametrize(("method", "path"), SSE_ROUTES)
+    def test_streaming_routes_publish_the_sse_media_type(self, client, method, path):
+        """Litestar reads the documented content type off the decorator, not off
+        the returned Stream, so a missing media_type publishes these as JSON and
+        no client can tell an SSE route from a body route."""
+        schema = client.get("/schema/openapi.json").json()
+        operation = schema["paths"][path][method]
+        streamed = [
+            media_type
+            for response in operation["responses"].values()
+            for media_type in (response.get("content") or {})
+            if media_type == "text/event-stream"
+        ]
+        assert streamed == ["text/event-stream"]
+
+    def test_export_publishes_the_octet_stream_media_type(self, client):
+        """/api/export answers with a parquet or jsonl body. It set its media
+        type on the returned Response only, so the schema promised JSON and a
+        generated client would have parsed the bytes as text. The error arm
+        stays JSON, which is what the exception handler is for."""
+        responses = client.get("/schema/openapi.json").json()["paths"]["/api/export"]["get"][
+            "responses"
+        ]
+        assert set(responses["200"]["content"]) == {"application/octet-stream"}
+        assert set(responses["400"]["content"]) == {"application/json"}
+
+    def test_schema_serializes_to_json(self):
+        """A ResponseSpec generates examples whatever create_examples says, and
+        polyfactory fills them with live pydantic instances, which stdlib json
+        cannot encode. The published asset is dumped that way rather than served
+        through litestar's own encoder, so the dump is what has to hold."""
+        from tools.gen_openapi import render_schema
+
+        assert json.loads(render_schema())["info"]["title"] == "lilbee"
+
     def test_schema_endpoint_returns_json(self, client):
         resp = client.get("/schema/openapi.json")
         assert resp.status_code == 200
@@ -1161,13 +1214,16 @@ class TestOpenAPISchema:
     def test_dry_run_payload_stays_in_the_schema(self, client):
         """The build route's return annotation unions a Stream with a generic
         Response, which litestar does not unwrap, so the dry-run payload is
-        declared on the decorator. Without that the published schema shows an
-        empty object and the model is not registered at all. The route is
-        registered unconditionally, so this holds with the wiki disabled."""
+        declared on the decorator under its own 200. Without that the published
+        schema shows an empty object and the model is not registered at all. The
+        route is registered unconditionally, so this holds with the wiki
+        disabled."""
         schema = client.get("/schema/openapi.json").json()
-        content = schema["paths"]["/api/wiki/build"]["post"]["responses"]["201"]["content"]
+        responses = schema["paths"]["/api/wiki/build"]["post"]["responses"]
+        content = responses["200"]["content"]
         assert "WikiBuildDryRunResult" in content["application/json"]["schema"]["$ref"]
         assert "WikiBuildDryRunResult" in schema["components"]["schemas"]
+        assert set(responses["201"]["content"]) == {"text/event-stream"}
 
     def test_redoc_endpoint(self, client):
         resp = client.get("/schema/redoc")
@@ -1359,6 +1415,17 @@ class TestCrawlRoute:
     def test_post_crawl_invalid_url(self, mock_stream, client):
         resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
         assert resp.status_code == 400
+
+    @mock.patch(
+        "lilbee.server.handlers.crawl_stream",
+        side_effect=ValueError("URL must start with http:// or https://"),
+    )
+    def test_error_on_a_streaming_route_stays_json(self, mock_stream, client):
+        """Litestar builds an error response with the handler's media type, so a
+        streaming route would otherwise label a JSON error body as SSE."""
+        resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
+        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.json()["status_code"] == 400
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_accepts_null_max_pages(self, mock_stream, client):

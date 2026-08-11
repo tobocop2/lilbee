@@ -8,10 +8,11 @@ from litestar.exceptions import ValidationException
 from litestar.response import Stream
 
 from lilbee.server import handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import CrawlRequest
 
 
-@post("/api/crawl")
+@post("/api/crawl", media_type=SSE_MEDIA_TYPE)
 async def crawl_route(data: CrawlRequest) -> Stream:
     """Crawl a URL with streaming SSE progress events."""
     from lilbee.crawler import require_valid_crawl_url
@@ -29,4 +30,4 @@ async def crawl_route(data: CrawlRequest) -> Stream:
         render_mode=data.render_mode,
         include_subdomains=data.include_subdomains,
     )
-    return Stream(gen, media_type="text/event-stream")
+    return Stream(gen, media_type=SSE_MEDIA_TYPE)

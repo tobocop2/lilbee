@@ -48,6 +48,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     dispatch_chat_stream,
     preflight_chat_request,
 )
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +121,13 @@ async def _auth_before_request(request: Request) -> Response | None:
 async def chat_completions_endpoint(
     request: Request, data: CompletionsRequest
 ) -> Response | Stream:
-    """``/v1/chat/completions`` (stream + non-stream + tools)."""
+    """``/v1/chat/completions`` (stream + non-stream + tools).
+
+    ``stream: true`` switches the 200 response from JSON to an SSE stream of
+    chat.completion.chunk frames. The request body picks the arm, which OpenAPI
+    cannot express, so the schema declares the JSON default and this contract
+    matches OpenAI's own.
+    """
     rejection = _reject_before_dispatch(request, data)
     if rejection is not None:
         return rejection
@@ -156,7 +163,7 @@ async def chat_completions_endpoint(
             _gated_completions_stream(
                 req, guard, model=resolved_model, include_usage=include_usage
             ),
-            media_type="text/event-stream",
+            media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
         )
     return await _run_non_stream(req, guard, canonical_model=resolved_model)

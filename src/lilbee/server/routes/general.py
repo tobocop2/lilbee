@@ -20,6 +20,7 @@ from litestar.status_codes import HTTP_202_ACCEPTED
 from pydantic import ValidationError
 
 from lilbee.server import handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ConfigResponse,
     ConfigUpdateResponse,
@@ -36,10 +37,10 @@ async def health_route() -> HealthResponse:
     return await handlers.health()
 
 
-@get("/api/warm/stream")
+@get("/api/warm/stream", media_type=SSE_MEDIA_TYPE)
 async def warm_stream_route() -> Stream:
     """Stream chat-model cold-load progress as SSE for a launcher's warm indicator."""
-    return Stream(handlers.warm_stream(), media_type="text/event-stream")
+    return Stream(handlers.warm_stream(), media_type=SSE_MEDIA_TYPE)
 
 
 @get("/api/status")

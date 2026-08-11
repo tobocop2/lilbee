@@ -31,7 +31,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
-from lilbee.server.handlers.sse import sse_error
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE, sse_error
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
@@ -140,7 +140,7 @@ def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) 
     """SSE Stream whose chat slot is freed by the generator or the after-send hook."""
     return Stream(
         _gated_stream(generator, guard),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
         background=BackgroundTask(guard.release),
     )
 
@@ -199,7 +199,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
         await release_chat_slot()
 
 
-@post("/api/ask/stream")
+@post("/api/ask/stream", media_type=SSE_MEDIA_TYPE)
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
     await _acquire_chat_lock_or_raise()
@@ -239,7 +239,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         await release_chat_slot()
 
 
-@post("/api/chat/stream")
+@post("/api/chat/stream", media_type=SSE_MEDIA_TYPE)
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
     await _acquire_chat_lock_or_raise()

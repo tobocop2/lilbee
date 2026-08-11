@@ -23,6 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import GpusResponse, PlacementResponse, PlacementSpecBody
 
 log = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ async def gpus_route() -> GpusResponse:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@get("/api/gpus/stream")
+@get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE)
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
     from lilbee.app.placement import get_placement
@@ -126,4 +127,4 @@ async def gpu_stats_stream_route() -> Stream:
         view = await asyncio.to_thread(get_placement)
     except ProviderError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
-    return Stream(handlers.gpu_stats_stream(view.gpus), media_type="text/event-stream")
+    return Stream(handlers.gpu_stats_stream(view.gpus), media_type=SSE_MEDIA_TYPE)

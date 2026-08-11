@@ -1243,7 +1243,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize` (these three are SSE streams), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `POST /api/wiki/index`, `GET /api/wiki/stubs` (the indexed pages nothing has written yet), `POST /api/wiki/generate/{slug}`, `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
 - Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
 - Status/health: `GET /api/status`, `GET /api/health`
-- Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`
+- Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`. Every release also attaches the same schema as an `openapi.json` asset, so a client can pin the contract for a version without running the server. Streaming routes declare `text/event-stream` on the decorator, which is where litestar reads the documented content type from.
 
 All chat-generating endpoints (`/api/ask`, `/api/chat`, both their `/stream` variants, and `POST /v1/chat/completions`) share a process-wide chat lock so only one inference call runs at a time per server. Concurrent requests queue server-side; if the wait exceeds the configured timeout the request returns 429 with a `Retry-After: 1` header.
 
