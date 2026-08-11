@@ -24,7 +24,7 @@ from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
 from lilbee.app.settings import apply_settings_update
-from lilbee.app.setup_state import is_fresh_install, models_ready
+from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.color_compat import (
@@ -227,9 +227,11 @@ class LilbeeApp(App[None]):
         self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
-        # A chat and an embedding model both resolve; gates the Chat view.
-        # The startup gate settles it before handing over any screen.
-        self.models_are_ready = True
+        # Per-role readiness, settled by the startup gate before it hands over
+        # any screen and re-answered whenever a model role is reassigned. They
+        # drive empty states and the landing view; no view is gated on them.
+        self.chat_is_ready = True
+        self.embedding_is_ready = True
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
         # so Footer / signal / worker wiring runs once per session.
@@ -349,44 +351,40 @@ class LilbeeApp(App[None]):
         self.install_screen(chat, name=_CHAT_SCREEN_NAME)
         gate.start_boot()
 
-    def reveal_chat(self) -> None:
-        """Swap the startup gate for the chat screen once the engine has settled.
+    def reveal_landing(self) -> None:
+        """Swap the startup gate for what the machine can serve.
 
-        Reached only for an app that can serve: the gate settles readiness
-        first, and routes to setup itself when there is any.
+        A resolvable chat model lands on Chat; anything else lands on the
+        Catalog, where models are installed.
         """
-        self.switch_screen(_CHAT_SCREEN_NAME)
-        if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
-            self.switch_view(self._initial_view)
+        if self.chat_is_ready:
+            self.switch_screen(_CHAT_SCREEN_NAME)
+            if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
+                self.switch_view(self._initial_view)
+        else:
+            self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
         self.task_bar.start_detect_pending()
 
-    def settle_setup_state(self) -> bool:
-        """Answer the setup questions, run setup if there is any, and say so.
+    def settle_landing(self) -> None:
+        """Answer per-role readiness and record it.
 
         Blocks the calling thread until the answer is recorded on the UI
         thread, so a handover ordered after it cannot read a stale flag.
-        Returns whether setup took the screen.
         """
-        ready = models_ready()
-        setup_to_do = not ready or is_fresh_install()
-        call_from_thread(self, self._apply_setup_state, ready, setup_to_do)
-        return setup_to_do
+        call_from_thread(self, self._apply_readiness, chat_ready(), embedding_ready())
 
     @work(thread=True, name="setup_state", exit_on_error=False)
-    def refresh_models_ready(self) -> None:
-        """Re-answer readiness off the UI thread, leaving the user where they are.
-
-        Never presents the wizard: this runs when a model lands, which is how
-        the wizard is closed.
-        """
-        ready = models_ready()
-        if ready and peek_services() is None:
-            # Setup finished after the gate stepped aside, so nothing has built
-            # the container yet and this thread is the one that should.
+    def refresh_readiness(self) -> None:
+        """Re-answer readiness off the UI thread, leaving the user where they are."""
+        chat = chat_ready()
+        embedding = embedding_ready()
+        if (chat or embedding) and peek_services() is None:
+            # The first model landed after the gate stepped aside, so nothing
+            # has built the container yet and this thread is the one that should.
             self.adopt_services()
-        call_from_thread(self, self._apply_setup_state, ready, False)
+        call_from_thread(self, self._apply_readiness, chat, embedding)
 
     def adopt_services(self) -> None:
         """Build the services container and subscribe this app to it.
@@ -397,11 +395,10 @@ class LilbeeApp(App[None]):
         """
         self._wire_worker_pool_notifications(get_services())
 
-    def _apply_setup_state(self, ready: bool, open_setup: bool) -> None:
-        """Record the readiness answer, then run setup when the boot probe asked."""
-        self.models_are_ready = ready
-        if open_setup:
-            self.open_setup()
+    def _apply_readiness(self, chat: bool, embedding: bool) -> None:
+        """Record the per-role readiness answers."""
+        self.chat_is_ready = chat
+        self.embedding_is_ready = embedding
 
     def _recheck_models_on_model_change(self, payload: tuple[str, object]) -> None:
         """Re-answer readiness whenever a model role is reassigned.
@@ -411,10 +408,10 @@ class LilbeeApp(App[None]):
         """
         key, _value = payload
         if key in MODEL_ROLE_FIELDS:
-            self.refresh_models_ready()
+            self.refresh_readiness()
 
     def open_setup(self) -> None:
-        """Show the setup wizard over the catalog.
+        """Show the setup wizard over the catalog, on explicit request (F5, /setup).
 
         The wizard is dismissable, so what sits under it is where Escape
         lands: the catalog, never a chat screen with no engine behind it.
@@ -479,16 +476,18 @@ class LilbeeApp(App[None]):
             reason = canon.reason or msg.MODEL_REASON_DEFAULT
 
             if canon.original == canon.effective:
-                # Nothing to fall back to: keep the ref and let the readiness
-                # check open the SetupWizard, which is the single voice for
-                # "pick a model." A toast here just duplicates the wizard (on first
-                # launch the default refs aren't downloaded yet), so log the reason
-                # as a breadcrumb but don't surface it.
-                log.warning(
-                    msg.MODEL_UNUSABLE_OPENING_SETUP.format(
-                        label=label, original=canon.original, reason=reason
+                # Nothing to fall back to: keep the ref and let the catalog
+                # landing be the single voice for "pick a model." A toast here
+                # would just duplicate it, so log the reason as a breadcrumb
+                # but don't surface it. An unconfigured role isn't even a
+                # breadcrumb: there is nothing to report about a model nobody
+                # chose.
+                if canon.original:
+                    log.warning(
+                        msg.MODEL_UNUSABLE_NO_FALLBACK.format(
+                            label=label, original=canon.original, reason=reason
+                        )
                     )
-                )
                 continue
 
             # A rejected swap (validation or disk error) must not be fatal at startup.
@@ -504,6 +503,12 @@ class LilbeeApp(App[None]):
                     ),
                     exc_info=True,
                 )
+                continue
+            if not canon.original:
+                # Adopting an installed model into an unconfigured role is the
+                # expected path (models pulled before the TUI ever ran), not a
+                # fallback worth a warning toast.
+                log.info(msg.MODEL_ADOPTED_LOG.format(label=label, effective=canon.effective))
                 continue
             notice = msg.MODEL_FALLBACK_NOTICE.format(
                 label=label, original=canon.original, effective=canon.effective, reason=reason
@@ -643,11 +648,6 @@ class LilbeeApp(App[None]):
 
     def _view_is_refused(self, view_name: str) -> bool:
         """True when *view_name* cannot be entered now, having handled the refusal."""
-        if view_name == msg.DEFAULT_VIEW and not self.models_are_ready:
-            # Chat with no model behind it is a prompt that cannot answer, so
-            # the Chat route is a route into setup until one resolves.
-            self.open_setup()
-            return True
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.

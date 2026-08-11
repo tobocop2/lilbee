@@ -53,7 +53,7 @@ def _mock_services():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     with (
-        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,

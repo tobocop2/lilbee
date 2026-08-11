@@ -454,7 +454,8 @@ def _seeded_models(monkeypatch):
     monkeypatch.setattr(cfg, "reranker_model", "")
     from lilbee.cli.tui import app as app_mod
 
-    monkeypatch.setattr(app_mod, "models_ready", lambda: True)
+    monkeypatch.setattr(app_mod, "chat_ready", lambda: True)
+    monkeypatch.setattr(app_mod, "embedding_ready", lambda: True)
 
 
 async def test_chat_screen_mounts_with_bar_present(_seeded_models) -> None:

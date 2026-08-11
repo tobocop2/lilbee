@@ -103,7 +103,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -3844,7 +3844,7 @@ async def test_chat_stays_up_when_models_exist():
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
-    with patch("lilbee.cli.tui.app.models_ready", return_value=True):
+    with patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True):
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()

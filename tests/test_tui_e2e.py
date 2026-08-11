@@ -3433,7 +3433,7 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch("lilbee.cli.tui.app.models_ready", return_value=True):
+            with mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True), mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen
@@ -3458,7 +3458,7 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch("lilbee.cli.tui.app.models_ready", return_value=True):
+            with mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True), mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen

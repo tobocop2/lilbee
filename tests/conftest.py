@@ -212,21 +212,6 @@ def _sealed_engine_resolution(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _sealed_fresh_install_probe(request, monkeypatch):
-    """Seal the TUI's fresh-install probe so every machine behaves like a set-up one.
-
-    ``is_fresh_install`` answers from ``cfg.lancedb_dir``, which outside an
-    isolated data dir is the developer's real platform path: present on one
-    machine, absent on the next, and it decides whether the app opens its setup
-    wizard over whatever screen a test is driving. Tests that exercise the
-    first-run path opt out with ``@pytest.mark.first_run``.
-    """
-    if "first_run" in {m.name for m in request.node.iter_markers()}:
-        return
-    monkeypatch.setattr("lilbee.cli.tui.app.is_fresh_install", lambda: False)
-
-
-@pytest.fixture(autouse=True)
 def _reset_services_after_test():
     """Drop any Services container ``set_services()`` left around.
 

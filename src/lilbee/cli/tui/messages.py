@@ -47,10 +47,11 @@ MODEL_FALLBACK_FAILED = (
     "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
     "rejected; keeping {original!r}. Pick a working {label} model in settings."
 )
-MODEL_UNUSABLE_OPENING_SETUP = (
+MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
-    "to. Opening setup so you can pick one."
+    "to. Pick one from the catalog."
 )
+MODEL_ADOPTED_LOG = "{label} model: using installed {effective!r}."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."

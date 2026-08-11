@@ -47,7 +47,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
         patch.object(ModelBar, "_scan_models"),
     ):

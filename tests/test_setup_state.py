@@ -178,7 +178,11 @@ async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_serv
 
     with (
         mock.patch(
-            "lilbee.cli.tui.app.models_ready",
+            "lilbee.cli.tui.app.chat_ready",
+            return_value=True,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.app.embedding_ready",
             return_value=True,
         ),
         mock.patch(
