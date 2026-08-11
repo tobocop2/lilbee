@@ -40,6 +40,7 @@ from lilbee.providers.base import (
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -110,7 +111,9 @@ class SdkLLMProvider(LLMProvider):
     def embed(self, texts: list[str]) -> list[Vector]:
         """Embed texts via the configured backend, converting its JSON floats to float32."""
         self._ensure_initialized()
-        ref = parse_model_ref(require_role_ref(cfg.embedding_model, "embedding", provider="sdk"))
+        ref = parse_model_ref(
+            require_role_ref(cfg.embedding_model, WorkerRole.EMBED, provider="sdk")
+        )
         request = EmbeddingRequest(
             ref=ref,
             inputs=texts,
@@ -174,7 +177,9 @@ class SdkLLMProvider(LLMProvider):
         tool-call deltas).
         """
         self._ensure_initialized()
-        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, "chat", provider="sdk"))
+        ref = parse_model_ref(
+            require_role_ref(model or cfg.chat_model, WorkerRole.CHAT, provider="sdk")
+        )
         if tools and not self.supports_tools(model or cfg.chat_model):
             chosen = model or cfg.chat_model
             raise ProviderError(
@@ -390,7 +395,9 @@ class SdkLLMProvider(LLMProvider):
         if not candidates:
             return []
         self._ensure_initialized()
-        ref = parse_model_ref(require_role_ref(cfg.reranker_model, "reranker", provider="sdk"))
+        ref = parse_model_ref(
+            require_role_ref(cfg.reranker_model, WorkerRole.RERANK, provider="sdk")
+        )
         request = RerankRequest(
             ref=ref,
             query=query,

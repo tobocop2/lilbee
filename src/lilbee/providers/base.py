@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 from pydantic import BaseModel
 
 from lilbee.core.vectors import Vector
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
-    from lilbee.providers.roles import WorkerRole
     from lilbee.providers.warm_progress import WarmProgress
 
 T_co = TypeVar("T_co", covariant=True)
@@ -155,11 +155,20 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
-def require_role_ref(ref: str, role: str, *, provider: str = "") -> str:
+# Human word per role for the not-configured error ("embedding model", not "embed model").
+_ROLE_WORDS: dict[WorkerRole, str] = {
+    WorkerRole.CHAT: "chat",
+    WorkerRole.EMBED: "embedding",
+    WorkerRole.RERANK: "reranker",
+    WorkerRole.VISION: "vision",
+}
+
+
+def require_role_ref(ref: str, role: WorkerRole, *, provider: str = "") -> str:
     """Reject an unconfigured role with a clean error instead of parsing ''."""
     if not ref:
         raise ProviderError(
-            f"No {role} model is configured. Pick one from the catalog "
+            f"No {_ROLE_WORDS[role]} model is configured. Pick one from the catalog "
             f"or run 'lilbee model pull <model>'.",
             provider=provider,
             kind=ProviderErrorKind.NOT_FOUND,

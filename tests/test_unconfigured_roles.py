@@ -216,3 +216,15 @@ class TestRoutingProviderUnconfigured:
             provider.embed(["hi"])
         with pytest.raises(ProviderError, match="No embedding model is configured"):
             provider.count_tokens("hi")
+
+    def test_chat_paths_name_the_state_and_tools_read_false(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "chat_model", "")
+        provider = RoutingProvider()
+        with pytest.raises(ProviderError, match="No chat model is configured"):
+            provider.chat([{"role": "user", "content": "hi"}])
+        with pytest.raises(ProviderError, match="No chat model is configured"):
+            provider.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+        assert provider.supports_tools("") is False
