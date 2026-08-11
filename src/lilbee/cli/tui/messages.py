@@ -289,8 +289,8 @@ CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_ALREADY_DOWNLOADING = "{name} is already downloading, press t to watch it"
 CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
-CATALOG_WELCOME = "Pick a model to start chatting — the fit chip shows what runs on this machine."
-CHAT_READY_TOAST = "Chat is ready — press c."
+CATALOG_WELCOME = "Pick a model to start chatting. The fit chip shows what runs on this machine."
+CHAT_READY_TOAST = "Chat is ready. Press c."
 CATALOG_INSTALLED_OK = "{name} installed"
 CATALOG_GATED_REPO = "{name} requires login, run /login or lilbee login"
 CATALOG_DOWNLOAD_FAILED = "{name}: download failed"
@@ -340,7 +340,7 @@ CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local AI stack and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."
 CHAT_WELCOME_NO_MODEL_HINT = "No chat model installed yet. Press m to pick one from the catalog."
-CHAT_INPUT_NO_MODEL = "No chat model — press m to pick one"
+CHAT_INPUT_NO_MODEL = "No chat model. Press m to pick one"
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
 CHAT_LOGIN_FAILED = "Login failed: {error}"
@@ -526,22 +526,6 @@ WIKI_TYPE_HEADINGS: dict[str, str] = {
     kind.value: label for kind, label in _WIKI_TYPE_HEADINGS.items()
 }
 APP_QUIT_AGAIN_HINT = "Answer cancelled. Press Ctrl+C again to quit."
-SETUP_WELCOME = "Welcome to lilbee"
-SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
-SETUP_INTRO = (
-    "lilbee needs two models to work: one for chat and one for search. "
-    "Pick one of each below: highlight a card and press [b]Enter[/b] to install. "
-    "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
-)
-SETUP_LOADING = "Finding popular models…"
-SETUP_PICKS_UNAVAILABLE = (
-    "Couldn't reach HuggingFace. Check your connection, or press Esc and use "
-    "'lilbee model pull <ref>'."
-)
-SETUP_HEADING_CHAT = "Chat Models"
-SETUP_HEADING_EMBED = "Embedding Models"
-SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"
-SETUP_RETURN_HINT = "Your existing models are ready  ·  Esc to return"
 SETUP_CARD_HINT = "↵ Enter to install"
 INSTALLED_CARD_HINT = "D / ⌫ to delete"
 
@@ -708,7 +692,7 @@ CHAT_MODE_TOGGLE_TOOLTIP = (
 CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
     "Search needs an embedding model. Press the pill to pick one from the catalog."
 )
-SEARCH_NEEDS_EMBEDDER = "Search needs an embedding model — pick one to enable it."
+SEARCH_NEEDS_EMBEDDER = "Search needs an embedding model. Pick one to enable it."
 CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat for this turn."
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
@@ -736,7 +720,7 @@ MODEL_BAR_EMBED_LABEL = "Embed"
 MODEL_BAR_VISION_LABEL = "Vision"
 MODEL_BAR_RERANK_LABEL = "Rerank"
 MODEL_BAR_DISABLED = "disabled"
-MODEL_BAR_NONE = "none — pick one"
+MODEL_BAR_NONE = "none, pick one"
 MODEL_BAR_NOT_INSTALLED = "{name} (not installed)"
 MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "This model is not installed. Click to pick another, "

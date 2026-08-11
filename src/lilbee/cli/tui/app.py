@@ -413,25 +413,6 @@ class LilbeeApp(App[None]):
         if key in MODEL_ROLE_FIELDS:
             self.refresh_readiness()
 
-    def open_setup(self) -> None:
-        """Show the setup wizard over the catalog, on explicit request (F5, /setup).
-
-        The wizard is dismissable, so what sits under it is where Escape
-        lands: the catalog, never a chat screen with no engine behind it.
-        """
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        if isinstance(self.screen, SetupWizard):
-            return
-        if self._switching:
-            # switch_view drops a switch that arrives mid-transition, which
-            # would leave the wizard over the screen that switch was leaving.
-            # Retrying on the next frame is paced by the display, not a spin.
-            self.call_after_refresh(self.open_setup)
-            return
-        self.switch_view(msg.CATALOG_VIEW)
-        self.push_screen(SetupWizard())
-
     def _wire_worker_pool_notifications(self, services: Services) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
 
@@ -630,19 +611,15 @@ class LilbeeApp(App[None]):
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel the foreground operation, else quit.
 
-        Only operations the user is actively watching (the setup wizard, an
-        in-flight chat stream) get the cancel-first treatment; a background
-        task like an engine warm or a sync never swallows a quit.
+        Only operations the user is actively watching (an in-flight chat
+        stream) get the cancel-first treatment; a background task like an
+        engine warm or a sync never swallows a quit.
         """
         get_services().cancel_inference()
 
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.screens.setup import SetupWizard
 
         screen = self.screen
-        if isinstance(screen, SetupWizard):
-            screen.action_cancel()
-            return
         if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)

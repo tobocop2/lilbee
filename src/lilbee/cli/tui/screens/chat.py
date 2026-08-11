@@ -311,7 +311,6 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("s", "cycle_scope", "Scope", show=False),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
-        Binding("f5", "open_setup", "Setup", show=False),
         # A function key, not a letter: the four role pickers are worth
         # reaching mid-sentence, and a focused input consumes printable keys
         # before any binding fires. Tab reaches the bar too, but only from
@@ -446,12 +445,6 @@ class ChatScreen(Screen[None]):
         """Quick check if the embedding model resolves (no network calls)."""
         return is_model_available(cfg.embedding_model, get_services().provider)
 
-    def _on_setup_complete(self, result: str | None) -> None:
-        """Called when wizard completes or is skipped."""
-        # Re-detect after setup so a freshly-set-up vault gets the hint.
-        self.app.task_bar.start_detect_pending()
-        self.refresh_model_bar()
-
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _value = payload
         if key in {"chat_mode", "embedding_model"}:
@@ -462,10 +455,6 @@ class ChatScreen(Screen[None]):
         with contextlib.suppress(NoMatches):
             self.query_one("#chat-welcome", ChatWelcome).set_no_model(not ready)
         self._apply_input_busy_state()
-
-    def action_open_setup(self) -> None:
-        """Open the setup wizard."""
-        self._cmd_setup("")
 
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
@@ -1387,11 +1376,6 @@ class ChatScreen(Screen[None]):
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")
-
-    def _cmd_setup(self, _args: str) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _cmd_remember(self, args: str) -> None:
         """Run /remember in a worker so embedding the text never blocks the UI."""
