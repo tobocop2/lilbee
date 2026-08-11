@@ -18,6 +18,7 @@ from textual.binding import Binding, BindingType
 from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.filter import LineFilter
+from textual.reactive import reactive
 from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
@@ -203,6 +204,13 @@ class LilbeeApp(App[None]):
         Binding("S", "run_sync", "Sync", show=False, priority=True),
     ]
 
+    # Per-role readiness, settled by the startup gate before it hands over any
+    # screen and re-answered whenever a model role is reassigned. They drive
+    # empty states and the landing view; no view is gated on them. Reactive so
+    # screens can watch them instead of polling.
+    chat_is_ready: reactive[bool] = reactive(True)
+    embedding_is_ready: reactive[bool] = reactive(True)
+
     def __init__(self, *, initial_view: str | None = None) -> None:
         # Both terminal questions are answered once, here: resolve_term_program can
         # shell out to tmux, and get_line_filters runs per widget per repaint. The
@@ -227,11 +235,6 @@ class LilbeeApp(App[None]):
         self._previous_view: str | None = None
         self._switching = False
         self._theme_index = 0
-        # Per-role readiness, settled by the startup gate before it hands over
-        # any screen and re-answered whenever a model role is reassigned. They
-        # drive empty states and the landing view; no view is gated on them.
-        self.chat_is_ready = True
-        self.embedding_is_ready = True
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
         # so Footer / signal / worker wiring runs once per session.
