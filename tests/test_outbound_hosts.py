@@ -36,6 +36,9 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # Agent-client documentation links cited from agent_configs/ module docstrings.
         "docs.litellm.ai",
         "opencode.ai",
+        # Claude Code install link in the launcher's binary-not-found hint. A
+        # string in a message; nothing fetches it.
+        "claude.com",
         # Citations for the dual-vendor Vulkan ICD workaround in
         # gpu_select.py, vulkan_icd_discovery.py, and log_dispatch.py.
         "alegruz.github.io",

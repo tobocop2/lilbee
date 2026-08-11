@@ -43,7 +43,6 @@ from lilbee.server.chat_dispatch.canonical import (
     TextDelta,
     ToolResultBlock,
     ToolUseBlock,
-    ToolUseDelta,
 )
 
 _IMAGE_CONTENT_UNSUPPORTED = (
@@ -331,25 +330,23 @@ class _AnthropicStreamMapper:
     ) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if isinstance(event.delta, TextDelta):
             return self._text_events(self._reasoning.feed(event.delta.text))
-        if isinstance(event.delta, ToolUseDelta):
-            if self._open is not _BlockKind.TOOL:
-                # A delta for a block that never started is a provider quirk,
-                # not a stream error; dropping beats crashing the stream.
-                return []
-            return [
-                (
-                    AnthropicEventType.CONTENT_BLOCK_DELTA,
-                    {
-                        "type": "content_block_delta",
-                        "index": self._next_index - 1,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": event.delta.partial_json,
-                        },
+        if self._open is not _BlockKind.TOOL:
+            # A tool delta for a block that never started is a provider quirk,
+            # not a stream error; dropping beats crashing the stream.
+            return []
+        return [
+            (
+                AnthropicEventType.CONTENT_BLOCK_DELTA,
+                {
+                    "type": "content_block_delta",
+                    "index": self._next_index - 1,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": event.delta.partial_json,
                     },
-                )
-            ]
-        return []
+                },
+            )
+        ]
 
     def block_stop(self) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         remaining = self._reasoning.flush()

@@ -165,3 +165,25 @@ async def test_whole_tool_call_on_start_block_still_carries_arguments():
     ]
     assert len(json_deltas) == 1
     assert json.loads(json_deltas[0]["delta"]["partial_json"]) == {"p": "."}
+
+
+@pytest.mark.asyncio
+async def test_orphan_tool_delta_is_dropped():
+    """An argument delta with no open tool block must not crash the stream."""
+    pairs = await _drain(
+        [
+            ContentBlockDelta(index=0, delta=ToolUseDelta(partial_json='{"p": 1}')),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+    )
+    assert _types(pairs) == ["message_start", "message_delta", "message_stop"]
+
+
+def test_mapper_skips_empty_tokens():
+    """A token with no content must not open a block or emit a delta."""
+    from lilbee.retrieval.reasoning import StreamToken
+    from lilbee.server.anthropic_api.translate import _AnthropicStreamMapper
+
+    mapper = _AnthropicStreamMapper()
+    assert mapper._text_events([StreamToken(content="", is_reasoning=False)]) == []

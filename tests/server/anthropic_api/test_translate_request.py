@@ -149,3 +149,77 @@ def test_empty_assistant_message_is_dropped():
         )
     )
     assert [m.role for m in req.messages] == ["user", "user"]
+
+
+def test_empty_string_content_message_is_dropped():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "and?"},
+            ]
+        )
+    )
+    assert [m.role for m in req.messages] == ["user", "user"]
+
+
+def test_tool_result_without_content_yields_empty_result():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1"}],
+                }
+            ]
+        )
+    )
+    result = req.messages[0].content[0]
+    assert isinstance(result, ToolResultBlock)
+    assert result.content == []
+
+
+def test_tool_result_list_content_keeps_text_and_drops_unknown():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [
+                                {"type": "text", "text": "ok"},
+                                {"type": "mystery", "payload": 1},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    result = req.messages[0].content[0]
+    assert isinstance(result, ToolResultBlock)
+    assert result.content == [TextBlock(text="ok")]
+
+
+def test_tool_result_image_content_raises():
+    with pytest.raises(ValueError, match="Image content"):
+        messages_to_canonical_request(
+            _request(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": [{"type": "image", "source": {"data": "x"}}],
+                            }
+                        ],
+                    }
+                ]
+            )
+        )

@@ -264,3 +264,91 @@ class TestStreaming:
         error_events = [p for t, p in events if t == "error"]
         assert len(error_events) == 1
         assert error_events[0]["error"]["type"] == "api_error"
+
+
+class TestErrorPaths:
+    async def test_busy_backend_is_429_with_retry_after(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.server.chat_dispatch.concurrency import ChatBusyError
+
+        async def _busy(_limit):
+            raise ChatBusyError
+
+        monkeypatch.setattr("lilbee.server.anthropic_api.routes.acquire_chat_slot_or_busy", _busy)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 429
+        assert resp.headers["retry-after"] == "1"
+        assert resp.json()["error"]["type"] == "rate_limit_error"
+
+    async def test_unclassified_preflight_error_is_500_api_error(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        def _boom(_req):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("lilbee.server.anthropic_api.routes.preflight_chat_request", _boom)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 500
+        assert resp.json()["error"]["type"] == "api_error"
+
+    async def test_classified_dispatch_error_maps_status_and_type(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def _overflow(_req, canonical_model):
+            raise ProviderError("context overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+
+        monkeypatch.setattr("lilbee.server.anthropic_api.routes.dispatch_chat", _overflow)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+
+    async def test_unclassified_dispatch_error_is_500(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        def _boom(_req, canonical_model):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("lilbee.server.anthropic_api.routes.dispatch_chat", _boom)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 500
+        assert resp.json()["error"]["type"] == "api_error"
+
+    async def test_classified_mid_stream_error_maps_error_type(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def _rate_limited(*_args, **_kwargs):
+            raise ProviderError("slow down", kind=ProviderErrorKind.RATE_LIMIT)
+
+        monkeypatch.setattr(
+            "lilbee.server.anthropic_api.routes.dispatch_chat_stream", _rate_limited
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+        assert resp.status_code == 200
+        events = _sse_events(resp.content)
+        error_events = [p for t, p in events if t == "error"]
+        assert len(error_events) == 1
+        assert error_events[0]["error"]["type"] == "rate_limit_error"
+
+    async def test_uninitialized_auth_fails_closed_as_401(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from litestar.exceptions import NotAuthorizedException
+
+        def _raise(_header):
+            raise NotAuthorizedException
+
+        monkeypatch.setattr(_auth_mod.session_manager, "validate", _raise)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 401
+        assert resp.json()["error"]["type"] == "authentication_error"
