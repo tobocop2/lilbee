@@ -319,8 +319,22 @@ CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask…   /  commands   ?  keys   F2  all comma
 COMMAND_PALETTE_ICON = "✦"
 # Box-drawing, not block elements: shade blocks are dither patterns that draw as
 # sparse dashes and full blocks seam per cell wherever the font is not cell-exact.
+# Box-drawing pair: the safe default for terminals whose fonts do not tile
+# block elements cell-exact (shade blocks render as sparse dashes there).
 PROGRESS_BAR_FILL = "━"
 PROGRESS_BAR_TRACK = "─"
+# Block pair: the full-weight bars, used where the terminal tiles them.
+PROGRESS_BAR_FILL_BLOCK = "█"
+PROGRESS_BAR_TRACK_BLOCK = "░"
+
+
+def progress_bar_glyphs() -> tuple[str, str]:
+    """Bar fill/track pair: block elements where the terminal tiles them."""
+    from lilbee.cli.tui.color_compat import draws_block_bars
+
+    if draws_block_bars():
+        return PROGRESS_BAR_FILL_BLOCK, PROGRESS_BAR_TRACK_BLOCK
+    return PROGRESS_BAR_FILL, PROGRESS_BAR_TRACK
 SLASH_CATALOG_TITLE = "Slash Commands"
 SLASH_CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
 SLASH_CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"

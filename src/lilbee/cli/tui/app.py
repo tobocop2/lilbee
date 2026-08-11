@@ -30,6 +30,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.color_compat import (
     EightBitPalette,
+    draws_block_bars,
     draws_block_glyphs,
     needs_eight_bit,
     resolve_term_program,
@@ -219,6 +220,9 @@ class LilbeeApp(App[None]):
         color_system = Console().color_system
         term_program = resolve_term_program(os.environ)
         self._plain_glyphs = not draws_block_glyphs(color_system, term_program)
+        # Prime the process-wide answer the bar renderers read (same predicate,
+        # same inputs), so no repaint pays for the tmux probe.
+        draws_block_bars()
         # A terminal that cannot tile partial-block glyphs also gets the sheet
         # restating Textual's own block borders.
         self._eight_bit_filter = (

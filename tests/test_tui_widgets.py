@@ -562,23 +562,25 @@ class TestTaskBar:
 
     def test_warm_detail_phases(self) -> None:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_FILL, _warm_detail
+        from lilbee.cli.tui.widgets.task_bar import _warm_detail
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        _warm_bar_fill = msg.progress_bar_glyphs()[0]
 
         assert _warm_detail(None) is None
         assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
         # Indeterminate phases carry a moving sweep bar plus the phase word: a
         # multi-second load has to read as working, not stalled.
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
-        assert msg.TASKBAR_WARM_STARTING in starting and _WARM_BAR_FILL in starting
+        assert msg.TASKBAR_WARM_STARTING in starting and _warm_bar_fill in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert msg.TASKBAR_WARM_LOADING in loading and _WARM_BAR_FILL in loading
+        assert msg.TASKBAR_WARM_LOADING in loading and _warm_bar_fill in loading
         # Reading weights: a determinate byte bar, then the phase word with %.
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
         assert "reading weights 42%" in reading
-        assert reading.startswith(_WARM_BAR_FILL * 5)  # round(0.42 * 12) = 5 filled cells
+        assert reading.startswith(_warm_bar_fill * 5)  # round(0.42 * 12) = 5 filled cells
         # No total yet: percent floors to 0 instead of dividing by zero.
         zero = _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS))
         assert "reading weights 0%" in zero
@@ -587,7 +589,10 @@ class TestTaskBar:
         from unittest import mock
 
         from lilbee.app.services import set_services
-        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_FILL, TaskBar
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        _warm_bar_fill = msg.progress_bar_glyphs()[0]
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         services = mock.MagicMock()
@@ -604,17 +609,19 @@ class TestTaskBar:
             warm = bar._warm_line()
             # model_ref is None here, so the line uses the fallback name.
             assert "warming up chat · " in warm
-            assert "reading weights 25%" in warm and _WARM_BAR_FILL in warm
+            assert "reading weights 25%" in warm and _warm_bar_fill in warm
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
 
     def test_sweep_bar_animates_and_keeps_width(self) -> None:
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.task_bar import (
-            _WARM_BAR_FILL,
             _WARM_BAR_WIDTH,
             _sweep_bar,
         )
+
+        _WARM_BAR_FILL = msg.progress_bar_glyphs()[0]
 
         frames = [_sweep_bar(t) for t in range(_WARM_BAR_WIDTH + 4)]
         assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
