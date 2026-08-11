@@ -18,6 +18,18 @@ def collapse_whitespace(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
+# Trailing possessive clitic on an entity surface: 's with a straight or
+# curly (U+2019) apostrophe, or the bare apostrophe of a plural possessive
+# (Voyagers'). Anchored to the end so a mid-label clitic (McDonald's
+# Corporation) stays.
+_POSSESSIVE_RE = re.compile("['\u2019]s?$")
+
+
+def strip_possessive(label: str) -> str:
+    """Drop a trailing possessive clitic from an entity surface form."""
+    return _POSSESSIVE_RE.sub("", label)
+
+
 # Characters that signal markdown-structural noise in a concept label.
 # Single source of truth for both ``is_valid_label`` (membership check)
 # and ``clean_label_for_display`` (regex strip).

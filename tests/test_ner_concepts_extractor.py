@@ -446,6 +446,40 @@ class TestEntityTypeFilter:
         assert labels == {"Irv Rybicki"}
 
 
+class TestPossessiveMerge:
+    """A possessive surface is the same subject as its base form."""
+
+    def test_a_possessive_surface_merges_into_its_standalone_base(self):
+        doc_a = _FakeDoc(ents=[_FakeSpan("Solar System", "LOC")])
+        doc_b = _FakeDoc(ents=[_FakeSpan("Solar System's", "LOC")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"a": doc_a, "b": doc_b}):
+            result = extractor.extract([_chunk("s.txt", 0, "a"), _chunk("s.txt", 1, "b")])
+        [entity] = result
+        assert entity.label == "Solar System"
+        assert len(entity.chunk_refs) == 2
+
+    def test_a_possessive_with_no_standalone_base_keeps_its_clitic(self):
+        """McDonald's-shaped names carry the clitic canonically; without the
+        base form in the corpus there is nothing safe to merge into."""
+        doc = _FakeDoc(ents=[_FakeSpan("McDonald's", "ORG")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        [entity] = result
+        assert entity.label == "McDonald's"
+
+    def test_a_curly_possessive_merges_too(self):
+        doc = _FakeDoc(
+            ents=[_FakeSpan("Le Verrier", "PERSON"), _FakeSpan("Le Verrier\u2019s", "PERSON")]
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        [entity] = result
+        assert entity.label == "Le Verrier"
+
+
 class TestFunnelLogging:
     """Concept counters are absent; entity counters remain."""
 

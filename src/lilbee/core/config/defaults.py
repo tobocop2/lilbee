@@ -28,12 +28,13 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 # spaCy NER labels that map onto something wiki-shaped. Excludes
 # QUANTITY / ORDINAL / CARDINAL / DATE / TIME / MONEY / PERCENT /
-# LANGUAGE / LAW because pages for "42" or "2021" are never useful.
-# FAC (buildings / airports) and NORP (nationalities / political /
-# religious groups) are included because corpora routinely surface
-# them as wiki-worthy topics.
+# LANGUAGE / LAW because pages for "42" or "2021" are never useful, and
+# NORP (nationalities / political / religious groups) because its surfaces
+# are adjectival (Saturnian, American) and make poor page subjects; opt
+# back in via the config override. FAC (buildings / airports) stays:
+# corpora routinely surface them as wiki-worthy topics.
 DEFAULT_ALLOWED_NER_LABELS = frozenset(
-    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC", "NORP"}
+    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC"}
 )
 
 # Timeout for backend catalog / management HTTP calls.
