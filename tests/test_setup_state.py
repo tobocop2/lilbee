@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.setup_state import chat_ready, embedding_ready, is_fresh_install
+from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat
 
@@ -24,18 +24,6 @@ def isolated_data_dir(tmp_path):
     finally:
         for field_name in type(snapshot).model_fields:
             setattr(cfg, field_name, getattr(snapshot, field_name))
-
-
-def test_a_missing_lancedb_dir_is_a_fresh_install(isolated_data_dir):
-    """A fresh data dir means the wizard runs, whatever the models say."""
-    assert not cfg.lancedb_dir.exists()
-    assert is_fresh_install() is True
-
-
-def test_an_existing_lancedb_dir_is_not_a_fresh_install(isolated_data_dir):
-    """A lilbee that has already stored something must not re-run first-run setup."""
-    cfg.lancedb_dir.mkdir(parents=True)
-    assert is_fresh_install() is False
 
 
 def test_empty_refs_are_not_ready_and_say_nothing(isolated_data_dir, caplog):
@@ -141,15 +129,6 @@ def test_not_ready_when_a_remote_ref_is_unusable(isolated_data_dir):
         return_value=ValidationResult.UNKNOWN,
     ):
         assert embedding_ready() is False
-
-
-def test_a_file_at_the_lancedb_path_is_a_fresh_install(isolated_data_dir):
-    """A stray file at the lancedb path is not a real data directory."""
-    cfg.lancedb_dir.parent.mkdir(parents=True, exist_ok=True)
-    cfg.lancedb_dir.write_text("not a directory")
-    assert cfg.lancedb_dir.exists()
-    assert not cfg.lancedb_dir.is_dir()
-    assert is_fresh_install() is True
 
 
 @pytest.fixture

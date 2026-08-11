@@ -10,14 +10,6 @@ from lilbee.providers.model_ref import parse_model_ref
 log = logging.getLogger(__name__)
 
 
-def is_fresh_install() -> bool:
-    """True when this lilbee has no data directory yet, so nothing has run here."""
-    if cfg.lancedb_dir.is_dir():
-        return False
-    log.debug("fresh install: lancedb_dir missing (%s)", cfg.lancedb_dir)
-    return True
-
-
 def chat_ready() -> bool:
     """True when the chat ref resolves to something usable now."""
     return _role_ready(cfg.chat_model)
@@ -53,8 +45,3 @@ def _role_ready(model: str) -> bool:
         log.debug("role_ready: model %r unresolved: %s", model, exc)
         return False
     return True
-
-
-def models_ready() -> bool:
-    """True when both the chat and embedding refs resolve to something usable now."""
-    return chat_ready() and embedding_ready()
