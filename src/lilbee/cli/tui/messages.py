@@ -335,6 +335,8 @@ def progress_bar_glyphs() -> tuple[str, str]:
     if draws_block_bars():
         return PROGRESS_BAR_FILL_BLOCK, PROGRESS_BAR_TRACK_BLOCK
     return PROGRESS_BAR_FILL, PROGRESS_BAR_TRACK
+
+
 SLASH_CATALOG_TITLE = "Slash Commands"
 SLASH_CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
 SLASH_CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"
