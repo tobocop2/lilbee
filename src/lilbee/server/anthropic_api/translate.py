@@ -213,7 +213,7 @@ class _AnthropicStreamMapper:
     def __init__(self) -> None:
         self._reasoning = TagParser(show=True)
         self._next_index = 0
-        self._open: str | None = None  # "thinking" | "text" | None
+        self._open: str | None = None  # "thinking" | "text" | "tool" | None
 
     def _close_open(self) -> list[tuple[str, dict[str, Any]]]:
         if self._open is None:
@@ -269,6 +269,7 @@ class _AnthropicStreamMapper:
             events = self._close_open()
             index = self._next_index
             self._next_index += 1
+            self._open = "tool"
             events.append(
                 (
                     "content_block_start",
@@ -284,21 +285,23 @@ class _AnthropicStreamMapper:
                     },
                 )
             )
-            # llama-server emits tool calls whole, so the arguments ride one
-            # delta; a fresh delta stream per token would require re-chunking
-            # JSON that is already complete.
-            arguments = json.dumps(event.block.input)
-            events.append(
-                (
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {"type": "input_json_delta", "partial_json": arguments},
-                    },
+            if event.block.input:
+                # A provider that announces a whole call up front carries the
+                # parsed input on the start block; forward it as one delta so
+                # SDK accumulation still sees arguments.
+                events.append(
+                    (
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": json.dumps(event.block.input),
+                            },
+                        },
+                    )
                 )
-            )
-            events.append(("content_block_stop", {"type": "content_block_stop", "index": index}))
             return events
         # Text blocks open lazily on the first delta so an empty block never
         # emits a start/stop pair.
@@ -308,9 +311,23 @@ class _AnthropicStreamMapper:
         if isinstance(event.delta, TextDelta):
             return self._text_events(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
-            # Whole tool calls arrive via ContentBlockStart; a bare delta for a
-            # block that never started is a provider quirk, not a stream error.
-            return []
+            if self._open != "tool":
+                # A delta for a block that never started is a provider quirk,
+                # not a stream error; dropping beats crashing the stream.
+                return []
+            return [
+                (
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": self._next_index - 1,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": event.delta.partial_json,
+                        },
+                    },
+                )
+            ]
         return []
 
     def block_stop(self) -> list[tuple[str, dict[str, Any]]]:

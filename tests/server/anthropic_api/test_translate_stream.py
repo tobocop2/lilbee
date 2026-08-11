@@ -19,6 +19,7 @@ from lilbee.server.chat_dispatch.canonical import (
     TextBlock,
     TextDelta,
     ToolUseBlock,
+    ToolUseDelta,
 )
 
 
@@ -103,20 +104,24 @@ async def test_think_tokens_split_into_thinking_then_text_blocks():
 
 
 @pytest.mark.asyncio
-async def test_tool_call_streams_whole_as_one_input_json_delta():
+async def test_incremental_tool_call_forwards_argument_deltas():
+    """Mirrors dispatch's real shape: input {} at start, arguments as deltas."""
     pairs = await _drain(
         [
             ContentBlockStart(index=0, block=TextBlock(text="")),
             ContentBlockDelta(index=0, delta=TextDelta(text="calling")),
-            ContentBlockStart(index=1, block=ToolUseBlock(id="t1", name="ls", input={"p": "."})),
+            ContentBlockStart(index=1, block=ToolUseBlock(id="t1", name="ls", input={})),
+            ContentBlockDelta(index=1, delta=ToolUseDelta(partial_json='{"p":')),
+            ContentBlockDelta(index=1, delta=ToolUseDelta(partial_json=' "."}')),
             ContentBlockStop(index=1),
-            ContentBlockStop(index=0),
             MessageDelta(stop_reason=StopReason.TOOL_USE),
             MessageStop(),
         ]
     )
     tool_starts = [
-        p for t, p in pairs if t == "content_block_start" and p["content_block"]["type"] == "tool_use"
+        p
+        for t, p in pairs
+        if t == "content_block_start" and p["content_block"]["type"] == "tool_use"
     ]
     assert len(tool_starts) == 1
     tool_index = tool_starts[0]["index"]
@@ -131,12 +136,32 @@ async def test_tool_call_streams_whole_as_one_input_json_delta():
         for t, p in pairs
         if t == "content_block_delta" and p["delta"]["type"] == "input_json_delta"
     ]
-    assert len(json_deltas) == 1
-    assert json.loads(json_deltas[0]["delta"]["partial_json"]) == {"p": "."}
-    assert json_deltas[0]["index"] == tool_index
-    # The open text block closes before the tool block opens
+    assert [d["delta"]["partial_json"] for d in json_deltas] == ['{"p":', ' "."}']
+    assert all(d["index"] == tool_index for d in json_deltas)
+    # The open text block closes before the tool block opens, and the tool
+    # block closes on the canonical stop.
     stop_indexes = [p["index"] for t, p in pairs if t == "content_block_stop"]
-    assert stop_indexes.index(0) < stop_indexes.index(tool_index)
+    assert stop_indexes == [0, tool_index]
     assert pairs[-2][0] == "message_delta"
     assert pairs[-2][1]["delta"]["stop_reason"] == "tool_use"
     assert pairs[-1][0] == "message_stop"
+
+
+@pytest.mark.asyncio
+async def test_whole_tool_call_on_start_block_still_carries_arguments():
+    """A provider announcing the full call up front still yields arguments."""
+    pairs = await _drain(
+        [
+            ContentBlockStart(index=0, block=ToolUseBlock(id="t1", name="ls", input={"p": "."})),
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.TOOL_USE),
+            MessageStop(),
+        ]
+    )
+    json_deltas = [
+        p
+        for t, p in pairs
+        if t == "content_block_delta" and p["delta"]["type"] == "input_json_delta"
+    ]
+    assert len(json_deltas) == 1
+    assert json.loads(json_deltas[0]["delta"]["partial_json"]) == {"p": "."}
