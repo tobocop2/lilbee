@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.core.text import clean_label_for_display, is_valid_label, make_slug
+from lilbee.core.text import clean_label_for_display, is_valid_label, make_slug, strip_possessive
 from lilbee.wiki.shared import (
     SUBDIR_TO_TYPE,
     WikiPageType,
@@ -98,6 +98,11 @@ class TestMakeSlug:
     def test_strips_leading_and_trailing_hyphens(self):
         assert make_slug("-well-known-") == "well-known"
 
+    def test_possessive_and_base_form_slug_apart(self):
+        # The possessive-merge pass relies on the two forms keying
+        # differently; if they ever slug alike the merge is a no-op.
+        assert make_slug("Solar System's") != make_slug("Solar System")
+
     def test_table_delimited_label_reduces_to_body(self):
         # Even if the sanity gate let this through, the slug should not
         # contain the leading double hyphen that bit bb-8b7s.
@@ -117,6 +122,29 @@ class TestMakeSlug:
         # strip. ``"---"`` must still collapse to ``""`` so the
         # ``if not slug: return None`` guard in the extractor fires.
         assert make_slug("---") == ""
+
+
+class TestStripPossessive:
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            ("Solar System's", "Solar System"),
+            ("Le Verrier\u2019s", "Le Verrier"),
+            ("Voyagers'", "Voyagers"),
+            ("Uranus\u2019", "Uranus"),
+        ],
+        ids=["straight", "curly", "plural-straight", "plural-curly"],
+    )
+    def test_strips_a_trailing_possessive_clitic(self, label: str, expected: str):
+        assert strip_possessive(label) == expected
+
+    @pytest.mark.parametrize(
+        "label",
+        ["Amazonis Planitia", "McDonald's Corporation", "O'Brien", ""],
+        ids=["plain", "clitic-mid-label", "leading-apostrophe-name", "empty"],
+    )
+    def test_leaves_everything_else_alone(self, label: str):
+        assert strip_possessive(label) == label
 
 
 class TestIsValidLabel:
