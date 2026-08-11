@@ -99,7 +99,7 @@ CMD_DELETE_SUGGESTION = "Did you mean {name}?"
 CMD_DELETE_SUCCESS = "Deleted {name}"
 CMD_REMEMBER_USAGE = "Usage: /remember <text>  (prefix with 'pref:' for a preference)"
 CMD_REMEMBER_SUCCESS = "Remembered ({kind})."
-CMD_REMEMBER_NO_EMBED = "Set an embedding model before saving memories."
+CMD_REMEMBER_NO_EMBED = "No embedding model. Press m and install one to save memories."
 MEMORY_AUTO_EXTRACTED = "Noted {count} memory(s) to review in /memories"
 CMD_EXPORT_USAGE = "Usage: /export <path.parquet|path.jsonl>"
 CMD_EXPORT_SUCCESS = "Exported {pages} page(s) to {output}"
@@ -267,10 +267,6 @@ CRAWL_DIALOG_CANCEL = "Cancel"
 CRAWL_DIALOG_URL_REQUIRED = "URL is required"
 CRAWL_DIALOG_INVALID_URL = "Invalid URL: {error}"
 CRAWL_DIALOG_INVALID_NUMBER = "{field} must be a positive integer or blank"
-EMBEDDING_MISSING = (
-    "No embedding model, search disabled. "
-    "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
-)
 THEME_SET = "Theme: {name}"
 HEADING_INSTALLED = "Installed"
 HEADING_MATCHES = "Matches"
@@ -710,8 +706,9 @@ CHAT_MODE_TOGGLE_TOOLTIP = (
     "Chat skips retrieval and answers directly. Click or press F3 to flip."
 )
 CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
-    "Search needs an embedding model. Install one to enable Search mode."
+    "Search needs an embedding model. Press the pill to pick one from the catalog."
 )
+SEARCH_NEEDS_EMBEDDER = "Search needs an embedding model — pick one to enable it."
 CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat for this turn."
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"

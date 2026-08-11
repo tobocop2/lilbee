@@ -548,3 +548,40 @@ async def test_painting_the_bar_never_builds_services() -> None:
             app.screen.query_one("#model-pick-chat", ModelPickerButton).repaint()
             await pilot.pause()
     assert services_mod._state.singleton is None
+
+
+async def test_search_refusal_routes_to_the_embedding_catalog() -> None:
+    """Flipping to Search with no embedder lands somewhere actionable, not a dead toggle."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import TAB_EMBED
+    from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import ChatMode
+
+    original_embed, original_mode = cfg.embedding_model, cfg.chat_mode
+    cfg.embedding_model = ""
+    cfg.chat_mode = ChatMode.CHAT.value
+    try:
+        app = _BarTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            toggle = app.query_one(ChatModeToggle)
+            with patch.object(app, "notify") as notify:
+                changed = toggle.set_mode(ChatMode.SEARCH.value)
+                await pilot.pause()
+                await pilot.pause()
+            assert changed is False
+            assert cfg.chat_mode == ChatMode.CHAT.value
+            assert isinstance(app.screen, CatalogScreen)
+            assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_EMBED
+            assert any(
+                msg.SEARCH_NEEDS_EMBEDDER in str(c.args[0])
+                for c in notify.call_args_list
+                if c.args
+            )
+    finally:
+        cfg.embedding_model = original_embed or ""
+        cfg.chat_mode = original_mode

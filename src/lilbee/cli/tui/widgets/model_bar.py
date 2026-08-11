@@ -459,10 +459,18 @@ class ChatModeToggle(Widget, can_focus=False):
         )
 
     def set_mode(self, target: str) -> bool:
-        """Apply *target* if it differs from the current mode and Search is allowed."""
+        """Apply *target* if it differs from the current mode and Search is allowed.
+
+        A Search flip with no embedding model routes to the catalog's embedding
+        tab instead of dead-ending on a disabled pill.
+        """
         if cfg.chat_mode == target:
             return False
         if target == ChatMode.SEARCH.value and not self._embedding_ready():
+            from lilbee.cli.tui.widgets.model_pick import _open_catalog_for_key
+
+            self.app.notify(msg.SEARCH_NEEDS_EMBEDDER)
+            _open_catalog_for_key(self, "embedding_model")
             return False
         apply_setting(self.app, "chat_mode", target)
         self._refresh()
