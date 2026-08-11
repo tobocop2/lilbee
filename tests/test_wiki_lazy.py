@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +10,9 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
+from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.entity_extractor import EntityKind
-from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
+from lilbee.wiki.lazy import UnknownStubError, generate_stub_page, resolve_stub
 from lilbee.wiki.shared import WikiSubdir
 from lilbee.wiki.stubs import WikiStub, save_stub_index
 
@@ -249,3 +251,47 @@ class TestGenerateStubPage:
         store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
         with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")):
             assert generate_stub_page("ford", store) == Path("p.md")
+
+    def test_progress_reports_the_generate_phase_and_the_written_page(self):
+        """An HTTP client watching the stream needs the phase before the model
+        call and the page after it; with neither it can only show 0% then 100%."""
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        events: list[tuple[EventType, object]] = []
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")):
+            generate_stub_page("ford", store, cfg, on_progress=lambda e, d: events.append((e, d)))
+        assert events == [
+            (EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=1)),
+            (EventType.WIKI_PAGE, WikiPageEvent(label="Ford", pages=1, current=1, total=1)),
+        ]
+
+    def test_a_failed_generation_reports_no_page(self):
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        events: list[tuple[EventType, object]] = []
+        with patch("lilbee.wiki.lazy.generate_page", return_value=None):
+            generate_stub_page("ford", store, cfg, on_progress=lambda e, d: events.append((e, d)))
+        assert [e for e, _ in events] == [EventType.WIKI_PHASE]
+
+    def test_cancel_before_the_model_call_generates_nothing(self):
+        """A client that disconnected must not spend the LLM call."""
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        cancelled = threading.Event()
+        cancelled.set()
+        with patch("lilbee.wiki.lazy.generate_page") as gen:
+            assert generate_stub_page("ford", store, cfg, cancel=cancelled) is None
+        gen.assert_not_called()
+
+
+class TestResolveStub:
+    @pytest.mark.parametrize("form", ["ford", "entities/ford"], ids=["bare", "qualified"])
+    def test_either_slug_form_resolves(self, form: str):
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        stub = resolve_stub(form, cfg)
+        assert stub is not None
+        assert stub.slug == "ford"
+
+    def test_an_unknown_slug_resolves_to_none(self):
+        save_stub_index({})
+        assert resolve_stub("nope", cfg) is None
