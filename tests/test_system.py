@@ -395,11 +395,14 @@ class TestExecutableDiscovery:
         assert "" not in executable_search_path().split(os.pathsep)
 
     def test_find_executable_returns_the_resolved_path(self, tmp_path, monkeypatch):
-        binary = tmp_path / "somecli"
+        # The .exe suffix keeps Windows honest: shutil.which only matches
+        # names carrying a PATHEXT extension there, and POSIX matches the
+        # literal name either way.
+        binary = tmp_path / "somecli.exe"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
         binary.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path))
-        assert find_executable("somecli") == str(binary)
+        assert find_executable("somecli.exe") == str(binary)
 
     def test_find_executable_returns_none_when_absent(self, monkeypatch):
         monkeypatch.setenv("PATH", "")
@@ -409,10 +412,10 @@ class TestExecutableDiscovery:
         """The whole point: a binary outside PATH is still found."""
         extra = tmp_path / "extra"
         extra.mkdir()
-        binary = extra / "othercli"
+        binary = extra / "othercli.exe"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
         binary.chmod(0o755)
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(system_mod, "_UNIX_BIN_DIRS", (str(extra),))
         monkeypatch.setattr(sys, "platform", "darwin")
-        assert find_executable("othercli") == str(binary)
+        assert find_executable("othercli.exe") == str(binary)
