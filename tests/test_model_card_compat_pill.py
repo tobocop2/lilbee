@@ -115,14 +115,6 @@ def test_catalog_to_row_marks_installed_rows_supported() -> None:
     assert catalog_to_row(model, installed=False).compat is ModelCompat.UNKNOWN
 
 
-def test_installed_registry_row_is_supported() -> None:
-    """Wizard/library rows built from an installed registry ref carry SUPPORTED."""
-    from lilbee.cli.tui.screens.setup import _installed_name_to_row
-
-    row = _installed_name_to_row("acme/foo-GGUF/foo-Q8_0.gguf", "chat")
-    assert row.compat is ModelCompat.SUPPORTED
-
-
 def test_remote_row_is_supported() -> None:
     """Rows for models a live local server reports are running are SUPPORTED."""
     from lilbee.cli.tui.screens.catalog_utils import remote_to_row

@@ -72,8 +72,8 @@ def ready_services():
     """Bind a mock container whose chat role is ready, so the startup gate releases at once.
 
     Also pins ``chat_ready``/``embedding_ready`` True: the app's readiness worker runs on a real
-    thread, so an unpinned False routes the test to the catalog and opens the
-    SetupWizard over it, on a slow runner's schedule.
+    thread, so an unpinned False routes the test to the catalog on a slow
+    runner's schedule.
     """
     from unittest.mock import MagicMock, patch
 
@@ -83,7 +83,10 @@ def ready_services():
     services.provider.role_ready.return_value = True
     set_services(services)
     try:
-        with patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True):
+        with (
+            patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+            patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+        ):
             yield services
     finally:
         set_services(None)

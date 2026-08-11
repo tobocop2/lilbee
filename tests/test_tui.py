@@ -44,7 +44,8 @@ def _isolated_cfg(tmp_path):
 def _patch_chat_setup():
     """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
     with (
-        mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True), mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -828,66 +829,6 @@ class TestDetectRemoteEmbeddings:
         assert detect_remote_embedding_models() == []
 
 
-class TestSetupWizard:
-    def test_creates(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        wizard = SetupWizard()
-        assert wizard._selected_chat is None
-        assert wizard._selected_embed is None
-
-    async def test_first_chat_grid_focused_on_mount(self) -> None:
-        """On mount, the first chat-model GridSelect must have keyboard focus.
-
-        Regression guard for bb-rqrv: on a fresh launch the wizard's
-        GridSelect widgets were focus-less, so arrow keys / Tab / Enter
-        never reached them. Users could not pick a model without the mouse.
-        """
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await await_chat(app, pilot)
-            await pilot.pause()
-            await app.push_screen(SetupWizard())
-            await pilot.pause()
-            focused = app.focused
-            assert isinstance(focused, GridSelect), (
-                f"expected GridSelect to have focus on mount, got {type(focused).__name__}"
-            )
-
-    async def test_single_tab_escapes_chat_grid(self) -> None:
-        """A single Tab from the chat grid must move focus OUT of the grid.
-
-        Regression guard for bb-q9gl root cause: GridSelect's default
-        ``action_tab_next`` cycled highlight within the grid before
-        escaping, so users who pressed Tab after selecting a card found
-        their selection silently changed as the highlight wandered through
-        other cards. Tab must not be a within-grid navigator.
-        """
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await await_chat(app, pilot)
-            await pilot.pause()
-            wizard = SetupWizard()
-            await app.push_screen(wizard)
-            await pilot.pause()
-            assert isinstance(app.focused, GridSelect), "test precondition"
-            before = app.focused
-            await pilot.press("tab")
-            await pilot.pause()
-            assert app.focused is not before, (
-                "Tab on focused GridSelect must leave the grid; "
-                f"stayed on {type(app.focused).__name__}"
-            )
-
-
 class TestCanonicalModelsDir:
     def test_returns_platform_path(self) -> None:
         from lilbee.core.system import canonical_models_dir
@@ -1342,20 +1283,6 @@ class TestSyncHint:
                 await pilot.press("S")
                 await pilot.pause()
                 run_sync.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_post_setup_runs_detect(self) -> None:
-        """Setup-wizard completion re-runs detection (not sync) on the chat screen."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
-            app = LilbeeApp()
-            async with app.run_test() as pilot:
-                await await_chat(app, pilot)
-                await pilot.pause()
-                with mock.patch.object(app.task_bar, "start_detect_pending") as start:
-                    app.screen._on_setup_complete("done")
-                    start.assert_called_once()
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

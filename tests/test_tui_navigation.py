@@ -42,7 +42,7 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
     # Simulate "already-initialized" state so the app does not read this as
-    # a fresh install and open the SetupWizard over tests that exercise chat.
+    # a fresh install and route away from tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for field_name in type(snapshot).model_fields:

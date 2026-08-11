@@ -241,7 +241,8 @@ async def test_go_back_switches_to_chat_on_lilbee_app() -> None:
 
     with (
         ready_services(),
-        patch("lilbee.cli.tui.app.chat_ready", return_value=True), patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+        patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+        patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
     ):
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:

@@ -445,7 +445,7 @@ class _ChatTestApp(LilbeeAppHost):
 
 @pytest.fixture
 def _seeded_models(monkeypatch):
-    """Pre-populate chat/embedding and skip the SetupWizard pop so the bar is reachable."""
+    """Pre-populate chat/embedding and pin readiness so the bar is reachable."""
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
@@ -554,10 +554,10 @@ async def test_search_refusal_routes_to_the_embedding_catalog() -> None:
     """Flipping to Search with no embedder lands somewhere actionable, not a dead toggle."""
     from textual.widgets import TabbedContent
 
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import TAB_EMBED
     from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
-    from lilbee.cli.tui import messages as msg
     from lilbee.core.config import cfg
     from lilbee.core.config.enums import ChatMode
 
@@ -578,9 +578,7 @@ async def test_search_refusal_routes_to_the_embedding_catalog() -> None:
             assert isinstance(app.screen, CatalogScreen)
             assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_EMBED
             assert any(
-                msg.SEARCH_NEEDS_EMBEDDER in str(c.args[0])
-                for c in notify.call_args_list
-                if c.args
+                msg.SEARCH_NEEDS_EMBEDDER in str(c.args[0]) for c in notify.call_args_list if c.args
             )
     finally:
         cfg.embedding_model = original_embed or ""

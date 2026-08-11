@@ -42,7 +42,8 @@ def _chat_ready_env():
     cfg.embedding_model = TEST_EMBED_REF
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     with (
-        mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True), mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+        mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
     ):
         yield

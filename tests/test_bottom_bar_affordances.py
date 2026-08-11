@@ -1,21 +1,18 @@
-"""ViewTabs model pill, setup wizard exit affordances, theme persistence."""
+"""ViewTabs model pill, theme persistence."""
 
 from __future__ import annotations
 
 from unittest import mock
 
 import pytest
-from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.catalog import display_label_for_ref
-from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
-from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import await_chat
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 _TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
@@ -177,97 +174,6 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
         # The unrelated payload must NOT trigger a refresh; the pill stays stale on
         # purpose (the only path that swaps the pill is a chat_model signal).
         assert _rendered_tab_text(tabs) == before
-
-
-# ---------------------------------------------------------------------------
-# Bug 3: setup wizard exit affordance
-# ---------------------------------------------------------------------------
-
-
-class _SetupHostApp(LilbeeAppHost):
-    """Minimal host app that pushes only the SetupWizard, no chat screen."""
-
-    CSS = ""
-
-    def on_mount(self) -> None:
-        self.push_screen(SetupWizard())
-
-
-async def test_setup_wizard_mounts_footer_so_done_keybinding_is_visible() -> None:
-    """The wizard composes a Footer so the Esc->Done hint surfaces to the user."""
-    with mock.patch(
-        "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=([], []),
-    ):
-        app = _SetupHostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert isinstance(app.screen, SetupWizard)
-            footers = list(app.screen.query(Footer))
-            assert len(footers) == 1, "Setup wizard must mount exactly one Footer"
-
-
-async def test_setup_wizard_mounts_view_tabs() -> None:
-    """The wizard composes ViewTabs so the page strip matches every other screen."""
-    with mock.patch(
-        "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=([], []),
-    ):
-        app = _SetupHostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            tabs = list(app.screen.query(ViewTabs))
-            assert len(tabs) == 1
-
-
-async def test_setup_wizard_hint_when_no_models_installed() -> None:
-    """Default first-run hint tells the user to press Enter to install."""
-    with mock.patch(
-        "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=([], []),
-    ):
-        app = _SetupHostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            label = app.screen.query_one("#setup-enter-hint")
-            assert msg.SETUP_ENTER_HINT in str(label.render())
-
-
-async def test_setup_wizard_hint_when_models_already_installed() -> None:
-    """Configured refs installed -> hint shifts to 'Esc to return' (a review, not setup)."""
-    from lilbee.core.config import cfg
-
-    chat_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf"
-    embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-    cfg.chat_model = chat_ref
-    cfg.embedding_model = embed_ref
-    with mock.patch(
-        "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=([chat_ref], [embed_ref]),
-    ):
-        app = _SetupHostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            label = app.screen.query_one("#setup-enter-hint")
-            assert msg.SETUP_RETURN_HINT in str(label.render())
-
-
-async def test_setup_wizard_hint_label_has_no_border_top_eating_its_row() -> None:
-    """Regression: border-top + height:1 left zero rows for the hint text."""
-    with mock.patch(
-        "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=([], []),
-    ):
-        app = _SetupHostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            label = app.screen.query_one("#setup-enter-hint")
-            border_style = label.styles.border_top[0] if label.styles.border_top else ""
-            assert border_style in ("", "none", None), (
-                f"border-top must stay off so height: 1 leaves a row for text "
-                f"(got {border_style!r})"
-            )
-            assert label.region.height >= 1
 
 
 # ---------------------------------------------------------------------------

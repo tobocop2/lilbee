@@ -30,7 +30,9 @@ class TestCanonicalizeUnconfigured:
         app = LilbeeApp()
         notifications: list[tuple] = []
         with (
-            mock.patch.object(LilbeeApp, "notify", side_effect=lambda *a, **k: notifications.append(a)),
+            mock.patch.object(
+                LilbeeApp, "notify", side_effect=lambda *a, **k: notifications.append(a)
+            ),
             mock.patch(
                 "lilbee.modelhub.model_manager.canonicalize_chat_model",
                 return_value=self._canon("", ""),
@@ -39,7 +41,9 @@ class TestCanonicalizeUnconfigured:
                 "lilbee.modelhub.model_manager.canonicalize_embedding_model",
                 return_value=self._canon("", ""),
             ),
-            mock.patch("lilbee.cli.tui.app.call_from_thread", side_effect=lambda a, fn, *args: None),
+            mock.patch(
+                "lilbee.cli.tui.app.call_from_thread", side_effect=lambda a, fn, *args: None
+            ),
             caplog.at_level(logging.INFO, logger="lilbee.cli.tui.app"),
         ):
             app.canonicalize_persisted_models()
