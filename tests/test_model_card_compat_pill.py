@@ -281,3 +281,24 @@ def test_watch_selected_before_compose_is_a_no_op() -> None:
 
     card = ModelCard(_row(ModelCompat.SUPPORTED))
     card.watch_selected(True)  # un-mounted: no .card-body to update yet
+
+
+async def test_watch_selected_rerenders_a_mounted_card() -> None:
+    """Moving the highlight onto a mounted card repaints its body with the hint."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    class _Host(LilbeeAppHost):
+        def compose(self):
+            yield ModelCard(_row(ModelCompat.SUPPORTED))
+
+    app = _Host()
+    async with app.run_test(size=(60, 20)) as pilot:
+        card = app.query_one(ModelCard)
+        before = str(app.query_one(".card-body", Static).render())
+        card.selected = True
+        await pilot.pause()
+        after = str(app.query_one(".card-body", Static).render())
+        assert before != after  # the highlight-only hint appeared
