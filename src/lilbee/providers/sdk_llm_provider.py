@@ -50,6 +50,17 @@ from lilbee.providers.sdk_backend import (
 log = logging.getLogger(__name__)
 
 
+def _require_role_ref(ref: str, role: str) -> str:
+    """Reject an unconfigured role with a clean error instead of parsing ''."""
+    if not ref:
+        raise ProviderError(
+            f"No {role} model is configured. Pick one from the catalog "
+            f"or run 'lilbee model pull <model>'.",
+            provider="sdk",
+        )
+    return ref
+
+
 def _api_base_for(ref: ProviderModelRef) -> str | None:
     """Endpoint for a local-server ref; ``None`` for hosted APIs (no base needed)."""
     if ref.provider in LOCAL_SERVER_KEYS:
@@ -109,7 +120,7 @@ class SdkLLMProvider(LLMProvider):
     def embed(self, texts: list[str]) -> list[Vector]:
         """Embed texts via the configured backend, converting its JSON floats to float32."""
         self._ensure_initialized()
-        ref = parse_model_ref(cfg.embedding_model)
+        ref = parse_model_ref(_require_role_ref(cfg.embedding_model, "embedding"))
         request = EmbeddingRequest(
             ref=ref,
             inputs=texts,
@@ -173,7 +184,7 @@ class SdkLLMProvider(LLMProvider):
         tool-call deltas).
         """
         self._ensure_initialized()
-        ref = parse_model_ref(model or cfg.chat_model)
+        ref = parse_model_ref(_require_role_ref(model or cfg.chat_model, "chat"))
         if tools and not self.supports_tools(model or cfg.chat_model):
             chosen = model or cfg.chat_model
             raise ProviderError(
@@ -389,7 +400,7 @@ class SdkLLMProvider(LLMProvider):
         if not candidates:
             return []
         self._ensure_initialized()
-        ref = parse_model_ref(cfg.reranker_model)
+        ref = parse_model_ref(_require_role_ref(cfg.reranker_model, "reranker"))
         request = RerankRequest(
             ref=ref,
             query=query,

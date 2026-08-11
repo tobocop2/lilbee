@@ -161,3 +161,45 @@ class TestOneShotSwapUnconfigured:
         err = capsys.readouterr().err
         assert "No chat model configured" in err
         assert "''" not in err
+
+
+class TestSdkProviderUnconfigured:
+    def _provider(self):
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        provider = SdkLLMProvider(backend=mock.MagicMock())
+        provider._initialized = True
+        return provider
+
+    def test_chat_names_the_state(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "chat_model", "")
+        with pytest.raises(ProviderError, match="No chat model is configured"):
+            self._provider().chat([{"role": "user", "content": "hi"}])
+
+    def test_embed_names_the_state(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        with pytest.raises(ProviderError, match="No embedding model is configured"):
+            self._provider().embed(["hi"])
+
+    def test_rerank_names_the_state(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        with pytest.raises(ProviderError, match="No reranker model is configured"):
+            self._provider().rerank("q", ["a"])
+
+
+class TestIngestUnconfigured:
+    def test_refusal_names_the_state_not_an_empty_ref(self, monkeypatch) -> None:
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        services = mock.MagicMock()
+        services.embedder.validate_model.return_value = False
+        monkeypatch.setattr(pipeline, "get_services", lambda: services)
+        with pytest.raises(RuntimeError, match="None is configured"):
+            pipeline._require_embedding_model()
