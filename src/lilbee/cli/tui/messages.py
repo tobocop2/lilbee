@@ -736,6 +736,7 @@ MODEL_BAR_EMBED_LABEL = "Embed"
 MODEL_BAR_VISION_LABEL = "Vision"
 MODEL_BAR_RERANK_LABEL = "Rerank"
 MODEL_BAR_DISABLED = "disabled"
+MODEL_BAR_NONE = "none — pick one"
 MODEL_BAR_NOT_INSTALLED = "{name} (not installed)"
 MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "This model is not installed. Click to pick another, "

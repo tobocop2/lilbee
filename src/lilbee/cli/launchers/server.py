@@ -174,7 +174,7 @@ def planned_chat_ctx() -> int | None:
     from lilbee.providers.model_ref import parse_model_ref
 
     ref = str(cfg.chat_model)
-    if not parse_model_ref(ref).is_local:
+    if not ref or not parse_model_ref(ref).is_local:
         return None
     if cfg.num_ctx is not None:
         return cfg.num_ctx

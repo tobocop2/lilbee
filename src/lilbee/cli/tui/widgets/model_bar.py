@@ -273,11 +273,15 @@ class ModelPickerButton(Static, can_focus=True):
             self._refresh()
 
     def _refresh(self) -> None:
-        # Only optional roles (vision/rerank) can be empty; chat/embed are
-        # non-nullable, so an empty ref means the role is off, not a model
-        # called "(none)".
+        # Any role can be empty. For the optional roles (vision/rerank) that
+        # means "off"; for chat/embed it means nothing is configured yet and
+        # the pill is the route to picking one.
         ref = getattr(cfg, self._key)
-        label = (display_label_for_ref(ref) or ref) if ref else msg.MODEL_BAR_DISABLED
+        if not ref:
+            unconfigured = self._key in ("chat_model", "embedding_model")
+            label = msg.MODEL_BAR_NONE if unconfigured else msg.MODEL_BAR_DISABLED
+        else:
+            label = display_label_for_ref(ref) or ref
         # Only local models can be "not installed": remote refs (ollama, cloud
         # APIs) resolve through their backend at call time. Checked against the
         # registry, never get_services(): a cold get_services() builds the whole

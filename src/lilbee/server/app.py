@@ -199,11 +199,12 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
         return
     if validated:
         log.info("Embedding model validated")
-    else:
+    elif cfg.embedding_model:
         log.warning(
             "Embedding model %s is unavailable; search and chat will run without embeddings",
             cfg.embedding_model,
         )
+    # Unconfigured: validate_model already logged the one INFO line.
 
 
 @asynccontextmanager

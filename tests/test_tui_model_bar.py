@@ -585,3 +585,19 @@ async def test_search_refusal_routes_to_the_embedding_catalog() -> None:
     finally:
         cfg.embedding_model = original_embed or ""
         cfg.chat_mode = original_mode
+
+
+async def test_bar_unconfigured_chat_reads_pick_one(monkeypatch) -> None:
+    """An empty chat/embed ref reads as a route to picking, not as 'disabled'."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "")
+    app = _BarTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+        rendered = str(chat_btn.render())
+        assert msg.MODEL_BAR_NONE in rendered
+        assert msg.MODEL_BAR_DISABLED not in rendered
