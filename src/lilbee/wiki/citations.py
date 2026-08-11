@@ -23,6 +23,7 @@ from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk
 from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 from lilbee.wiki.grammar import (
+    CHUNK_MARKER_RE,
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,
     CITE_RE,
@@ -136,25 +137,34 @@ def footnote_marker_keys(body: str) -> set[str]:
 
 
 def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
-    """Drop in-body footnote definition lines and unverified ``[^srcN]`` markers.
+    """Drop in-body footnote definitions, unverified ``[^srcN]`` markers, and
+    ``[Chunk N]`` labels.
 
     The citation block is re-rendered from the verified records, so any
     definition line still inside the body would either duplicate a verified
     definition or publish an unverified excerpt as prose. A marker whose
     definition was dropped renders as literal ``[^srcN]`` text and hides the
-    claim from ``find_unmarked_claims``. Fenced lines are example syntax and
-    stay verbatim.
+    claim from ``find_unmarked_claims``. A ``[Chunk N]`` label names prompt
+    evidence no reader can see, and stripping it returns the claim to uncited
+    prose rather than dressing it as a citation nothing verified. Fenced lines
+    are example syntax and stay verbatim.
     """
     keys = {rec["citation_key"] for rec in verified}
     # keepends so removing a definition line does not also rewrite the body's
     # own line endings or drop its trailing newline.
     lines = body.splitlines(keepends=True)
     kept = [
-        line if fenced else CITE_RE.sub(lambda m: m.group(0) if m.group(1) in keys else "", line)
+        line if fenced else _scrub_line(line, keys)
         for line, fenced in zip(lines, _fence_flags(lines), strict=True)
         if fenced or not FOOTNOTE_RE.match(line)
     ]
     return "".join(kept)
+
+
+def _scrub_line(line: str, verified_keys: set[str]) -> str:
+    """One unfenced body line with unverified markers and chunk labels removed."""
+    line = CITE_RE.sub(lambda m: m.group(0) if m.group(1) in verified_keys else "", line)
+    return CHUNK_MARKER_RE.sub("", line)
 
 
 def wiki_sourced_count(records: list[CitationRecord], config: Config) -> int:
