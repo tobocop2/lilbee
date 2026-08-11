@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class AnthropicEventType(StrEnum):
+    """SSE event vocabulary of the Anthropic Messages stream."""
+
+    MESSAGE_START = "message_start"
+    CONTENT_BLOCK_START = "content_block_start"
+    CONTENT_BLOCK_DELTA = "content_block_delta"
+    CONTENT_BLOCK_STOP = "content_block_stop"
+    MESSAGE_DELTA = "message_delta"
+    MESSAGE_STOP = "message_stop"
+    PING = "ping"
+    ERROR = "error"
 
 
 class _AnthropicModel(BaseModel):

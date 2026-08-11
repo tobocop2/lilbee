@@ -23,8 +23,8 @@ _PORT = 8888
 
 
 def _write_server_session() -> None:
-    server_json_path().write_text(json.dumps({"token": _TOKEN}))
-    (cfg.data_dir / "server.port").write_text(str(_PORT))
+    server_json_path().write_text(json.dumps({"token": _TOKEN}), encoding="utf-8")
+    (cfg.data_dir / "server.port").write_text(str(_PORT), encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +95,7 @@ def test_find_binary_falls_back_to_claude_local(tmp_path):
 
     local = tmp_path / ".claude" / "local" / "claude"
     local.parent.mkdir(parents=True)
-    local.write_text("#!/bin/sh\n")
+    local.write_text("#!/bin/sh\n", encoding="utf-8")
     local.chmod(0o755)
     with patch("lilbee.cli.launchers.claude.shutil.which", return_value=None):
         assert _find_claude_binary() == str(local)
@@ -140,13 +140,13 @@ def test_launch_claude_writes_mcp_config_with_env_ref(tmp_path):
     mcp_path = cfg.data_dir / "launchers" / "claude-mcp.json"
     assert "--mcp-config" in argv
     assert argv[argv.index("--mcp-config") + 1] == str(mcp_path)
-    config = json.loads(mcp_path.read_text())
+    config = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = config["mcpServers"]["lilbee"]
     assert server["type"] == "http"
     assert server["url"] == f"http://127.0.0.1:{_PORT}/mcp"
     # The env reference, never the literal token
     assert server["headers"]["Authorization"] == "Bearer ${LILBEE_TOKEN}"
-    assert _TOKEN not in mcp_path.read_text()
+    assert _TOKEN not in mcp_path.read_text(encoding="utf-8")
 
 
 def test_launch_claude_installs_skill_and_records_marker(tmp_path):

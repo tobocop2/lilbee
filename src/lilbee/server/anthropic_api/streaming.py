@@ -8,6 +8,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+from lilbee.server.anthropic_api.models import AnthropicEventType
+
 log = logging.getLogger(__name__)
 
 # Cadence for ping events while no token has arrived; keeps clients from
@@ -17,14 +19,14 @@ _KEEPALIVE_INTERVAL_S = 5.0
 _PING_FRAME = b'event: ping\ndata: {"type": "ping"}\n\n'
 
 
-def encode_anthropic_event(event_type: str, payload: dict[str, Any]) -> bytes:
+def encode_anthropic_event(event_type: AnthropicEventType, payload: dict[str, Any]) -> bytes:
     """Frame one event as Anthropic SSE: ``event: <type>`` + ``data: <json>``."""
     body = json.dumps(payload, separators=(",", ":"))
     return f"event: {event_type}\ndata: {body}\n\n".encode()
 
 
 async def encode_anthropic_sse(
-    events: AsyncIterator[tuple[str, dict[str, Any]]],
+    events: AsyncIterator[tuple[AnthropicEventType, dict[str, Any]]],
 ) -> AsyncIterator[bytes]:
     """Frame each ``(type, payload)`` pair as SSE, pinging while upstream is slow.
 

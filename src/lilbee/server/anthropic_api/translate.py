@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from enum import StrEnum
 from typing import Any
 
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.anthropic_api.models import (
+    AnthropicEventType,
     AnthropicMessage,
     AnthropicTool,
     AnthropicToolChoice,
@@ -48,6 +50,15 @@ _IMAGE_CONTENT_UNSUPPORTED = (
     "Image content is not supported by /v1/messages yet. Send a text-only request."
 )
 _TOOL_CHOICE_NAME_REQUIRED = 'tool_choice type "tool" requires a name.'
+
+
+class _BlockKind(StrEnum):
+    """Kind of the mapper's open output block."""
+
+    THINKING = "thinking"
+    TEXT = "text"
+    TOOL = "tool"
+
 
 _ANTHROPIC_CHOICE_MODES: dict[str, str] = {
     "auto": "auto",
@@ -213,25 +224,29 @@ class _AnthropicStreamMapper:
     def __init__(self) -> None:
         self._reasoning = TagParser(show=True)
         self._next_index = 0
-        self._open: str | None = None  # "thinking" | "text" | "tool" | None
+        self._open: _BlockKind | None = None
 
-    def _close_open(self) -> list[tuple[str, dict[str, Any]]]:
+    def _close_open(self) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if self._open is None:
             return []
         index = self._next_index - 1
         self._open = None
-        return [("content_block_stop", {"type": "content_block_stop", "index": index})]
+        return [
+            (AnthropicEventType.CONTENT_BLOCK_STOP, {"type": "content_block_stop", "index": index})
+        ]
 
-    def _ensure_block(self, kind: str) -> list[tuple[str, dict[str, Any]]]:
+    def _ensure_block(self, kind: _BlockKind) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if self._open == kind:
             return []
         events = self._close_open()
         shell = (
-            {"type": "thinking", "thinking": ""} if kind == "thinking" else {"type": "text", "text": ""}
+            {"type": "thinking", "thinking": ""}
+            if kind is _BlockKind.THINKING
+            else {"type": "text", "text": ""}
         )
         events.append(
             (
-                "content_block_start",
+                AnthropicEventType.CONTENT_BLOCK_START,
                 {
                     "type": "content_block_start",
                     "index": self._next_index,
@@ -243,12 +258,14 @@ class _AnthropicStreamMapper:
         self._next_index += 1
         return events
 
-    def _text_events(self, tokens: list[StreamToken]) -> list[tuple[str, dict[str, Any]]]:
-        events: list[tuple[str, dict[str, Any]]] = []
+    def _text_events(
+        self, tokens: list[StreamToken]
+    ) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
+        events: list[tuple[AnthropicEventType, dict[str, Any]]] = []
         for token in tokens:
             if not token.content:
                 continue
-            kind = "thinking" if token.is_reasoning else "text"
+            kind = _BlockKind.THINKING if token.is_reasoning else _BlockKind.TEXT
             events.extend(self._ensure_block(kind))
             index = self._next_index - 1
             delta = (
@@ -258,21 +275,23 @@ class _AnthropicStreamMapper:
             )
             events.append(
                 (
-                    "content_block_delta",
+                    AnthropicEventType.CONTENT_BLOCK_DELTA,
                     {"type": "content_block_delta", "index": index, "delta": delta},
                 )
             )
         return events
 
-    def block_start(self, event: ContentBlockStart) -> list[tuple[str, dict[str, Any]]]:
+    def block_start(
+        self, event: ContentBlockStart
+    ) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if isinstance(event.block, ToolUseBlock):
             events = self._close_open()
             index = self._next_index
             self._next_index += 1
-            self._open = "tool"
+            self._open = _BlockKind.TOOL
             events.append(
                 (
-                    "content_block_start",
+                    AnthropicEventType.CONTENT_BLOCK_START,
                     {
                         "type": "content_block_start",
                         "index": index,
@@ -291,7 +310,7 @@ class _AnthropicStreamMapper:
                 # SDK accumulation still sees arguments.
                 events.append(
                     (
-                        "content_block_delta",
+                        AnthropicEventType.CONTENT_BLOCK_DELTA,
                         {
                             "type": "content_block_delta",
                             "index": index,
@@ -307,17 +326,19 @@ class _AnthropicStreamMapper:
         # emits a start/stop pair.
         return []
 
-    def block_delta(self, event: ContentBlockDelta) -> list[tuple[str, dict[str, Any]]]:
+    def block_delta(
+        self, event: ContentBlockDelta
+    ) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if isinstance(event.delta, TextDelta):
             return self._text_events(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
-            if self._open != "tool":
+            if self._open is not _BlockKind.TOOL:
                 # A delta for a block that never started is a provider quirk,
                 # not a stream error; dropping beats crashing the stream.
                 return []
             return [
                 (
-                    "content_block_delta",
+                    AnthropicEventType.CONTENT_BLOCK_DELTA,
                     {
                         "type": "content_block_delta",
                         "index": self._next_index - 1,
@@ -330,7 +351,7 @@ class _AnthropicStreamMapper:
             ]
         return []
 
-    def block_stop(self) -> list[tuple[str, dict[str, Any]]]:
+    def block_stop(self) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         remaining = self._reasoning.flush()
         events = self._text_events([remaining] if remaining else [])
         events.extend(self._close_open())
@@ -342,11 +363,11 @@ async def canonical_stream_to_anthropic_events(
     *,
     model: str,
     response_id: str,
-) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+) -> AsyncIterator[tuple[AnthropicEventType, dict[str, Any]]]:
     """Turn canonical stream events into Anthropic SSE ``(type, payload)`` pairs."""
     mapper = _AnthropicStreamMapper()
     yield (
-        "message_start",
+        AnthropicEventType.MESSAGE_START,
         {
             "type": "message_start",
             "message": {
@@ -374,7 +395,7 @@ async def canonical_stream_to_anthropic_events(
         elif isinstance(event, MessageDelta):
             usage = event.usage or CanonicalUsage(input_tokens=0, output_tokens=0)
             yield (
-                "message_delta",
+                AnthropicEventType.MESSAGE_DELTA,
                 {
                     "type": "message_delta",
                     "delta": {
@@ -392,4 +413,4 @@ async def canonical_stream_to_anthropic_events(
             # canonical data), and message_stop follows the loop so it stays
             # last even if the provider never sends one.
             continue
-    yield ("message_stop", {"type": "message_stop"})
+    yield (AnthropicEventType.MESSAGE_STOP, {"type": "message_stop"})

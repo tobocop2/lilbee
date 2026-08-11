@@ -31,9 +31,7 @@ def _stub_registry() -> None:
 
 
 def test_agent_config_claude_requires_running_server():
-    with patch(
-        "lilbee.cli.commands.agent_config.running_server_session", return_value=None
-    ):
+    with patch("lilbee.cli.commands.agent_config.running_server_session", return_value=None):
         result = runner.invoke(app, ["agent-config", "claude"])
     assert result.exit_code == 1
     assert "lilbee serve" in result.stderr

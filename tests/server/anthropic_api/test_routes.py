@@ -147,9 +147,7 @@ class TestAuth:
 
 
 class TestValidation:
-    async def test_missing_max_tokens_is_400_envelope(
-        self, services_with_chat_model, _auth_token
-    ):
+    async def test_missing_max_tokens_is_400_envelope(self, services_with_chat_model, _auth_token):
         body = _body()
         del body["max_tokens"]
         async with AsyncTestClient(_build_app()) as client:
@@ -176,9 +174,7 @@ class TestValidation:
         self, services_with_chat_model, _auth_token
     ):
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post(
-                "/v1/messages", json=_body(model="nope/missing"), headers=_h()
-            )
+            resp = await client.post("/v1/messages", json=_body(model="nope/missing"), headers=_h())
         assert resp.status_code == 404
         assert resp.json()["error"]["type"] == "not_found_error"
 
@@ -222,7 +218,9 @@ class TestNonStreaming:
         payload = resp.json()
         assert payload["stop_reason"] == "tool_use"
         tool_blocks = [b for b in payload["content"] if b["type"] == "tool_use"]
-        assert tool_blocks == [{"type": "tool_use", "id": "c1", "name": "search", "input": {"q": "foo"}}]
+        assert tool_blocks == [
+            {"type": "tool_use", "id": "c1", "name": "search", "input": {"q": "foo"}}
+        ]
 
 
 class TestStreaming:

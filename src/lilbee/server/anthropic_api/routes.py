@@ -14,7 +14,11 @@ from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
-from lilbee.server.anthropic_api.models import MessagesRequest, MessagesResponse
+from lilbee.server.anthropic_api.models import (
+    AnthropicEventType,
+    MessagesRequest,
+    MessagesResponse,
+)
 from lilbee.server.anthropic_api.streaming import encode_anthropic_event, encode_anthropic_sse
 from lilbee.server.anthropic_api.translate import (
     canonical_stream_to_anthropic_events,
@@ -153,7 +157,7 @@ async def _gated_messages_stream(
                 body = anthropic_error_body(
                     anthropic_error_type(classified.code), classified.message
                 )
-            yield encode_anthropic_event("error", body)
+            yield encode_anthropic_event(AnthropicEventType.ERROR, body)
     finally:
         await guard.release()
 
@@ -192,9 +196,7 @@ def _auth_failure(request: Request) -> Response | None:
         authorized = False
     if authorized:
         return None
-    return _error_response(
-        401, CompletionsErrorCode.INVALID_API_KEY, "Missing or invalid API key."
-    )
+    return _error_response(401, CompletionsErrorCode.INVALID_API_KEY, "Missing or invalid API key.")
 
 
 def _validation_exception_handler(_: Request, exc: ValidationException) -> Response:
