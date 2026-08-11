@@ -31,8 +31,8 @@ def isolated_env(tmp_path, monkeypatch):
 
 
 def _write_server_session(token: str, port: int) -> None:
-    server_json_path().write_text(json.dumps({"token": token}))
-    (cfg.data_dir / "server.port").write_text(str(port))
+    server_json_path().write_text(json.dumps({"token": token}), encoding="utf-8")
+    (cfg.data_dir / "server.port").write_text(str(port), encoding="utf-8")
 
 
 def test_claude_config_prints_the_http_registration_with_the_live_session():
@@ -79,8 +79,8 @@ def test_claude_config_applies_data_dir_override(tmp_path):
     alt = tmp_path / "alt"
     alt_data = alt / "data"
     alt_data.mkdir(parents=True)
-    (alt_data / "server.json").write_text(json.dumps({"token": "alt-token"}))
-    (alt_data / "server.port").write_text("8799")
+    (alt_data / "server.json").write_text(json.dumps({"token": "alt-token"}), encoding="utf-8")
+    (alt_data / "server.port").write_text("8799", encoding="utf-8")
 
     result = runner.invoke(app, ["agent-config", "claude", "--data-dir", str(alt)])
 
