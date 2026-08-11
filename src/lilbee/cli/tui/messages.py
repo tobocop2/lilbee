@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 def app_title(model: str) -> str:
     """The window title showing the active chat model. Single source so every
     code path that sets the title uses the same format."""
-    return f"lilbee: {model}"
+    return f"lilbee: {model}" if model else "lilbee"
 
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
@@ -47,10 +47,11 @@ MODEL_FALLBACK_FAILED = (
     "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
     "rejected; keeping {original!r}. Pick a working {label} model in settings."
 )
-MODEL_UNUSABLE_OPENING_SETUP = (
+MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
-    "to. Opening setup so you can pick one."
+    "to. Pick one from the catalog."
 )
+MODEL_ADOPTED_LOG = "{label} model: using installed {effective!r}."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."
@@ -98,7 +99,7 @@ CMD_DELETE_SUGGESTION = "Did you mean {name}?"
 CMD_DELETE_SUCCESS = "Deleted {name}"
 CMD_REMEMBER_USAGE = "Usage: /remember <text>  (prefix with 'pref:' for a preference)"
 CMD_REMEMBER_SUCCESS = "Remembered ({kind})."
-CMD_REMEMBER_NO_EMBED = "Set an embedding model before saving memories."
+CMD_REMEMBER_NO_EMBED = "No embedding model. Press m and install one to save memories."
 MEMORY_AUTO_EXTRACTED = "Noted {count} memory(s) to review in /memories"
 CMD_EXPORT_USAGE = "Usage: /export <path.parquet|path.jsonl>"
 CMD_EXPORT_SUCCESS = "Exported {pages} page(s) to {output}"
@@ -266,10 +267,6 @@ CRAWL_DIALOG_CANCEL = "Cancel"
 CRAWL_DIALOG_URL_REQUIRED = "URL is required"
 CRAWL_DIALOG_INVALID_URL = "Invalid URL: {error}"
 CRAWL_DIALOG_INVALID_NUMBER = "{field} must be a positive integer or blank"
-EMBEDDING_MISSING = (
-    "No embedding model, search disabled. "
-    "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
-)
 THEME_SET = "Theme: {name}"
 HEADING_INSTALLED = "Installed"
 HEADING_MATCHES = "Matches"
@@ -292,6 +289,8 @@ CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_ALREADY_DOWNLOADING = "{name} is already downloading, press t to watch it"
 CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
+CATALOG_WELCOME = "Pick a model to start chatting. The fit chip shows what runs on this machine."
+CHAT_READY_TOAST = "Chat is ready. Press c."
 CATALOG_INSTALLED_OK = "{name} installed"
 CATALOG_GATED_REPO = "{name} requires login, run /login or lilbee login"
 CATALOG_DOWNLOAD_FAILED = "{name}: download failed"
@@ -320,8 +319,24 @@ CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask…   /  commands   ?  keys   F2  all comma
 COMMAND_PALETTE_ICON = "✦"
 # Box-drawing, not block elements: shade blocks are dither patterns that draw as
 # sparse dashes and full blocks seam per cell wherever the font is not cell-exact.
+# Box-drawing pair: the safe default for terminals whose fonts do not tile
+# block elements cell-exact (shade blocks render as sparse dashes there).
 PROGRESS_BAR_FILL = "━"
 PROGRESS_BAR_TRACK = "─"
+# Block pair: the full-weight bars, used where the terminal tiles them.
+PROGRESS_BAR_FILL_BLOCK = "█"
+PROGRESS_BAR_TRACK_BLOCK = "░"
+
+
+def progress_bar_glyphs() -> tuple[str, str]:
+    """Bar fill/track pair: block elements where the terminal tiles them."""
+    from lilbee.cli.tui.color_compat import draws_block_bars
+
+    if draws_block_bars():
+        return PROGRESS_BAR_FILL_BLOCK, PROGRESS_BAR_TRACK_BLOCK
+    return PROGRESS_BAR_FILL, PROGRESS_BAR_TRACK
+
+
 SLASH_CATALOG_TITLE = "Slash Commands"
 SLASH_CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
 SLASH_CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"
@@ -340,6 +355,8 @@ MODEL_BEING_DOWNLOADED = (
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local AI stack and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."
+CHAT_WELCOME_NO_MODEL_HINT = "No chat model installed yet. Press m to pick one from the catalog."
+CHAT_INPUT_NO_MODEL = "No chat model. Press m to pick one"
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
 CHAT_LOGIN_FAILED = "Login failed: {error}"
@@ -525,22 +542,6 @@ WIKI_TYPE_HEADINGS: dict[str, str] = {
     kind.value: label for kind, label in _WIKI_TYPE_HEADINGS.items()
 }
 APP_QUIT_AGAIN_HINT = "Answer cancelled. Press Ctrl+C again to quit."
-SETUP_WELCOME = "Welcome to lilbee"
-SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
-SETUP_INTRO = (
-    "lilbee needs two models to work: one for chat and one for search. "
-    "Pick one of each below: highlight a card and press [b]Enter[/b] to install. "
-    "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
-)
-SETUP_LOADING = "Finding popular models…"
-SETUP_PICKS_UNAVAILABLE = (
-    "Couldn't reach HuggingFace. Check your connection, or press Esc and use "
-    "'lilbee model pull <ref>'."
-)
-SETUP_HEADING_CHAT = "Chat Models"
-SETUP_HEADING_EMBED = "Embedding Models"
-SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"
-SETUP_RETURN_HINT = "Your existing models are ready  ·  Esc to return"
 SETUP_CARD_HINT = "↵ Enter to install"
 INSTALLED_CARD_HINT = "D / ⌫ to delete"
 
@@ -705,8 +706,9 @@ CHAT_MODE_TOGGLE_TOOLTIP = (
     "Chat skips retrieval and answers directly. Click or press F3 to flip."
 )
 CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
-    "Search needs an embedding model. Install one to enable Search mode."
+    "Search needs an embedding model. Press the pill to pick one from the catalog."
 )
+SEARCH_NEEDS_EMBEDDER = "Search needs an embedding model. Pick one to enable it."
 CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat for this turn."
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
@@ -734,6 +736,7 @@ MODEL_BAR_EMBED_LABEL = "Embed"
 MODEL_BAR_VISION_LABEL = "Vision"
 MODEL_BAR_RERANK_LABEL = "Rerank"
 MODEL_BAR_DISABLED = "disabled"
+MODEL_BAR_NONE = "none, pick one"
 MODEL_BAR_NOT_INSTALLED = "{name} (not installed)"
 MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "This model is not installed. Click to pick another, "

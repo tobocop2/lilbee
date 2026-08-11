@@ -497,11 +497,14 @@ def test_default_first_leads_with_configured_model():
     assert default_first(refs, "not/installed.gguf") == refs
 
 
-def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path):
+def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path, monkeypatch):
+    from lilbee.core.config import cfg
+
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     other_ref = "bartowski/SmolLM-135M-Instruct-GGUF/SmolLM-135M-Instruct.Q8_0.gguf"
+    monkeypatch.setattr(cfg, "chat_model", "owner/Absent-GGUF/absent.Q4_K_M.gguf")
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
@@ -509,8 +512,8 @@ def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path
     ):
         result = runner.invoke(app, ["launch", "opencode"])
 
-    # cfg.chat_model (the default Qwen ref) is absent from the served refs, so the
-    # startup pin would dangle and the client would open on its own provider.
+    # cfg.chat_model is absent from the served refs, so the startup pin would
+    # dangle and the client would open on its own provider.
     assert "is not installed" in result.output
 
 

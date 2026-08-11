@@ -53,7 +53,8 @@ def _mock_services():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     with (
-        patch("lilbee.cli.tui.app.models_ready", return_value=True),
+        patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+        patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -126,12 +127,6 @@ def _wiki_screen():
     return WikiScreen()
 
 
-def _setup_screen():
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    return SetupWizard()
-
-
 @pytest.mark.parametrize(
     "factory",
     [
@@ -141,7 +136,6 @@ def _setup_screen():
         _status_screen,
         _task_center_screen,
         _wiki_screen,
-        _setup_screen,
     ],
     ids=[
         "chat",
@@ -150,7 +144,6 @@ def _setup_screen():
         "status",
         "task_center",
         "wiki",
-        "setup",
     ],
 )
 async def test_every_screen_mounts_a_task_bar(factory) -> None:

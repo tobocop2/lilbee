@@ -896,11 +896,13 @@ def _require_embedding_model() -> None:
     to keyword via embedding_available() and carry on.
     """
     if not get_services().embedder.validate_model():
-        raise RuntimeError(
-            f"Ingest needs an embedding model. "
-            f"{active_config().embedding_model!r} is not available: "
-            "pull it, or set a different embedding_model."
+        ref = active_config().embedding_model
+        detail = (
+            f"{ref!r} is not available: pull it, or set a different embedding_model."
+            if ref
+            else "None is configured: pull one and set embedding_model."
         )
+        raise RuntimeError(f"Ingest needs an embedding model. {detail}")
 
 
 async def _run_post_ingest_passes(

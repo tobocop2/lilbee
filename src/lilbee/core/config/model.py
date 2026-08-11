@@ -111,11 +111,10 @@ class Config(BaseSettings):
     # tool into the agent's config. Per-launch --mcp/--no-mcp overrides it.
     agent_mcp_enabled: bool = ConfigField(default=True, writable=True)
 
-    chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)
-    embedding_model: str = Field(
-        default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
-        min_length=1,
-    )
+    # Empty = not configured, same convention as vision_model. A fresh install
+    # has no models; the catalog assigns these on the first download.
+    chat_model: str = Field(default="")
+    embedding_model: str = Field(default="")
     # Vision OCR model for scanned PDFs and image-only pages. Empty = disabled;
     # there is no cross-role fallback onto the chat model even if multimodal.
     vision_model: str = ConfigField(default="", public=True)
@@ -1081,10 +1080,8 @@ class Config(BaseSettings):
     )
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
-        """Validate and canonicalize a model ref; blank clears optional roles."""
+        """Validate and canonicalize a model ref; blank means the role is unconfigured."""
         if not v or not v.strip():
-            if info.field_name in {"chat_model", "embedding_model"}:
-                raise ValueError(f"{info.field_name} must not be blank")
             return ""
         from lilbee.providers.model_ref import parse_model_ref
 

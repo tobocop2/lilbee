@@ -23,6 +23,7 @@ still separate $background, $surface and $panel on most themes.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from functools import lru_cache
@@ -80,6 +81,19 @@ def draws_block_glyphs(color_system: str | None, term_program: str | None) -> bo
     which advertises it falsely.
     """
     return color_system == TRUECOLOR_COLOR_SYSTEM and term_program != APPLE_TERMINAL
+
+
+@lru_cache(maxsize=1)
+def draws_block_bars() -> bool:
+    """One process-wide draws_block_glyphs answer for bar content glyphs.
+
+    Bars are widget content, not CSS, so the app's border decision cannot
+    carry them. Cached because resolve_term_program can shell out to tmux;
+    the app primes this in __init__ so no repaint pays that cost.
+    """
+    from rich.console import Console
+
+    return draws_block_glyphs(Console().color_system, resolve_term_program(os.environ))
 
 
 def resolve_term_program(environ: Mapping[str, str]) -> str | None:

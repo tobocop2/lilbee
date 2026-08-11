@@ -101,7 +101,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=("/m", "/catalog"),
         help_text="Browse the model catalog",
     ),
-    SlashCommand("/setup", "_cmd_setup", help_text="Run the first-run setup wizard"),
     SlashCommand(
         "/remember",
         "_cmd_remember",

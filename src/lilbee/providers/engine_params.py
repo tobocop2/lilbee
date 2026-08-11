@@ -108,6 +108,13 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     (2) an absolute path to an existing file. Pass *registry* to resolve without
     reaching for ``get_services()`` (callers running inside its construction).
     """
+    if not model:
+        raise ProviderError(
+            "No model is configured for this role. Pick one from the catalog "
+            "or run 'lilbee model pull <model>'.",
+            provider="llama-server",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
     if registry is None:
         # call-time import: keeps the app-layer container off this module's import graph
         from lilbee.app.services import get_services

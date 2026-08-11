@@ -115,14 +115,6 @@ def test_catalog_to_row_marks_installed_rows_supported() -> None:
     assert catalog_to_row(model, installed=False).compat is ModelCompat.UNKNOWN
 
 
-def test_installed_registry_row_is_supported() -> None:
-    """Wizard/library rows built from an installed registry ref carry SUPPORTED."""
-    from lilbee.cli.tui.screens.setup import _installed_name_to_row
-
-    row = _installed_name_to_row("acme/foo-GGUF/foo-Q8_0.gguf", "chat")
-    assert row.compat is ModelCompat.SUPPORTED
-
-
 def test_remote_row_is_supported() -> None:
     """Rows for models a live local server reports are running are SUPPORTED."""
     from lilbee.cli.tui.screens.catalog_utils import remote_to_row
@@ -281,3 +273,32 @@ class TestSizeVariantStripFitsTheCard:
         body_width = 27
         lines = _local_lines(row, selected=True, body_width=body_width)
         assert max(line.cell_length for line in lines) <= body_width
+
+
+def test_watch_selected_before_compose_is_a_no_op() -> None:
+    """A highlight that lands before the card composes must not crash the watch."""
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    card = ModelCard(_row(ModelCompat.SUPPORTED))
+    card.watch_selected(True)  # un-mounted: no .card-body to update yet
+
+
+async def test_watch_selected_rerenders_a_mounted_card() -> None:
+    """Moving the highlight onto a mounted card repaints its body with the hint."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    class _Host(LilbeeAppHost):
+        def compose(self):
+            yield ModelCard(_row(ModelCompat.SUPPORTED))
+
+    app = _Host()
+    async with app.run_test(size=(60, 20)) as pilot:
+        card = app.query_one(ModelCard)
+        before = str(app.query_one(".card-body", Static).render())
+        card.selected = True
+        await pilot.pause()
+        after = str(app.query_one(".card-body", Static).render())
+        assert before != after  # the highlight-only hint appeared
