@@ -379,8 +379,10 @@ class TestExecutableDiscovery:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("PATH", "/usr/bin")
         entries = executable_search_path().split(os.pathsep)
-        assert "/opt/homebrew/bin" in entries
-        assert "/usr/local/bin" in entries
+        # Compare through Path so the host OS's separator applies: the CI
+        # matrix runs this darwin-branch test on Windows too.
+        assert str(Path("/opt/homebrew/bin")) in entries
+        assert str(Path("/usr/local/bin")) in entries
         assert str(Path("~/.local/bin").expanduser()) in entries
 
     def test_search_path_adds_the_well_known_windows_dirs(self, monkeypatch):
