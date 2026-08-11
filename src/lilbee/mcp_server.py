@@ -937,6 +937,7 @@ def wiki_index() -> dict[str, Any]:
 @_wiki_tool
 def wiki_generate(slug: str) -> dict[str, Any]:
     """Generate one indexed wiki page. Costs a single LLM call and is GPU-heavy."""
+    from lilbee.wiki.browse import page_slug
     from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
 
     try:
@@ -945,7 +946,9 @@ def wiki_generate(slug: str) -> dict[str, Any]:
         return _error(str(exc))
     if path is None:
         return _error(f"index entry for {slug} is stale; its sources are gone")
-    return {"command": "wiki_generate", "slug": slug, "path": path.as_posix()}
+    # The read surfaces address pages by section, so answer with that slug.
+    read_slug = page_slug(path, cfg.data_root / cfg.wiki_dir)
+    return {"command": "wiki_generate", "slug": read_slug, "path": path.as_posix()}
 
 
 @_tool
