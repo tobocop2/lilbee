@@ -17,6 +17,7 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     AddRequest,
     DocumentListResponse,
@@ -31,7 +32,7 @@ class RemoveRequest(BaseModel):
     names: list[str] = Field(max_length=100)
 
 
-@post("/api/sync")
+@post("/api/sync", media_type=SSE_MEDIA_TYPE)
 async def sync_route(data: SyncRequest | None = None) -> Stream:
     """Re-index changed documents with streaming SSE progress events.
 
@@ -48,11 +49,11 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
         handlers.sync_stream(
             enable_ocr=enable_ocr, force_rebuild=force_rebuild, retry_skipped=retry_skipped
         ),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
     )
 
 
-@post("/api/add")
+@post("/api/add", media_type=SSE_MEDIA_TYPE)
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
@@ -63,12 +64,12 @@ async def add_route(data: AddRequest) -> Stream:
         handlers.add_files_stream(
             paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout
         ),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )
 
 
-@post("/api/add/upload")
+@post("/api/add/upload", media_type=SSE_MEDIA_TYPE)
 async def add_upload_route(
     data: MultipartBody[list[UploadFile]],
 ) -> Stream:
@@ -88,7 +89,7 @@ async def add_upload_route(
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
     return Stream(
         handlers.add_uploads_stream(cleaned),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )
 
@@ -109,12 +110,18 @@ async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     return await handlers.delete_documents(data.names)
 
 
-@get("/api/export")
+@get("/api/export", media_type="application/octet-stream")
 async def export_route(
     fmt: Annotated[str, QueryParameter(name="format")] = "",
     source: FromQuery[str] = "",
 ) -> Response[bytes]:
-    """Download the per-page text dataset as a file (parquet by default)."""
+    """Download the per-page text dataset as a file (parquet by default).
+
+    The media type is declared on the decorator as well as on the returned
+    Response for the same reason the streaming routes declare theirs: litestar
+    documents the content type from the decorator, so without it the schema
+    promises JSON and a generated client parses a parquet file as text.
+    """
     from lilbee.app.dataset import DatasetError, export_to_bytes
 
     try:
@@ -131,7 +138,7 @@ async def export_route(
     )
 
 
-@post("/api/import")
+@post("/api/import", media_type=SSE_MEDIA_TYPE)
 async def import_route(
     request: Request,
     fmt: Annotated[str, QueryParameter(name="format")] = "",
@@ -150,6 +157,6 @@ async def import_route(
         raise ValidationException(str(exc)) from exc
     return Stream(
         handlers.import_stream(await request.body(), fmt),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )

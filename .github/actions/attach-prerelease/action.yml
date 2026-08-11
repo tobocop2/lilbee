@@ -1,5 +1,5 @@
 name: Attach binaries and the lilbee wheel to GH pre-release
-description: "Attach this run's standalone executables and the pure lilbee wheel to a pre-release at the given tag. Caller needs contents:write. (Per-backend engine wheels are attached separately by attach-multigpu.)"
+description: "Attach this run's standalone executables, the pure lilbee wheel, and the OpenAPI schema to a pre-release at the given tag. Caller needs contents:write. (Per-backend engine wheels are attached separately by attach-multigpu.)"
 
 inputs:
   tag:
@@ -31,10 +31,18 @@ runs:
         name: wheel-default
         path: lilbee-wheel/
 
+    # The API contract for this version. One file, so clients pin a schema
+    # instead of introspecting a source checkout.
+    - name: Download the OpenAPI schema
+      uses: actions/download-artifact@v4
+      with:
+        name: openapi-schema
+        path: schema/
+
     - name: List release assets
       shell: bash
       run: |
-        ls -lh bins/ lilbee-wheel/
+        ls -lh bins/ lilbee-wheel/ schema/
 
     - name: Create GH pre-release with binaries and the lilbee wheel
       uses: softprops/action-gh-release@v3
@@ -43,5 +51,6 @@ runs:
         files: |
           bins/*
           lilbee-wheel/*
+          schema/openapi.json
         generate_release_notes: ${{ inputs.generate-notes == 'true' }}
         prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}

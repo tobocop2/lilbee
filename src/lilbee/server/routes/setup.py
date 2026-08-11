@@ -28,6 +28,7 @@ from lilbee.crawler import (
     crawler_browsers_path,
 )
 from lilbee.server.handlers import SseStream
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 
 
 @get("/setup/crawler/status")
@@ -63,10 +64,10 @@ async def _bootstrap_crawler_stream() -> AsyncGenerator[str, None]:
         yield frame
 
 
-@post("/setup/crawler")
+@post("/setup/crawler", media_type=SSE_MEDIA_TYPE)
 async def setup_crawler_route() -> Stream:
     """Stream the Chromium bootstrap subprocess as SSE events."""
-    return Stream(_bootstrap_crawler_stream(), media_type="text/event-stream")
+    return Stream(_bootstrap_crawler_stream(), media_type=SSE_MEDIA_TYPE)
 
 
 __all__ = [

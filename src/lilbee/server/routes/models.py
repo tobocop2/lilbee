@@ -18,6 +18,7 @@ from lilbee.catalog.types import ModelSource
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.server import handlers
 from lilbee.server.handlers import ModelsResponse, format_task_mismatch
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ExternalModelsResponse,
     ModelsCatalogResponse,
@@ -125,7 +126,7 @@ async def models_installed_route() -> ModelsInstalledResponse:
     return await handlers.models_installed()
 
 
-@post("/api/models/pull")
+@post("/api/models/pull", media_type=SSE_MEDIA_TYPE)
 async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
     # Validate before opening the stream so an unsupported arch is a real 409, not
@@ -141,7 +142,7 @@ async def models_pull_route(data: PullRequest) -> Stream:
         handlers.models_pull(
             data.model, source=data.source, allow_unsupported=data.allow_unsupported
         ),
-        media_type="text/event-stream",
+        media_type=SSE_MEDIA_TYPE,
     )
 
 
