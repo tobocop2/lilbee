@@ -20,6 +20,7 @@ from lilbee.providers.base import (
     ClosableIterator,
     LLMProvider,
     ProviderError,
+    require_role_ref,
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
@@ -84,11 +85,11 @@ class RoutingProvider(LLMProvider):
         return self._get_local()
 
     def embed(self, texts: list[str]) -> list[Vector]:
-        ref = parse_model_ref(cfg.embedding_model)
+        ref = parse_model_ref(require_role_ref(cfg.embedding_model, "embedding"))
         return self._pick_backend(ref).embed(texts)
 
     def count_tokens(self, text: str) -> int:
-        ref = parse_model_ref(cfg.embedding_model)
+        ref = parse_model_ref(require_role_ref(cfg.embedding_model, "embedding"))
         return self._pick_backend(ref).count_tokens(text)
 
     @overload

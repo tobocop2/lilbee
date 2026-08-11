@@ -273,3 +273,11 @@ class TestSizeVariantStripFitsTheCard:
         body_width = 27
         lines = _local_lines(row, selected=True, body_width=body_width)
         assert max(line.cell_length for line in lines) <= body_width
+
+
+def test_watch_selected_before_compose_is_a_no_op() -> None:
+    """A highlight that lands before the card composes must not crash the watch."""
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    card = ModelCard(_row(ModelCompat.SUPPORTED))
+    card.watch_selected(True)  # un-mounted: no .card-body to update yet

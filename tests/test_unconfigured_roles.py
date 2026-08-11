@@ -203,3 +203,16 @@ class TestIngestUnconfigured:
         monkeypatch.setattr(pipeline, "get_services", lambda: services)
         with pytest.raises(RuntimeError, match="None is configured"):
             pipeline._require_embedding_model()
+
+
+class TestRoutingProviderUnconfigured:
+    def test_embed_and_count_tokens_name_the_state(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        provider = RoutingProvider()
+        with pytest.raises(ProviderError, match="No embedding model is configured"):
+            provider.embed(["hi"])
+        with pytest.raises(ProviderError, match="No embedding model is configured"):
+            provider.count_tokens("hi")

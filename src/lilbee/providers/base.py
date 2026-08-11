@@ -155,6 +155,18 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
+def require_role_ref(ref: str, role: str, *, provider: str = "") -> str:
+    """Reject an unconfigured role with a clean error instead of parsing ''."""
+    if not ref:
+        raise ProviderError(
+            f"No {role} model is configured. Pick one from the catalog "
+            f"or run 'lilbee model pull <model>'.",
+            provider=provider,
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+    return ref
+
+
 ChatMessage = dict[str, str]
 
 
