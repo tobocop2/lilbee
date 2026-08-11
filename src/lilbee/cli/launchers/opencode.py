@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import typer
@@ -16,6 +15,7 @@ from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
+from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -47,31 +47,6 @@ def _opencode_skill_dest() -> Path:
     return _opencode_config_dir() / "skills" / "lilbee-mcp"
 
 
-def _setup_marker_path() -> Path:
-    """lilbee's record that opencode setup already ran (so launch doesn't re-prompt)."""
-    return cfg.data_dir / "launchers" / _SETUP_MARKER_NAME
-
-
-def _setup_recorded() -> bool:
-    return _setup_marker_path().exists()
-
-
-def _record_setup() -> None:
-    """Persist that the user accepted opencode setup; idempotent (atomic write)."""
-    path = _setup_marker_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as tmp:
-            tmp_name = tmp.name
-            tmp.write(json.dumps({"accepted": True}).encode("utf-8"))
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
 def _print_setup_plan() -> None:
     """Tell the user exactly which files the first-run setup writes."""
     typer.secho("First-time opencode setup will write:", fg=typer.colors.CYAN)
@@ -84,29 +59,14 @@ def _print_setup_plan() -> None:
     )
 
 
-def _is_interactive() -> bool:
-    """True when stdin is a TTY, so a confirmation prompt can be answered."""
-    return sys.stdin.isatty()
-
-
 def _confirm_setup(assume_yes: bool) -> bool:
-    """Prompt before the first opencode setup; True means proceed.
-
-    Skipped when already recorded, when *assume_yes* is set, or when stdin is
-    not a TTY (scripts/CI: invoking ``launch opencode`` is the consent there).
-    The choice is remembered so later launches don't re-prompt.
-    """
-    if _setup_recorded():
-        return True
-    _print_setup_plan()
-    if assume_yes or not _is_interactive():
-        _record_setup()
-        return True
-    if not typer.confirm("Proceed with opencode setup?", default=True):
-        typer.secho("Skipped opencode setup.", fg=typer.colors.YELLOW)
-        return False
-    _record_setup()
-    return True
+    """Prompt before the first opencode setup; True means proceed."""
+    return confirm_first_run_setup(
+        marker_name=_SETUP_MARKER_NAME,
+        client_name="opencode",
+        print_plan=_print_setup_plan,
+        assume_yes=assume_yes,
+    )
 
 
 class OpencodeLauncher:

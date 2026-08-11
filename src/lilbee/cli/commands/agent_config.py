@@ -10,7 +10,7 @@ from typing import Any
 import typer
 import yaml
 
-from lilbee.cli.agent_configs import hermes, litellm, opencode
+from lilbee.cli.agent_configs import claude, hermes, litellm, opencode
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.hermes import _MCP_CONTAINER_KEY
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
@@ -86,6 +86,16 @@ def _hermes_cmd(
     """Print a hermes config.yaml block (OpenAI-compatible provider + MCP server)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit_block(hermes.hermes_config)
+
+
+@agent_config_app.command("claude")
+def _claude_cmd(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Print a Claude Code .mcp.json block (lilbee MCP server)."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _emit_block(claude.claude_mcp_config)
 
 
 @agent_config_app.command("litellm")
