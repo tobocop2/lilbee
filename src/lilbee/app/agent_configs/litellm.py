@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import yaml
 
+from lilbee.app.endpoints import OPENAI_PATH
+
 
 def litellm_config(
     *,
@@ -17,7 +19,7 @@ def litellm_config(
             "model_name": f"lilbee/{ref}",
             "litellm_params": {
                 "model": f"openai/{ref}",
-                "api_base": f"{base_url}/v1",
+                "api_base": f"{base_url}{OPENAI_PATH}",
                 "api_key": api_key,
             },
         }

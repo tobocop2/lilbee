@@ -14,6 +14,8 @@ from lilbee.core.system import (
     chat_ctx_target_for_total_bytes,
     default_data_dir,
     default_state_dir,
+    executable_search_path,
+    find_executable,
     find_local_root,
     is_ignored_dir,
     is_network_path,
@@ -363,3 +365,54 @@ class TestCgroupCappedMemory:
             lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
         )
         assert sys_mod.scaled_chat_ctx_target_default() == 24576
+
+
+class TestExecutableDiscovery:
+    """PATH plus the per-user install dirs a GUI-spawned server never inherits."""
+
+    def test_search_path_keeps_the_inherited_path_first(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/inherited/bin")
+        entries = executable_search_path().split(os.pathsep)
+        assert entries[0] == "/inherited/bin"
+
+    def test_search_path_adds_the_well_known_unix_dirs(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        entries = executable_search_path().split(os.pathsep)
+        assert "/opt/homebrew/bin" in entries
+        assert "/usr/local/bin" in entries
+        assert str(Path("~/.local/bin").expanduser()) in entries
+
+    def test_search_path_adds_the_well_known_windows_dirs(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("PATH", "C:/Windows")
+        entries = executable_search_path().split(os.pathsep)
+        assert str(Path("~/AppData/Roaming/npm").expanduser()) in entries
+        assert "/opt/homebrew/bin" not in entries
+
+    def test_search_path_drops_an_empty_path_var(self, monkeypatch):
+        monkeypatch.setenv("PATH", "")
+        assert "" not in executable_search_path().split(os.pathsep)
+
+    def test_find_executable_returns_the_resolved_path(self, tmp_path, monkeypatch):
+        binary = tmp_path / "somecli"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert find_executable("somecli") == str(binary)
+
+    def test_find_executable_returns_none_when_absent(self, monkeypatch):
+        monkeypatch.setenv("PATH", "")
+        assert find_executable("definitely-not-installed-xyz") is None
+
+    def test_find_executable_searches_the_extra_dirs(self, tmp_path, monkeypatch):
+        """The whole point: a binary outside PATH is still found."""
+        extra = tmp_path / "extra"
+        extra.mkdir()
+        binary = extra / "othercli"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(system_mod, "_UNIX_BIN_DIRS", (str(extra),))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert find_executable("othercli") == str(binary)

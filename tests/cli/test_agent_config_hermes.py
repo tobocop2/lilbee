@@ -9,9 +9,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from lilbee.app.agent_configs.hermes import hermes_config
 from lilbee.catalog.types import ModelTask
 from lilbee.cli import app
-from lilbee.cli.agent_configs.hermes import hermes_config
 from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
@@ -132,7 +132,7 @@ def _stub_registry():
     registry.list_installed.return_value = [manifest]
     services = MagicMock()
     services.registry = registry
-    with patch("lilbee.cli.launchers.server.get_services", return_value=services):
+    with patch("lilbee.app.models.get_services", return_value=services):
         yield
 
 

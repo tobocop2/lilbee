@@ -23,6 +23,10 @@ from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.mcp_mount import build_mcp_mount
+from lilbee.server.routes.agent_config import (
+    agent_config_index_route,
+    agent_config_route,
+)
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -312,6 +316,8 @@ def create_app() -> Litestar:
             gpus_route,
             gpu_stats_stream_route,
             crawl_route,
+            agent_config_index_route,
+            agent_config_route,
             setup_crawler_route,
             setup_crawler_status_route,
             wiki_list_route,
