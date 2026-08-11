@@ -38,7 +38,7 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
     # Simulate "already-initialized" state so the app does not read this as
-    # a fresh install and open the SetupWizard over tests that exercise chat.
+    # a fresh install and route away from tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for field_name in type(snapshot).model_fields:
@@ -3242,123 +3242,8 @@ class TestQuestionMarkBehavior:
             assert inp.value == "", "? typed itself instead of opening help"
 
 
-class TestSetupWizardGrid:
-    """Test setup wizard uses GridSelect + ModelCard."""
-
-    async def test_setup_uses_grid_select(self, _mock_resolve):
-        """SetupWizard mounts GridSelect, not ListView."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                grids = app.screen.query(GridSelect)
-                assert len(grids) >= 1
-
-    async def test_setup_step1_shows_chat_picks(self, _mock_resolve):
-        """Setup shows 'Chat Models' heading."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                headings = app.screen.query(".section-heading")
-                texts = [str(h.render()) for h in headings]
-                assert "Chat Models" in texts
-
-    async def test_cmd_setup_opens_wizard(self, _mock_resolve):
-        """/setup command opens the setup wizard."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.screen._handle_slash("/setup")
-                await pilot.pause()
-                assert isinstance(app.screen, SetupWizard)
-
-    async def test_setup_grid_highlights_focused_card(self, _mock_resolve):
-        """The focused card in the SetupWizard grid shows a visible focus
-        indicator so keyboard users can see which card is under the cursor."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                grid = app.screen.query(GridSelect).first()
-                grid.focus()
-                await pilot.pause()
-                await pilot.press("right")
-                await pilot.pause()
-                cards = [c for c in grid.children if isinstance(c, ModelCard)]
-                highlighted = [c for c in cards if c.has_class("-highlight")]
-                others = [c for c in cards if not c.has_class("-highlight")]
-                assert len(highlighted) == 1
-                assert others, "need a non-focused card to compare against"
-                focused_border = highlighted[0].styles.border_top
-                baseline_border = others[0].styles.border_top
-                assert focused_border is not None
-                assert focused_border[0] == "solid"
-                # The focus rule paints a visible color; baseline is transparent.
-                assert focused_border[1] != baseline_border[1]
-
-    async def test_setup_focused_selected_card_uses_accent_border(self, _mock_resolve):
-        """A focused + selected wizard card uses the full $accent border that
-        catalog model cards do, not the older thick-left-only treatment.
-
-        After bb-2rzb the wizard is required to share its card styling
-        with the catalog browser; the focused + selected state therefore
-        collapses into the same ``border: solid $accent`` rule the catalog
-        uses on hover/highlight."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                grid = app.screen.query(GridSelect).first()
-                cards = [c for c in grid.children if isinstance(c, ModelCard)]
-                assert cards
-                cards[0].selected = True
-                grid.focus()
-                await pilot.pause()
-                assert cards[0].has_class("-highlight")
-                assert cards[0].has_class("-selected")
-                border_top = cards[0].styles.border_top
-                assert border_top is not None
-                assert border_top[0] == "solid"
+class TestCatalogViewSwitching:
+    """Catalog grid state survives switching views away and back."""
 
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""
@@ -3433,7 +3318,10 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch("lilbee.cli.tui.app.models_ready", return_value=True):
+            with (
+                mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+                mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+            ):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen
@@ -3458,7 +3346,10 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch("lilbee.cli.tui.app.models_ready", return_value=True):
+            with (
+                mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+                mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+            ):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen

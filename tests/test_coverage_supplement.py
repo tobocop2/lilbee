@@ -62,33 +62,6 @@ class TestStatusHelpers:
         assert "missing" in str(result.plain)
 
 
-class TestSetupPendingDownload:
-    """The isinstance-narrowing branches in `_pending_download` and
-    `_preselect_recommended` for the unreachable-but-typesafe case
-    where a card row is not a LocalCatalogRow."""
-
-    def test_pending_download_returns_none_for_frontier_row(self) -> None:
-        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
-        from lilbee.cli.tui.screens.setup import _pending_download
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-
-        row = FrontierCatalogRow(
-            name="claude-test",
-            ref="anthropic/claude-test",
-            task="chat",
-            provider="Anthropic",
-            provider_id="anthropic",
-            key_status=KeyStatus.READY,
-        )
-        card = ModelCard(row)
-        assert _pending_download(card) is None
-
-    def test_pending_download_returns_none_for_no_card(self) -> None:
-        from lilbee.cli.tui.screens.setup import _pending_download
-
-        assert _pending_download(None) is None
-
-
 class TestSettingsLazyBody:
     """`_LazyGroupBody.populated` property and `_populate_pane` early
     returns for unknown pane ids."""
@@ -642,10 +615,10 @@ class TestAppCanonicalizeFallbackNotice:
 
         This is the first-launch case: the default refs aren't downloaded
         yet and there's nothing to fall back to. The app's readiness check
-        keys off the same unresolved state and opens the SetupWizard, which
-        is the single voice for "pick a model." A toast
-        here just duplicates the wizard (its text literally says "Opening
-        setup"), so it's suppressed; the WARNING log stays as a breadcrumb.
+        keys off the same unresolved state and routes to the catalog, which
+        is the single voice for "pick a model." A toast here would just
+        duplicate that, so it's suppressed; the WARNING log stays as a
+        breadcrumb.
         """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
@@ -686,7 +659,7 @@ class TestAppCanonicalizeFallbackNotice:
                 app.canonicalize_persisted_models()
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
-            assert not notifications, "no toast: the SetupWizard is the single voice"
+            assert not notifications, "no toast: the catalog routing is the single voice"
             assert any("litellm" in r.getMessage() for r in caplog.records), (
                 "the reason must still be logged at WARNING as a breadcrumb"
             )

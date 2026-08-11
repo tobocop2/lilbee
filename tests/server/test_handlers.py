@@ -34,6 +34,10 @@ def isolated_env(tmp_path: Path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.linked_roots = {}
     cfg.concept_graph = False
+    # Configured-but-not-installed, the state this module always ran under
+    # before the defaults became unconfigured.
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     yield docs
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

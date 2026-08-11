@@ -1046,8 +1046,8 @@ class TestConfigDefaultsRoute:
         assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         # Model role defaults surface so UI reset affordances can restore
         # them via PUT /api/models/<role>, even though the fields are
-        # non-writable on PATCH /api/config.
-        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        # non-writable on PATCH /api/config. The default is unconfigured.
+        assert data["chat_model"] == ""
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
         assert data["wiki_embedding_faithfulness_threshold"] == 0.5
@@ -1599,11 +1599,17 @@ class TestLifespan:
         assert "Failed to validate embedding model" in caplog.text
 
     @mock.patch("lilbee.server.app.get_services")
-    async def test_unavailable_embedding_model_warns_and_does_not_block(self, mock_get_svc, caplog):
+    async def test_unavailable_embedding_model_warns_and_does_not_block(
+        self, mock_get_svc, caplog, monkeypatch
+    ):
         mock_svc = mock.MagicMock()
         mock_svc.embedder.validate_model.return_value = False
         mock_get_svc.return_value = mock_svc
+        from lilbee.core.config import cfg
         from lilbee.server.app import _lifespan
+
+        # A configured-but-unavailable ref is the warn case; unconfigured is INFO.
+        monkeypatch.setattr(cfg, "embedding_model", "owner/embed-GGUF/embed.Q8_0.gguf")
 
         with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
             async with _lifespan(mock.MagicMock()):

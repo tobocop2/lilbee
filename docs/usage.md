@@ -41,7 +41,7 @@
 
 `lilbee` (no args) launches the full Textual app: streaming chat with clickable
 citations, a model bar, a Task Center for background jobs, and screens for the
-catalog, settings, the setup wizard, and the generated wiki.
+catalog, settings, and the generated wiki.
 
 Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
 command palette, and `/help` for the slash-command catalog. Every action lilbee
@@ -84,15 +84,15 @@ contrast and layering are the same either way.
 
 ### First run
 
-The welcome screen walks you through:
+A fresh install opens on the model catalog. Each card carries a fit chip that
+says whether the model runs on this machine. Pick a chat model and pull it; the
+first model you install becomes the active one, and a toast tells you chat is
+ready. Models pulled earlier from the CLI are adopted automatically, and that
+launch lands straight in chat.
 
-1. Picking an **embedding model** (required for indexing your documents).
-2. Picking a **chat model** (optional; needed for cited answers and the
-   conversational REPL).
-
-Both pickers show every model the role can run: native GGUFs from the built-in
-catalog and, when an API key is configured, anything your provider exposes.
-Pulling a model installs it; selecting it assigns it to the matching role.
+An embedding model works the same way, but nothing asks for one up front. The
+first feature that needs one (Search mode, `/remember`, indexing) sends you to
+the catalog's embedding tab.
 
 After that you're in chat. `/add` indexes documents, `/crawl` indexes a website
 (crawler extra required), `/settings` opens the settings tabs.
@@ -199,7 +199,6 @@ tab-complete; `/help` opens the same catalog live.
 | `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
 | `/memories` | | Browse, delete, or share saved memories |
-| `/setup` | | Run the first-time setup wizard |
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
 | `/theme <name>` | | Switch theme |
@@ -1520,5 +1519,5 @@ lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s,
 export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mtmd)
 ```
 
-Pick or change a vision model interactively via `/settings` or `/setup` in the
+Pick or change a vision model interactively via `/settings` in the
 TUI; the selection is saved to `config.toml` and persists across sessions.

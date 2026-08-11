@@ -23,7 +23,7 @@ _LOGO = "\n".join(BEE_LINES)
 
 
 class StartupGate(Screen[None]):
-    """Holds the screen until the app can serve, then hands over to chat.
+    """Holds the screen until readiness settles, then hands over to the landing view.
 
     The engine itself loads in the background after the handover; a prompt sent
     before it is ready waits inside its own answer bubble with live progress.
@@ -32,7 +32,7 @@ class StartupGate(Screen[None]):
     CSS_PATH = "startup_gate.tcss"
 
     # Lilbee always hosts screens on a LilbeeApp, so narrowing the type lets
-    # reveal_chat resolve without reflection.
+    # reveal_landing resolve without reflection.
     app: LilbeeApp  # type: ignore[assignment]
 
     def compose(self) -> ComposeResult:
@@ -74,12 +74,13 @@ class StartupGate(Screen[None]):
 
     @work(thread=True, name="startup_gate", exit_on_error=False)
     def _boot_worker(self) -> None:
-        """Settle the refs, settle the setup answer, build the container, hand over.
+        """Settle the refs, settle readiness, build the container, hand over.
 
         Canonicalization runs first: it can swap a stale ref for a working one,
-        which decides the setup answer. An already built container skips it.
+        or adopt an installed model into an unconfigured role, which decides
+        the landing view. An already built container skips it.
 
-        ``settle_setup_state`` blocks until the app has recorded the answer, so
+        ``settle_landing`` blocks until the app has recorded the answer, so
         the handover cannot read a readiness flag that has yet to be written.
 
         Building the container spawns the role servers, so it belongs on this
@@ -88,10 +89,7 @@ class StartupGate(Screen[None]):
         try:
             if peek_services() is None:
                 self.app.canonicalize_persisted_models()
-            if self.app.settle_setup_state():
-                # Setup owns the screen now, and the app has already routed
-                # there; handing over as well would land on top of it.
-                return
+            self.app.settle_landing()
             self.app.adopt_services()
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
@@ -118,13 +116,13 @@ class StartupGate(Screen[None]):
         self._release()
 
     def _release(self) -> None:
-        """Hand the screen to chat, unless something else has taken it.
+        """Hand the screen to the landing view, unless something else has taken it.
 
-        reveal_chat switches whatever screen is on top, so a gate that resolved
+        reveal_landing switches whatever screen is on top, so a gate that resolved
         after another screen opened above it would replace that screen instead of
         itself. No widget lookup here either: the gate can resolve before compose
         has mounted its children, and a missed query would strand the user.
         """
         if self.app.screen is not self:
             return
-        self.app.reveal_chat()
+        self.app.reveal_landing()
