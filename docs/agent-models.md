@@ -4,6 +4,8 @@
 
 Launch with `--no-mcp` to keep lilbee as the model provider but drop its MCP block, leaving your own agent MCP config untouched. The default is the `agent_mcp_enabled` config field (env `LILBEE_AGENT_MCP_ENABLED`); `--mcp` / `--no-mcp` override it per launch.
 
+Claude Code needs a large context window: its built-in system prompt and tool schemas take tens of thousands of tokens before the first turn. Pick a chat model that serves a 64K-token window or larger (the launcher warns when the served window is smaller). `lilbee launch claude` keeps the session lean -- it loads only project-scoped settings and only lilbee's MCP server -- because a populated global Claude Code setup adds tens of thousands more tokens that no local window absorbs.
+
 ## Verified families
 
 Each family completes the loop end to end: the agent sends a prompt, the model calls `lilbee_search`, the tool runs against an indexed workspace, and the model answers from the results. How reliably a model reaches for a tool depends on the model and its size, not on lilbee.
