@@ -62,8 +62,9 @@ Test-Gate -Name 'just under the 12.5 floor (555.84)' -Output @('555.84') -Expect
 Test-Gate -Name 'CUDA 12.4 floor (551.61)' -Output @('551.61') -Expect 'cu124'
 Test-Gate -Name 'just under the 12.4 floor (551.60)' -Output @('551.60') -Expect ''
 Test-Gate -Name 'pre-rename driver (550.54.14)' -Output @('550.54.14') -Expect ''
-# A numeric-split comparison reads 551.7 as below 551.61. [version] does not.
-Test-Gate -Name 'ordering: 551.7 is above 551.61' -Output @('551.7') -Expect 'cu124'
+# NVIDIA prints a two-digit minor on Windows, so the minor decides inside a major.
+Test-Gate -Name 'minor ordering: 551.86 is above 551.61' -Output @('551.86') -Expect 'cu124'
+Test-Gate -Name 'minor ordering: 555.84 is below 555.85' -Output @('555.84') -Expect 'cu124'
 # --query-gpu prints one row per card.
 Test-Gate -Name 'two cards' -Output @('610.88', '610.88') -Expect 'cu125'
 # nvidia-smi present but answering nothing: driver installed, no card.
