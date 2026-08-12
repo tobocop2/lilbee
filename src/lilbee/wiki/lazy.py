@@ -174,13 +174,10 @@ def generate_stub_page(
             supersedes_sources=False,
         )
         if path is not None:
-            # Link it into the wiki, the way a build does. Without this a page
-            # written on request carries no [[links]] at all while every page
-            # written by a build carries several, so it lands in the vault as an
-            # isolated node: in the wiki but not part of it, and alone in the
-            # graph. Passing no entities is deliberate; the surface map is built
-            # from the pages already on disk, which now includes this one, so
-            # the new page gains links out and its neighbours gain links back.
+            # The link pass a build runs; without it the page has no [[links]]
+            # and sits alone in the graph. No entities: the surface map is then
+            # built from the pages on disk, this one included, so links go both
+            # ways.
             rewrite_links_across_wiki([], config)
             on_progress(
                 EventType.WIKI_PAGE,

@@ -298,9 +298,8 @@ class TestResolveStub:
 
 
 class TestGeneratedPagesJoinTheWiki:
-    """A page written on request used to carry no ``[[links]]`` at all, while
-    every page a build wrote carried several. It landed in the vault as an
-    isolated node: in the wiki, but not part of it, and alone in the graph."""
+    """A page written on request carried no ``[[links]]``, so it sat alone in
+    the graph while every page a build wrote was connected."""
 
     def _entities_dir(self) -> Path:
         d = cfg.data_root / cfg.wiki_dir / "entities"
@@ -326,8 +325,7 @@ class TestGeneratedPagesJoinTheWiki:
         assert "[[henry-ford]]" in new_page.read_text(encoding="utf-8")
 
     def test_its_neighbours_link_back_to_the_new_page(self):
-        """Links only outward would still leave the page with no backlinks, so
-        it would sit on the edge of the graph rather than inside it."""
+        """Outward links alone would leave it with no backlinks."""
         entities = self._entities_dir()
         neighbour = entities / "henry-ford.md"
         neighbour.write_text("---\n---\nHe built the model t.\n", encoding="utf-8")
