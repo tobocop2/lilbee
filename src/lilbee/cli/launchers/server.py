@@ -16,8 +16,6 @@ from typing import IO
 import httpx
 import typer
 
-from lilbee.app.services import get_services
-from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
 from lilbee.cli.launchers.warm_render import render_warm
@@ -61,12 +59,6 @@ def running_server_session() -> tuple[str, int] | None:
     if not isinstance(token, str) or not token:
         return None
     return token, port
-
-
-def installed_chat_model_refs() -> list[str]:
-    """Return sorted refs for every chat-task model in the registry."""
-    registry = get_services().registry
-    return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
 
 
 def free_port() -> int:
@@ -174,7 +166,7 @@ def planned_chat_ctx() -> int | None:
     from lilbee.providers.model_ref import parse_model_ref
 
     ref = str(cfg.chat_model)
-    if not parse_model_ref(ref).is_local:
+    if not ref or not parse_model_ref(ref).is_local:
         return None
     if cfg.num_ctx is not None:
         return cfg.num_ctx

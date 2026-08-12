@@ -39,11 +39,12 @@ def _mock_embedder():
 
 @pytest.fixture(autouse=True)
 def _isolate_cfg():
-    """Restore global cfg after every test."""
+    """Pin a sample embedding ref (defaults are unconfigured) and restore cfg after."""
     snapshot = cfg.model_copy()
     cfg.concept_graph = False
     cfg.query_expansion_count = 0
     cfg.hyde = False
+    cfg.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

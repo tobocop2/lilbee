@@ -24,6 +24,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.runtime.progress import SseEvent
+from lilbee.server.handlers.agent_config import agent_config, agent_config_index
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
@@ -75,7 +76,11 @@ from lilbee.server.handlers.sse import (
     sse_error,
     sse_event,
 )
-from lilbee.server.handlers.wiki import wiki_build_stream, wiki_synthesize_stream
+from lilbee.server.handlers.wiki import (
+    wiki_build_stream,
+    wiki_generate_stream,
+    wiki_synthesize_stream,
+)
 from lilbee.server.models import (
     GpusResponse,
     HealthResponse,
@@ -299,6 +304,8 @@ __all__ = [
     "SseStream",
     "add_files_stream",
     "add_uploads_stream",
+    "agent_config",
+    "agent_config_index",
     "ask",
     "ask_stream",
     "chat",
@@ -342,5 +349,6 @@ __all__ = [
     "validate_upload_names",
     "warm_stream",
     "wiki_build_stream",
+    "wiki_generate_stream",
     "wiki_synthesize_stream",
 ]

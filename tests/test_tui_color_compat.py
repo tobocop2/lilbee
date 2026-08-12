@@ -382,7 +382,6 @@ _SCREENS = [
     pytest.param("lilbee.cli.tui.screens.status", "StatusScreen", id="status"),
     pytest.param("lilbee.cli.tui.screens.wiki", "WikiScreen", id="wiki"),
     pytest.param("lilbee.cli.tui.screens.wiki_drafts", "WikiDraftsScreen", id="wiki-drafts"),
-    pytest.param("lilbee.cli.tui.screens.setup", "SetupWizard", id="setup"),
     pytest.param("lilbee.cli.tui.screens.startup_gate", "StartupGate", id="startup-gate"),
     pytest.param("lilbee.cli.tui.screens.command_palette", "LilbeeCommandPalette", id="palette"),
     pytest.param("lilbee.cli.tui.widgets.confirm_dialog", "ConfirmDialog", id="confirm"),

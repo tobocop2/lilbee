@@ -13,7 +13,7 @@ import re
 import threading
 from typing import TYPE_CHECKING, Any
 
-from lilbee.core.text import collapse_whitespace, is_valid_label, make_slug
+from lilbee.core.text import collapse_whitespace, is_valid_label, make_slug, strip_possessive
 from lilbee.wiki.entity_extractor.base import (
     ChunkRef,
     EntityKind,
@@ -102,6 +102,8 @@ class NerConceptsExtractor:
                     doc, ref, entity_records, allowed_ent_types, funnel, debug_enabled
                 )
 
+        _merge_possessives(entity_records)
+
         if debug_enabled:
             log.debug(
                 "ner funnel: raw_ents=%(raw_ents)d "
@@ -153,6 +155,25 @@ def _accumulate_doc_entities(
         rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
         rec.refs.add(ref)
         funnel["kept_entity_surfaces"] += 1
+
+
+def _merge_possessives(entity_records: dict[str, _Aggregate]) -> None:
+    """Fold each possessive surface into its standalone base entity, in place.
+
+    "Solar System's" and "Solar System" are one subject, but a name whose
+    canonical form carries the clitic (McDonald's) has no standalone base in
+    the corpus, so a possessive with no base aggregate stays as it is.
+    """
+    for key in list(entity_records):
+        agg = entity_records[key]
+        base = strip_possessive(agg.label)
+        if base == agg.label:
+            continue
+        base_agg = entity_records.get(make_slug(base))
+        if base_agg is None or base_agg is agg:
+            continue
+        base_agg.refs |= agg.refs
+        del entity_records[key]
 
 
 class _Aggregate:

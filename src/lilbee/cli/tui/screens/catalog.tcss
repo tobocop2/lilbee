@@ -29,6 +29,13 @@
     min-height: 0;
 }
 
+#catalog-welcome {
+    height: 1;
+    width: 100%;
+    color: $text-muted;
+    padding: 0 1;
+}
+
 #catalog-toolbar {
     height: 1;
     width: 100%;

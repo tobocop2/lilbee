@@ -197,7 +197,9 @@ def _augment_surface_map_with_existing_pages(
             surface_to_slug.setdefault(spaced, slug)
 
 
-def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) -> None:
+def rewrite_links_across_wiki(
+    entities: list[ExtractedEntity], config: Config, wiki_root: Path | None = None
+) -> None:
     """Rewrite ``[[slug]]`` links on every page under ``wiki/`` content subdirs.
 
     A page never receives a link to itself: the rewriter takes the
@@ -209,7 +211,10 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
     compiled once per build and reused across pages.
     """
     surface_to_slug = _entity_surface_map(entities)
-    wiki_root = config.data_root / config.wiki_dir
+    # Callers that were handed a root use it: accept publishes into the root it
+    # was given, which is not always the one the config points at.
+    if wiki_root is None:
+        wiki_root = config.data_root / config.wiki_dir
     _augment_surface_map_with_existing_pages(surface_to_slug, wiki_root)
     rewriter = compile_rewriter(surface_to_slug)
     if rewriter is None:
@@ -312,7 +317,7 @@ def build_wiki(
             ),
         )
 
-    _rewrite_links_across_wiki(entities, config)
+    rewrite_links_across_wiki(entities, config)
     log.info("Generated %d batched wiki pages", len(pages))
     return pages
 

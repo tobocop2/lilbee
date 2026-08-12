@@ -12,6 +12,15 @@ from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.retrieval.embedder import Embedder
 
 
+@pytest.fixture(autouse=True)
+def _pin_embedding_model():
+    """Pin the nomic sample ref: the prefixing tests assert its task prefixes."""
+    old = cfg.embedding_model
+    cfg.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    yield
+    cfg.embedding_model = old or ""
+
+
 @pytest.fixture()
 def mock_provider():
     return MagicMock()

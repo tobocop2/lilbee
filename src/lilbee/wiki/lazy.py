@@ -16,9 +16,18 @@ from typing import TYPE_CHECKING
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.text import clean_label_for_display
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    WikiPageEvent,
+    WikiPhase,
+    WikiPhaseEvent,
+    noop_callback,
+)
 
 from .batch import hash_existing_sources
 from .citations import resolve_multi_source_citations
+from .generation import rewrite_links_across_wiki
 from .page import (
     chunks_to_text,
     generate_page,
@@ -28,6 +37,7 @@ from .shared import WIKI_BUILD_LOCK
 from .stubs import WikiStub, load_stub_index
 
 if TYPE_CHECKING:
+    import threading
     from pathlib import Path
 
     from lilbee.core.config import Config
@@ -89,18 +99,27 @@ def _resolve(slug: str, stubs: dict[str, WikiStub]) -> WikiStub | None:
     return next((stub for stub in stubs.values() if stub.wiki_slug == slug), None)
 
 
+def resolve_stub(slug: str, config: Config | None = None) -> WikiStub | None:
+    """The index entry for *slug*, by bare or subdir-qualified form."""
+    return _resolve(slug, load_stub_index(config or cfg))
+
+
 def generate_stub_page(
     slug: str,
     store: Store,
     config: Config | None = None,
     *,
     stats: BuildStats | None = None,
+    on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> Path | None:
     """Write the page for one indexed subject. Returns its path, or None.
 
     Runs the same citation verification, faithfulness gate, and drafts
     quarantine a build does; nothing here bypasses them. Holds the wiki mutex,
     so a page generated from the browse tree cannot interleave with a build.
+    Emits the same wiki_phase/wiki_page events a build does; a *cancel* set
+    before the model call skips it.
     """
     if config is None:
         config = cfg
@@ -116,6 +135,11 @@ def generate_stub_page(
             return None
         if unresolved:
             log.info("%d of %s's indexed chunks are gone", unresolved, slug)
+
+        on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.GENERATE, total=1))
+        if cancel is not None and cancel.is_set():
+            log.info("Generation of %s cancelled before the model call", slug)
+            return None
 
         source_names = sorted(chunks_by_source)
         all_chunks = [c for chunks in chunks_by_source.values() for c in chunks]
@@ -133,7 +157,7 @@ def generate_stub_page(
                 parsed, source_names, source_hashes, chunks_by_source
             )
 
-        return generate_page(
+        path = generate_page(
             label=stub.label,
             prompt=prompt,
             chunks=all_chunks,
@@ -149,3 +173,14 @@ def generate_stub_page(
             # them. Pruning here would delete every document that named it.
             supersedes_sources=False,
         )
+        if path is not None:
+            # The link pass a build runs; without it the page has no [[links]]
+            # and sits alone in the graph. No entities: the surface map is then
+            # built from the pages on disk, this one included, so links go both
+            # ways.
+            rewrite_links_across_wiki([], config)
+            on_progress(
+                EventType.WIKI_PAGE,
+                WikiPageEvent(label=stub.label, pages=1, current=1, total=1),
+            )
+        return path

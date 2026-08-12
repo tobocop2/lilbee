@@ -4082,14 +4082,18 @@ class TestWikiIndexAndGenerate:
         assert result.exit_code == 1
         assert "sources are gone" in result.output
 
-    def test_generate_json_output(self, mock_svc, isolated_env):
+    def test_generate_json_output_carries_the_read_slug(self, mock_svc, isolated_env):
+        """`wiki read` addresses pages by section, so the JSON slug must be
+        the sectioned form, not the bare form the caller typed."""
         cfg.wiki = True
         cfg.json_mode = True
-        with mock.patch("lilbee.wiki.lazy.generate_stub_page", return_value=Path("w/ford.md")):
+        page = cfg.data_root / cfg.wiki_dir / "entities" / "ford.md"
+        with mock.patch("lilbee.wiki.lazy.generate_stub_page", return_value=page):
             result = runner.invoke(app, ["--json", "wiki", "generate", "ford"])
         data = json.loads(result.output)
         assert data["command"] == "wiki_generate"
-        assert data["slug"] == "ford"
+        assert data["slug"] == "entities/ford"
+        assert data["path"] == str(page)
 
     @pytest.mark.parametrize(
         ("side_effect", "return_value", "needle"),

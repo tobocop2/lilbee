@@ -706,6 +706,8 @@ class TestBuildFleetWiring:
             "_estimate_role",
             lambda role, ref, **_k: ModelPlacementInput(role, 5 * _GB),
         )
+        monkeypatch.setattr(cfg, "chat_model", "owner/chat-GGUF/chat.Q4_K_M.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "owner/embed-GGUF/embed.Q8_0.gguf")
         monkeypatch.setattr(cfg, "reranker_model", "")  # unconfigured -> skipped
         monkeypatch.setattr(cfg, "vision_model", "")
         inputs, refs, _res, _skipped = planning_mod._server_model_inputs()

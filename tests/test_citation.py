@@ -526,6 +526,42 @@ class TestScrubUnverifiedMarkers:
         assert "doc.md" not in result
         assert "quote one" not in result
 
+    def test_strips_a_chunk_label_glued_to_a_blockquote_arrow(self):
+        """The observed leak: prose citing the prompt's evidence label instead
+        of a footnote, e.g. 'outgassing >[Chunk 6]'. The label names nothing a
+        reader can see, so it must not reach the page."""
+        body = "Formed by volcanic activity and outgassing >[Chunk 6].\n"
+        result = scrub_unverified_markers(body, [])
+        assert result == "Formed by volcanic activity and outgassing.\n"
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("Plain label [Chunk 2] mid-sentence.\n", "Plain label mid-sentence.\n"),
+            ("Lowercase [chunk 12] variant.\n", "Lowercase variant.\n"),
+            ("Plural [Chunks 3 and 4] variant.\n", "Plural variant.\n"),
+            ("Comma [Chunks 1, 2] variant.\n", "Comma variant.\n"),
+        ],
+        ids=["bare", "lowercase", "plural-and", "plural-comma"],
+    )
+    def test_strips_chunk_label_variants(self, body: str, expected: str):
+        assert scrub_unverified_markers(body, []) == expected
+
+    def test_a_real_blockquote_keeps_its_arrow_when_the_label_goes(self):
+        body = "> [Chunk 3] the plant opened in 1913.[^src1]\n"
+        result = scrub_unverified_markers(body, [_citation_record(citation_key="src1")])
+        assert result == "> the plant opened in 1913.[^src1]\n"
+
+    def test_a_fenced_chunk_label_is_example_syntax(self):
+        body = "Prose.\n\n```markdown\nEvidence arrives as [Chunk 1] blocks\n```\n"
+        assert scrub_unverified_markers(body, []) == body
+
+    def test_a_stripped_chunk_claim_becomes_visible_to_the_unmarked_gate(self):
+        """Stripping must not fabricate a citation: the claim goes back to
+        uncited prose, where the unmarked-claims gate can flag it."""
+        body = "Dropped claim >[Chunk 6].\n"
+        assert find_unmarked_claims(scrub_unverified_markers(body, [])) == ["Dropped claim."]
+
     def test_fenced_footnote_syntax_survives_untouched(self):
         """A page documenting footnote syntax quotes it in a fence; the scrub must
         leave the example verbatim, like the link and title scanners do."""

@@ -110,11 +110,14 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
             continue
         apply_ephemeral_model_swap(field, canon.effective)
-        err.print(
-            f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-            f"using installed {canon.effective!r} for this run.",
-            style=theme.WARNING,
-        )
+        if canon.original:
+            notice = (
+                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+                f"using installed {canon.effective!r} for this run."
+            )
+        else:
+            notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
+        err.print(notice, style=theme.WARNING)
 
 
 _MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")

@@ -438,6 +438,9 @@ class CatalogScreen(Screen[None]):
                 id="catalog-search",
                 classes=_HIDDEN_CLASS,
             )
+        # First-run guidance: shown while no chat model resolves, hidden the
+        # moment one does. The fit chips on the cards carry the hardware signal.
+        yield Static(msg.CATALOG_WELCOME, id="catalog-welcome")
         with Horizontal(id="catalog-toolbar"):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
@@ -485,6 +488,7 @@ class CatalogScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
+        self.watch(self.app, "chat_is_ready", self._on_chat_ready_changed, init=True)
         self._fetch_installed_names()
         self._fetch_families()
         # Force Chat as the initial active tab. Deliberately not
@@ -2132,6 +2136,11 @@ class CatalogScreen(Screen[None]):
 
         self._enqueue_download(model)
 
+    def _on_chat_ready_changed(self, ready: bool) -> None:
+        """Show the first-run welcome only while no chat model resolves."""
+        with contextlib.suppress(NoMatches):
+            self.query_one("#catalog-welcome", Static).display = not ready
+
     def _enqueue_download(self, model: CatalogModel) -> None:
         """Submit the download to the app-level TaskBarController.
 
@@ -2141,12 +2150,16 @@ class CatalogScreen(Screen[None]):
         confirm with a modal before enqueuing; the modal returns True to
         proceed with ``allow_unsupported=True`` or False to cancel.
         """
+
+        def _adopt() -> None:
+            self.app.call_from_thread(self._adopt_first_download, model)
+
         if model.compat is ModelCompat.UNSUPPORTED:
 
             def _after_confirm(verdict: bool | None) -> None:
                 if not verdict:
                     return
-                self.app.task_bar.start_download(model, allow_unsupported=True)
+                self.app.task_bar.start_download(model, allow_unsupported=True, on_success=_adopt)
                 self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
             self.app.push_screen(
@@ -2158,8 +2171,22 @@ class CatalogScreen(Screen[None]):
             )
             return
 
-        self.app.task_bar.start_download(model)
+        self.app.task_bar.start_download(model, on_success=_adopt)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
+
+    def _adopt_first_download(self, model: CatalogModel) -> None:
+        """Make the first model of an unconfigured role the active one.
+
+        A role that already has a model keeps it: a later download never
+        steals the assignment. Chat announces itself, since the user's next
+        step (start chatting) is on another screen.
+        """
+        field = _model_field_for_task(model.task)
+        if getattr(cfg, field):
+            return
+        apply_active_model(self.app, field, model.ref)
+        if field == "chat_model":
+            self.app.notify(msg.CHAT_READY_TOAST)
 
     def action_go_back(self) -> None:
         # An open filter collapses to hidden (restoring grid/list focus);

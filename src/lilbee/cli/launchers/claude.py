@@ -9,8 +9,8 @@ from pathlib import Path
 
 import typer
 
-from lilbee.cli.agent_configs import config_file
-from lilbee.cli.agent_configs.claude import claude_mcp_config
+from lilbee.app.agent_configs.claude import claude_http_config
+from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
@@ -124,7 +124,7 @@ class ClaudeLauncher:
                 assume_yes=self._assume_yes,
             ):
                 raise typer.Exit(0)
-            block = claude_mcp_config(base_url=base_url, api_key=_TOKEN_REF)
+            block = claude_http_config(base_url=base_url, api_key=_TOKEN_REF)
             config_file.atomic_write_text(_mcp_config_path(), json.dumps(block, indent=2))
             # --strict-mcp-config keeps the session to lilbee's one MCP server.
             # Without it, every server in the user's own Claude Code config

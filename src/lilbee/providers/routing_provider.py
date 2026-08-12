@@ -20,6 +20,7 @@ from lilbee.providers.base import (
     ClosableIterator,
     LLMProvider,
     ProviderError,
+    require_role_ref,
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
@@ -84,11 +85,11 @@ class RoutingProvider(LLMProvider):
         return self._get_local()
 
     def embed(self, texts: list[str]) -> list[Vector]:
-        ref = parse_model_ref(cfg.embedding_model)
+        ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).embed(texts)
 
     def count_tokens(self, text: str) -> int:
-        ref = parse_model_ref(cfg.embedding_model)
+        ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).count_tokens(text)
 
     @overload
@@ -125,7 +126,7 @@ class RoutingProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
-        ref = parse_model_ref(model or cfg.chat_model)
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
         backend = self._pick_backend(ref)
         # Split on stream so each call resolves to a specific overload; the
         # base impl signature accepts bool but the @overloads on the LLMProvider
@@ -151,6 +152,8 @@ class RoutingProvider(LLMProvider):
     def supports_tools(self, model_ref: str) -> bool:
         """Delegate the tool-capability probe to the backend the ref routes to."""
         resolved = model_ref or cfg.chat_model
+        if not resolved:
+            return False  # no model configured: nothing to advertise tools
         return self._pick_backend(parse_model_ref(resolved)).supports_tools(resolved)
 
     def chat_with_tools(
@@ -163,7 +166,7 @@ class RoutingProvider(LLMProvider):
         model: str | None = None,
     ) -> ChatToolResult:
         """Dispatch a tool-enabled chat turn to the backend the ref routes to."""
-        ref = parse_model_ref(model or cfg.chat_model)
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
         backend = self._pick_backend(ref)
         return backend.chat_with_tools(
             messages, tools=tools, tool_choice=tool_choice, options=options, model=model

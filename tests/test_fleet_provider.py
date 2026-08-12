@@ -110,6 +110,10 @@ def _no_real_probe(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     mslot = tmp_path_factory.mktemp("machine-slot")
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: mslot)
+    # The suite's subject is fleet mechanics, not model selection: pin sample
+    # refs so the chat/embed roles enroll in plans (defaults are unconfigured).
+    monkeypatch.setattr(cfg, "chat_model", "owner/chat-GGUF/chat.Q4_K_M.gguf")
+    monkeypatch.setattr(cfg, "embedding_model", "owner/embed-GGUF/embed.Q8_0.gguf")
 
 
 def _install_engine(

@@ -7,9 +7,9 @@ from typing import Protocol
 
 import typer
 
+from lilbee.app.models import installed_chat_model_refs
 from lilbee.cli.launchers.server import (
     ensure_server_running,
-    installed_chat_model_refs,
     stop_spawned_server,
     wait_for_chat_warm,
 )
@@ -75,7 +75,7 @@ def _warn_on_model_pin_gaps(model_refs: list[str]) -> None:
             err=True,
             fg=typer.colors.YELLOW,
         )
-    elif str(cfg.chat_model) not in model_refs:
+    elif cfg.chat_model and str(cfg.chat_model) not in model_refs:
         # The startup pin would point at a model the provider does not serve,
         # so the client opens on its own default provider instead of lilbee.
         typer.secho(

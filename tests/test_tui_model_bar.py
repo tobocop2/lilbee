@@ -445,7 +445,7 @@ class _ChatTestApp(LilbeeAppHost):
 
 @pytest.fixture
 def _seeded_models(monkeypatch):
-    """Pre-populate chat/embedding and skip the SetupWizard pop so the bar is reachable."""
+    """Pre-populate chat/embedding and pin readiness so the bar is reachable."""
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
@@ -454,7 +454,8 @@ def _seeded_models(monkeypatch):
     monkeypatch.setattr(cfg, "reranker_model", "")
     from lilbee.cli.tui import app as app_mod
 
-    monkeypatch.setattr(app_mod, "models_ready", lambda: True)
+    monkeypatch.setattr(app_mod, "chat_ready", lambda: True)
+    monkeypatch.setattr(app_mod, "embedding_ready", lambda: True)
 
 
 async def test_chat_screen_mounts_with_bar_present(_seeded_models) -> None:
@@ -547,3 +548,54 @@ async def test_painting_the_bar_never_builds_services() -> None:
             app.screen.query_one("#model-pick-chat", ModelPickerButton).repaint()
             await pilot.pause()
     assert services_mod._state.singleton is None
+
+
+async def test_search_refusal_routes_to_the_embedding_catalog() -> None:
+    """Flipping to Search with no embedder lands somewhere actionable, not a dead toggle."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import TAB_EMBED
+    from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import ChatMode
+
+    original_embed, original_mode = cfg.embedding_model, cfg.chat_mode
+    cfg.embedding_model = ""
+    cfg.chat_mode = ChatMode.CHAT.value
+    try:
+        app = _BarTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            toggle = app.query_one(ChatModeToggle)
+            with patch.object(app, "notify") as notify:
+                changed = toggle.set_mode(ChatMode.SEARCH.value)
+                await pilot.pause()
+                await pilot.pause()
+            assert changed is False
+            assert cfg.chat_mode == ChatMode.CHAT.value
+            assert isinstance(app.screen, CatalogScreen)
+            assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_EMBED
+            assert any(
+                msg.SEARCH_NEEDS_EMBEDDER in str(c.args[0]) for c in notify.call_args_list if c.args
+            )
+    finally:
+        cfg.embedding_model = original_embed or ""
+        cfg.chat_mode = original_mode
+
+
+async def test_bar_unconfigured_chat_reads_pick_one(monkeypatch) -> None:
+    """An empty chat/embed ref reads as a route to picking, not as 'disabled'."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "")
+    app = _BarTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+        rendered = str(chat_btn.render())
+        assert msg.MODEL_BAR_NONE in rendered
+        assert msg.MODEL_BAR_DISABLED not in rendered

@@ -507,7 +507,11 @@ def wiki_generate(
         raise typer.Exit(1)
 
     if cfg.json_mode:
-        json_output({"command": "wiki_generate", "slug": slug, "path": str(path)})
+        from lilbee.wiki.browse import page_slug
+
+        # The read surfaces address pages by section, so answer with that slug.
+        read_slug = page_slug(path, cfg.data_root / cfg.wiki_dir)
+        json_output({"command": "wiki_generate", "slug": read_slug, "path": str(path)})
     else:
         console.print(f"Wrote {path}")
 
