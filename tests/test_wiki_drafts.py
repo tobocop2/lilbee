@@ -218,6 +218,28 @@ class TestAcceptDraft:
         assert not (wiki_root / WikiSubdir.DRAFTS / "brakes.md").exists()
         assert "new brakes body" in (wiki_root / WikiSubdir.CONCEPTS / "brakes.md").read_text()
 
+    def test_an_accepted_draft_is_linked_into_the_wiki(self, tmp_path: Path) -> None:
+        """An accepted draft is a published page. Without the link pass it
+        arrived with no ``[[links]]`` and sat alone in the graph."""
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.ENTITIES / "mars.md", "Mars is the fourth planet.\n")
+        _write(
+            wiki_root / WikiSubdir.ENTITIES / "olympus-mons.md",
+            "old body mentioning nothing\n",
+        )
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "olympus-mons.md",
+            _draft_content("Olympus Mons is a volcano on mars."),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            accept_draft("olympus-mons", wiki_root, store)
+
+        published = (wiki_root / WikiSubdir.ENTITIES / "olympus-mons.md").read_text(
+            encoding="utf-8"
+        )
+        assert "[[mars]]" in published, "the accepted page reached the wiki with no links"
+
     def test_accepts_into_summaries_when_no_published_counterpart(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(wiki_root / WikiSubdir.DRAFTS / "fresh.md", _draft_content("fresh body"))
