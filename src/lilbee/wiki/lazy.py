@@ -27,6 +27,7 @@ from lilbee.runtime.progress import (
 
 from .batch import hash_existing_sources
 from .citations import resolve_multi_source_citations
+from .generation import rewrite_links_across_wiki
 from .page import (
     chunks_to_text,
     generate_page,
@@ -173,6 +174,11 @@ def generate_stub_page(
             supersedes_sources=False,
         )
         if path is not None:
+            # The link pass a build runs; without it the page has no [[links]]
+            # and sits alone in the graph. No entities: the surface map is then
+            # built from the pages on disk, this one included, so links go both
+            # ways.
+            rewrite_links_across_wiki([], config)
             on_progress(
                 EventType.WIKI_PAGE,
                 WikiPageEvent(label=stub.label, pages=1, current=1, total=1),

@@ -174,7 +174,7 @@ def archive_legacy_concept_pages(
 def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
     """Rewrite ``[[slug]]`` → ``slug`` (plain text) across remaining wiki pages.
 
-    The existing ``_rewrite_links_across_wiki`` path is the wrong
+    The existing ``rewrite_links_across_wiki`` path is the wrong
     tool here: it compiles an *additive* surface map, not a
     removal pass. Walk the active wiki content subdirs once per
     archived slug is acceptable because the archive count is
