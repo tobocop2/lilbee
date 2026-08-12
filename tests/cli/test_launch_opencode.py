@@ -785,18 +785,18 @@ def test_launch_opencode_first_run_records_setup_marker(tmp_path):
 
 
 def test_record_setup_writes_marker_atomically(tmp_path, monkeypatch):
-    from lilbee.cli.launchers import opencode
+    from lilbee.cli.launchers import setup_gate
 
     marker = tmp_path / "opencode-setup.json"
-    monkeypatch.setattr(opencode, "_setup_marker_path", lambda: marker)
-    opencode._record_setup()
+    monkeypatch.setattr(setup_gate, "_marker_path", lambda _name: marker)
+    setup_gate._record_setup("opencode-setup.json")
     assert json.loads(marker.read_text()) == {"accepted": True}
     assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_record_setup_leaves_existing_marker_intact_on_failure(tmp_path, monkeypatch):
     """A failed rewrite must not truncate or litter: the prior marker survives."""
-    from lilbee.cli.launchers import opencode
+    from lilbee.cli.launchers import setup_gate
 
     marker = tmp_path / "opencode-setup.json"
     marker.write_text(json.dumps({"accepted": True}))
@@ -804,10 +804,10 @@ def test_record_setup_leaves_existing_marker_intact_on_failure(tmp_path, monkeyp
     def _boom(*_a, **_k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(opencode, "_setup_marker_path", lambda: marker)
-    monkeypatch.setattr(opencode.os, "replace", _boom)
+    monkeypatch.setattr(setup_gate, "_marker_path", lambda _name: marker)
+    monkeypatch.setattr(setup_gate.os, "replace", _boom)
     with pytest.raises(OSError):
-        opencode._record_setup()
+        setup_gate._record_setup("opencode-setup.json")
     assert json.loads(marker.read_text()) == {"accepted": True}
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -833,8 +833,8 @@ def test_launch_opencode_interactive_accept_runs_setup(tmp_path):
     completed = MagicMock(returncode=0)
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
-        patch("lilbee.cli.launchers.opencode.typer.confirm", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=True),
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed) as run,
     ):
         result = runner.invoke(app, ["launch", "opencode"])
@@ -848,8 +848,8 @@ def test_launch_opencode_interactive_decline_skips_setup_and_launch(tmp_path):
     config_path = tmp_path / ".config" / "opencode" / "opencode.json"
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
-        patch("lilbee.cli.launchers.opencode.typer.confirm", return_value=False),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=False),
         patch("lilbee.cli.launchers.launcher.subprocess.run") as run,
     ):
         result = runner.invoke(app, ["launch", "opencode"])
@@ -864,8 +864,8 @@ def test_launch_opencode_yes_flag_skips_prompt_when_interactive(tmp_path):
     completed = MagicMock(returncode=0)
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
-        patch("lilbee.cli.launchers.opencode.typer.confirm") as confirm,
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm") as confirm,
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         result = runner.invoke(app, ["launch", "opencode", "--yes"])
