@@ -295,3 +295,126 @@ class TestResolveStub:
     def test_an_unknown_slug_resolves_to_none(self):
         save_stub_index({})
         assert resolve_stub("nope", cfg) is None
+
+
+class TestGeneratedPagesJoinTheWiki:
+    """A page written on request carried no ``[[links]]``, so it sat alone in
+    the graph while every page a build wrote was connected."""
+
+    def _entities_dir(self) -> Path:
+        d = cfg.data_root / cfg.wiki_dir / "entities"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_the_new_page_links_out_to_its_neighbours(self):
+        entities = self._entities_dir()
+        (entities / "henry-ford.md").write_text("---\n---\nAbout the man.\n", encoding="utf-8")
+        new_page = entities / "model-t.md"
+
+        def write_it(**kwargs):
+            new_page.write_text(
+                "---\n---\nThe Model T was built by henry ford.\n", encoding="utf-8"
+            )
+            return new_page
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", side_effect=write_it):
+            generate_stub_page("model-t", store, cfg)
+
+        assert "[[henry-ford]]" in new_page.read_text(encoding="utf-8")
+
+    def test_its_neighbours_link_back_to_the_new_page(self):
+        """Outward links alone would leave it with no backlinks."""
+        entities = self._entities_dir()
+        neighbour = entities / "henry-ford.md"
+        neighbour.write_text("---\n---\nHe built the model t.\n", encoding="utf-8")
+        new_page = entities / "model-t.md"
+
+        def write_it(**kwargs):
+            new_page.write_text("---\n---\nA car.\n", encoding="utf-8")
+            return new_page
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", side_effect=write_it):
+            generate_stub_page("model-t", store, cfg)
+
+        assert "[[model-t]]" in neighbour.read_text(encoding="utf-8")
+
+    def test_a_failed_generation_does_not_rewrite_anything(self):
+        entities = self._entities_dir()
+        neighbour = entities / "henry-ford.md"
+        original = "---\n---\nHe built the model t.\n"
+        neighbour.write_text(original, encoding="utf-8")
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", return_value=None):
+            generate_stub_page("model-t", store, cfg)
+
+        assert neighbour.read_text(encoding="utf-8") == original
+
+
+class TestGeneratingOnRequestEndToEnd:
+    """The whole path with only the model stubbed: real prompt, real citation
+    verification, real faithfulness gate, real page write, real link pass. The
+    class above patches ``generate_page``, so it proves the call happens but not
+    that a page written this way actually reaches the vault linked."""
+
+    _RESPONSE = (
+        "# Amazonis Planitia\n\n"
+        "> Amazonis Planitia is a plain on mars.[^src1]\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: a.md, excerpt: "Amazonis Planitia is a plain on mars."\n'
+    )
+
+    def _provider(self):
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = []
+        provider.chat.return_value = ChatResult(
+            text=self._RESPONSE, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        return provider
+
+    def test_the_page_reaches_the_vault_linked_to_its_neighbours(self):
+        entities = cfg.data_root / cfg.wiki_dir / "entities"
+        entities.mkdir(parents=True, exist_ok=True)
+        neighbour = entities / "mars.md"
+        neighbour.write_text(
+            "---\n---\nMars is the fourth planet. Amazonis Planitia lies on it.\n",
+            encoding="utf-8",
+        )
+
+        text = "Amazonis Planitia is a plain on mars."
+        chunk = make_search_chunk(source="a.md", chunk_index=0, chunk=text)
+        save_stub_index({"amazonis-planitia": _stub("amazonis-planitia", (("a.md", 0),))})
+        store = _store_with({"a.md": [chunk]})
+
+        services = MagicMock()
+        services.provider = self._provider()
+        # The faithfulness score needs an embedder, which the test environment
+        # has no engine for. Left real it scores 0, the page is quarantined to
+        # drafts/, and this would silently stop testing the published path.
+        # page.py resolves services itself to embed the written body.
+        page_services = MagicMock()
+        page_services.embedder.embed_batch.side_effect = lambda chunks: [
+            [0.1] * cfg.embedding_dim for _ in chunks
+        ]
+        with (
+            patch("lilbee.wiki.lazy.get_services", return_value=services),
+            patch("lilbee.wiki.page.get_services", return_value=page_services),
+            patch("lilbee.wiki.page.check_faithfulness", return_value=1.0),
+        ):
+            path = generate_stub_page("amazonis-planitia", store, cfg)
+
+        assert path.parent.name == "entities", f"quarantined to {path.parent.name}/"
+
+        assert path is not None, "the page was not written at all"
+        body = path.read_text(encoding="utf-8")
+        assert "[^src1]" in body, "the citation did not survive verification"
+        assert "[[mars]]" in body, "the page reached the vault with no links"
+        assert "[[amazonis-planitia]]" in neighbour.read_text(encoding="utf-8")
