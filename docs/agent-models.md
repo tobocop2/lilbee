@@ -1,8 +1,10 @@
 # Local models for coding agents
 
-`lilbee launch opencode` and `lilbee launch hermes` wire [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) to your local lilbee chat models, so an agent searches your library, reads the results, and answers with citations, all on your machine. The agent talks to lilbee over the OpenAI-compatible API and calls `lilbee_search` through MCP, so a model works here only if it emits tool calls in a format lilbee can read.
+`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` wire [opencode](https://opencode.ai), [hermes](https://github.com/NousResearch/hermes-agent), and [Claude Code](https://claude.com/claude-code) to your local lilbee chat models, so an agent searches your library, reads the results, and answers with citations, all on your machine. opencode and hermes talk to lilbee over the OpenAI-compatible API; Claude Code talks over the Anthropic-compatible `/v1/messages` route. All three call `lilbee_search` through MCP, so a model works here only if it emits tool calls in a format lilbee can read.
 
 Launch with `--no-mcp` to keep lilbee as the model provider but drop its MCP block, leaving your own agent MCP config untouched. The default is the `agent_mcp_enabled` config field (env `LILBEE_AGENT_MCP_ENABLED`); `--mcp` / `--no-mcp` override it per launch.
+
+Claude Code needs a large context window: its built-in system prompt and tool schemas take tens of thousands of tokens before the first turn. Pick a chat model that serves a 64K-token window or larger (the launcher warns when the served window is smaller). `lilbee launch claude` keeps the session lean -- it loads only project-scoped settings and only lilbee's MCP server -- because a populated global Claude Code setup adds tens of thousands more tokens that no local window absorbs.
 
 ## Verified families
 
