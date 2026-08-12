@@ -31,6 +31,7 @@ from lilbee.wiki.citations import (
     strip_citation_block,
     verify_citation,
 )
+from lilbee.wiki.generation import rewrite_links_across_wiki
 from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.page import index_wiki_page, indexable_chunks
 from lilbee.wiki.shared import (
@@ -454,6 +455,10 @@ def accept_draft(
                 "re-run accept once the index is writable"
             )
         update_wiki_index(config)
+        # Same link pass a build runs. An accepted draft is a published page,
+        # and without this it arrives with no [[links]] and sits alone in the
+        # graph, the way a page written on request did before #710.
+        rewrite_links_across_wiki([], config, wiki_root)
         draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(
