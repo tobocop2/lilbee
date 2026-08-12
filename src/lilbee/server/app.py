@@ -20,6 +20,7 @@ from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
+from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.mcp_mount import build_mcp_mount
@@ -280,6 +281,7 @@ def create_app() -> Litestar:
             chat_route,
             chat_stream_route,
             completions_router,
+            anthropic_router,
             sync_route,
             add_route,
             add_upload_route,

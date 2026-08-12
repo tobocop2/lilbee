@@ -49,6 +49,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     preflight_chat_request,
 )
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
+from lilbee.server.validation_format import format_validation
 
 log = logging.getLogger(__name__)
 
@@ -342,19 +343,7 @@ def _auth_failure(request: Request) -> Response | None:
 
 def _validation_exception_handler(_: Request, exc: ValidationException) -> Response:
     """Wrap Litestar's body-parse failures in the OpenAI error envelope."""
-    return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _format_validation(exc))
-
-
-def _format_validation(exc: ValidationException) -> str:
-    """Render a litestar/pydantic ValidationException as a single user-facing string.
-
-    Litestar wraps pydantic errors as ``{"key": "field_name", "message": "..."}``
-    entries on ``exc.extra``; we flatten them into a semicolon-joined string so
-    the OpenAI envelope carries the same field names a client expects to see.
-    """
-    items: list[dict[str, str]] = exc.extra if isinstance(exc.extra, list) else []
-    parts = [f"{err.get('key') or ''}: {err.get('message', '')}".lstrip(": ") for err in items]
-    return "; ".join(parts) if parts else str(exc.detail)
+    return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, format_validation(exc))
 
 
 def _parse_created(downloaded_at: str | None) -> int:
