@@ -31,9 +31,12 @@ embed_gguf=$(find "${models_dir}" -name 'nomic-embed-text-v1.5.Q4_K_M.gguf' \( -
 "${exe}" self-check --chat-model-path "${chat_gguf}" --embed-model-path "${embed_gguf}"
 
 # Legs 2-4 share one isolated knowledge base seeded with a marker document.
+# Both model roles default to unconfigured, so the smoke names its refs
+# explicitly; they resolve against the mirrored files found above.
 work=$(mktemp -d)
 data_dir="${work}/data"
 export LILBEE_CHAT_MODEL="Qwen/Qwen3-0.6B-GGUF"
+export LILBEE_EMBEDDING_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 cat > "${work}/smoke-doc.md" <<'EOF'
 # Blue quartz operations manual
@@ -42,8 +45,7 @@ The blue quartz resonator array is calibrated to 432 megahertz and must be
 kept below 40 degrees. The calibration engineer on record is Ada Marlowe.
 EOF
 
-# Leg 2: ingest + search. The featured embedder is the mirrored nomic model,
-# so ingest resolves it locally.
+# Leg 2: ingest + search.
 "${exe}" --data-dir "${data_dir}" add "${work}/smoke-doc.md"
 search_out=$("${exe}" --data-dir "${data_dir}" search "blue quartz resonator")
 echo "${search_out}"
