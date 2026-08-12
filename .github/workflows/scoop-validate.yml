@@ -9,6 +9,7 @@ on:
     paths:
       - bucket/**
       - packaging/tools/render_scoop_manifest.py
+      - packaging/tools/test_scoop_cuda_gate.ps1
       - .github/actions/validate-scoop-install/**
       - .github/workflows/scoop-validate.yml
 
@@ -22,6 +23,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - name: Check the CUDA gate
+        # The runner has no NVIDIA card, so installing only ever proves the Vulkan
+        # branch. This stubs nvidia-smi and covers the other one.
+        shell: pwsh
+        run: ./packaging/tools/test_scoop_cuda_gate.ps1
       - name: Read manifest version
         id: manifest
         shell: pwsh
