@@ -12,11 +12,12 @@ from litestar.middleware.base import DefineMiddleware
 from litestar.testing import AsyncTestClient
 from mcp.server.mcpserver import MCPServer
 
+from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import set_services
 from lilbee.server import auth as auth_mod
 from lilbee.server import mcp_mount
 from lilbee.server.auth import AuthMiddleware
-from lilbee.server.mcp_mount import MCP_MOUNT_PATH, build_mcp_mount
+from lilbee.server.mcp_mount import build_mcp_mount
 
 _HTTP_OK = 200
 _HTTP_UNAUTHORIZED = 401
@@ -104,7 +105,7 @@ def test_a_wildcard_bind_warns_that_mcp_stays_loopback_only(monkeypatch, caplog,
 
 def test_handler_mounts_at_mcp_path() -> None:
     handler, _ = build_mcp_mount()
-    assert MCP_MOUNT_PATH in handler.paths
+    assert MCP_PATH in handler.paths
 
 
 def test_fresh_session_manager_per_build(monkeypatch) -> None:
@@ -181,11 +182,11 @@ async def _initialize(client: AsyncTestClient, token: str) -> str:
             "clientInfo": {"name": "test", "version": "0"},
         },
     }
-    resp = await client.post(MCP_MOUNT_PATH, json=body, headers=_bearer(token))
+    resp = await client.post(MCP_PATH, json=body, headers=_bearer(token))
     assert resp.status_code == _HTTP_OK
     session_id = resp.headers["mcp-session-id"]
     await client.post(
-        MCP_MOUNT_PATH,
+        MCP_PATH,
         json={"jsonrpc": "2.0", "method": "notifications/initialized"},
         headers={**_bearer(token), "mcp-session-id": session_id},
     )
@@ -196,7 +197,7 @@ async def _call(
     client: AsyncTestClient, token: str, session_id: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
     resp = await client.post(
-        MCP_MOUNT_PATH,
+        MCP_PATH,
         json=payload,
         headers={**_bearer(token), "mcp-session-id": session_id},
     )
@@ -210,7 +211,7 @@ async def test_initialize_requires_the_same_bearer_token(
     """No bearer token is rejected by the shared AuthMiddleware."""
     async with _client(mcp_app) as client:
         resp = await client.post(
-            MCP_MOUNT_PATH,
+            MCP_PATH,
             json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             headers={"Accept": _ACCEPT},
         )
@@ -231,7 +232,7 @@ async def test_initialize_succeeds_with_the_session_token(
                 "clientInfo": {"name": "test", "version": "0"},
             },
         }
-        resp = await client.post(MCP_MOUNT_PATH, json=body, headers=_bearer(auth_token))
+        resp = await client.post(MCP_PATH, json=body, headers=_bearer(auth_token))
     assert resp.status_code == _HTTP_OK
     assert _parse_sse(resp.text)["result"]["serverInfo"]["name"] == "lilbee"
 
