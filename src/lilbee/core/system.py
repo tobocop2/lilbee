@@ -1,6 +1,7 @@
 """OS, environment, and platform helpers for lilbee."""
 
 import os
+import shutil
 import sys
 import threading
 from collections.abc import Iterator
@@ -281,3 +282,25 @@ def is_network_path(path: Path) -> bool:
         resolved = str(path)
     fstype = _mount_fstype(resolved, mounts_text)
     return fstype in _NETWORK_FS_TYPES or fstype.startswith("fuse.")
+
+
+_EXTRA_BIN_DIRS: tuple[str, ...] = ("~/.local/bin", "~/.bun/bin")
+_UNIX_BIN_DIRS: tuple[str, ...] = ("/opt/homebrew/bin", "/usr/local/bin")
+_WINDOWS_BIN_DIRS: tuple[str, ...] = ("~/AppData/Roaming/npm", "~/AppData/Local/Programs")
+
+
+def executable_search_path() -> str:
+    """PATH plus the directories user-level installers put executables in.
+
+    A server started from a desktop session inherits the login PATH, which
+    misses the package-manager and per-user install dirs a shell profile adds.
+    """
+    platform_dirs = _WINDOWS_BIN_DIRS if sys.platform == "win32" else _UNIX_BIN_DIRS
+    entries = [os.environ.get("PATH", "")]
+    entries += [str(Path(d).expanduser()) for d in (*_EXTRA_BIN_DIRS, *platform_dirs)]
+    return os.pathsep.join(entry for entry in entries if entry)
+
+
+def find_executable(name: str) -> str | None:
+    """Absolute path to the *name* executable, or None when it is not installed."""
+    return shutil.which(name, path=executable_search_path())

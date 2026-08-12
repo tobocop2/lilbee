@@ -58,7 +58,7 @@ def test_litellm_config_emits_yaml_with_one_entry_per_chat_model():
         [(_CHAT_REF_A, "chat"), (_CHAT_REF_B, "chat"), (_EMBED_REF, "embedding")]
     )
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "litellm"])
@@ -82,7 +82,7 @@ def test_litellm_config_skips_non_chat_models():
     _write_server_session("tok", 9000)
     registry = _fake_registry([(_EMBED_REF, "embedding")])
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "litellm"])
@@ -96,7 +96,7 @@ def test_litellm_config_entries_are_sorted():
     _write_server_session("tok", 9000)
     registry = _fake_registry([(_CHAT_REF_A, "chat"), (_CHAT_REF_B, "chat")])
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "litellm"])
@@ -124,7 +124,7 @@ def test_litellm_config_applies_data_dir_override(tmp_path):
     (alt_data / "server.port").write_text("8799")
     registry = _fake_registry([(_CHAT_REF_A, "chat")])
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "litellm", "--data-dir", str(alt)])

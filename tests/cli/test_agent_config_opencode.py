@@ -55,7 +55,7 @@ def test_opencode_config_prints_provider_with_real_port_and_token():
     _write_server_session("test-token-abc", 8765)
     registry = _fake_registry([(_CHAT_REF_A, "chat"), (_EMBED_REF, "embedding")])
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "opencode"])
@@ -83,7 +83,7 @@ def test_opencode_config_lists_all_chat_models_sorted():
         [(_CHAT_REF_B, "chat"), (_CHAT_REF_A, "chat"), (_EMBED_REF, "embedding")]
     )
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "opencode"])
@@ -113,7 +113,7 @@ def test_opencode_config_applies_data_dir_override(tmp_path):
     (alt_data / "server.port").write_text("8799")
     registry = _fake_registry([(_CHAT_REF_A, "chat")])
     with patch(
-        "lilbee.cli.launchers.server.get_services",
+        "lilbee.app.models.get_services",
         return_value=MagicMock(registry=registry),
     ):
         result = runner.invoke(app, ["agent-config", "opencode", "--data-dir", str(alt)])

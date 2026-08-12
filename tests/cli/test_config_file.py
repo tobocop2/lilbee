@@ -7,7 +7,7 @@ import json
 import pytest
 import typer
 
-from lilbee.cli.agent_configs import config_file
+from lilbee.cli.launchers import config_file
 
 
 def test_load_returns_empty_when_absent(tmp_path):
