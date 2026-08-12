@@ -295,3 +295,64 @@ class TestResolveStub:
     def test_an_unknown_slug_resolves_to_none(self):
         save_stub_index({})
         assert resolve_stub("nope", cfg) is None
+
+
+class TestGeneratedPagesJoinTheWiki:
+    """A page written on request used to carry no ``[[links]]`` at all, while
+    every page a build wrote carried several. It landed in the vault as an
+    isolated node: in the wiki, but not part of it, and alone in the graph."""
+
+    def _entities_dir(self) -> Path:
+        d = cfg.data_root / cfg.wiki_dir / "entities"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_the_new_page_links_out_to_its_neighbours(self):
+        entities = self._entities_dir()
+        (entities / "henry-ford.md").write_text("---\n---\nAbout the man.\n", encoding="utf-8")
+        new_page = entities / "model-t.md"
+
+        def write_it(**kwargs):
+            new_page.write_text(
+                "---\n---\nThe Model T was built by henry ford.\n", encoding="utf-8"
+            )
+            return new_page
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", side_effect=write_it):
+            generate_stub_page("model-t", store, cfg)
+
+        assert "[[henry-ford]]" in new_page.read_text(encoding="utf-8")
+
+    def test_its_neighbours_link_back_to_the_new_page(self):
+        """Links only outward would still leave the page with no backlinks, so
+        it would sit on the edge of the graph rather than inside it."""
+        entities = self._entities_dir()
+        neighbour = entities / "henry-ford.md"
+        neighbour.write_text("---\n---\nHe built the model t.\n", encoding="utf-8")
+        new_page = entities / "model-t.md"
+
+        def write_it(**kwargs):
+            new_page.write_text("---\n---\nA car.\n", encoding="utf-8")
+            return new_page
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", side_effect=write_it):
+            generate_stub_page("model-t", store, cfg)
+
+        assert "[[model-t]]" in neighbour.read_text(encoding="utf-8")
+
+    def test_a_failed_generation_does_not_rewrite_anything(self):
+        entities = self._entities_dir()
+        neighbour = entities / "henry-ford.md"
+        original = "---\n---\nHe built the model t.\n"
+        neighbour.write_text(original, encoding="utf-8")
+
+        save_stub_index({"model-t": _stub("model-t", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        with patch("lilbee.wiki.lazy.generate_page", return_value=None):
+            generate_stub_page("model-t", store, cfg)
+
+        assert neighbour.read_text(encoding="utf-8") == original
