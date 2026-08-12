@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lilbee.app.endpoints import MCP_PATH, OPENAI_PATH
 from lilbee.catalog import agent_model_id, display_label_for_ref
 
 _OUTPUT_TOKEN_LIMIT = 8192
@@ -62,7 +63,7 @@ def opencode_config(
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "lilbee",
                 "options": {
-                    "baseURL": f"{base_url}/v1",
+                    "baseURL": f"{base_url}{OPENAI_PATH}",
                     "apiKey": api_key,
                 },
                 # Key by the clean agent id (not the full ref) so opencode routes
@@ -77,7 +78,7 @@ def opencode_config(
         config["mcp"] = {
             "lilbee": {
                 "type": "remote",
-                "url": f"{base_url}/mcp",
+                "url": f"{base_url}{MCP_PATH}",
                 "enabled": True,
                 "headers": {"Authorization": f"Bearer {api_key}"},
                 "timeout": _MCP_TIMEOUT_MS,

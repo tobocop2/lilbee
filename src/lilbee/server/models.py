@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
@@ -18,6 +19,8 @@ from lilbee.sessions import MessageRole
 from lilbee.wiki.entity_extractor import EntityKind
 
 if TYPE_CHECKING:
+    from lilbee.app.agent_configs.detect import ClientDetection
+    from lilbee.app.agent_configs.document import AgentConfigDocument
     from lilbee.app.placement import PlacementView
 
 
@@ -829,3 +832,59 @@ class SessionDeleteResponse(BaseModel):
 
     id: str
     deleted: bool
+
+
+class AgentClientDetection(BaseModel):
+    """Whether one agent client's CLI is installed on the machine lilbee runs on."""
+
+    client: AgentClient
+    cli_detected: bool
+    cli_path: str | None
+
+
+class AgentConfigIndexResponse(BaseModel):
+    """Response for ``GET /api/agent-config``: every client lilbee can configure."""
+
+    clients: list[AgentClientDetection]
+
+    @classmethod
+    def from_detections(cls, detections: list[ClientDetection]) -> AgentConfigIndexResponse:
+        """Serialize the probe results one entry per supported client."""
+        return cls(
+            clients=[
+                AgentClientDetection(
+                    client=found.client,
+                    cli_detected=found.cli_detected,
+                    cli_path=found.cli_path,
+                )
+                for found in detections
+            ]
+        )
+
+
+class AgentConfigResponse(BaseModel):
+    """Response for ``GET /api/agent-config/{client}``: one client's live config.
+
+    ``config`` carries the block for a JSON client, ``content`` the rendered text
+    for a YAML one. ``stdio_config`` is the alternative block for a client that
+    can also run lilbee as a subprocess instead of calling this server.
+    """
+
+    client: AgentClient
+    format: ConfigFormat
+    surfaces: list[AgentSurface]
+    config: dict[str, Any] | None = None
+    content: str | None = None
+    stdio_config: dict[str, Any] | None = None
+
+    @classmethod
+    def from_document(cls, document: AgentConfigDocument) -> AgentConfigResponse:
+        """The canonical serialized config document, shared by the HTTP and CLI surfaces."""
+        return cls(
+            client=document.client,
+            format=document.format,
+            surfaces=list(document.surfaces),
+            config=document.config,
+            content=document.content,
+            stdio_config=document.stdio_config,
+        )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.cli.agent_configs.merge import LILBEE_PROVIDER_KEY, deep_merge, prune_lilbee
+from lilbee.app.agent_configs.merge import LILBEE_PROVIDER_KEY, deep_merge, prune_lilbee
 
 
 def test_adds_lilbee_into_empty_config():

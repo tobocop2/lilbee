@@ -42,7 +42,7 @@ def _stub_registry():
     registry.list_installed.return_value = [manifest]
     services = MagicMock()
     services.registry = registry
-    with patch("lilbee.cli.launchers.server.get_services", return_value=services):
+    with patch("lilbee.app.models.get_services", return_value=services):
         yield
 
 

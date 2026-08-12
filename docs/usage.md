@@ -454,6 +454,49 @@ See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for the full MCP
 tool list and workflows. Non-MCP agents can use the [JSON CLI
 fallback](#json-cli-fallback) below.
 
+### Client config blocks
+
+`lilbee agent-config <client>` prints a paste-ready config for one client,
+filled in with the running server's address and session token:
+
+```bash
+lilbee agent-config claude     # Claude Code mcpServers block
+lilbee agent-config opencode   # opencode.json provider + MCP server
+lilbee agent-config hermes     # hermes config.yaml fragment
+lilbee agent-config litellm    # LiteLLM proxy config.yaml snippet
+```
+
+opencode and hermes get lilbee as a model provider and as an MCP server.
+Claude Code brings its own model, so it gets the MCP tools only. The claude
+block registers the running server over HTTP; the alternative block printed on
+stderr has Claude Code start `lilbee mcp` itself instead.
+
+The same blocks come off the running server over HTTP, which is what a GUI
+client should use. `GET /api/agent-config` lists the supported clients and
+whether each one's CLI is installed on this machine:
+
+```json
+{
+  "clients": [
+    { "client": "claude", "cli_detected": true, "cli_path": "/opt/homebrew/bin/claude" },
+    { "client": "hermes", "cli_detected": false, "cli_path": null },
+    { "client": "opencode", "cli_detected": true, "cli_path": "/usr/local/bin/opencode" }
+  ]
+}
+```
+
+`GET /api/agent-config/<client>` returns that client's document. JSON clients
+get it in `config`, hermes gets its rendered YAML in `content`, and claude also
+carries the subprocess form in `stdio_config`. Both routes need the session
+token like every other route. Fetch the document when you need it rather than
+saving it: the token is minted fresh on every server start, so a copy written
+to disk stops working after a restart.
+
+```bash
+curl -H "Authorization: Bearer $(jq -r .token <data-dir>/server.json)" \
+  http://127.0.0.1:8080/api/agent-config/claude
+```
+
 ### Serving a large agent fleet
 
 One daemon serves many agents at once, and two limits bite before the GPU does.
