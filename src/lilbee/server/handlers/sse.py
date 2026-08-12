@@ -38,6 +38,49 @@ SSE_MEDIA_TYPE = "text/event-stream"
 SseErrorCodeValue = SseErrorCode | ProviderErrorKind | CompletionsErrorCode
 
 
+async def frames_with_keepalive(
+    frames: AsyncGenerator[bytes, None] | Any,
+    *,
+    keepalive: bytes,
+    interval_s: float,
+) -> AsyncGenerator[bytes, None]:
+    """Yield *frames*, interleaving *keepalive* whenever the upstream is slow.
+
+    Keeps clients from tripping their idle-stream timeout during slow
+    first-token latency on local models, which would otherwise fire a retry
+    storm against the chat lock. The in-progress ``__anext__`` task is held
+    across keepalive emissions; only on real completion or error is the task
+    replaced.
+    """
+    iterator = frames.__aiter__()
+    pending = asyncio.ensure_future(iterator.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval_s)
+            if pending not in done:
+                yield keepalive
+                continue
+            try:
+                frame = pending.result()
+            except StopAsyncIteration:
+                break
+            yield frame
+            pending = asyncio.ensure_future(iterator.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                # Expected: the future we just cancelled. By name, not
+                # BaseException, which also swallowed a Ctrl-C landing here.
+                pass
+            except Exception:
+                # The upstream failed as it was torn down. The request is
+                # already unwinding, so record it rather than mask the unwind.
+                log.debug("upstream stream errored during keepalive cleanup", exc_info=True)
+
+
 def sse_event(event: str, data: Any) -> str:
     """Format a single Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
