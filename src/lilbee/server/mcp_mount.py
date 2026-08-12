@@ -11,6 +11,7 @@ from litestar.handlers import asgi
 from litestar.types import ASGIApp, Receive, Scope, Send
 from mcp.server.transport_security import TransportSecuritySettings
 
+from lilbee.app.endpoints import MCP_PATH
 from lilbee.core.config import cfg
 from lilbee.mcp_server import build_mcp_server, set_http_mounted
 
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
     from litestar.handlers import ASGIRouteHandler
 
 log = logging.getLogger(__name__)
-
-MCP_MOUNT_PATH = "/mcp"
 
 _Lifespan = Callable[["Litestar"], AbstractAsyncContextManager[None]]
 
@@ -56,7 +55,7 @@ def _transport_security() -> TransportSecuritySettings:
             "accepts loopback Host headers only. Bind to a specific address to "
             "reach the MCP endpoint from other machines.",
             bind,
-            MCP_MOUNT_PATH,
+            MCP_PATH,
         )
     elif bind and bind not in _LOOPBACK_HOSTS:
         hosts.append(f"{_fmt_host(bind)}:*")
@@ -92,7 +91,7 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     async def _forward(scope: Scope, receive: Receive, send: Send) -> None:
         await asgi_app(scope, receive, send)
 
-    handler = asgi(MCP_MOUNT_PATH, is_mount=True, copy_scope=True)(_forward)
+    handler = asgi(MCP_PATH, is_mount=True, copy_scope=True)(_forward)
 
     @asynccontextmanager
     async def _session_lifespan(app: Litestar) -> AsyncIterator[None]:

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import typer
 
-from lilbee.cli.agent_configs import config_file
-from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
-from lilbee.cli.agent_configs.opencode import opencode_config
+from lilbee.app.agent_configs.merge import deep_merge, prune_lilbee
+from lilbee.app.agent_configs.opencode import opencode_config
+from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill

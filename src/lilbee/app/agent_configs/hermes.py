@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from lilbee.app.agent_configs.merge import LILBEE_PROVIDER_KEY
+from lilbee.app.endpoints import MCP_PATH, OPENAI_PATH
 from lilbee.catalog import agent_model_id
-from lilbee.cli.agent_configs.merge import LILBEE_PROVIDER_KEY
 
-_V1_SUFFIX = "/v1"
-_MCP_SUFFIX = "/mcp"
 # hermes's custom provider defaults max_tokens to the full window, leaving ~no
 # room for input. Pin a sane output cap so the system prompt + history fit.
 _MAX_OUTPUT_TOKENS = 8192
@@ -38,7 +37,7 @@ def hermes_config(
     # path. lilbee's /v1 resolves it back to the ref, so routing is unchanged.
     pin_id = agent_model_id(pin) if pin is not None else None
     provider: dict[str, Any] = {
-        "api": f"{base_url}{_V1_SUFFIX}",
+        "api": f"{base_url}{OPENAI_PATH}",
         "api_key": api_key,
         "max_tokens": _MAX_OUTPUT_TOKENS,
     }
@@ -58,7 +57,7 @@ def hermes_config(
         # makes hermes reject the entry (it must be a mapping) -> 0 connected.
         config["mcp_servers"] = {
             LILBEE_PROVIDER_KEY: {
-                "url": f"{base_url}{_MCP_SUFFIX}",
+                "url": f"{base_url}{MCP_PATH}",
                 "headers": {"Authorization": f"Bearer {api_key}"},
             }
         }

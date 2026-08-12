@@ -217,6 +217,12 @@ def adopt_embedder(ref: str) -> AdoptResult:
     )
 
 
+def installed_chat_model_refs() -> list[str]:
+    """Return sorted refs for every chat-task model in the registry."""
+    registry = get_services().registry
+    return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+
+
 def _native_manifest_index() -> dict[str, ModelManifest]:
     """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
     registry = ModelRegistry(cfg.models_dir)

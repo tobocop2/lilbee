@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.cli.agent_configs.opencode import opencode_config
+from lilbee.app.agent_configs.opencode import opencode_config
 
 
 def _entry_name(ref: str) -> str:

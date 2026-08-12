@@ -24,6 +24,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.runtime.progress import SseEvent
+from lilbee.server.handlers.agent_config import agent_config, agent_config_index
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
@@ -303,6 +304,8 @@ __all__ = [
     "SseStream",
     "add_files_stream",
     "add_uploads_stream",
+    "agent_config",
+    "agent_config_index",
     "ask",
     "ask_stream",
     "chat",

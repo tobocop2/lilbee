@@ -1228,7 +1228,7 @@ While `wiki` is off, generated pages are excluded from retrieval regardless of s
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
 - `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
-- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the client config block for hand-wired persistent setups
+- `lilbee agent-config <client>` (`claude`, `hermes`, `opencode`, `litellm`): print the client config block for hand-wired persistent setups
 - `--json` / `-j` on any command for structured output
 
 ### TUI (Textual)
@@ -1242,6 +1242,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Crawl: `POST /api/crawl` (SSE progress)
 - Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize`, `POST /api/wiki/generate/{slug}` (these four are SSE streams; generate's done event carries the slug the read route accepts), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `POST /api/wiki/index`, `GET /api/wiki/stubs` (the indexed pages nothing has written yet), `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
 - Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
+- Agent configs: `GET /api/agent-config` (supported clients plus whether each CLI is installed here), `GET /api/agent-config/{client}` (that client's config block, carrying this server's URL and current token)
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`. Every release also attaches the same schema as an `openapi.json` asset, so a client can pin the contract for a version without running the server. Streaming routes declare `text/event-stream` on the decorator, which is where litestar reads the documented content type from.
 
@@ -1249,7 +1250,7 @@ All chat-generating endpoints (`/api/ask`, `/api/chat`, both their `/stream` var
 
 ### Auth model
 
-All network surfaces, the `/v1/*` model runtime, the `/api/*` REST routes, and the `/mcp` streamable-http endpoint, share **one** bearer session token. The daemon generates it on startup, persists it to `server.json` (mode `0600`), and hands it to local clients through `lilbee agent-config` / `lilbee launch`. Clients send `Authorization: Bearer <token>`; `AuthMiddleware` (`src/lilbee/server/auth.py`) checks it on **every** request, reads included. There is no unauthenticated route, `GET /api/health` included: health reports the chat engine's last error, which carries model paths and loader failures, so an open liveness probe would hand out the most useful reconnaissance on the box. A local probe runs as the user and reads the token out of `server.json` like every other local client.
+All network surfaces, the `/v1/*` model runtime, the `/api/*` REST routes, and the `/mcp` streamable-http endpoint, share **one** bearer session token. The daemon generates it on startup, persists it to `server.json` (mode `0600`), and hands it to local clients through `lilbee agent-config`, `GET /api/agent-config/{client}`, and `lilbee launch`. Clients send `Authorization: Bearer <token>`; `AuthMiddleware` (`src/lilbee/server/auth.py`) checks it on **every** request, reads included. There is no unauthenticated route, `GET /api/health` included: health reports the chat engine's last error, which carries model paths and loader failures, so an open liveness probe would hand out the most useful reconnaissance on the box. A local probe runs as the user and reads the token out of `server.json` like every other local client.
 
 `/v1/models` and `/v1/chat/completions` are the only routes the middleware skips, and they are not exempt: they check the same token inside the handler so a bad one comes back in the OpenAI error envelope rather than Litestar's 401 shape. `tests/server/test_every_route_is_authenticated.py` walks the live route table and asserts every path answers 401 without a token, so a new route cannot quietly opt out.
 

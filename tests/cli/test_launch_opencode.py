@@ -36,7 +36,7 @@ def _stub_registry() -> None:
     registry.list_installed.return_value = [manifest]
     services = MagicMock()
     services.registry = registry
-    with patch("lilbee.cli.launchers.server.get_services", return_value=services):
+    with patch("lilbee.app.models.get_services", return_value=services):
         yield
 
 
@@ -313,7 +313,7 @@ def test_served_chat_ctx_none_when_window_absent(monkeypatch):
 
 
 def test_opencode_config_sets_limit_context_when_known():
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=32768
@@ -324,7 +324,7 @@ def test_opencode_config_sets_limit_context_when_known():
 
 
 def test_opencode_config_omits_limit_when_ctx_unknown():
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=None
@@ -333,7 +333,7 @@ def test_opencode_config_omits_limit_when_ctx_unknown():
 
 
 def test_opencode_config_pins_default_model_when_ref_given():
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(
         base_url="http://127.0.0.1:9",
@@ -345,7 +345,7 @@ def test_opencode_config_pins_default_model_when_ref_given():
 
 
 def test_opencode_config_includes_mcp_by_default():
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
     assert block["mcp"]["lilbee"]["url"] == "http://127.0.0.1:9/mcp"
@@ -353,7 +353,7 @@ def test_opencode_config_includes_mcp_by_default():
 
 def test_opencode_config_omits_mcp_block_when_disabled():
     """include_mcp=False drops the mcp block entirely but keeps lilbee as provider."""
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(
         base_url="http://127.0.0.1:9",
@@ -366,7 +366,7 @@ def test_opencode_config_omits_mcp_block_when_disabled():
 
 
 def test_opencode_config_omits_model_key_without_default_ref():
-    from lilbee.cli.agent_configs.opencode import opencode_config
+    from lilbee.app.agent_configs.opencode import opencode_config
 
     block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
     assert "model" not in block
@@ -966,7 +966,7 @@ def test_launch_opencode_refuses_to_overwrite_corrupt_config(tmp_path):
 
 
 def test_opencode_config_sets_generous_mcp_timeout():
-    from lilbee.cli.agent_configs.opencode import _MCP_TIMEOUT_MS, opencode_config
+    from lilbee.app.agent_configs.opencode import _MCP_TIMEOUT_MS, opencode_config
 
     block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
     # opencode defaults remote-MCP requests to 5000 ms, which the first
