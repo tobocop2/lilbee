@@ -384,13 +384,19 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
-          # The second path exists on the ROCm cell only; upload-artifact warns
-          # for a pattern that matches nothing and uploads the rest.
-          path: |
-            dist/${{ matrix.asset_name }}
-            dist/${{ matrix.asset_name }}.gfx.txt
+          path: dist/${{ matrix.asset_name }}
           # The onefile payload is already zstd-compressed; deflating it again buys nothing.
           compression-level: 0
+
+      # Its own artifact, not a second path on the step above: that step is shared
+      # by every GPU cell, and only this one produces a manifest. attach-release-artifacts
+      # collects it with the binaries either way -- both match its `lilbee-*` pattern.
+      - name: Upload the ROCm kernel manifest as a run artifact
+        if: matrix.backend == 'rocm'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}.gfx.txt
+          path: dist/${{ matrix.asset_name }}.gfx.txt
 
       # workflow_call eager attach: the caller created the pre-release shell,
       # so each cell's exe appears on the release as soon as it builds.
