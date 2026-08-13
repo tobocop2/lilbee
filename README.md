@@ -25,7 +25,6 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-908caa?style=flat-square&labelColor=191724" alt="Platforms">
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-9ccfd8?logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Install from PyPI"></a>
   <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-f6c177?logo=homebrew&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Homebrew tap"></a>
   <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/badge/AUR-package-c4a7e7?logo=archlinux&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="lilbee on the AUR"></a>
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-c4a7e7?logo=nixos&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Nix flake"></a>
@@ -33,6 +32,7 @@
   <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-9ccfd8?logo=docker&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Docker image on GHCR"></a>
   <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-9ccfd8?logo=flatpak&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Flatpak repo"></a>
   <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-f6c177?logo=snapcraft&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Snap package"></a>
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-9ccfd8?logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Install from PyPI"></a>
 </p>
 
 <p align="center">
