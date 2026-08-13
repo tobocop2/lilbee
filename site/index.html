@@ -131,8 +131,6 @@
       <div class="menu">
         <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
         <div class="menu-panel">
-          <a href="/#install-pip">pip</a>
-          <a href="/#install-uv">uv</a>
           <a href="/#install-brew">homebrew</a>
           <a href="/#install-aur">AUR</a>
           <a href="/#install-docker">docker</a>
@@ -142,6 +140,8 @@
           <a href="/#install-scoop">scoop</a>
           <a href="/#install-binary">binary</a>
           <a href="/#install-source">source</a>
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
         </div>
       </div>
       <div class="menu">
@@ -432,9 +432,7 @@
       <h2 class="label">install</h2>
 
       <div class="installtabs" role="tablist" aria-label="Install methods">
-        <button type="button" class="tab" role="tab" id="tab-pip" aria-controls="pane-pip" aria-selected="true" tabindex="0">pip</button>
-        <button type="button" class="tab" role="tab" id="tab-uv" aria-controls="pane-uv" aria-selected="false" tabindex="-1">uv</button>
-        <button type="button" class="tab" role="tab" id="tab-brew" aria-controls="pane-brew" aria-selected="false" tabindex="-1">homebrew</button>
+        <button type="button" class="tab" role="tab" id="tab-brew" aria-controls="pane-brew" aria-selected="true" tabindex="0">homebrew</button>
         <button type="button" class="tab" role="tab" id="tab-aur" aria-controls="pane-aur" aria-selected="false" tabindex="-1">AUR</button>
         <button type="button" class="tab" role="tab" id="tab-docker" aria-controls="pane-docker" aria-selected="false" tabindex="-1">docker</button>
         <button type="button" class="tab" role="tab" id="tab-nix" aria-controls="pane-nix" aria-selected="false" tabindex="-1">nix</button>
@@ -443,85 +441,11 @@
         <button type="button" class="tab" role="tab" id="tab-scoop" aria-controls="pane-scoop" aria-selected="false" tabindex="-1">scoop</button>
         <button type="button" class="tab" role="tab" id="tab-binary" aria-controls="pane-binary" aria-selected="false" tabindex="-1">binary</button>
         <button type="button" class="tab" role="tab" id="tab-source" aria-controls="pane-source" aria-selected="false" tabindex="-1">source</button>
+        <button type="button" class="tab" role="tab" id="tab-pip" aria-controls="pane-pip" aria-selected="false" tabindex="-1">pip</button>
+        <button type="button" class="tab" role="tab" id="tab-uv" aria-controls="pane-uv" aria-selected="false" tabindex="-1">uv</button>
       </div>
 
-      <div class="installpane" role="tabpanel" id="pane-pip" aria-labelledby="tab-pip">
-        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
-        <div class="install">
-          <span class="prompt">$</span>
-          <span class="cmd">pip install --pre lilbee</span>
-          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-        </div>
-        <div class="variant cuda">
-          <span class="variant-tag">NVIDIA · CUDA</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-        </div>
-        <div class="variant rocm">
-          <span class="variant-tag">AMD · ROCm</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">pip install --pre lilbee --extra-index-url https://lilbee.sh/rocm/</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
-        </div>
-        <div class="variant compat">
-          <span class="variant-tag">older CPU · no AVX2</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-        </div>
-        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
-        <div class="notes-body" id="notes-pip" hidden>
-          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://lilbee.sh/cpu/</code> &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
-        </div>
-      </div>
-
-      <div class="installpane" role="tabpanel" id="pane-uv" aria-labelledby="tab-uv" hidden>
-        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
-        <div class="install">
-          <span class="prompt">$</span>
-          <span class="cmd">uv tool install --prerelease=allow lilbee</span>
-          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-        </div>
-        <div class="variant cuda">
-          <span class="variant-tag">NVIDIA · CUDA</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/cu125/</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-        </div>
-        <div class="variant rocm">
-          <span class="variant-tag">AMD · ROCm</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/rocm/</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
-        </div>
-        <div class="variant compat">
-          <span class="variant-tag">older CPU · no AVX2</span>
-          <div class="install">
-            <span class="prompt">$</span>
-            <span class="cmd">uv tool install --prerelease=allow --extra-index-url https://lilbee.sh/compat/ --with 'lancedb==0.34.0+compat' lilbee</span>
-            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-          </div>
-        </div>
-        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-uv">details</button>
-        <div class="notes-body" id="notes-uv" hidden>
-          <p class="extras">uv fetches a Python for you if needed &nbsp;.&nbsp; extras: <code>uv tool install --prerelease=allow 'lilbee[crawler]'</code></p>
-        </div>
-      </div>
-
-      <div class="installpane" role="tabpanel" id="pane-brew" aria-labelledby="tab-brew" hidden>
+      <div class="installpane" role="tabpanel" id="pane-brew" aria-labelledby="tab-brew">
         <div class="oschips"><span class="oschip">macOS arm64</span><span class="oschip">Linux x86_64</span></div>
         <div class="install">
           <span class="prompt">$</span>
@@ -888,6 +812,86 @@
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-source">details</button>
         <div class="notes-body" id="notes-source" hidden>
           <p class="extras">for hacking on it or contributing &nbsp;.&nbsp; needs <code>git</code> and <code>uv</code></p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-pip" aria-labelledby="tab-pip" hidden>
+        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <p class="variant-note">for installing into a Python you manage. The <code>[engine]</code> extra ships from lilbee.sh, not PyPI, and the index picks the build: <code>metal/</code> on Apple silicon, <code>vulkan/</code> for other GPUs, <code>cpu/</code> without one.</p>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre lilbee 'lancedb==0.34.0+compat' --extra-index-url https://lilbee.sh/compat/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+          <p class="variant-note">no compat engine wheel exists: this installs lilbee without an engine, so use a bundled build instead, or point <code>LILBEE_LLAMA_SERVER_PATH</code> at your own <code>llama-server</code>.</p>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
+        <div class="notes-body" id="notes-pip" hidden>
+          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[engine,crawler,litellm]'</code></p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-uv" aria-labelledby="tab-uv" hidden>
+        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <p class="variant-note">for installing into a Python you manage. The <code>[engine]</code> extra ships from lilbee.sh, not PyPI, and the index picks the build: <code>metal/</code> on Apple silicon, <code>vulkan/</code> for other GPUs, <code>cpu/</code> without one.</p>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant rocm">
+          <span class="variant-tag">AMD · ROCm</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow --extra-index-url https://lilbee.sh/compat/ --with 'lancedb==0.34.0+compat' lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+          <p class="variant-note">no compat engine wheel exists: this installs lilbee without an engine, so use a bundled build instead, or point <code>LILBEE_LLAMA_SERVER_PATH</code> at your own <code>llama-server</code>.</p>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-uv">details</button>
+        <div class="notes-body" id="notes-uv" hidden>
+          <p class="extras">uv fetches a Python for you if needed &nbsp;.&nbsp; extras: <code>uv tool install --prerelease=allow 'lilbee[engine,crawler]'</code></p>
         </div>
       </div>
 
