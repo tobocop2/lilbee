@@ -7,8 +7,10 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - README.md
       - bucket/**
       - packaging/tools/render_scoop_manifest.py
+      - packaging/tools/test_scoop_cuda_gate.ps1
       - .github/actions/validate-scoop-install/**
       - .github/workflows/scoop-validate.yml
 
@@ -22,6 +24,24 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - name: Check the README install command parses
+        # Windows ships PowerShell 5.1, which has no && operator. `shell: powershell`
+        # is 5.1; `shell: pwsh` is 7 and would accept a line users cannot run.
+        shell: powershell
+        run: |
+          $row = Select-String -Path README.md -Pattern '^\| \*\*Scoop\*\*' | Select-Object -First 1
+          if (-not $row) { throw "no Scoop row in the README install table" }
+          $cmd = [regex]::Match($row.Line, '`([^`]+)`').Groups[1].Value
+          Write-Host "documented: $cmd"
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseInput($cmd, [ref]$null, [ref]$errors)
+          if ($errors) { throw "does not parse in Windows PowerShell 5.1: $($errors[0].Message)" }
+          Write-Host "parses in Windows PowerShell $($PSVersionTable.PSVersion)"
+      - name: Check the CUDA gate
+        # The runner has no NVIDIA card, so installing only ever proves the Vulkan
+        # branch. This stubs nvidia-smi and covers the other one.
+        shell: pwsh
+        run: ./packaging/tools/test_scoop_cuda_gate.ps1
       - name: Read manifest version
         id: manifest
         shell: pwsh

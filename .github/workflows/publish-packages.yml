@@ -34,6 +34,7 @@ jobs:
       sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
       sha_windows: ${{ steps.info.outputs.sha_windows }}
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
+      sha_windows_cu124: ${{ steps.info.outputs.sha_windows_cu124 }}
     steps:
       - name: Resolve tag and asset digests
         id: info
@@ -56,6 +57,7 @@ jobs:
           sha_macos_x86_64=$(get_sha lilbee-macos-x86_64)
           sha_windows=$(get_sha lilbee-windows-x86_64.exe)
           sha_windows_cu125=$(get_sha lilbee-windows-x86_64-cu125.exe)
+          sha_windows_cu124=$(get_sha lilbee-windows-x86_64-cu124.exe)
 
           [ -n "$sha_linux" ] || { echo "lilbee-linux-x86_64 missing from release ${tag}"; exit 1; }
           [ -n "$sha_macos_arm64" ] || { echo "lilbee-macos-arm64 missing from release ${tag}"; exit 1; }
@@ -71,6 +73,7 @@ jobs:
             echo "sha_macos_x86_64=$sha_macos_x86_64"
             echo "sha_windows=$sha_windows"
             echo "sha_windows_cu125=$sha_windows_cu125"
+            echo "sha_windows_cu124=$sha_windows_cu124"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -206,12 +209,15 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
           SHA_WINDOWS: ${{ needs.resolve.outputs.sha_windows }}
           SHA_WINDOWS_CU125: ${{ needs.resolve.outputs.sha_windows_cu125 }}
+          SHA_WINDOWS_CU124: ${{ needs.resolve.outputs.sha_windows_cu124 }}
         run: |
           set -euo pipefail
           [ -n "$SHA_WINDOWS" ] || { echo "lilbee-windows-x86_64.exe missing from release"; exit 1; }
           [ -n "$SHA_WINDOWS_CU125" ] || { echo "lilbee-windows-x86_64-cu125.exe missing from release"; exit 1; }
+          [ -n "$SHA_WINDOWS_CU124" ] || { echo "lilbee-windows-x86_64-cu124.exe missing from release"; exit 1; }
           python packaging/tools/render_scoop_manifest.py bucket/lilbee.json \
-            --version "$VERSION" --sha-windows "$SHA_WINDOWS" --sha-windows-cu125 "$SHA_WINDOWS_CU125"
+            --version "$VERSION" --sha-windows "$SHA_WINDOWS" \
+            --sha-windows-cu125 "$SHA_WINDOWS_CU125" --sha-windows-cu124 "$SHA_WINDOWS_CU124"
       - name: Install from the rendered manifest and smoke test
         uses: ./.github/actions/validate-scoop-install
         with:
