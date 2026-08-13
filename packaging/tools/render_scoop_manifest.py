@@ -17,9 +17,9 @@ def _replace_once(content: str, pattern: re.Pattern[str], repl: str, what: str) 
 
 
 def _render_default(content: str, args: argparse.Namespace) -> str:
-    # The version field, the literal version in the CPU download URL (the cu125
-    # URL is built from $version at install time), the Scoop-verified CPU hash,
-    # and the cu125 hash checked by post_install.
+    # The version field, the literal version in the CPU download URL (the CUDA
+    # URLs are built from $version at install time), the Scoop-verified CPU hash,
+    # and each CUDA hash checked by post_install.
     content = _replace_once(
         content, re.compile(r'"version": "[^"]*"'), f'"version": "{args.version}"', "version line"
     )
@@ -35,12 +35,14 @@ def _render_default(content: str, args: argparse.Namespace) -> str:
         rf"\g<1>{args.sha_windows}\g<2>",
         "CPU hash",
     )
-    return _replace_once(
-        content,
-        re.compile(r"(\$cudaHash = ')[0-9a-f]{64}(')"),
-        rf"\g<1>{args.sha_windows_cu125}\g<2>",
-        "cu125 hash",
-    )
+    for flavor, sha in (("cu125", args.sha_windows_cu125), ("cu124", args.sha_windows_cu124)):
+        content = _replace_once(
+            content,
+            re.compile(rf"('{flavor}' = ')[0-9a-f]{{64}}(')"),
+            rf"\g<1>{sha}\g<2>",
+            f"{flavor} hash",
+        )
+    return content
 
 
 def _render_compat(content: str, args: argparse.Namespace) -> str:
@@ -74,6 +76,7 @@ def main() -> None:
     )
     parser.add_argument("--sha-windows")
     parser.add_argument("--sha-windows-cu125")
+    parser.add_argument("--sha-windows-cu124")
     parser.add_argument("--sha-windows-compat")
     args = parser.parse_args()
 
@@ -86,6 +89,7 @@ def main() -> None:
             for flag, value in (
                 ("--sha-windows", args.sha_windows),
                 ("--sha-windows-cu125", args.sha_windows_cu125),
+                ("--sha-windows-cu124", args.sha_windows_cu124),
             )
             if not value
         ]
