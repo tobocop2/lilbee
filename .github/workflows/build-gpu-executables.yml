@@ -295,6 +295,7 @@ jobs:
           # find it by shape rather than by that name.
           bin_dir=$(find dist -type d -path '*lilbee_engine/bin' | head -1)
           [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
+          echo "ENGINE_BIN_DIR=${bin_dir}" >> "${GITHUB_ENV}"
           # rocBLAS also loads Tensile kernels as data, so the directory is required
           # the same way the libraries are.
           if [ "${BACKEND}" = "rocm" ]; then
@@ -318,6 +319,32 @@ jobs:
           if [ "${BACKEND}" = "rocm" ]; then
             bash tools/qa/assert_rocm_bundle_loads.sh "${bin_dir}"
           fi
+
+      # A ROCm build serves only the cards it carries rocBLAS kernels for, and
+      # rocm_runtime.py reads those kernels back at startup to refuse a host it
+      # cannot serve. A downloader has to make the same call before it has a
+      # binary to read, so publish the list beside the binary. Generated from the
+      # bundle being shipped, so it cannot describe a different build.
+      - name: Publish the gfx targets this ROCm build ships kernels for
+        if: matrix.backend == 'rocm'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manifest="dist/${{ matrix.asset_name }}.gfx.txt"
+          for kernels in "${ENGINE_BIN_DIR}"/rocblas/library/TensileLibrary_lazy_gfx*.dat; do
+            name="${kernels##*/}"
+            name="${name#TensileLibrary_lazy_}"
+            echo "${name%.dat}"
+          done | sort -u > "${manifest}"
+          # An empty manifest reads as "supports nothing" and would turn every AMD
+          # host away, so a bundle with no kernels fails the cell instead.
+          [ -s "${manifest}" ] || { echo "the bundle carries no rocBLAS kernels" >&2; exit 1; }
+          cat "${manifest}"
+          [ -z "${TAG}" ] || gh release upload "${TAG}" "${manifest}" --clobber
 
       - name: Smoke test
         # GPU cells run on GPU-less runners: the bundled server links the vendor
@@ -357,7 +384,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          # The second path exists on the ROCm cell only; upload-artifact warns
+          # for a pattern that matches nothing and uploads the rest.
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.gfx.txt
           # The onefile payload is already zstd-compressed; deflating it again buys nothing.
           compression-level: 0
 
