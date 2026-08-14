@@ -4862,9 +4862,7 @@ class TestDownsizedShapeWarning:
     def test_warns_when_granted_window_is_below_target(
         self, monkeypatch, tmp_path: Path, caplog
     ) -> None:
-        launches = [
-            _fake_launch(WorkerRole.CHAT, slots=1, ctx=41472, built_ctx_target=65536)
-        ]
+        launches = [_fake_launch(WorkerRole.CHAT, slots=1, ctx=41472, built_ctx_target=65536)]
         _install_engine(monkeypatch, tmp_path, launches=launches)
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             FleetProvider()._ensure_fleet()
@@ -4876,9 +4874,7 @@ class TestDownsizedShapeWarning:
     def test_quiet_when_the_granted_shape_meets_the_request(
         self, monkeypatch, tmp_path: Path, caplog
     ) -> None:
-        launches = [
-            _fake_launch(WorkerRole.CHAT, slots=4, ctx=65536, built_ctx_target=65536)
-        ]
+        launches = [_fake_launch(WorkerRole.CHAT, slots=4, ctx=65536, built_ctx_target=65536)]
         _install_engine(monkeypatch, tmp_path, launches=launches)
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             FleetProvider()._ensure_fleet()

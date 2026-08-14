@@ -1888,9 +1888,7 @@ class TestReasoningModeOnRoute:
                 },
             )
         chunks = _sse_to_chunks(resp.content)
-        deltas = [
-            c["choices"][0]["delta"] for c in chunks if isinstance(c, dict) and c["choices"]
-        ]
+        deltas = [c["choices"][0]["delta"] for c in chunks if isinstance(c, dict) and c["choices"]]
         content = "".join(d.get("content") or "" for d in deltas)
         assert content == "<think>why</think>hi"
         assert all("reasoning_content" not in d for d in deltas)

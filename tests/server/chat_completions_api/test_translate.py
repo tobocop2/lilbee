@@ -1221,8 +1221,9 @@ class TestStreamCreatedIsConstant:
         assert len({c.created for c in chunks}) == 1
 
 
-class TestReasoningModeInline:
-    """``inline`` keeps thinking in ``content`` so tag-blind clients see motion."""
+class TestReasoningModePresentation:
+    """``inline`` keeps thinking in ``content`` so tag-blind clients see motion;
+    ``off`` falls back to the separate split for templates that think anyway."""
 
     def _resp(self, text: str) -> CanonicalResponse:
         return CanonicalResponse(

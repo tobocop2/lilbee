@@ -66,21 +66,29 @@ def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
     serving process's log (the serve console and server.log), not only in the
     agent-config path whose stderr scripts discard.
     """
-    below_ctx = 0 < launch.built_ctx_target and launch.ctx < launch.built_ctx_target
+    below_ctx = launch.built_ctx_target > 0 and launch.ctx < launch.built_ctx_target
     below_slots = launch.slots < _CHAT_SLOTS
     if not (below_ctx or below_slots):
         return
+    # A pre-field launch record carries built_ctx_target=0; show the granted
+    # window as the requested one rather than "x 0 context". The remedy names
+    # both target knobs because the recorded target does not say which of
+    # num_ctx (pin) or chat_n_ctx_target produced it.
+    requested_ctx = launch.built_ctx_target or launch.ctx
     log.warning(
         "Chat engine downsized: serving %d slot(s) x %d context "
         "(requested: up to %d slots x %d context). Requests beyond %d at once "
         "wait for a free slot, so parallel agents can look stalled. "
-        "A smaller model or a lower chat_n_ctx_target frees room for more slots.",
+        "A smaller model or a lower context target (num_ctx or "
+        "chat_n_ctx_target) frees room for more slots.",
         launch.slots,
         launch.ctx,
         _CHAT_SLOTS,
-        launch.built_ctx_target,
+        requested_ctx,
         launch.slots,
     )
+
+
 # Slots the PLACEMENT estimate reserves KV for on a tensor-split chat: one full
 # window, the minimum any split must hold. The launch may serve more than this
 # (see _resolve_split_chat_slots) when the cards measurably have room for several

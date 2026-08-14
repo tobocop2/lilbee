@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -11,6 +12,8 @@ from lilbee.core.config.enums import ReasoningMode
 
 # Wire layer reuses the provider-layer enum so the two can never drift.
 from lilbee.providers.base import FinishReason as FinishReason
+
+log = logging.getLogger(__name__)
 
 
 class ToolChoiceMode(StrEnum):
@@ -136,7 +139,12 @@ class CompletionsRequest(BaseModel):
         # Other vendors use ``reasoning`` for an object (OpenRouter's effort
         # config). A non-string shape is their field, not this one; treat it
         # as absent so those requests keep working instead of turning 400.
-        return value if value is None or isinstance(value, str) else None
+        # Logged like the route logs other unsupported params, so the client
+        # can learn the value had no effect.
+        if value is None or isinstance(value, str):
+            return value
+        log.debug("chat/completions ignoring non-string reasoning value: %r", value)
+        return None
 
 
 class CompletionsResponseToolCallFunction(BaseModel):
