@@ -1212,9 +1212,8 @@ class FleetProvider:
             if role is WorkerRole.CHAT:
                 self._chat_slots = role_launches[0].slots
                 self._chat_ctx = role_launches[0].ctx
-                # Adoption is the one point every serving process passes through
-                # (fresh launch, reload, guest bind), so the downsize warning
-                # cannot be missed by whoever runs this engine.
+                # Every serving process passes through adoption (fresh launch,
+                # reload, guest bind), so the warning fires in each of them.
                 planning.warn_when_chat_downsized(role_launches[0])
             self._retire_clients(old_clients)
 

@@ -61,10 +61,8 @@ _CHAT_SLOTS = 4
 def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
     """Log when a chat engine's granted shape ends below the requested one.
 
-    The planner downsizing is correct physics; what was missing is the signal.
-    Called where the provider adopts the launch, so the message lands on the
-    serving process's log (the serve console and server.log), not only in the
-    agent-config path whose stderr scripts discard.
+    Runs at engine adoption so the warning lands on the serving process's
+    own log, where the operator of that engine reads it.
     """
     below_ctx = launch.built_ctx_target > 0 and launch.ctx < launch.built_ctx_target
     below_slots = launch.slots < _CHAT_SLOTS
