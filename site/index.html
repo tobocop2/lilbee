@@ -384,16 +384,16 @@
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">Four agents at once against a single local model (Qwen3 Coder 30B A3B): finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with <code>lilbee_search</code>.</p>
+          <p class="tutorial-caption">Four agents at once against a single local model (Qwen3 Coder Next) on one RTX 5090, each in its own worktree, reading and searching this repository through lilbee. 130 tokens/sec on a single stream.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">The same four-up shape on MiniMax M2.7, each pane writing a small Python function through lilbee.</p>
+          <p class="tutorial-caption">The same four-up shape on MiniMax M2.7 across three A100s, each pane investigating a different way the engine acquisition ladder can fail. 60.9 tokens/sec on a single stream, 103.3 aggregate across three concurrent agents.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-memory" aria-labelledby="tutorial-tab-memory" hidden>
