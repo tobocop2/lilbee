@@ -223,11 +223,11 @@ One model serves as many agents as you want to run. These reels show four workin
 
 ![four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.gif)
 
-Qwen3 Coder Next on one RTX 5090, at 130 tokens/sec on a single stream.
+Qwen3 Coder Next, 45GB across three RTX 4090s, holding all four agents for the full reel.
 
-![four agents at once on MiniMax M2.7, investigating lilbee's engine lifecycle](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax.gif)
+![four agents at once on Devstral Small 2 24B, working the same four tasks](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.gif)
 
-The same shape carrying a large model: MiniMax M2.7 across three A100s, at 60.9 tokens/sec on a single stream and 103.3 aggregate across three concurrent agents.
+The same four tasks on Devstral Small 2 24B. It answers one of them in eighteen seconds, which is where the reel ends.
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 

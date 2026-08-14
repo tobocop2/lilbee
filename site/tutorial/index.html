@@ -434,7 +434,7 @@
 
       <section class="tutorial-section" id="agents-qwen3-coder">
         <h4><a href="#agents-qwen3-coder">Four agents on one local model</a></h4>
-        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next on a single RTX 5090, each in its own worktree, reading and searching this repository through lilbee. The model holds 130 tokens/sec on a single stream.</p>
+        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next, 45GB across three RTX 4090s, each in its own clone of this repository through lilbee.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" type="video/mp4">
@@ -443,13 +443,13 @@
         </div>
       </section>
 
-      <section class="tutorial-section" id="agents-minimax">
-        <h4><a href="#agents-minimax">The same, on MiniMax M2.7</a></h4>
-        <p>The same four-up shape on MiniMax M2.7 across three A100s. Each pane investigates a different way the engine acquisition ladder can fail when two processes race. The model holds 60.9 tokens/sec on a single stream, and 103.3 aggregate across three concurrent agents.</p>
+      <section class="tutorial-section" id="agents-devstral">
+        <h4><a href="#agents-devstral">The same, on Devstral Small 2 24B</a></h4>
+        <p>The same four tasks on Devstral Small 2 24B. It answers one of them in eighteen seconds, which is where the reel ends.</p>
         <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax.mp4">four agents on MiniMax M2.7 (MP4)</a>
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.mp4">four agents on Devstral Small 2 24B (MP4)</a>
           </video>
         </div>
       </section>
