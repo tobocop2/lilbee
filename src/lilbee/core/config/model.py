@@ -580,7 +580,8 @@ class Config(BaseSettings):
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
-    # <16 GiB -> 8192, 16-32 -> 12288, 32-64 -> 16384, >=64 -> 24576.
+    # <16 GiB -> 8192, 16-32 -> 12288, 32-64 -> 16384, 64-128 -> 24576,
+    # >=128 -> 65536 (an agent-capable window on server-class hosts).
     # 8192 is the floor; the picker still clamps to training_ctx and
     # host headroom.
     chat_n_ctx_target: int = ConfigField(
