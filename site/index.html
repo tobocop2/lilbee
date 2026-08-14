@@ -249,7 +249,7 @@
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">agents: qwen3 coder</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">agents: minimax</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">agents: devstral</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-memory" aria-controls="tutorial-pane-memory" aria-selected="false" tabindex="-1">memory</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-wiki" aria-controls="tutorial-pane-wiki" aria-selected="false" tabindex="-1">wiki</button>
             </div>
@@ -384,16 +384,16 @@
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">Four agents at once against a single local model (Qwen3 Coder 30B A3B): finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with <code>lilbee_search</code>.</p>
+          <p class="tutorial-caption">Four agents at once against a single local model, Qwen3 Coder Next, 45GB across three RTX 4090s. Each works in its own clone of this repository through lilbee.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
           <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">The same four-up shape on MiniMax M2.7, each pane writing a small Python function through lilbee.</p>
+          <p class="tutorial-caption">The same four tasks on Devstral Small 2 24B. It answers one of them in eighteen seconds, which is where the reel ends.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-memory" aria-labelledby="tutorial-tab-memory" hidden>

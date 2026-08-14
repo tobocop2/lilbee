@@ -219,11 +219,15 @@ Ask it something with a real answer at stake and you get the answer, not a parap
 
 `lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
-One model serves as many agents as you want to run. These reels show four working at once against a single local model, each on its own task: finding and fixing the bug behind a failing test, refactoring duplicated logic out of two functions, and searching the indexed project with `lilbee_search`.
+One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
 
-![four agents at once on Qwen3 Coder 30B A3B, each fixing, refactoring or searching through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen3-coder.gif)
+![four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.gif)
 
-![four agents at once on MiniMax M2.7, writing Python functions through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-minimax-m27.gif)
+Qwen3 Coder Next, 45GB across three RTX 4090s, holding all four agents for the full reel.
+
+![four agents at once on Devstral Small 2 24B, working the same four tasks](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral.gif)
+
+The same four tasks on Devstral Small 2 24B. It answers one of them in eighteen seconds, which is where the reel ends.
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
