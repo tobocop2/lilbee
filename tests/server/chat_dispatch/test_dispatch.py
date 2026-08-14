@@ -304,6 +304,16 @@ class TestDispatchChat:
         opts = services_with_model.provider.chat.call_args.kwargs["options"]
         assert opts == {"temperature": 0.2}
 
+    def test_think_false_passed_to_provider(self, services_with_model) -> None:
+        dispatch_chat(_req(think=False))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert opts == {"think": False}
+
+    def test_think_omitted_when_unset(self, services_with_model) -> None:
+        dispatch_chat(_req(temperature=0.2))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert "think" not in opts
+
     def test_tool_use_message_round_trips_as_assistant_tool_calls(
         self, services_with_model
     ) -> None:
