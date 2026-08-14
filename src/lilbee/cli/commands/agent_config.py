@@ -15,6 +15,7 @@ from lilbee.app.agent_configs.document import (
     client_serves_models,
 )
 from lilbee.app.agent_configs.litellm import litellm_config
+from lilbee.app.agent_configs.window import AGENT_CHAT_CTX_FLOOR
 from lilbee.app.models import installed_chat_model_refs
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
@@ -50,10 +51,36 @@ def _served_chat_models() -> list[str]:
     return with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model)
 
 
+def _warn_on_small_agent_window(chat_ctx: int | None) -> None:
+    """Say when the served window cannot hold an agent's first turn, with the remedy.
+
+    ``lilbee launch`` sizes the window itself; this paste path runs against a
+    server the user started, whose window is fixed at boot, so the printed
+    config would otherwise carry a window the first message overflows. An
+    unknown window (no chat engine yet) stays silent.
+    """
+    if chat_ctx is None or chat_ctx >= AGENT_CHAT_CTX_FLOOR:
+        return
+    typer.secho(
+        f"Warning: the server serves a {chat_ctx:,}-token context window, but an "
+        f"agent's first turn (system prompt plus tool schemas) needs about "
+        f"{AGENT_CHAT_CTX_FLOOR:,}, so the first message can overflow. To raise it: "
+        f"stop the server, run 'lilbee engine stop', set chat_n_ctx_target to "
+        f"{AGENT_CHAT_CTX_FLOOR} (or start with "
+        f"LILBEE_CHAT_N_CTX_TARGET={AGENT_CHAT_CTX_FLOOR}), then run 'lilbee serve' "
+        "again. If the window stays small, the model's trained context or device "
+        "memory is the limit; use a longer-context model or a smaller quantization.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
+
+
 def _build(client: AgentClient) -> AgentConfigDocument:
     """Build *client*'s document from the running server's port and token."""
     token, port = _session_or_exit()
     serves_models = client_serves_models(client)
+    chat_ctx = client_chat_ctx(port) if serves_models else None
+    _warn_on_small_agent_window(chat_ctx)
     return build_agent_config(
         client,
         base_url=f"http://{LOOPBACK}:{port}",
@@ -63,7 +90,7 @@ def _build(client: AgentClient) -> AgentConfigDocument:
         # context window, so the pasted config opens on a lilbee model and trims
         # history to the right limit.
         default_ref=str(cfg.chat_model) if serves_models else None,
-        chat_ctx=client_chat_ctx(port) if serves_models else None,
+        chat_ctx=chat_ctx,
     )
 
 
