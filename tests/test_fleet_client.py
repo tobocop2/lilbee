@@ -2177,11 +2177,20 @@ def test_chat_stream_items_requests_return_progress() -> None:
     assert seen["return_progress"] is True
 
 
+def _prefill_client(handler, events: list) -> LlamaServerClient:
+    """A probed-lenient client whose constructor carries the prefill callback."""
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient("http://gpu0", "test-model", http=http, on_prefill=events.append)
+    client._needs_alternation = False
+    return client
+
+
 def test_chat_stream_prefill_progress_reaches_callback_not_the_frames() -> None:
     """Progress chunks drive on_prefill and never surface as stream frames.
 
-    The callback sees each (processed, total) and then None when the first
-    generated token proves prefill is over.
+    The callback sees each (processed, total) and then None at the FIRST
+    generated token, not at stream end: pulled one frame at a time, the clear
+    has already landed while later frames are still pending.
     """
     body = (
         'data: {"choices":[{"delta":{"content":""}}],'
@@ -2189,6 +2198,7 @@ def test_chat_stream_prefill_progress_reaches_callback_not_the_frames() -> None:
         'data: {"choices":[{"delta":{"content":""}}],'
         '"prompt_progress":{"total":320,"cache":0,"processed":320,"time_ms":90}}\n\n'
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":" there"}}]}\n\n'
         "data: [DONE]\n\n"
     )
 
@@ -2198,15 +2208,18 @@ def test_chat_stream_prefill_progress_reaches_callback_not_the_frames() -> None:
         return httpx.Response(404)
 
     events: list[tuple[int, int] | None] = []
-    client = _client(handler)
-    client._on_prefill = lambda progress: events.append(progress)
-    frames = list(client.chat_stream_items([{"role": "user", "content": "hi"}]))
-    assert frames == ["Hi"]
+    stream = client_iter = iter(
+        _prefill_client(handler, events).chat_stream_items([{"role": "user", "content": "hi"}])
+    )
+    first = next(client_iter)
+    assert first == "Hi"
+    assert events == [(128, 320), (320, 320), None]
+    assert list(stream) == [" there"]
     assert events == [(128, 320), (320, 320), None]
 
 
-def test_chat_stream_prefill_cleared_when_the_stream_ends_early() -> None:
-    """A stream that dies mid-prefill still reports the prefill as over."""
+def test_chat_stream_prefill_cleared_when_the_stream_ends_without_a_token() -> None:
+    """A stream that ends mid-prefill (death or truncation) still clears the reading."""
     body = (
         'data: {"choices":[{"delta":{"content":""}}],'
         '"prompt_progress":{"total":320,"cache":0,"processed":128,"time_ms":50}}\n\n'
@@ -2219,7 +2232,33 @@ def test_chat_stream_prefill_cleared_when_the_stream_ends_early() -> None:
         return httpx.Response(404)
 
     events: list[tuple[int, int] | None] = []
-    client = _client(handler)
-    client._on_prefill = lambda progress: events.append(progress)
-    list(client.chat_stream_items([{"role": "user", "content": "hi"}]))
+    list(_prefill_client(handler, events).chat_stream_items([{"role": "user", "content": "hi"}]))
     assert events == [(128, 320), None]
+
+
+class TestPrefillProgressParsing:
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ('data: {"prompt_progress":{"total":320,"cache":0,"processed":128}}', (128, 320)),
+            ("data: not-json prompt_progress", None),
+            ('data: {"prompt_progress":"128/320"}', None),
+            ('data: {"prompt_progress":{"total":320}}', None),
+            ('data: {"prompt_progress":{"total":"a","processed":"b"}}', None),
+            ('data: {"choices":[{"delta":{"content":"hi"}}]}', None),
+            ('{"prompt_progress":{"total":320,"processed":128}}', None),
+        ],
+        ids=[
+            "well-formed",
+            "unparseable-json",
+            "non-mapping-progress",
+            "missing-processed",
+            "non-numeric-counts",
+            "ordinary-token-line",
+            "no-data-prefix",
+        ],
+    )
+    def test_parses_only_well_formed_progress_lines(self, line, expected) -> None:
+        from lilbee.providers.fleet.client import _prefill_progress
+
+        assert _prefill_progress(line) == expected
