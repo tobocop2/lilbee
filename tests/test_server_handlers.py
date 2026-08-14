@@ -162,6 +162,22 @@ class TestHealth:
         mock_svc.provider.role_ready.return_value = True
         assert (await handlers.health()).chat_error is None
 
+    async def test_chat_shape_carries_served_ctx_and_slots(self, mock_svc):
+        """Health reports the granted shape (slots x window) so a script can
+        check what the engine actually serves, not what config asked for."""
+        mock_svc.provider.role_ready.return_value = True
+        mock_svc.provider.served_chat_ctx.return_value = 41472
+        mock_svc.provider.served_chat_slots.return_value = 1
+        result = await handlers.health()
+        assert result.chat_ctx == 41472
+        assert result.chat_slots == 1
+
+    async def test_chat_slots_absent_before_the_engine_is_up(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = None
+        mock_svc.provider.served_chat_slots.return_value = None
+        assert (await handlers.health()).chat_slots is None
+
 
 def _parse_warm_events(chunks: list[str]) -> list[dict]:
     """Pull the JSON payloads off ``warm`` SSE chunks, ignoring the [DONE] tail."""

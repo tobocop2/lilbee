@@ -213,6 +213,26 @@ class TestListModelsEndpoint:
         # model with no served window simply carries no context_window key.
         assert "context_window" not in by_id["z/Other/o.gguf"]
 
+    async def test_slots_advertised_for_active_model_only(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The granted slot count rides the active model entry so an agent
+        harness can read the real concurrency instead of assuming one."""
+        from lilbee.core.config import cfg
+
+        other = _installed_chat_model("z/Other/o.gguf")
+        services_with_chat_model.registry.list_installed = MagicMock(
+            return_value=[_installed_chat_model(INSTALLED_REF), other]
+        )
+        monkeypatch.setattr(cfg, "chat_model", INSTALLED_REF)
+        services_with_chat_model.provider.served_chat_ctx.return_value = 40960
+        services_with_chat_model.provider.served_chat_slots.return_value = 2
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        by_id = {m["id"]: m for m in resp.json()["data"]}
+        assert by_id[INSTALLED_REF]["slots"] == 2
+        assert "slots" not in by_id["z/Other/o.gguf"]
+
     async def test_remote_configured_chat_model_is_listed_first(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):

@@ -229,6 +229,9 @@ class ModelEntry(BaseModel):
     context_window: int | None = None
     """The context the active chat engine serves, so a client can trim history to
     fit. None when the engine is not up yet or the window is unknown."""
+    slots: int | None = None
+    """Batching slots the active chat engine serves: how many requests generate
+    at once before the rest queue. None when the engine is not up yet."""
 
 
 class ModelsListResponse(BaseModel):

@@ -342,6 +342,12 @@ class RoutingProvider(LLMProvider):
             return None
         return self._local.served_chat_ctx()
 
+    def served_chat_slots(self) -> int | None:
+        """Chat batching slots of the local engine, or None when none exists."""
+        if self._local is None:
+            return None
+        return self._local.served_chat_slots()
+
     def warm_pending(self) -> bool:
         """Forward to the native side; the SDK side never warms."""
         return self._get_local().warm_pending()

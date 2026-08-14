@@ -77,9 +77,11 @@ async def list_models_endpoint(request: Request) -> Response:
 def _build_models_list_payload() -> ModelsListResponse:
     """Synchronous /v1/models body: blocking registry walk + engine ctx probe."""
     services = get_services()
-    # The served window applies to the active chat model; advertise it so a
-    # client trims history to fit instead of overflowing on a long session.
+    # The served shape applies to the active chat model; advertise it so a
+    # client trims history to fit and an agent harness reads the real
+    # concurrency instead of assuming the configured target.
     served_ctx = services.provider.served_chat_ctx()
+    served_slots = services.provider.served_chat_slots()
     installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
     # A remote-configured chat model has no registry entry but is still listed,
     # configured model first (the launcher's picker order).
@@ -96,6 +98,7 @@ def _build_models_list_payload() -> ModelsListResponse:
                 if ref in installed
                 else fallback_created,
                 context_window=served_ctx if ref == cfg.chat_model else None,
+                slots=served_slots if ref == cfg.chat_model else None,
             )
             for ref in refs
         ]

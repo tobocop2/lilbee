@@ -56,6 +56,31 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
+
+
+def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
+    """Log when a chat engine's granted shape ends below the requested one.
+
+    The planner downsizing is correct physics; what was missing is the signal.
+    Called where the provider adopts the launch, so the message lands on the
+    serving process's log (the serve console and server.log), not only in the
+    agent-config path whose stderr scripts discard.
+    """
+    below_ctx = 0 < launch.built_ctx_target and launch.ctx < launch.built_ctx_target
+    below_slots = launch.slots < _CHAT_SLOTS
+    if not (below_ctx or below_slots):
+        return
+    log.warning(
+        "Chat engine downsized: serving %d slot(s) x %d context "
+        "(requested: up to %d slots x %d context). Requests beyond %d at once "
+        "wait for a free slot, so parallel agents can look stalled. "
+        "A smaller model or a lower chat_n_ctx_target frees room for more slots.",
+        launch.slots,
+        launch.ctx,
+        _CHAT_SLOTS,
+        launch.built_ctx_target,
+        launch.slots,
+    )
 # Slots the PLACEMENT estimate reserves KV for on a tensor-split chat: one full
 # window, the minimum any split must hold. The launch may serve more than this
 # (see _resolve_split_chat_slots) when the cards measurably have room for several
