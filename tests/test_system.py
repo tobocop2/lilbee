@@ -219,10 +219,21 @@ class TestChatCtxTargetForTotalBytes:
         assert chat_ctx_target_for_total_bytes(_gib(48)) == 16384
         assert chat_ctx_target_for_total_bytes(64 * 1024**3 - 1) == 16384
 
-    def test_64gb_and_above_picks_24k(self):
+    def test_64_to_128gb_picks_24k(self):
         assert chat_ctx_target_for_total_bytes(_gib(64)) == 24576
-        assert chat_ctx_target_for_total_bytes(_gib(128)) == 24576
-        assert chat_ctx_target_for_total_bytes(_gib(512)) == 24576
+        assert chat_ctx_target_for_total_bytes(_gib(96)) == 24576
+        assert chat_ctx_target_for_total_bytes(128 * 1024**3 - 1) == 24576
+
+    def test_128gb_and_above_picks_the_agent_floor(self):
+        # A server-class host defaults to a window that holds an agent client's
+        # first turn. core.system cannot import the app-layer constant, so this
+        # test is what keeps the two values equal.
+        from lilbee.app.agent_configs.window import AGENT_CHAT_CTX_FLOOR
+
+        assert AGENT_CHAT_CTX_FLOOR == 65536
+        assert chat_ctx_target_for_total_bytes(_gib(128)) == AGENT_CHAT_CTX_FLOOR
+        assert chat_ctx_target_for_total_bytes(_gib(251)) == AGENT_CHAT_CTX_FLOOR
+        assert chat_ctx_target_for_total_bytes(_gib(512)) == AGENT_CHAT_CTX_FLOOR
 
     def test_zero_or_negative_returns_floor(self):
         assert chat_ctx_target_for_total_bytes(0) == 8192

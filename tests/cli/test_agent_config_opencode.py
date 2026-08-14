@@ -147,3 +147,50 @@ def test_opencode_config_with_non_string_token_exits_1():
     result = runner.invoke(app, ["agent-config", "opencode"])
     assert result.exit_code == 1
     assert "lilbee serve" in result.stderr
+
+
+def _invoke_with_served_ctx(chat_ctx: int | None):
+    """Run `agent-config opencode` against a fake session serving *chat_ctx*."""
+    _write_server_session("tok", 8765)
+    registry = _fake_registry([(_CHAT_REF_A, "chat")])
+    with (
+        patch(
+            "lilbee.app.models.get_services",
+            return_value=MagicMock(registry=registry),
+        ),
+        patch(
+            "lilbee.cli.commands.agent_config.client_chat_ctx",
+            return_value=chat_ctx,
+        ),
+    ):
+        return runner.invoke(app, ["agent-config", "opencode"])
+
+
+def test_opencode_config_warns_when_served_window_is_below_the_agent_floor():
+    """The paste path cannot resize a running server, so a window an agent's
+    first turn overflows is called out with the remedy (bb-vs7rk); the config
+    itself still prints, with the true window."""
+    result = _invoke_with_served_ctx(24576)
+
+    assert result.exit_code == 0, result.stderr
+    assert "24,576-token" in result.stderr
+    assert "chat_n_ctx_target" in result.stderr
+    assert "lilbee engine stop" in result.stderr
+    # stdout stays a clean, parseable config block.
+    payload = json.loads(result.stdout)
+    assert payload["provider"]["lilbee"]["models"]["Qwen3-0.6B"]["limit"]["context"] == 24576
+
+
+def test_opencode_config_stays_quiet_at_the_agent_floor():
+    result = _invoke_with_served_ctx(65536)
+
+    assert result.exit_code == 0, result.stderr
+    assert "engine stop" not in result.stderr
+
+
+def test_opencode_config_stays_quiet_when_the_window_is_unknown():
+    # No chat engine yet: nothing to measure, so no false alarm.
+    result = _invoke_with_served_ctx(None)
+
+    assert result.exit_code == 0, result.stderr
+    assert "engine stop" not in result.stderr

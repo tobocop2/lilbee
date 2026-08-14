@@ -145,6 +145,10 @@ def is_ignored_dir(name: str, ignore_dirs: frozenset[str]) -> bool:
 _CTX_TIER_FLOOR = 8192
 _CTX_TIER_TABLE: tuple[tuple[int, int], ...] = (
     # (total_bytes_threshold, target)
+    # The top tier matches AGENT_CHAT_CTX_FLOOR: a 128 GiB host is a server or
+    # pod whose GPUs can back an agent-sized window, and the dynamic picker
+    # still clamps to trained context and device memory where they cannot.
+    (128 * 1024**3, 65536),
     (64 * 1024**3, 24576),
     (32 * 1024**3, 16384),
     (16 * 1024**3, 12288),
@@ -152,7 +156,7 @@ _CTX_TIER_TABLE: tuple[tuple[int, int], ...] = (
 
 
 def chat_ctx_target_for_total_bytes(total_bytes: int) -> int:
-    """Pick a chat_n_ctx_target from total host RAM (floor 8192, tiers at 16/32/64 GiB)."""
+    """Pick a chat_n_ctx_target from total host RAM (floor 8192, tiers at 16/32/64/128 GiB)."""
     if total_bytes <= 0:
         return _CTX_TIER_FLOOR
     for threshold, target in _CTX_TIER_TABLE:
