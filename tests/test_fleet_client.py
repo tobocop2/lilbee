@@ -2161,3 +2161,65 @@ def test_abort_streams_survives_close_errors() -> None:
     client._active_streams.update({failing, healthy})
     client.abort_streams()  # must not raise
     healthy.close.assert_called_once_with()
+
+
+def test_chat_stream_items_requests_return_progress() -> None:
+    """The stream request opts into the engine's prefill-progress frames."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, text="data: [DONE]\n\n")
+        return httpx.Response(404)
+
+    list(_client(handler).chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert seen["return_progress"] is True
+
+
+def test_chat_stream_prefill_progress_reaches_callback_not_the_frames() -> None:
+    """Progress chunks drive on_prefill and never surface as stream frames.
+
+    The callback sees each (processed, total) and then None when the first
+    generated token proves prefill is over.
+    """
+    body = (
+        'data: {"choices":[{"delta":{"content":""}}],'
+        '"prompt_progress":{"total":320,"cache":0,"processed":128,"time_ms":50}}\n\n'
+        'data: {"choices":[{"delta":{"content":""}}],'
+        '"prompt_progress":{"total":320,"cache":0,"processed":320,"time_ms":90}}\n\n'
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=body)
+        return httpx.Response(404)
+
+    events: list[tuple[int, int] | None] = []
+    client = _client(handler)
+    client._on_prefill = lambda progress: events.append(progress)
+    frames = list(client.chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert frames == ["Hi"]
+    assert events == [(128, 320), (320, 320), None]
+
+
+def test_chat_stream_prefill_cleared_when_the_stream_ends_early() -> None:
+    """A stream that dies mid-prefill still reports the prefill as over."""
+    body = (
+        'data: {"choices":[{"delta":{"content":""}}],'
+        '"prompt_progress":{"total":320,"cache":0,"processed":128,"time_ms":50}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=body)
+        return httpx.Response(404)
+
+    events: list[tuple[int, int] | None] = []
+    client = _client(handler)
+    client._on_prefill = lambda progress: events.append(progress)
+    list(client.chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert events == [(128, 320), None]
