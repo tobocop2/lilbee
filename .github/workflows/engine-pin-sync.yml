@@ -1,0 +1,95 @@
+name: engine-pin-sync
+
+# Follows the engine fork's weekly sync-upstream workflow (tobocop2/llama.cpp,
+# Mondays 08:00 UTC): when the fork publishes a new immutable memory-YYYYMMDD
+# tag (latest upstream master with the GET /memory work rebased on top), this
+# bumps ENGINE_LLAMA_CPP_REF to it, regenerates the arch table that must
+# follow the pin, and opens or refreshes ONE rolling pull request for review.
+# The branch push uses a deploy key (ENGINE_PIN_SYNC_KEY secret) so the PR's
+# CI runs; events from the built-in GITHUB_TOKEN would not trigger it.
+on:
+  schedule:
+    - cron: "0 10 * * 1" # Mondays, two hours after the fork sync
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: engine-pin-sync
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ssh-key: ${{ secrets.ENGINE_PIN_SYNC_KEY }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Find the fork's newest sync tag
+        id: fork
+        run: |
+          tag=$(git ls-remote --tags https://github.com/tobocop2/llama.cpp 'memory-*' \
+            | awk -F/ '{print $NF}' | grep -E '^memory-[0-9]{8}$' | sort | tail -1)
+          if [ -z "$tag" ]; then
+            echo "the fork has no memory-YYYYMMDD tag yet" >&2
+            exit 1
+          fi
+          current=$(sed -n 's/^ENGINE_LLAMA_CPP_REF=//p' engine-versions.env)
+          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$tag" = "$current" ]; then
+            echo "pin already at $tag; nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.fork.outputs.changed == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Bump the pin and regenerate the arch table
+        if: steps.fork.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.fork.outputs.tag }}
+        run: |
+          sed -i "s|^ENGINE_LLAMA_CPP_REF=.*|ENGINE_LLAMA_CPP_REF=${TAG}|" engine-versions.env
+          sed -i -E "s|llama-cpp-[^+]+|llama-cpp-${TAG}|" packaging/engine-wheel/lilbee_engine/pins.py
+          make engine-archs
+
+      - name: Push the rolling branch
+        if: steps.fork.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.fork.outputs.tag }}
+        run: |
+          git config user.name "engine-pin-sync"
+          git config user.email "engine-pin-sync@users.noreply.github.com"
+          git checkout -B chore/engine-pin-sync
+          git commit -am "Bump the bundled llama.cpp engine to ${TAG}"
+          git push -f origin chore/engine-pin-sync
+
+      - name: Open or refresh the rolling PR
+        if: steps.fork.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.fork.outputs.tag }}
+          OLD: ${{ steps.fork.outputs.current }}
+        run: |
+          title="Bump the bundled llama.cpp engine to ${TAG}"
+          body="Weekly engine pin bump from the fork's sync: \`${TAG}\` is the latest ggml-org/llama.cpp master with the GET /memory work rebased on top, compile-verified by the fork's sync-upstream workflow. Replaces \`${OLD}\`. The engine cache key changes, so this PR's CI rebuilds every backend against the new source. Merge when the matrix is green and the bump is wanted; skipping a week costs nothing, the next refresh lands here."
+          pr=$(gh pr list --head chore/engine-pin-sync --state open --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            gh pr create --base main --head chore/engine-pin-sync \
+              --title "$title" --body "$body" --reviewer tobocop2
+          else
+            gh pr edit "$pr" --title "$title" --body "$body"
+            gh pr comment "$pr" --body "@tobocop2 refreshed: the pin now points at \`${TAG}\`."
+          fi
