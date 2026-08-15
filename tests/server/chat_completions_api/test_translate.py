@@ -1222,7 +1222,9 @@ class TestStreamCreatedIsConstant:
 
 
 class TestReasoningModePresentation:
-    """``inline`` keeps thinking in ``content`` so tag-blind clients see motion;
+    """``inline`` streams thinking as content so tag-blind clients see motion --
+    with the tag markers stripped, because a client that ignores
+    reasoning_content renders raw <think> text literally (it did, on camera);
     ``off`` falls back to the separate split for templates that think anyway."""
 
     def _resp(self, text: str) -> CanonicalResponse:
@@ -1234,15 +1236,23 @@ class TestReasoningModePresentation:
             usage=CanonicalUsage(input_tokens=0, output_tokens=0),
         )
 
-    def test_inline_response_keeps_think_text_in_content(self) -> None:
+    def test_inline_response_keeps_think_text_in_content_without_tags(self) -> None:
         body = canonical_to_completions_response(
             self._resp("<think>weighing</think>Answer."),
             response_id=_RESPONSE_ID,
             mode=ReasoningMode.INLINE,
         )
         message = body.choices[0].message
-        assert message.content == "<think>weighing</think>Answer."
+        assert message.content == "weighing\n\nAnswer."
         assert message.reasoning_content is None
+
+    def test_inline_response_with_only_thinking_keeps_the_thinking(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("<think>all thought, no answer</think>"),
+            response_id=_RESPONSE_ID,
+            mode=ReasoningMode.INLINE,
+        )
+        assert body.choices[0].message.content == "all thought, no answer"
 
     def test_off_response_still_splits_leaked_thinking(self) -> None:
         # A template that ignores enable_thinking still thinks; presentation
@@ -1275,18 +1285,24 @@ class TestReasoningModePresentation:
         )
         return [c.choices[0].delta for c in chunks if c.choices]
 
-    async def test_inline_stream_carries_think_text_as_content(self) -> None:
+    async def test_inline_stream_carries_think_text_as_content_without_tags(self) -> None:
         deltas = await self._inline_deltas(["<think>", "why", "</think>", "hi"])
         content = "".join(d.content or "" for d in deltas)
-        assert content == "<think>why</think>hi"
+        assert content == "whyhi"
         assert all(d.reasoning_content is None for d in deltas)
 
-    async def test_inline_stream_does_not_buffer_partial_tags(self) -> None:
-        # The splitter buffers a possible tag prefix; inline mode must not,
-        # so every model token reaches the client the moment it arrives.
-        deltas = await self._inline_deltas(["<thi", "nk>", "hm"])
-        content_deltas = [d.content for d in deltas if d.content]
-        assert content_deltas == ["<thi", "nk>", "hm"]
+    async def test_inline_stream_strips_a_tag_split_across_deltas(self) -> None:
+        # A tag can arrive in pieces; the stateful parse must still drop it
+        # whole rather than leak a fragment like "nk>" into the content.
+        deltas = await self._inline_deltas(["<thi", "nk>", "hm", "</th", "ink>", "ok"])
+        content = "".join(d.content or "" for d in deltas)
+        assert content == "hmok"
+
+    async def test_inline_stream_flushes_an_unclosed_think_block(self) -> None:
+        # A stream cut mid-thought still delivers the thinking it carried.
+        deltas = await self._inline_deltas(["<think>", "partial thought"])
+        content = "".join(d.content or "" for d in deltas)
+        assert content == "partial thought"
 
 
 class TestReasoningRequestField:
