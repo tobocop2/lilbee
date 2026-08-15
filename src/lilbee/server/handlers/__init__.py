@@ -128,6 +128,7 @@ async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     provider = get_services().provider
     chat_status, chat_error = _chat_status(provider)
+    prefill = provider.chat_prefill_progress()
     return HealthResponse(
         status="ok",
         version=get_version(),
@@ -135,6 +136,8 @@ async def health() -> HealthResponse:
         chat_status=chat_status,
         chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
+        chat_prefill_processed=prefill[0] if prefill else None,
+        chat_prefill_total=prefill[1] if prefill else None,
     )
 
 
