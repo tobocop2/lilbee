@@ -136,6 +136,7 @@ async def health() -> HealthResponse:
         chat_status=chat_status,
         chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
+        chat_slots=provider.served_chat_slots(),
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
     )

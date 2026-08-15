@@ -213,7 +213,7 @@ class TestStreamingModelEcho:
             return
             yield  # pragma: no cover -- makes this an async generator
 
-        def _fake_chunks(events, *, model, response_id, include_usage):
+        def _fake_chunks(events, *, model, response_id, include_usage, mode):
             captured["model"] = model
 
             async def _empty():

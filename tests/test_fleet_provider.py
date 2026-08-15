@@ -41,6 +41,7 @@ def _fake_launch(
     ctx: int = 0,
     weights_bytes: int = 0,
     replica: int = 0,
+    built_ctx_target: int = 0,
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
@@ -49,6 +50,7 @@ def _fake_launch(
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
     launch.replica = replica
+    launch.built_ctx_target = built_ctx_target
     return launch
 
 
@@ -2458,6 +2460,16 @@ class TestChatCapacityAndCtxGetters:
         p._chat_ctx = 32768
         assert p.served_chat_ctx() == 32768
 
+    def test_served_chat_slots_is_none_before_swap(self) -> None:
+        assert FleetProvider().served_chat_slots() is None
+
+    def test_served_chat_slots_reads_chat_slots_when_up(self) -> None:
+        p = FleetProvider()
+        p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+        p._chat_slots = 2
+        assert p.served_chat_slots() == 2
+
 
 class _FakeReplica:
     """A minimal client double with real health/in-flight state for routing tests."""
@@ -4842,6 +4854,31 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
         assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
         for client in clients:
             client.mark_unhealthy.assert_called_once()
+
+
+class TestDownsizedShapeWarning:
+    """Adopting a chat engine below the requested shape says so out loud."""
+
+    def test_warns_when_granted_window_is_below_target(
+        self, monkeypatch, tmp_path: Path, caplog
+    ) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT, slots=1, ctx=41472, built_ctx_target=65536)]
+        _install_engine(monkeypatch, tmp_path, launches=launches)
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            FleetProvider()._ensure_fleet()
+        warning = "\n".join(r.message for r in caplog.records)
+        assert "1 slot" in warning
+        assert "41472" in warning
+        assert "65536" in warning
+
+    def test_quiet_when_the_granted_shape_meets_the_request(
+        self, monkeypatch, tmp_path: Path, caplog
+    ) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT, slots=4, ctx=65536, built_ctx_target=65536)]
+        _install_engine(monkeypatch, tmp_path, launches=launches)
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            FleetProvider()._ensure_fleet()
+        assert not [r for r in caplog.records if "downsized" in r.message]
 
 
 class TestChatPrefillProgress:
