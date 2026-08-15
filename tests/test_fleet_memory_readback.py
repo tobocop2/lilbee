@@ -318,6 +318,34 @@ class TestSwapManagerRouting:
             manager._check_estimates({"chat-0"})
         assert "unverified" in caplog.text
 
+    def test_an_unsized_launch_fetches_but_compares_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # est_vram_bytes=0 marks a model the estimator could not size; there is
+        # no figure to compare against, so the report is fetched (proving the
+        # endpoint works) and the check ends without a warning.
+        urls: list[str] = []
+
+        def _responder(url):
+            urls.append(url)
+            return _MemoryResponse({"data": [{"name": "CUDA0", "model": GIB}]})
+
+        monkeypatch.setattr(sm, "_probe_client", lambda: _FakeClient(_responder))
+        compared: list[str] = []
+        monkeypatch.setattr(sm, "check_memory_report", lambda *a, **k: compared.append("cmp"))
+        manager = _manager_with_launch(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        manager._launch_by_model["chat-0"] = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server", MEMORY_FLAG],
+            env_overrides={},
+            model="chat-model",
+        )
+        with caplog.at_level(logging.WARNING):
+            manager._check_estimates({"chat-0"})
+        assert len(urls) == 1
+        assert compared == []
+        assert not caplog.records
+
     def test_bound_manager_without_ports_skips_quietly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
     ) -> None:
