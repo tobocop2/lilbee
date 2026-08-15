@@ -4842,3 +4842,40 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
         assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
         for client in clients:
             client.mark_unhealthy.assert_called_once()
+
+
+class TestChatPrefillProgress:
+    """The provider exposes the latest chat prefill progress for status surfaces."""
+
+    def test_none_before_any_prefill(self) -> None:
+        assert FleetProvider().chat_prefill_progress() is None
+
+    def test_records_and_clears_via_the_client_callback(self) -> None:
+        p = FleetProvider()
+        p._record_chat_prefill((128, 320))
+        assert p.chat_prefill_progress() == (128, 320)
+        p._record_chat_prefill((320, 320))
+        assert p.chat_prefill_progress() == (320, 320)
+        p._record_chat_prefill(None)
+        assert p.chat_prefill_progress() is None
+
+    def test_adopt_group_gives_only_the_chat_client_the_prefill_hook(self, monkeypatch) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED)]
+        for launch in launches:
+            launch.rerank_mode = None
+            launch.model_id = launch.role
+        captured: dict[WorkerRole, object] = {}
+
+        def _capture(_endpoint, model, **kw):
+            captured[model] = kw.get("on_prefill")
+            return _fake_client()
+
+        monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+        monkeypatch.setattr(
+            planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+        )
+        p = FleetProvider()
+        p._ensure_fleet()
+        assert captured[WorkerRole.CHAT] == p._record_chat_prefill
+        assert captured[WorkerRole.EMBED] is None
