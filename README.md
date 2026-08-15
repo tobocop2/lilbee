@@ -223,7 +223,19 @@ One model serves as many agents as you want to run. These reels show four workin
 
 ![four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.gif)
 
-Qwen3 Coder Next, 45GB across three RTX 4090s, holding all four agents for the full reel.
+Qwen3 Coder Next, 45GB across three RTX 4090s: four agents on one model, 138 tokens a second warm.
+
+![four agents on Gemma 4 26B, its reasoning streamed as visible text](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.gif)
+
+Gemma 4 26B is a thinking model, and lilbee streams its reasoning as visible text: every pane shows the model working through the problem before it answers.
+
+![four agents on Qwen3.6 27B, thinking out loud on the same tasks](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.gif)
+
+Qwen3.6 27B on the same four tasks: each agent states what it expects, then reads the code to check itself.
+
+![one agent on Devstral 2 123B, walking through lilbee's GPU placement code](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.gif)
+
+And the same setup scales up: Devstral 2 123B, 70GB across two A100 80GB cards, one agent at the model's full 14 tokens a second.
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
