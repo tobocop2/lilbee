@@ -221,6 +221,13 @@ class HealthResponse(BaseModel):
     chat_ctx: int | None = None
     """Per-slot context the chat engine serves, so a launcher can tell the client
     its window and the client trims history to fit. None until the engine is up."""
+    chat_prefill_processed: int | None = None
+    """Prompt tokens the chat engine has processed for a prefill in flight. A
+    large model's first agent turn can spend minutes here with nothing streamed;
+    polling this tells a working engine apart from a hung one. None when idle."""
+    chat_prefill_total: int | None = None
+    """Prompt tokens the in-flight chat prefill will process in total. None when
+    no prefill is running."""
 
 
 class CompactionInfo(BaseModel):
