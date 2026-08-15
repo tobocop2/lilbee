@@ -9,9 +9,8 @@ from __future__ import annotations
 # The engine pin these names were read from, checked against engine-versions.env so
 # a bump without a regenerate fails the suite instead of silently going stale.
 # The version is a build-time source coordinate, not a dependency: llama-server is
-# compiled from the llama.cpp commit below, which the pinned llama-cpp-python
-# release vendors. lilbee ships neither package.
-ENGINE_LLAMA_CPP_VERSION = "0.3.30"
+# compiled from the llama.cpp commit below.
+ENGINE_LLAMA_CPP_VERSION = "b9665"
 LLAMA_CPP_COMMIT = "e3a74b299085cd00013804f7fca2e03441b2da20"
 
 SUPPORTED_ARCHS: frozenset[str] = frozenset(

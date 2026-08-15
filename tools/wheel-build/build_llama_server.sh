@@ -7,8 +7,8 @@
 #
 # Reads:
 #   BACKEND            cpu|vulkan|metal|cu121..cu125|rocm|sycl
-#   LLAMA_CPP_VERSION  llama.cpp source tag (via the llama-cpp-python release that
-#                      vendors it; defaults to the pin in engine-versions.env)
+#   LLAMA_CPP_VERSION  llama.cpp release tag to build (defaults to the pin in
+#                      engine-versions.env)
 #   TARGET_ARCH        cross-compile target (optional; defaults to host)
 #   LLAMA_BUILD_DIR    work dir (default /tmp/llama-build)
 
@@ -62,16 +62,14 @@ clone_with_retry() {
   return 1
 }
 
-# llama-cpp-python vendors llama.cpp as a submodule; clone at the matching tag so
-# the server's GGUF support is a known-good combination.
-# Windows MAX_PATH (260 chars): llama.cpp's vendored server webui has paths long
-# enough to fail submodule checkout without long-path support. No-op elsewhere.
+# Windows MAX_PATH (260 chars): llama.cpp's server webui has paths long enough
+# to fail checkout without long-path support. No-op elsewhere.
 git config --global core.longpaths true
-src="${build_dir}/llama-cpp-python-${version}"
+src="${build_dir}/llama.cpp-${version}"
 mkdir -p "${build_dir}"
 if [ ! -d "${src}" ]; then
-  clone_with_retry --depth 1 --branch "v${version}" --recurse-submodules \
-    https://github.com/abetlen/llama-cpp-python "${src}"
+  clone_with_retry --depth 1 --branch "${version}" \
+    https://github.com/ggml-org/llama.cpp "${src}"
 fi
 
 # Same backend flags as the wheel build (GGML_* cmake flags apply to the server
@@ -100,7 +98,7 @@ fi
 # Linux) even with LLAMA_SERVER_SSL=OFF, baking in a library path that does
 # not exist on user machines. The fleet only talks to localhost; hide OpenSSL
 # from the build entirely.
-cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
+cmake -S "${src}" -B "${src}/server-build" \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="${rpath}" ${CMAKE_ARGS}
