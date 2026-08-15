@@ -249,6 +249,9 @@
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">agents: qwen3 coder</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gemma4" aria-controls="tutorial-pane-gemma4" aria-selected="false" tabindex="-1">agents: gemma 4</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-qwen36" aria-controls="tutorial-pane-qwen36" aria-selected="false" tabindex="-1">agents: qwen3.6</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-solo123b" aria-controls="tutorial-pane-solo123b" aria-selected="false" tabindex="-1">agent: devstral 123b</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-memory" aria-controls="tutorial-pane-memory" aria-selected="false" tabindex="-1">memory</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-wiki" aria-controls="tutorial-pane-wiki" aria-selected="false" tabindex="-1">wiki</button>
             </div>
@@ -385,7 +388,28 @@
           <div class="tutorial-clip">
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">Four agents at once against a single local model, Qwen3 Coder Next, 45GB across three RTX 4090s. Each works in its own clone of this repository through lilbee.</p>
+          <p class="tutorial-caption">Four agents at once against a single local model, Qwen3 Coder Next, 45GB across three RTX 4090s at 138 tokens a second. Each works in its own clone of this repository through lilbee.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gemma4" aria-labelledby="tutorial-tab-gemma4" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">The same four tasks on Gemma 4 26B, a thinking model. lilbee streams its reasoning as visible text, so every pane shows the model working through the problem before it answers.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-qwen36" aria-labelledby="tutorial-tab-qwen36" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Qwen3.6 27B, also thinking out loud: each agent states what it expects, then reads the code to check itself.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-solo123b" aria-labelledby="tutorial-tab-solo123b" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Devstral 2 123B, 70GB across two A100 80GB cards. One agent gets the model's full 14 tokens a second; a model this size trades pane count for depth.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-memory" aria-labelledby="tutorial-tab-memory" hidden>
