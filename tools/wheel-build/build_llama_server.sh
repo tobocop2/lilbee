@@ -7,10 +7,11 @@
 #
 # Reads:
 #   BACKEND            cpu|vulkan|metal|cu121..cu125|rocm|sycl
-#   LLAMA_CPP_VERSION  LEGACY override: build the llama.cpp that this
-#                      llama-cpp-python release tag vendors, instead of the
-#                      ENGINE_LLAMA_CPP_REPO/REF pin (cu121 needs it: CUDA
-#                      12.1's nvcc can't compile the newer CUDA kernels)
+#   LLAMA_CPP_REPO     llama.cpp repo to clone (default: the pin in
+#                      engine-versions.env)
+#   LLAMA_CPP_REF      llama.cpp ref to build (default: the pin; cu121 pins
+#                      upstream b9665 because CUDA 12.1's nvcc can't compile
+#                      the newer CUDA kernels)
 #   TARGET_ARCH        cross-compile target (optional; defaults to host)
 #   LLAMA_BUILD_DIR    work dir (default /tmp/llama-build)
 
@@ -23,14 +24,15 @@ target_arch="${TARGET_ARCH:-}"
 pkg_bin_dir="${script_dir}/../../packaging/engine-wheel/lilbee_engine/bin"
 
 # Pinned engine sources live in engine-versions.env at the repo root (shared
-# with CI's engine-helper install). LLAMA_CPP_VERSION from the environment
-# switches to the legacy llama-cpp-python source at that tag.
+# with CI's engine-helper install). LLAMA_CPP_REPO / LLAMA_CPP_REF from the
+# environment override the pinned default.
 source "${script_dir}/../../engine-versions.env"
 
 # Resolve the EFFECTIVE llama.cpp source before writing the pin, so an override
 # ships under an identity that matches the build actually produced rather than the
 # default pin (which would let two different builds alias each other's fleets).
-version="${LLAMA_CPP_VERSION:-${ENGINE_LLAMA_CPP_REF}}"
+repo="${LLAMA_CPP_REPO:-${ENGINE_LLAMA_CPP_REPO}}"
+version="${LLAMA_CPP_REF:-${ENGINE_LLAMA_CPP_REF}}"
 
 # Regenerate the wheel's pin module so the shipped engine identity always reflects
 # the effective versions AND the backend flavor (sharing between lilbee processes
@@ -68,25 +70,13 @@ clone_with_retry() {
 # enough to fail checkout without long-path support. No-op elsewhere.
 git config --global core.longpaths true
 mkdir -p "${build_dir}"
-if [ -n "${LLAMA_CPP_VERSION:-}" ]; then
-  # Legacy source: llama-cpp-python vendors llama.cpp as a submodule; clone at
-  # the matching tag and build the commit it vendors.
-  src="${build_dir}/llama-cpp-python-${version}"
-  if [ ! -d "${src}" ]; then
-    clone_with_retry --depth 1 --branch "v${version}" --recurse-submodules \
-      https://github.com/abetlen/llama-cpp-python "${src}"
-  fi
-  llama_src="${src}/vendor/llama.cpp"
-else
-  # Default source: llama.cpp itself, straight from the pinned repo at the
-  # pinned ref. No submodules: kompute is the only one and no backend here
-  # uses it.
-  src="${build_dir}/llama.cpp-${version}"
-  if [ ! -d "${src}" ]; then
-    clone_with_retry --depth 1 --branch "${version}" "${ENGINE_LLAMA_CPP_REPO}" "${src}"
-  fi
-  llama_src="${src}"
+# llama.cpp straight from the pinned repo at the pinned ref. No submodules:
+# kompute is the only one and no backend here uses it.
+src="${build_dir}/llama.cpp-${version}"
+if [ ! -d "${src}" ]; then
+  clone_with_retry --depth 1 --branch "${version}" "${repo}" "${src}"
 fi
+llama_src="${src}"
 
 # Same backend flags as the wheel build (GGML_* cmake flags apply to the server
 # target verbatim), plus the server target and a baked install-rpath. SSL/CURL
