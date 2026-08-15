@@ -11,8 +11,8 @@ from __future__ import annotations
 # The ref is a build-time source coordinate, not a dependency: llama-server is
 # compiled from the llama.cpp commit below, cloned from ENGINE_LLAMA_CPP_REPO at
 # this ref. lilbee ships no llama.cpp package.
-ENGINE_LLAMA_CPP_REF = "build-memory-metrics-release-b10139-b11c3a9"
-LLAMA_CPP_COMMIT = "b11c3a9502bbaafabe23369d6f7f0a1af1376998"
+ENGINE_LLAMA_CPP_REF = "memory-20260815"
+LLAMA_CPP_COMMIT = "1de581d93fde516d1df0332553765ffbe3e2176a"
 
 SUPPORTED_ARCHS: frozenset[str] = frozenset(
     {
@@ -71,6 +71,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "granite",
         "granitehybrid",
         "granitemoe",
+        "graniteswitch",
         "grok",
         "grovemoe",
         "hunyuan-dense",
@@ -83,6 +84,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "jamba",
         "jina-bert-v2",
         "jina-bert-v3",
+        "kimi-k3",
         "kimi-linear",
         "laguna",
         "lfm2",
@@ -99,12 +101,15 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "mimo2",
         "minicpm",
         "minicpm3",
+        "minimax-01",
         "minimax-m2",
         "minimax-m3",
         "mistral3",
         "mistral4",
         "modern-bert",
         "mpt",
+        "muse-glimmer",
+        "nanbeige",
         "nemotron",
         "nemotron_h",
         "nemotron_h_moe",
@@ -125,6 +130,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "plamo2",
         "plamo3",
         "plm",
+        "pockettts",
         "qwen",
         "qwen2",
         "qwen2moe",
@@ -134,6 +140,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "qwen35moe",
         "qwen3moe",
         "qwen3next",
+        "qwen3tts",
         "qwen3vl",
         "qwen3vlmoe",
         "refact",
