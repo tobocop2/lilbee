@@ -213,6 +213,26 @@ class TestListModelsEndpoint:
         # model with no served window simply carries no context_window key.
         assert "context_window" not in by_id["z/Other/o.gguf"]
 
+    async def test_slots_advertised_for_active_model_only(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The granted slot count rides the active model entry so an agent
+        harness can read the real concurrency instead of assuming one."""
+        from lilbee.core.config import cfg
+
+        other = _installed_chat_model("z/Other/o.gguf")
+        services_with_chat_model.registry.list_installed = MagicMock(
+            return_value=[_installed_chat_model(INSTALLED_REF), other]
+        )
+        monkeypatch.setattr(cfg, "chat_model", INSTALLED_REF)
+        services_with_chat_model.provider.served_chat_ctx.return_value = 40960
+        services_with_chat_model.provider.served_chat_slots.return_value = 2
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        by_id = {m["id"]: m for m in resp.json()["data"]}
+        assert by_id[INSTALLED_REF]["slots"] == 2
+        assert "slots" not in by_id["z/Other/o.gguf"]
+
     async def test_remote_configured_chat_model_is_listed_first(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
@@ -1762,3 +1782,131 @@ class TestStreamErrorFrameKeepsTheStreamId:
 
         assert len(ids) >= 2, f"expected content and error frames, got {ids}"
         assert len(set(ids)) == 1, f"error frame changed the completion id: {ids}"
+
+
+class TestReasoningModeOnRoute:
+    """The reasoning mode: request field first, then the completions_reasoning setting."""
+
+    _THINKING_TEXT = "<think>weighing</think>Answer."
+
+    def _thinking_provider(self, services) -> None:
+        services.provider.chat.return_value = ChatResult(
+            text=self._THINKING_TEXT, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+
+    async def test_request_inline_keeps_thinking_in_content(
+        self, services_with_chat_model, _auth_token
+    ):
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning": "inline",
+                },
+            )
+        message = resp.json()["choices"][0]["message"]
+        assert message["content"] == self._THINKING_TEXT
+        assert "reasoning_content" not in message
+
+    async def test_setting_inline_applies_without_request_field(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import ReasoningMode
+
+        monkeypatch.setattr(cfg, "completions_reasoning", ReasoningMode.INLINE)
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        message = resp.json()["choices"][0]["message"]
+        assert message["content"] == self._THINKING_TEXT
+
+    async def test_request_separate_overrides_inline_setting(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import ReasoningMode
+
+        monkeypatch.setattr(cfg, "completions_reasoning", ReasoningMode.INLINE)
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning": "separate",
+                },
+            )
+        message = resp.json()["choices"][0]["message"]
+        assert message["content"] == "Answer."
+        assert message["reasoning_content"] == "weighing"
+
+    async def test_request_off_sends_think_false_to_provider(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning": "off",
+                },
+            )
+        opts = services_with_chat_model.provider.chat.call_args.kwargs["options"]
+        assert opts["think"] is False
+
+    async def test_inline_streaming_carries_thinking_as_content(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["<think>", "why", "</think>", "hi"]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "reasoning": "inline",
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        deltas = [c["choices"][0]["delta"] for c in chunks if isinstance(c, dict) and c["choices"]]
+        content = "".join(d.get("content") or "" for d in deltas)
+        assert content == "<think>why</think>hi"
+        assert all("reasoning_content" not in d for d in deltas)
+
+    async def test_object_shaped_reasoning_still_completes(
+        self, services_with_chat_model, _auth_token
+    ):
+        """OpenRouter-style ``reasoning`` objects are not this field; the
+        request keeps working exactly as before the field existed."""
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning": {"effort": "high", "exclude": True},
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "hello"

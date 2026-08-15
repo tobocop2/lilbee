@@ -66,8 +66,8 @@ clone_with_retry() {
   return 1
 }
 
-# Windows MAX_PATH (260 chars): llama.cpp's vendored server webui has paths long
-# enough to fail checkout without long-path support. No-op elsewhere.
+# Windows MAX_PATH (260 chars): llama.cpp's server webui has paths long enough
+# to fail checkout without long-path support. No-op elsewhere.
 git config --global core.longpaths true
 mkdir -p "${build_dir}"
 # llama.cpp straight from the pinned repo at the pinned ref. No submodules:
@@ -309,7 +309,7 @@ clone_with_retry -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://gi
 ( cd "${go_build_dir}/llama-swap" && go build -trimpath -o "${pkg_bin_dir}/llama-swap${exe_suffix}" . )
 
 # gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
-clone_with_retry -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
+clone_with_retry -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" "${ENGINE_GGUF_PARSER_REPO}" "${go_build_dir}/gguf-parser-go"
 ( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
 
 echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"

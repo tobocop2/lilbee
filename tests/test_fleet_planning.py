@@ -3490,3 +3490,42 @@ class TestATightSplitSizesPerDeviceButLaunchesWithoutARatio:
 
         launch, _seen = self._tight_chat_launch(monkeypatch)
         assert launch.ctx > _DYNAMIC_CTX_FLOOR
+
+
+class TestWarnWhenChatDownsized:
+    """The downsize warning names the granted shape against the requested one."""
+
+    def _launch(self, *, slots: int, ctx: int, target: int) -> InstanceLaunch:
+        return InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=[],
+            env_overrides={},
+            model="org/m.gguf",
+            slots=slots,
+            ctx=ctx,
+            built_ctx_target=target,
+        )
+
+    def test_warns_when_window_is_below_target(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_chat_downsized(self._launch(slots=1, ctx=41472, target=65536))
+        assert any("downsized" in r.message for r in caplog.records)
+        message = caplog.records[0].message
+        assert "41472" in message
+        assert "65536" in message
+
+    def test_warns_when_only_slots_fall_short(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_chat_downsized(self._launch(slots=2, ctx=65536, target=65536))
+        assert any("downsized" in r.message for r in caplog.records)
+
+    def test_quiet_at_the_full_requested_shape(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_chat_downsized(self._launch(slots=4, ctx=65536, target=65536))
+        assert not caplog.records
+
+    def test_quiet_when_a_larger_window_was_granted(self, caplog) -> None:
+        # A num_ctx pin below the granted window must not read as a downsize.
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_chat_downsized(self._launch(slots=4, ctx=131072, target=65536))
+        assert not caplog.records
