@@ -313,7 +313,7 @@ jobs:
           ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap${exe}" . )
           # gguf-parser's CLI lives under a nested go.mod in cmd/gguf-parser.
           git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" \
-            https://github.com/gpustack/gguf-parser-go.git "${work}/gguf-parser-go"
+            "${ENGINE_GGUF_PARSER_REPO}" "${work}/gguf-parser-go"
           ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser${exe}" . )
           if command -v cygpath >/dev/null 2>&1; then
             cygpath -w "${helperdir}" >> "${GITHUB_PATH}"
