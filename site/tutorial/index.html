@@ -434,11 +434,44 @@
 
       <section class="tutorial-section" id="agents-qwen3-coder">
         <h4><a href="#agents-qwen3-coder">Four agents on one local model</a></h4>
-        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next, 45GB across three RTX 4090s, each in its own clone of this repository through lilbee.</p>
+        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next, 45GB across three RTX 4090s at 138 tokens a second, each in its own clone of this repository through lilbee.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" type="video/mp4">
             <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4">four agents on Qwen3 Coder Next (MP4)</a>
+          </video>
+        </div>
+      </section>
+
+      <section class="tutorial-section" id="agents-gemma4">
+        <h4><a href="#agents-gemma4">The same, on a thinking model</a></h4>
+        <p>Gemma 4 26B reasons before it answers, and lilbee streams that reasoning as visible text. Every pane shows the model working through the problem -- reading files, second-guessing itself, checking the code -- before it commits to an answer.</p>
+        <div class="tutorial-clip">
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.mp4">four agents on Gemma 4 26B (MP4)</a>
+          </video>
+        </div>
+      </section>
+
+      <section class="tutorial-section" id="agents-qwen36">
+        <h4><a href="#agents-qwen36">Qwen3.6 27B, thinking out loud</a></h4>
+        <p>The same four tasks on Qwen3.6 27B: each agent states what it expects first, then reads the code to check itself.</p>
+        <div class="tutorial-clip">
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.mp4">four agents on Qwen3.6 27B (MP4)</a>
+          </video>
+        </div>
+      </section>
+
+      <section class="tutorial-section" id="agent-devstral-123b">
+        <h4><a href="#agent-devstral-123b">One agent on Devstral 2 123B</a></h4>
+        <p>The biggest model in the set: 70GB across two A100 80GB cards. One agent gets the model's full 14 tokens a second -- a model this size trades pane count for depth.</p>
+        <div class="tutorial-clip">
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.mp4">one agent on Devstral 2 123B (MP4)</a>
           </video>
         </div>
       </section>
