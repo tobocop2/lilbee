@@ -178,7 +178,6 @@ class TestHealth:
         mock_svc.provider.served_chat_slots.return_value = None
         assert (await handlers.health()).chat_slots is None
 
-
     async def test_chat_prefill_progress_reported_while_prefilling(self, mock_svc):
         """A long first-turn prefill is visible on health, so a polling user can
         tell a working engine from a hung one."""
