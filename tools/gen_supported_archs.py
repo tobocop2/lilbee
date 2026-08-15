@@ -5,12 +5,10 @@ The set of architectures lilbee will pull has to be the set the bundled engine c
 actually load, so it is read from the engine's own arch table rather than from a
 third-party package that happens to enumerate GGUF architecture names.
 
-``engine-versions.env`` pins the engine as a llama-cpp-python release tag. That is a
-build-time source coordinate only, not a dependency: ``build_llama_server.sh`` clones
-that tag with ``--recurse-submodules`` and compiles llama-server from the llama.cpp
-commit it vendors, and lilbee ships neither package. This resolves the same submodule
-commit over the GitHub API, so the architectures below are the ones the shipped binary
-was actually built with, then reads them from that commit's ``src/llama-arch.cpp``,
+``engine-versions.env`` pins the engine as a llama.cpp release tag; the tag is a
+build-time source coordinate only, not a dependency. This resolves the tag's commit
+over the GitHub API, so the architectures below are the ones the shipped binary was
+actually built with, then reads them from that commit's ``src/llama-arch.cpp``,
 which maps every ``LLM_ARCH_*`` to the ``general.architecture`` string a GGUF carries.
 Nothing here is imported at runtime, and CI needs no llama.cpp checkout.
 
@@ -35,7 +33,6 @@ _OUT = _REPO_ROOT / "src" / "lilbee" / "_generated" / "engine_archs.py"
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _TEMPLATE = "engine_archs.py.jinja"
 
-_LLAMA_CPP_PYTHON = "abetlen/llama-cpp-python"
 _LLAMA_CPP = "ggml-org/llama.cpp"
 _ARCH_TABLE_PATH = "src/llama-arch.cpp"
 
@@ -65,15 +62,10 @@ def engine_version(env_path: Path) -> str:
     raise SystemExit(f"ENGINE_LLAMA_CPP_VERSION not found in {env_path}")
 
 
-def vendored_commit(version: str) -> str:
-    """The llama.cpp commit the given llama-cpp-python release vendors."""
-    url = (
-        f"https://api.github.com/repos/{_LLAMA_CPP_PYTHON}/contents/vendor/llama.cpp?ref=v{version}"
-    )
-    entry = _get_json(url)
-    if entry.get("type") != "submodule":
-        raise SystemExit(f"vendor/llama.cpp is not a submodule at v{version}")
-    return str(entry["sha"])
+def tag_commit(version: str) -> str:
+    """The commit the llama.cpp tag *version* points at."""
+    url = f"https://api.github.com/repos/{_LLAMA_CPP}/commits/{version}"
+    return str(_get_json(url)["sha"])
 
 
 def arch_names(commit: str) -> frozenset[str]:
@@ -113,7 +105,7 @@ def main() -> int:
     args = ap.parse_args()
 
     version = engine_version(_ENGINE_ENV)
-    commit = vendored_commit(version)
+    commit = tag_commit(version)
     archs = arch_names(commit)
     rendered = render(version, commit, archs)
 
@@ -126,7 +118,7 @@ def main() -> int:
         return 0
 
     _OUT.write_text(rendered)
-    print(f"wrote {_OUT}: {len(archs)} architectures from llama.cpp {commit[:12]} (v{version})")
+    print(f"wrote {_OUT}: {len(archs)} architectures from llama.cpp {commit[:12]} ({version})")
     return 0
 
 
