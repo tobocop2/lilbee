@@ -93,10 +93,16 @@ def arch_names(repo: str, commit: str) -> frozenset[str]:
 def render_readme_block(archs: frozenset[str]) -> str:
     """The README's generated supported-architectures block, markers included.
 
-    One architecture per source line: markdown joins them into flowing text,
-    and a pin bump diffs as exactly the names that appeared or left.
-    """
-    names = "\n".join(f"`{arch}` ·" for arch in sorted(archs)).removesuffix(" ·")
+    A four-column table of the sorted names."""
+    names_list = sorted(archs)
+    cols = 4
+    rows = []
+    for i in range(0, len(names_list), cols):
+        cells = [f"`{a}`" for a in names_list[i : i + cols]]
+        cells += [""] * (cols - len(cells))
+        rows.append("| " + " | ".join(cells) + " |")
+    header = "|" + " |" * cols + "\n" + "|" + "---|" * cols
+    names = header + "\n" + "\n".join(rows)
     return (
         f"{_README_START}\n"
         "lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF "

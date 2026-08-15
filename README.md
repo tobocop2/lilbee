@@ -105,164 +105,6 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 - **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
 - **Per-project libraries.** One library for everything, or one per project.
 
-## Supported models
-
-<!-- supported-archs:start -->
-lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model built on one of the architectures below. The list comes from the bundled engine itself and grows with every engine update.
-
-<details>
-<summary><b>All 144 supported model architectures. Click to expand.</b></summary>
-
-`afmoe` ·
-`apertus` ·
-`arcee` ·
-`arctic` ·
-`arwkv7` ·
-`baichuan` ·
-`bailingmoe` ·
-`bailingmoe2` ·
-`bert` ·
-`bitnet` ·
-`bloom` ·
-`chameleon` ·
-`chatglm` ·
-`clip` ·
-`codeshell` ·
-`cogvlm` ·
-`cohere2` ·
-`cohere2moe` ·
-`command-r` ·
-`dbrx` ·
-`deci` ·
-`deepseek` ·
-`deepseek2` ·
-`deepseek2-ocr` ·
-`deepseek32` ·
-`deepseek4` ·
-`dflash` ·
-`dots1` ·
-`dream` ·
-`eagle3` ·
-`ernie4_5` ·
-`ernie4_5-moe` ·
-`eurobert` ·
-`exaone` ·
-`exaone-moe` ·
-`exaone4` ·
-`falcon` ·
-`falcon-h1` ·
-`gemma` ·
-`gemma-embedding` ·
-`gemma2` ·
-`gemma3` ·
-`gemma3n` ·
-`gemma4` ·
-`gemma4-assistant` ·
-`glm-dsa` ·
-`glm4` ·
-`glm4moe` ·
-`gpt-oss` ·
-`gpt2` ·
-`gptj` ·
-`gptneox` ·
-`granite` ·
-`granitehybrid` ·
-`granitemoe` ·
-`graniteswitch` ·
-`grok` ·
-`grovemoe` ·
-`hunyuan-dense` ·
-`hunyuan-moe` ·
-`hunyuan_vl` ·
-`hy_v3` ·
-`internlm2` ·
-`jais` ·
-`jais2` ·
-`jamba` ·
-`jina-bert-v2` ·
-`jina-bert-v3` ·
-`kimi-k3` ·
-`kimi-linear` ·
-`laguna` ·
-`lfm2` ·
-`lfm2moe` ·
-`llada` ·
-`llada-moe` ·
-`llama` ·
-`llama-embed` ·
-`llama4` ·
-`maincoder` ·
-`mamba` ·
-`mamba2` ·
-`mellum` ·
-`mimo2` ·
-`minicpm` ·
-`minicpm3` ·
-`minimax-01` ·
-`minimax-m2` ·
-`minimax-m3` ·
-`mistral3` ·
-`mistral4` ·
-`modern-bert` ·
-`mpt` ·
-`muse-glimmer` ·
-`nanbeige` ·
-`nemotron` ·
-`nemotron_h` ·
-`nemotron_h_moe` ·
-`neo-bert` ·
-`nomic-bert` ·
-`nomic-bert-moe` ·
-`olmo` ·
-`olmo2` ·
-`olmoe` ·
-`openelm` ·
-`orion` ·
-`paddleocr` ·
-`pangu-embedded` ·
-`phi2` ·
-`phi3` ·
-`phimoe` ·
-`plamo` ·
-`plamo2` ·
-`plamo3` ·
-`plm` ·
-`pockettts` ·
-`qwen` ·
-`qwen2` ·
-`qwen2moe` ·
-`qwen2vl` ·
-`qwen3` ·
-`qwen35` ·
-`qwen35moe` ·
-`qwen3moe` ·
-`qwen3next` ·
-`qwen3tts` ·
-`qwen3vl` ·
-`qwen3vlmoe` ·
-`refact` ·
-`rnd1` ·
-`rwkv6` ·
-`rwkv6qwen2` ·
-`rwkv7` ·
-`seed_oss` ·
-`smallthinker` ·
-`smollm3` ·
-`stablelm` ·
-`starcoder` ·
-`starcoder2` ·
-`step35` ·
-`t5` ·
-`t5encoder` ·
-`talkie` ·
-`wavtokenizer-dec` ·
-`xverse`
-
-</details>
-<!-- supported-archs:end -->
-
-One family per architecture is also [tested end to end on real GPUs](#tested-model-families).
-
 ## Why lilbee
 
 A small local model is fun, but limited on its own. Give it properly processed documents and a search engine over them, and it becomes genuinely powerful. Without those, it never gets past novelty.
@@ -426,6 +268,54 @@ Placement reads what the engine reports about your hardware, and every backend w
 ### Tested model families
 
 One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.
+
+<!-- supported-archs:start -->
+lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model built on one of the architectures below. The list comes from the bundled engine itself and grows with every engine update.
+
+<details>
+<summary><b>All 144 supported model architectures. Click to expand.</b></summary>
+
+| | | | |
+|---|---|---|---|
+| `afmoe` | `apertus` | `arcee` | `arctic` |
+| `arwkv7` | `baichuan` | `bailingmoe` | `bailingmoe2` |
+| `bert` | `bitnet` | `bloom` | `chameleon` |
+| `chatglm` | `clip` | `codeshell` | `cogvlm` |
+| `cohere2` | `cohere2moe` | `command-r` | `dbrx` |
+| `deci` | `deepseek` | `deepseek2` | `deepseek2-ocr` |
+| `deepseek32` | `deepseek4` | `dflash` | `dots1` |
+| `dream` | `eagle3` | `ernie4_5` | `ernie4_5-moe` |
+| `eurobert` | `exaone` | `exaone-moe` | `exaone4` |
+| `falcon` | `falcon-h1` | `gemma` | `gemma-embedding` |
+| `gemma2` | `gemma3` | `gemma3n` | `gemma4` |
+| `gemma4-assistant` | `glm-dsa` | `glm4` | `glm4moe` |
+| `gpt-oss` | `gpt2` | `gptj` | `gptneox` |
+| `granite` | `granitehybrid` | `granitemoe` | `graniteswitch` |
+| `grok` | `grovemoe` | `hunyuan-dense` | `hunyuan-moe` |
+| `hunyuan_vl` | `hy_v3` | `internlm2` | `jais` |
+| `jais2` | `jamba` | `jina-bert-v2` | `jina-bert-v3` |
+| `kimi-k3` | `kimi-linear` | `laguna` | `lfm2` |
+| `lfm2moe` | `llada` | `llada-moe` | `llama` |
+| `llama-embed` | `llama4` | `maincoder` | `mamba` |
+| `mamba2` | `mellum` | `mimo2` | `minicpm` |
+| `minicpm3` | `minimax-01` | `minimax-m2` | `minimax-m3` |
+| `mistral3` | `mistral4` | `modern-bert` | `mpt` |
+| `muse-glimmer` | `nanbeige` | `nemotron` | `nemotron_h` |
+| `nemotron_h_moe` | `neo-bert` | `nomic-bert` | `nomic-bert-moe` |
+| `olmo` | `olmo2` | `olmoe` | `openelm` |
+| `orion` | `paddleocr` | `pangu-embedded` | `phi2` |
+| `phi3` | `phimoe` | `plamo` | `plamo2` |
+| `plamo3` | `plm` | `pockettts` | `qwen` |
+| `qwen2` | `qwen2moe` | `qwen2vl` | `qwen3` |
+| `qwen35` | `qwen35moe` | `qwen3moe` | `qwen3next` |
+| `qwen3tts` | `qwen3vl` | `qwen3vlmoe` | `refact` |
+| `rnd1` | `rwkv6` | `rwkv6qwen2` | `rwkv7` |
+| `seed_oss` | `smallthinker` | `smollm3` | `stablelm` |
+| `starcoder` | `starcoder2` | `step35` | `t5` |
+| `t5encoder` | `talkie` | `wavtokenizer-dec` | `xverse` |
+
+</details>
+<!-- supported-archs:end -->
 
 <details>
 <summary><b>The family tables, per role. Click to expand.</b></summary>

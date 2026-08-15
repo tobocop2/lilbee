@@ -92,6 +92,6 @@ def test_readme_arch_block_matches_the_generated_list() -> None:
     start = readme.index("<!-- supported-archs:start -->")
     end = readme.index("<!-- supported-archs:end -->")
     block = readme[start:end]
-    listed = set(re.findall(r"`([^`]+)`(?: ·|\n)", block))
+    listed = set(re.findall(r"`([^`]+)`", block))
     assert listed == SUPPORTED_ARCHS
     assert f"All {len(SUPPORTED_ARCHS)} supported model architectures" in block
