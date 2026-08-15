@@ -1788,6 +1788,10 @@ class TestReasoningModeOnRoute:
     """The reasoning mode: request field first, then the completions_reasoning setting."""
 
     _THINKING_TEXT = "<think>weighing</think>Answer."
+    # What inline mode delivers: the thinking as ordinary content with the tag
+    # markers stripped -- a client that ignores reasoning_content renders raw
+    # <think> text literally, which is what inline exists to avoid.
+    _INLINE_TEXT = "weighing\n\nAnswer."
 
     def _thinking_provider(self, services) -> None:
         services.provider.chat.return_value = ChatResult(
@@ -1809,7 +1813,7 @@ class TestReasoningModeOnRoute:
                 },
             )
         message = resp.json()["choices"][0]["message"]
-        assert message["content"] == self._THINKING_TEXT
+        assert message["content"] == self._INLINE_TEXT
         assert "reasoning_content" not in message
 
     async def test_setting_inline_applies_without_request_field(
@@ -1830,7 +1834,7 @@ class TestReasoningModeOnRoute:
                 },
             )
         message = resp.json()["choices"][0]["message"]
-        assert message["content"] == self._THINKING_TEXT
+        assert message["content"] == self._INLINE_TEXT
 
     async def test_request_separate_overrides_inline_setting(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -1890,7 +1894,7 @@ class TestReasoningModeOnRoute:
         chunks = _sse_to_chunks(resp.content)
         deltas = [c["choices"][0]["delta"] for c in chunks if isinstance(c, dict) and c["choices"]]
         content = "".join(d.get("content") or "" for d in deltas)
-        assert content == "<think>why</think>hi"
+        assert content == "whyhi"
         assert all("reasoning_content" not in d for d in deltas)
 
     async def test_object_shaped_reasoning_still_completes(

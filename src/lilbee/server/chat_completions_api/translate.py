@@ -113,10 +113,16 @@ def canonical_to_completions_response(
     tool_calls = [_response_tool_call(b) for b in resp.content if isinstance(b, ToolUseBlock)]
     # lilbee carries a reasoning model's thinking inline as <think>...</think>; the
     # OpenAI surface reports it in its own field so agents render a clean answer.
-    # INLINE skips the split for clients that never render reasoning_content; OFF
-    # keeps it, because a template that ignores enable_thinking still thinks.
+    # INLINE streams the thinking as ordinary content for clients that never
+    # render reasoning_content -- with the tag markers stripped, because a
+    # client that ignores reasoning_content renders raw <think> text literally.
+    # OFF keeps the split, because a template that ignores enable_thinking
+    # still thinks.
     if mode is ReasoningMode.INLINE:
-        reasoning, answer = "", "".join(text_parts)
+        reasoning, answer = split_reasoning("".join(text_parts))
+        if reasoning:
+            answer = f"{reasoning}\n\n{answer}" if answer else reasoning
+        reasoning = ""
     else:
         reasoning, answer = split_reasoning("".join(text_parts))
     content: str | None = answer if answer or not tool_calls else None
@@ -152,8 +158,10 @@ class _StreamMapper:
         self._role_emitted = False
         self._tool_index_for_block: dict[int, int] = {}
         self._next_tool_index = 0
-        # INLINE forwards text untouched (thinking stays in content, and no
-        # token is ever held back for a possible tag prefix).
+        # INLINE routes thinking into content instead of reasoning_content, with
+        # the <think> markers stripped: a client that ignores reasoning_content
+        # renders raw tags literally, which is exactly what INLINE exists to
+        # avoid. The same stateful parse handles a tag split across deltas.
         self._inline = mode is ReasoningMode.INLINE
         # Splits lilbee's inline <think> text into its own delta field. Stateful
         # because a tag can arrive split across deltas.
@@ -180,9 +188,6 @@ class _StreamMapper:
 
     def block_delta(self, event: ContentBlockDelta) -> CompletionsStreamDelta | None:
         if isinstance(event.delta, TextDelta):
-            if self._inline:
-                text = event.delta.text
-                return CompletionsStreamDelta(content=text) if text else None
             return self._text_delta(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
             # A delta for a block we never saw start is a provider quirk, not a
@@ -198,13 +203,15 @@ class _StreamMapper:
 
     def block_stop(self) -> CompletionsStreamDelta | None:
         """Emit whatever the reasoning splitter still holds (a partial or unclosed tag)."""
-        if self._inline:
-            return None
         remaining = self._reasoning.flush()
         return self._text_delta([remaining] if remaining else [])
 
     def _text_delta(self, tokens: list[StreamToken]) -> CompletionsStreamDelta | None:
-        """One delta carrying the reasoning and answer text split out of *tokens*."""
+        """One delta carrying the parsed text: split fields, or tag-free content."""
+        if self._inline:
+            # Arrival order preserved; the parser already dropped the markers.
+            text = "".join(t.content for t in tokens)
+            return CompletionsStreamDelta(content=text) if text else None
         reasoning = "".join(t.content for t in tokens if t.is_reasoning)
         answer = "".join(t.content for t in tokens if not t.is_reasoning)
         if not reasoning and not answer:

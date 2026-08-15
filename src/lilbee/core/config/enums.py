@@ -7,7 +7,8 @@ class ReasoningMode(StrEnum):
     """How ``/v1/chat/completions`` presents a reasoning model's thinking.
 
     ``separate`` reports thinking in ``reasoning_content`` (OpenAI-compatible).
-    ``inline`` keeps thinking in ``content`` as ``<think>`` text, for clients
+    ``inline`` streams thinking as ordinary ``content`` text with the
+    ``<think>`` markers stripped, for clients
     that never render ``reasoning_content``. ``off`` asks the model not to
     think; thinking templates honor the request and other templates ignore it.
     """

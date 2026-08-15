@@ -509,7 +509,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text=(
             "How /v1/chat/completions presents thinking: separate "
-            "reasoning_content field, inline <think> text in content, "
+            "reasoning_content field, inline thinking as plain content text, "
             "or off (ask the model not to think)"
         ),
         choices=tuple(m.value for m in ReasoningMode),
