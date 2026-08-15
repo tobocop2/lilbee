@@ -8,6 +8,7 @@ them are offline: the generator reaches the network, the checks do not.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -81,3 +82,17 @@ def test_architectures_the_engine_serves_ahead_of_the_gguf_package(arch: str) ->
     # time. The gguf package tracks its own release cadence, so it lags the engine by
     # a different amount at every version; reading the engine's table removes the lag.
     assert classify(arch) is ModelCompat.SUPPORTED
+
+
+def test_readme_arch_block_matches_the_generated_list() -> None:
+    # The README's collapsible list is generated from the same table; a pin
+    # bump that skips `make engine-archs` must fail here, not ship a stale
+    # support claim to the front page.
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    start = readme.index("<!-- supported-archs:start -->")
+    end = readme.index("<!-- supported-archs:end -->")
+    block = readme[start:end]
+    listed = set(re.findall(r"`([^`]+)`(?: ·|\n)", block))
+    listed.discard("make engine-archs")  # the regeneration command named in the prose
+    assert listed == SUPPORTED_ARCHS
+    assert f"All {len(SUPPORTED_ARCHS)} supported model architectures" in block

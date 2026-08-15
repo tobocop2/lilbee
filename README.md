@@ -317,6 +317,160 @@ One representative per architecture family, pulled with `lilbee model pull` and 
 
 </details>
 
+<!-- supported-archs:start -->
+lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: every GGUF whose architecture the pinned engine build knows. This list is generated from that build's own architecture table (`make engine-archs`) and follows every engine bump.
+
+<details>
+<summary><b>All 144 supported model architectures. Click to expand.</b></summary>
+
+`afmoe` ·
+`apertus` ·
+`arcee` ·
+`arctic` ·
+`arwkv7` ·
+`baichuan` ·
+`bailingmoe` ·
+`bailingmoe2` ·
+`bert` ·
+`bitnet` ·
+`bloom` ·
+`chameleon` ·
+`chatglm` ·
+`clip` ·
+`codeshell` ·
+`cogvlm` ·
+`cohere2` ·
+`cohere2moe` ·
+`command-r` ·
+`dbrx` ·
+`deci` ·
+`deepseek` ·
+`deepseek2` ·
+`deepseek2-ocr` ·
+`deepseek32` ·
+`deepseek4` ·
+`dflash` ·
+`dots1` ·
+`dream` ·
+`eagle3` ·
+`ernie4_5` ·
+`ernie4_5-moe` ·
+`eurobert` ·
+`exaone` ·
+`exaone-moe` ·
+`exaone4` ·
+`falcon` ·
+`falcon-h1` ·
+`gemma` ·
+`gemma-embedding` ·
+`gemma2` ·
+`gemma3` ·
+`gemma3n` ·
+`gemma4` ·
+`gemma4-assistant` ·
+`glm-dsa` ·
+`glm4` ·
+`glm4moe` ·
+`gpt-oss` ·
+`gpt2` ·
+`gptj` ·
+`gptneox` ·
+`granite` ·
+`granitehybrid` ·
+`granitemoe` ·
+`graniteswitch` ·
+`grok` ·
+`grovemoe` ·
+`hunyuan-dense` ·
+`hunyuan-moe` ·
+`hunyuan_vl` ·
+`hy_v3` ·
+`internlm2` ·
+`jais` ·
+`jais2` ·
+`jamba` ·
+`jina-bert-v2` ·
+`jina-bert-v3` ·
+`kimi-k3` ·
+`kimi-linear` ·
+`laguna` ·
+`lfm2` ·
+`lfm2moe` ·
+`llada` ·
+`llada-moe` ·
+`llama` ·
+`llama-embed` ·
+`llama4` ·
+`maincoder` ·
+`mamba` ·
+`mamba2` ·
+`mellum` ·
+`mimo2` ·
+`minicpm` ·
+`minicpm3` ·
+`minimax-01` ·
+`minimax-m2` ·
+`minimax-m3` ·
+`mistral3` ·
+`mistral4` ·
+`modern-bert` ·
+`mpt` ·
+`muse-glimmer` ·
+`nanbeige` ·
+`nemotron` ·
+`nemotron_h` ·
+`nemotron_h_moe` ·
+`neo-bert` ·
+`nomic-bert` ·
+`nomic-bert-moe` ·
+`olmo` ·
+`olmo2` ·
+`olmoe` ·
+`openelm` ·
+`orion` ·
+`paddleocr` ·
+`pangu-embedded` ·
+`phi2` ·
+`phi3` ·
+`phimoe` ·
+`plamo` ·
+`plamo2` ·
+`plamo3` ·
+`plm` ·
+`pockettts` ·
+`qwen` ·
+`qwen2` ·
+`qwen2moe` ·
+`qwen2vl` ·
+`qwen3` ·
+`qwen35` ·
+`qwen35moe` ·
+`qwen3moe` ·
+`qwen3next` ·
+`qwen3tts` ·
+`qwen3vl` ·
+`qwen3vlmoe` ·
+`refact` ·
+`rnd1` ·
+`rwkv6` ·
+`rwkv6qwen2` ·
+`rwkv7` ·
+`seed_oss` ·
+`smallthinker` ·
+`smollm3` ·
+`stablelm` ·
+`starcoder` ·
+`starcoder2` ·
+`step35` ·
+`t5` ·
+`t5encoder` ·
+`talkie` ·
+`wavtokenizer-dec` ·
+`xverse`
+
+</details>
+<!-- supported-archs:end -->
+
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 

@@ -1,7 +1,7 @@
 name: engine-pin-sync
 
 # Follows the engine fork's weekly sync-upstream workflow (tobocop2/llama.cpp,
-# Mondays 08:00 UTC): when the fork publishes a new immutable memory-YYYYMMDD
+# Mondays 08:00 UTC): when the fork publishes a new immutable memory-YYYYMMDD-HHMMSS
 # tag (latest upstream master with the GET /memory work rebased on top), this
 # bumps ENGINE_LLAMA_CPP_REF to it, regenerates the arch table that must
 # follow the pin, and opens or refreshes ONE rolling pull request for review.
@@ -35,9 +35,9 @@ jobs:
         id: fork
         run: |
           tag=$(git ls-remote --tags https://github.com/tobocop2/llama.cpp 'memory-*' \
-            | awk -F/ '{print $NF}' | grep -E '^memory-[0-9]{8}$' | sort | tail -1)
+            | awk -F/ '{print $NF}' | grep -E '^memory-[0-9]{8}-[0-9]{6}$' | sort | tail -1)
           if [ -z "$tag" ]; then
-            echo "the fork has no memory-YYYYMMDD tag yet" >&2
+            echo "the fork has no memory-YYYYMMDD-HHMMSS tag yet" >&2
             exit 1
           fi
           current=$(sed -n 's/^ENGINE_LLAMA_CPP_REF=//p' engine-versions.env)
