@@ -5,16 +5,16 @@ The set of architectures lilbee will pull has to be the set the bundled engine c
 actually load, so it is read from the engine's own arch table rather than from a
 third-party package that happens to enumerate GGUF architecture names.
 
-``engine-versions.env`` pins the engine as a llama-cpp-python release tag. That is a
-build-time source coordinate only, not a dependency: ``build_llama_server.sh`` clones
-that tag with ``--recurse-submodules`` and compiles llama-server from the llama.cpp
-commit it vendors, and lilbee ships neither package. This resolves the same submodule
-commit over the GitHub API, so the architectures below are the ones the shipped binary
-was actually built with, then reads them from that commit's ``src/llama-arch.cpp``,
-which maps every ``LLM_ARCH_*`` to the ``general.architecture`` string a GGUF carries.
-Nothing here is imported at runtime, and CI needs no llama.cpp checkout.
+``engine-versions.env`` pins the engine as a repo plus ref
+(``ENGINE_LLAMA_CPP_REPO`` / ``ENGINE_LLAMA_CPP_REF``), the same coordinates
+``build_llama_server.sh`` clones and compiles llama-server from. This resolves that
+ref's commit over the GitHub API, so the architectures below are the ones the shipped
+binary was actually built with, then reads them from that commit's
+``src/llama-arch.cpp``, which maps every ``LLM_ARCH_*`` to the
+``general.architecture`` string a GGUF carries. Nothing here is imported at runtime,
+and CI needs no llama.cpp checkout.
 
-Run after bumping ``ENGINE_LLAMA_CPP_VERSION`` (``make engine-archs``); the check in
+Run after bumping ``ENGINE_LLAMA_CPP_REF`` (``make engine-archs``); the check in
 ``tests/test_engine_archs.py`` fails when the generated file is left behind.
 """
 
@@ -35,8 +35,6 @@ _OUT = _REPO_ROOT / "src" / "lilbee" / "_generated" / "engine_archs.py"
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _TEMPLATE = "engine_archs.py.jinja"
 
-_LLAMA_CPP_PYTHON = "abetlen/llama-cpp-python"
-_LLAMA_CPP = "ggml-org/llama.cpp"
 _ARCH_TABLE_PATH = "src/llama-arch.cpp"
 
 # { LLM_ARCH_LLAMA, "llama" } entries of llama.cpp's LLM_ARCH_NAMES table.
@@ -56,29 +54,32 @@ def _get_json(url: str) -> dict:
     return dict(resp.json())
 
 
-def engine_version(env_path: Path) -> str:
-    """``ENGINE_LLAMA_CPP_VERSION`` from engine-versions.env."""
+def engine_pin(env_path: Path) -> tuple[str, str]:
+    """``(repo, ref)`` of the pinned llama.cpp source from engine-versions.env.
+
+    The repo is returned as the GitHub API's ``owner/name`` slug, stripped from
+    the clone URL the build script uses.
+    """
+    values: dict[str, str] = {}
     for line in env_path.read_text().splitlines():
         key, _, value = line.partition("=")
-        if key.strip() == "ENGINE_LLAMA_CPP_VERSION":
-            return value.strip()
-    raise SystemExit(f"ENGINE_LLAMA_CPP_VERSION not found in {env_path}")
+        values[key.strip()] = value.strip()
+    try:
+        repo_url, ref = values["ENGINE_LLAMA_CPP_REPO"], values["ENGINE_LLAMA_CPP_REF"]
+    except KeyError as missing:
+        raise SystemExit(f"{missing.args[0]} not found in {env_path}") from None
+    return repo_url.removeprefix("https://github.com/").removesuffix(".git"), ref
 
 
-def vendored_commit(version: str) -> str:
-    """The llama.cpp commit the given llama-cpp-python release vendors."""
-    url = (
-        f"https://api.github.com/repos/{_LLAMA_CPP_PYTHON}/contents/vendor/llama.cpp?ref=v{version}"
-    )
-    entry = _get_json(url)
-    if entry.get("type") != "submodule":
-        raise SystemExit(f"vendor/llama.cpp is not a submodule at v{version}")
-    return str(entry["sha"])
+def pinned_commit(repo: str, ref: str) -> str:
+    """The commit *ref* resolves to in *repo*, through any annotated tag."""
+    commit = _get_json(f"https://api.github.com/repos/{repo}/commits/{ref}")
+    return str(commit["sha"])
 
 
-def arch_names(commit: str) -> frozenset[str]:
+def arch_names(repo: str, commit: str) -> frozenset[str]:
     """Every ``general.architecture`` string llama.cpp maps to an arch at *commit*."""
-    url = f"https://api.github.com/repos/{_LLAMA_CPP}/contents/{_ARCH_TABLE_PATH}?ref={commit}"
+    url = f"https://api.github.com/repos/{repo}/contents/{_ARCH_TABLE_PATH}?ref={commit}"
     source = base64.b64decode(_get_json(url)["content"]).decode("utf-8", "replace")
     names = set(_ARCH_ENTRY_RE.findall(source))
     if not names:
@@ -86,7 +87,7 @@ def arch_names(commit: str) -> frozenset[str]:
     return frozenset(names - {_UNKNOWN_ARCH})
 
 
-def render(version: str, commit: str, archs: frozenset[str]) -> str:
+def render(ref: str, commit: str, archs: frozenset[str]) -> str:
     """The generated module, laid out as ``ruff format`` leaves it.
 
     A Python module rather than a data file on purpose: lilbee's standalone builds
@@ -100,7 +101,7 @@ def render(version: str, commit: str, archs: frozenset[str]) -> str:
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
-    return template.render(version=version, commit=commit, archs=sorted(archs))
+    return template.render(ref=ref, commit=commit, archs=sorted(archs))
 
 
 def main() -> int:
@@ -112,10 +113,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    version = engine_version(_ENGINE_ENV)
-    commit = vendored_commit(version)
-    archs = arch_names(commit)
-    rendered = render(version, commit, archs)
+    repo, ref = engine_pin(_ENGINE_ENV)
+    commit = pinned_commit(repo, ref)
+    archs = arch_names(repo, commit)
+    rendered = render(ref, commit, archs)
 
     if args.check:
         current = _OUT.read_text() if _OUT.exists() else ""
@@ -126,7 +127,7 @@ def main() -> int:
         return 0
 
     _OUT.write_text(rendered)
-    print(f"wrote {_OUT}: {len(archs)} architectures from llama.cpp {commit[:12]} (v{version})")
+    print(f"wrote {_OUT}: {len(archs)} architectures from llama.cpp {commit[:12]} ({ref})")
     return 0
 
 

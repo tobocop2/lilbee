@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_version:
-        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in engine-versions.env)."
+        description: "Legacy override: build the llama.cpp this llama-cpp-python tag vendors instead of the repo/ref pin in engine-versions.env."
         default: ""
         required: false
   workflow_call:
@@ -22,7 +22,7 @@ on:
         type: string
         default: ""
       llama_cpp_version:
-        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in engine-versions.env)."
+        description: "Legacy override: build the llama.cpp this llama-cpp-python tag vendors instead of the repo/ref pin in engine-versions.env."
         type: string
         default: ""
 

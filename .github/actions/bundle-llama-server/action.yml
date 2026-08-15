@@ -10,8 +10,10 @@ inputs:
     required: true
   llama-cpp-version:
     description: >-
-      llama.cpp source tag to build from (blank = the pin in engine-versions.env).
-      Set for a backend whose toolchain can't compile the default (e.g. CUDA 12.1).
+      Legacy source override: build the llama.cpp that this llama-cpp-python
+      release tag vendors instead of the ENGINE_LLAMA_CPP_REPO/REF pin in
+      engine-versions.env. Set for a backend whose toolchain can't compile the
+      pinned source (e.g. CUDA 12.1); such engines lack GET /memory.
     required: false
     default: ""
   cache-env:

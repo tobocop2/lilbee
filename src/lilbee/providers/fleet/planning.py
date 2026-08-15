@@ -43,6 +43,7 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.readback import supports_memory_readback
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
@@ -1504,6 +1505,7 @@ def _launch_for(
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
+        memory_endpoint=supports_memory_readback(binary),
     )
     return InstanceLaunch(
         role=plan.role,
