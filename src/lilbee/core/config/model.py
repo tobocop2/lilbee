@@ -30,6 +30,7 @@ from .enums import (
     CrawlRenderMode,
     KvCacheType,
     LlmProvider,
+    ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
@@ -461,6 +462,15 @@ class Config(BaseSettings):
     # If True, emit <think>…</think> content as separate SSE reasoning events;
     # if False, strip it silently.
     show_reasoning: bool = ConfigField(default=False, writable=True)
+
+    # How /v1/chat/completions presents a reasoning model's thinking. ``separate``
+    # reports it in ``reasoning_content`` (OpenAI-compatible); ``inline`` keeps it
+    # in ``content`` as <think> text for clients that never render
+    # ``reasoning_content``; ``off`` asks the model not to think. A request's
+    # ``reasoning`` field overrides this per call.
+    completions_reasoning: ReasoningMode = ConfigField(
+        default=ReasoningMode.SEPARATE, writable=True
+    )
 
     # Maximum reasoning characters before lilbee forces the model to answer.
     # Per-model overrides apply on top of this default. Approx N/4 tokens.

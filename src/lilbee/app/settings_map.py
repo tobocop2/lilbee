@@ -15,6 +15,7 @@ from lilbee.core.config.enums import (
     CrawlRenderMode,
     KvCacheType,
     LlmProvider,
+    ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
@@ -501,6 +502,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.DISPLAY,
         help_text="Show model reasoning/thinking tokens in output",
+    ),
+    "completions_reasoning": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "How /v1/chat/completions presents thinking: separate "
+            "reasoning_content field, inline <think> text in content, "
+            "or off (ask the model not to think)"
+        ),
+        choices=tuple(m.value for m in ReasoningMode),
     ),
     "lilbee_name": SettingDef(
         str,
