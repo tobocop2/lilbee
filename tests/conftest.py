@@ -491,6 +491,7 @@ def _default_provider_mock():
     provider.max_concurrent_chats.return_value = 1
     provider.served_chat_ctx.return_value = None
     provider.served_chat_slots.return_value = None
+    provider.chat_prefill_progress.return_value = None
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.
     provider.warm_progress.return_value = None

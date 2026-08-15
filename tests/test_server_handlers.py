@@ -179,6 +179,23 @@ class TestHealth:
         assert (await handlers.health()).chat_slots is None
 
 
+    async def test_chat_prefill_progress_reported_while_prefilling(self, mock_svc):
+        """A long first-turn prefill is visible on health, so a polling user can
+        tell a working engine from a hung one."""
+        mock_svc.provider.role_ready.return_value = True
+        mock_svc.provider.chat_prefill_progress.return_value = (12000, 32768)
+        result = await handlers.health()
+        assert result.chat_prefill_processed == 12000
+        assert result.chat_prefill_total == 32768
+
+    async def test_chat_prefill_absent_when_nothing_is_prefilling(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
+        mock_svc.provider.chat_prefill_progress.return_value = None
+        result = await handlers.health()
+        assert result.chat_prefill_processed is None
+        assert result.chat_prefill_total is None
+
+
 def _parse_warm_events(chunks: list[str]) -> list[dict]:
     """Pull the JSON payloads off ``warm`` SSE chunks, ignoring the [DONE] tail."""
     import json

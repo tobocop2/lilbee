@@ -225,6 +225,13 @@ class HealthResponse(BaseModel):
     """Batching slots the chat engine serves (its real request concurrency), so a
     script driving parallel agents can read the granted shape instead of assuming
     the configured one. None until the engine is up."""
+    chat_prefill_processed: int | None = None
+    """Prompt tokens the chat engine has processed for a prefill in flight. A
+    large model's first agent turn can spend minutes here with nothing streamed;
+    polling this tells a working engine apart from a hung one. None when idle."""
+    chat_prefill_total: int | None = None
+    """Prompt tokens the in-flight chat prefill will process in total. None when
+    no prefill is running."""
 
 
 class CompactionInfo(BaseModel):

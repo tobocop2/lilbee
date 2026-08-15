@@ -555,6 +555,15 @@ class LLMProvider(Protocol):
         """
         return None
 
+    def chat_prefill_progress(self) -> tuple[int, int] | None:
+        """``(processed, total)`` prompt tokens of a chat prefill in flight, or None.
+
+        A large model's first agent turn can spend minutes in prompt processing
+        with no tokens streamed; status surfaces poll this to show the work.
+        Default ``None``: providers without a managed engine report nothing.
+        """
+        return None
+
     def warm_pending(self) -> bool:
         """Whether a warm has been requested and has not finished.
 

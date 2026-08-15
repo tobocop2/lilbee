@@ -6,6 +6,8 @@ Launch with `--no-mcp` to keep lilbee as the model provider but drop its MCP blo
 
 Claude Code needs a large context window: its built-in system prompt and tool schemas take tens of thousands of tokens before the first turn. Pick a chat model that serves a 64K-token window or larger (the launcher warns when the served window is smaller). `lilbee launch claude` keeps the session lean -- it loads only project-scoped settings and only lilbee's MCP server -- because a populated global Claude Code setup adds tens of thousands more tokens that no local window absorbs.
 
+The first prompt on a large model pays a long prompt-processing (prefill) delay after the launcher's warm bar finishes. An agent's first turn is ~32K tokens, and on a 100B-class model that is 30 seconds to a few minutes of compute before the first visible token; the agent shows only its spinner during it. The wait is roughly the prompt size over the model's prefill speed, and it is work, not a hang: poll `GET /api/health` and watch `chat_prefill_processed` climb toward `chat_prefill_total`. Later turns reuse the prompt cache and start far faster.
+
 ## Verified families
 
 Each family completes the loop end to end: the agent sends a prompt, the model calls `lilbee_search`, the tool runs against an indexed workspace, and the model answers from the results. How reliably a model reaches for a tool depends on the model and its size, not on lilbee.
