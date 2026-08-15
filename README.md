@@ -52,7 +52,7 @@ lilbee runs and manages your models: chat, embedding, vision, and rerank, placed
 
 It's all one program: no separate model server, [vector database](#built-on), or container to stand up. lilbee runs the models and keeps the index itself. Reach it as a terminal app, CLI, Model Context Protocol server, HTTP API, or Python library. Close it and it's gone, or run it as a service to keep it warm. Everything runs on your computer; it uses a cloud model only when you pick one.
 
-Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). You don't need [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) at all: the [model families lilbee runs](#tested-model-families) are the architectures behind most of the 190,000+ GGUF repos on Hugging Face, verified per family on real GPUs. If you already use them, point lilbee at your existing setup and keep your models.
+Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). You don't need [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) at all: the [architectures lilbee runs](#supported-models) are behind most of the 190,000+ GGUF repos on Hugging Face, with representatives [verified on real GPUs](docs/tested-models.md). If you already use them, point lilbee at your existing setup and keep your models.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
@@ -100,7 +100,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 - **A real [search engine](docs/architecture.md#search-pipeline) on top,** ranking every result by how well it answers you, with 50+ [tunable knobs](docs/usage.md#settings-screen) and sane defaults.
 - **It brings and runs the models itself,** on Metal, Vulkan, or CUDA, with no server to point at and no cloud account. Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, rerank).
 - **A model too big for one card runs across all of them,** sized with gguf-parser and tensor-split automatically, or pinned by hand. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
-- **Already on Ollama or LM Studio? Keep them.** lilbee's own manager handles everything across the same [model families](#tested-model-families) they run, and their models also show up in the same pickers.
+- **Already on Ollama or LM Studio? Keep them.** lilbee's own manager handles everything across the same [architectures](#supported-models) they run, and their models also show up in the same pickers.
 - **One install, many surfaces:** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
 - **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
 - **Per-project libraries.** One library for everything, or one per project.
@@ -265,9 +265,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 Placement reads what the engine reports about your hardware, and every backend words that differently, so each is checked on real silicon rather than inferred from the last one. CUDA from an RTX 3090 up to H200, and up to eight A100s at once, Vulkan on NVIDIA and Intel, ROCm on an AMD Instinct MI300X, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) lists every machine and what each run settled. Captures from hardware not listed are welcome.
 
-### Tested model families
-
-One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.
+### Supported models
 
 <!-- supported-archs:start -->
 lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model built on one of the architectures below. The list comes from the bundled engine itself and grows with every engine update.
@@ -317,54 +315,7 @@ lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model
 </details>
 <!-- supported-archs:end -->
 
-<details>
-<summary><b>The family tables, per role. Click to expand.</b></summary>
-
-**Vision** (all on a single 12 GB card, projector fetched by the pull itself):
-
-| Family | Projector type |
-|--------|----------------|
-| LightOnOCR | lightonocr |
-| Qwen2.5-VL | qwen2.5vl merger |
-| Qwen3-VL | qwen3vl |
-| Gemma 3 | gemma3 |
-| SmolVLM2 | idefics3 |
-| MiniCPM-V | resampler |
-| InternVL3 | internvl |
-| LLaVA 1.6 | mlp |
-| Gemma 4 | mixed vision+audio |
-| dots.ocr | dots.ocr |
-
-**Chat** (one per memory-architecture class):
-
-| Class | Representative |
-|-------|----------------|
-| Dense GQA | Llama 3.2 |
-| Dense | Qwen3 |
-| Sliding-window attention | Gemma 3 |
-| Multi-head latent attention | DeepSeek V2 Lite |
-| Mixture of experts | OLMoE |
-| Hybrid SSM | LFM2 |
-
-**Embedding:**
-
-| Class | Representative |
-|-------|----------------|
-| BERT encoder | all-MiniLM-L6-v2 |
-| nomic-bert | nomic-embed-text v1.5 |
-| Decoder-pooled | Qwen3-Embedding 0.6B |
-| Decoder-pooled, large | Qwen3-Embedding 8B |
-| XLM-RoBERTa | bge-m3 |
-
-**Rerank:**
-
-| Class | Representative |
-|-------|----------------|
-| Cross-encoder | bge-reranker-v2-m3 |
-| LLM reranker | Qwen3-Reranker 0.6B |
-
-</details>
-
+One representative per family also runs the full pipeline end to end on real GPUs -- the models, method, and results are in [docs/tested-models.md](docs/tested-models.md).
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 

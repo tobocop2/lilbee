@@ -95,3 +95,48 @@ def test_readme_arch_block_matches_the_generated_list() -> None:
     listed = set(re.findall(r"`([^`]+)`", block))
     assert listed == SUPPORTED_ARCHS
     assert f"All {len(SUPPORTED_ARCHS)} supported model architectures" in block
+
+
+# general.architecture probed from each tested repo's GGUF header (the repos in
+# docs/tested-models.md). Update alongside that document.
+_TESTED_REPO_ARCHS = {
+    "LiquidAI/LFM2-1.2B-GGUF": "lfm2",
+    "Qwen/Qwen3-4B-GGUF": "qwen3",
+    "Qwen/Qwen3-Embedding-0.6B-GGUF": "qwen3",
+    "Qwen/Qwen3-Embedding-8B-GGUF": "qwen3",
+    "Qwen/Qwen3-VL-4B-Instruct-GGUF": "qwen3vl",
+    "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF": "olmoe",
+    "cjpais/llava-1.6-mistral-7b-gguf": "llama",
+    "ggml-org/InternVL3-2B-Instruct-GGUF": "qwen2",
+    "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF": "qwen2vl",
+    "ggml-org/SmolVLM2-2.2B-Instruct-GGUF": "llama",
+    "ggml-org/dots.ocr-GGUF": "qwen2",
+    "ggml-org/gemma-3-4b-it-GGUF": "gemma3",
+    "ggml-org/gemma-4-12B-it-GGUF": "gemma4",
+    "gpustack/bge-m3-GGUF": "bert",
+    "gpustack/bge-reranker-v2-m3-GGUF": "bert",
+    "hugging-quants/Llama-3.2-3B-Instruct-Q4_K_M-GGUF": "llama",
+    "mradermacher/DeepSeek-V2-Lite-Chat-GGUF": "deepseek2",
+    "mradermacher/Qwen3-Reranker-0.6B-GGUF": "qwen3",
+    "noctrex/LightOnOCR-2-1B-GGUF": "qwen3",
+    "nomic-ai/nomic-embed-text-v1.5-GGUF": "nomic-bert",
+    "openbmb/MiniCPM-V-2_6-gguf": "qwen2",
+    "second-state/All-MiniLM-L6-v2-Embedding-GGUF": "bert",
+}
+
+
+def test_every_tested_family_arch_stays_supported() -> None:
+    # An engine bump that drops or renames one of these architectures strands
+    # a hardware-tested family; that must fail the suite, not ship quietly.
+    unsupported = {r: a for r, a in _TESTED_REPO_ARCHS.items() if a not in SUPPORTED_ARCHS}
+    assert not unsupported
+
+
+def test_tested_repo_map_matches_the_tested_models_doc() -> None:
+    # The map above is verification data for docs/tested-models.md; a repo
+    # swapped there without updating the map (or vice versa) is drift.
+    doc = (Path(__file__).resolve().parents[1] / "docs/tested-models.md").read_text(
+        encoding="utf-8"
+    )
+    missing_in_doc = [r for r in _TESTED_REPO_ARCHS if r not in doc]
+    assert not missing_in_doc
