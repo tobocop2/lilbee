@@ -510,9 +510,14 @@ class LlamaServerClient:
         rerank_mode: RerankMode | None = None,
         inline_reasoning: bool = False,
         embed_busy_deadline_s: float | None = None,
+        on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
+        # Prefill observer: called with (processed, total) per engine progress
+        # frame during a streamed chat's prompt processing, then None once the
+        # first generated frame proves the prefill is over.
+        self._on_prefill = on_prefill
         # Cold-load budget (seconds) the embed path waits out a still-warming replica
         # before dropping the input, in place of the short attempt cap. Set on the
         # EMBED-role client to the same ceiling llama-swap keeps the server alive for,
@@ -830,17 +835,35 @@ class LlamaServerClient:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
-        with (
-            self._track(),
-            self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
-        ):
-            _raise_for_status(resp)
-            with self._abortable(resp):
-                for line in resp.iter_lines():
-                    yield from _parse_sse_stream_items(line, inliner)
-            tail = inliner.finish()
-            if tail:
-                yield tail
+        on_prefill = self._on_prefill
+        prefilling = False
+        try:
+            with (
+                self._track(),
+                self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
+            ):
+                _raise_for_status(resp)
+                with self._abortable(resp):
+                    for line in resp.iter_lines():
+                        if on_prefill is not None:
+                            progress = _prefill_progress(line)
+                            if progress is not None:
+                                prefilling = True
+                                on_prefill(progress)
+                        for item in _parse_sse_stream_items(line, inliner):
+                            if prefilling and on_prefill is not None:
+                                # The first real frame proves prefill is over.
+                                prefilling = False
+                                on_prefill(None)
+                            yield item
+                tail = inliner.finish()
+                if tail:
+                    yield tail
+        finally:
+            # A stream that dies or is closed mid-prefill must not leave a
+            # stale in-progress reading on the status surface.
+            if prefilling and on_prefill is not None:
+                on_prefill(None)
 
     def _chat_payload(
         self,
@@ -857,6 +880,9 @@ class LlamaServerClient:
             # include_usage makes llama-server emit a final SSE chunk carrying the
             # token usage (with an empty choices list) just before [DONE].
             payload["stream_options"] = {"include_usage": True}
+            # return_progress makes llama-server stream prompt_progress frames
+            # during prefill, so a long first turn is observable server-side.
+            payload["return_progress"] = True
         if tools is not None:
             payload["tools"] = tools
         if tool_choice is not None:
@@ -1374,6 +1400,32 @@ def _tool_call_delta_from_chunk(call: Mapping[str, Any], *, fallback_index: int)
         name=str(raw_name) if raw_name else None,
         arguments_delta=str(raw_args) if raw_args else None,
     )
+
+
+_PROMPT_PROGRESS_KEY = "prompt_progress"
+
+
+def _prefill_progress(line: str) -> tuple[int, int] | None:
+    """The ``(processed, total)`` of one SSE line's ``prompt_progress``, or None.
+
+    llama-server emits the block on streamed chats that opt in via
+    ``return_progress``; the substring pre-check keeps the extra JSON parse off
+    every ordinary token line.
+    """
+    if _PROMPT_PROGRESS_KEY not in line or not line.startswith(_DATA_PREFIX):
+        return None
+    body = line[len(_DATA_PREFIX) :].strip()
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    progress = obj.get(_PROMPT_PROGRESS_KEY)
+    if not isinstance(progress, Mapping):
+        return None
+    try:
+        return int(progress["processed"]), int(progress["total"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _parse_sse_stream_items(

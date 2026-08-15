@@ -3752,3 +3752,18 @@ class TestRoutingRoleReadyRemote:
         cfg.chat_model = "org/repo/chat-Q4_K_M.gguf"
         assert rp.role_ready(WorkerRole.CHAT) is False
         local.role_ready.assert_called_once_with(WorkerRole.CHAT)
+
+
+class TestRoutingChatPrefillProgress:
+    def test_is_none_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().chat_prefill_progress() is None  # _local is None
+
+    def test_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.chat_prefill_progress.return_value = (128, 320)
+        assert rp.chat_prefill_progress() == (128, 320)

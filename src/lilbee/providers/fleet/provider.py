@@ -880,6 +880,9 @@ class FleetProvider:
         # the concurrency gate and clients; defaults until the chat group is up.
         self._chat_slots = 1
         self._chat_ctx: int | None = None
+        # Latest chat prefill progress reported by a streaming client, cleared
+        # by the same stream when generation starts or the stream ends.
+        self._chat_prefill: tuple[int, int] | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
         # first-requests must not each start a swap (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
@@ -1198,6 +1201,7 @@ class FleetProvider:
                     timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
+                    on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     # A cold embed replica 429s bulk ingest until its slots load; wait
                     # out the same cold-load budget llama-swap keeps it alive for so a
                     # burst never drops files while the server is legitimately warming.
@@ -1393,6 +1397,17 @@ class FleetProvider:
         """Per-slot context the chat server runs with, or None if not up."""
         with self._lock:
             return self._chat_ctx if WorkerRole.CHAT in self._role_group else None
+
+    def chat_prefill_progress(self) -> tuple[int, int] | None:
+        """``(processed, total)`` of a chat prefill in flight, or None when idle."""
+        with self._lock:
+            return self._chat_prefill
+
+    def _record_chat_prefill(self, progress: tuple[int, int] | None) -> None:
+        """Store a stream's prefill reading. Latest writer wins across concurrent
+        streams; a live prefill rewrites itself on its next engine batch."""
+        with self._lock:
+            self._chat_prefill = progress
 
     def warm_pending(self) -> bool:
         """Whether a requested warm is still running.
