@@ -9,8 +9,7 @@ from __future__ import annotations
 # The engine pin these names were read from, checked against engine-versions.env so
 # a bump without a regenerate fails the suite instead of silently going stale.
 # The version is a build-time source coordinate, not a dependency: llama-server is
-# compiled from the llama.cpp commit below, which the pinned llama-cpp-python
-# release vendors. lilbee ships neither package.
+# compiled from the llama.cpp commit below.
 ENGINE_LLAMA_CPP_VERSION = "{{ version }}"
 LLAMA_CPP_COMMIT = "{{ commit }}"
 

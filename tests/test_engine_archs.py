@@ -1,7 +1,7 @@
 """The generated engine arch list stays in step with the engine pin.
 
-``engine_archs.py`` is generated from the llama.cpp commit that the pinned
-llama-cpp-python release vendors. Nothing at runtime re-derives it, so these
+``engine_archs.py`` is generated from the pinned llama.cpp release's arch
+table. Nothing at runtime re-derives it, so these
 tests are what stops a bumped engine from leaving a stale support claim behind.
 All of them are offline: the generator reaches the network, the checks do not.
 """
