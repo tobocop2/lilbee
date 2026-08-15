@@ -964,6 +964,7 @@ The ones most users set at least once.
 | `LILBEE_RAG_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG (search-mode) answers |
 | `LILBEE_GENERAL_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for chat-mode (ungrounded) answers |
 | `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
+| `LILBEE_COMPLETIONS_REASONING` | `separate` | How `/v1/chat/completions` presents thinking: `separate` (own `reasoning_content` field), `inline` (`<think>` text stays in `content`, for clients that never render `reasoning_content`), or `off` (ask the model not to think). A request's `reasoning` field overrides it per call |
 | `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
 
 ### Retrieval tuning

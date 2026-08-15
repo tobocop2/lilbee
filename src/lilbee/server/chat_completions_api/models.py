@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from lilbee.core.config.enums import ReasoningMode
 
 # Wire layer reuses the provider-layer enum so the two can never drift.
 from lilbee.providers.base import FinishReason as FinishReason
+
+log = logging.getLogger(__name__)
 
 
 class ToolChoiceMode(StrEnum):
@@ -100,7 +105,9 @@ class CompletionsRequest(BaseModel):
 
     - Honoured: ``model``, ``messages``, ``tools``, ``tool_choice``,
       ``temperature``, ``top_p``, ``top_k``, ``max_tokens``, ``stop``, ``seed``,
-      ``frequency_penalty``, ``presence_penalty``, ``stream``, ``stream_options``.
+      ``frequency_penalty``, ``presence_penalty``, ``stream``, ``stream_options``,
+      ``reasoning`` (lilbee extension: ``separate`` / ``inline`` / ``off``,
+      overriding the ``completions_reasoning`` setting for this request).
     - Rejected with a 400: ``n`` greater than 1 (lilbee serves one choice).
     - Accepted but ignored (``extra="allow"`` keeps them off the parsed model and
       the route logs their keys at debug): ``n == 1``, ``response_format``,
@@ -124,6 +131,20 @@ class CompletionsRequest(BaseModel):
     stop: str | list[str] | None = None
     stream: bool = False
     stream_options: StreamOptions | None = None
+    reasoning: ReasoningMode | None = None
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _reasoning_strings_only(cls, value: object) -> object:
+        # Other vendors use ``reasoning`` for an object (OpenRouter's effort
+        # config). A non-string shape is their field, not this one; treat it
+        # as absent so those requests keep working instead of turning 400.
+        # Logged like the route logs other unsupported params, so the client
+        # can learn the value had no effect.
+        if value is None or isinstance(value, str):
+            return value
+        log.debug("chat/completions ignoring non-string reasoning value: %r", value)
+        return None
 
 
 class CompletionsResponseToolCallFunction(BaseModel):
@@ -216,6 +237,9 @@ class ModelEntry(BaseModel):
     context_window: int | None = None
     """The context the active chat engine serves, so a client can trim history to
     fit. None when the engine is not up yet or the window is unknown."""
+    slots: int | None = None
+    """Batching slots the active chat engine serves: how many requests generate
+    at once before the rest queue. None when the engine is not up yet."""
 
 
 class ModelsListResponse(BaseModel):

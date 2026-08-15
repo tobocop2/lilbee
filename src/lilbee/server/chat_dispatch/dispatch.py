@@ -484,6 +484,8 @@ def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
         out["presence_penalty"] = req.presence_penalty
     if req.stop is not None:
         out["stop"] = req.stop
+    if req.think is not None:
+        out["think"] = req.think
     return out or None
 
 

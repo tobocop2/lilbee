@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Literal, assert_never
 
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.chat_completions_api.models import (
     CompletionsImageContent,
@@ -71,7 +72,9 @@ _IMAGE_CONTENT_UNSUPPORTED = (
 )
 
 
-def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalChatRequest:
+def completions_to_canonical_request(
+    request: CompletionsRequest, *, mode: ReasoningMode = ReasoningMode.SEPARATE
+) -> CanonicalChatRequest:
     """Translate a validated ``CompletionsRequest`` to the canonical request."""
     system_parts: list[str] = []
     messages: list[CanonicalMessage] = []
@@ -96,18 +99,26 @@ def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalCh
         presence_penalty=request.presence_penalty,
         stop=_stop_from_request(request.stop),
         stream=request.stream,
+        # OFF asks the template to skip thinking; the other modes only change
+        # presentation, so the template default stands.
+        think=False if mode is ReasoningMode.OFF else None,
     )
 
 
 def canonical_to_completions_response(
-    resp: CanonicalResponse, *, response_id: str
+    resp: CanonicalResponse, *, response_id: str, mode: ReasoningMode = ReasoningMode.SEPARATE
 ) -> CompletionsResponse:
     """Translate a canonical chat response to the OpenAI ``chat.completion`` model."""
     text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
     tool_calls = [_response_tool_call(b) for b in resp.content if isinstance(b, ToolUseBlock)]
     # lilbee carries a reasoning model's thinking inline as <think>...</think>; the
     # OpenAI surface reports it in its own field so agents render a clean answer.
-    reasoning, answer = split_reasoning("".join(text_parts))
+    # INLINE skips the split for clients that never render reasoning_content; OFF
+    # keeps it, because a template that ignores enable_thinking still thinks.
+    if mode is ReasoningMode.INLINE:
+        reasoning, answer = "", "".join(text_parts)
+    else:
+        reasoning, answer = split_reasoning("".join(text_parts))
     content: str | None = answer if answer or not tool_calls else None
 
     total = resp.usage.input_tokens + resp.usage.output_tokens
@@ -137,10 +148,13 @@ def canonical_to_completions_response(
 class _StreamMapper:
     """Per-stream state for the canonical-to-OpenAI chunk converter."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, mode: ReasoningMode = ReasoningMode.SEPARATE) -> None:
         self._role_emitted = False
         self._tool_index_for_block: dict[int, int] = {}
         self._next_tool_index = 0
+        # INLINE forwards text untouched (thinking stays in content, and no
+        # token is ever held back for a possible tag prefix).
+        self._inline = mode is ReasoningMode.INLINE
         # Splits lilbee's inline <think> text into its own delta field. Stateful
         # because a tag can arrive split across deltas.
         self._reasoning = TagParser(show=True)
@@ -166,6 +180,9 @@ class _StreamMapper:
 
     def block_delta(self, event: ContentBlockDelta) -> CompletionsStreamDelta | None:
         if isinstance(event.delta, TextDelta):
+            if self._inline:
+                text = event.delta.text
+                return CompletionsStreamDelta(content=text) if text else None
             return self._text_delta(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
             # A delta for a block we never saw start is a provider quirk, not a
@@ -181,6 +198,8 @@ class _StreamMapper:
 
     def block_stop(self) -> CompletionsStreamDelta | None:
         """Emit whatever the reasoning splitter still holds (a partial or unclosed tag)."""
+        if self._inline:
+            return None
         remaining = self._reasoning.flush()
         return self._text_delta([remaining] if remaining else [])
 
@@ -224,13 +243,14 @@ async def canonical_stream_to_completions_chunks(
     model: str,
     response_id: str,
     include_usage: bool = False,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> AsyncIterator[CompletionsStreamChunk]:
     """Turn canonical stream events into ``CompletionsStreamChunk`` instances.
 
     The trailing usage-only chunk is emitted only when *include_usage* is set,
     matching OpenAI's ``stream_options.include_usage`` contract.
     """
-    mapper = _StreamMapper()
+    mapper = _StreamMapper(mode=mode)
     # One timestamp for the whole completion. OpenAI holds created constant
     # across a stream; recomputing it per chunk reported several creation times
     # for one completion, and clients order or dedupe on it.
