@@ -88,7 +88,7 @@ def test_readme_arch_block_matches_the_generated_list() -> None:
     # The README's collapsible list is generated from the same table; a pin
     # bump that skips `make engine-archs` must fail here, not ship a stale
     # support claim to the front page.
-    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
     start = readme.index("<!-- supported-archs:start -->")
     end = readme.index("<!-- supported-archs:end -->")
     block = readme[start:end]
