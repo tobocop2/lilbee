@@ -93,6 +93,5 @@ def test_readme_arch_block_matches_the_generated_list() -> None:
     end = readme.index("<!-- supported-archs:end -->")
     block = readme[start:end]
     listed = set(re.findall(r"`([^`]+)`(?: ·|\n)", block))
-    listed.discard("make engine-archs")  # the regeneration command named in the prose
     assert listed == SUPPORTED_ARCHS
     assert f"All {len(SUPPORTED_ARCHS)} supported model architectures" in block

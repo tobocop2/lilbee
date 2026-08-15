@@ -99,10 +99,9 @@ def render_readme_block(archs: frozenset[str]) -> str:
     names = "\n".join(f"`{arch}` ·" for arch in sorted(archs)).removesuffix(" ·")
     return (
         f"{_README_START}\n"
-        "lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: every GGUF "
-        "whose architecture the pinned engine build knows. This list is generated from "
-        "that build's own architecture table (`make engine-archs`) and follows every "
-        "engine bump.\n"
+        "lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF "
+        "model built on one of the architectures below. The list comes from the bundled "
+        "engine itself and grows with every engine update.\n"
         "\n"
         "<details>\n"
         f"<summary><b>All {len(archs)} supported model architectures. Click to expand.</b></summary>\n"
