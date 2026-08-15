@@ -1216,6 +1216,9 @@ class FleetProvider:
             if role is WorkerRole.CHAT:
                 self._chat_slots = role_launches[0].slots
                 self._chat_ctx = role_launches[0].ctx
+                # Every serving process passes through adoption (fresh launch,
+                # reload, guest bind), so the warning fires in each of them.
+                planning.warn_when_chat_downsized(role_launches[0])
             self._retire_clients(old_clients)
 
     def _swap_for(self, role: WorkerRole) -> SwapManager | None:
@@ -1397,6 +1400,11 @@ class FleetProvider:
         """Per-slot context the chat server runs with, or None if not up."""
         with self._lock:
             return self._chat_ctx if WorkerRole.CHAT in self._role_group else None
+
+    def served_chat_slots(self) -> int | None:
+        """Batching slots the chat server runs with, or None if not up."""
+        with self._lock:
+            return self._chat_slots if WorkerRole.CHAT in self._role_group else None
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """``(processed, total)`` of a chat prefill in flight, or None when idle."""

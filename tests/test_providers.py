@@ -3680,6 +3680,19 @@ class TestRoutingLifecycleForwarding:
         rp._local.served_chat_ctx.return_value = 16384
         assert rp.served_chat_ctx() == 16384
 
+    def test_served_chat_slots_is_none_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().served_chat_slots() is None  # _local is None
+
+    def test_served_chat_slots_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.served_chat_slots.return_value = 2
+        assert rp.served_chat_slots() == 2
+
     def test_role_ready_forwards_to_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider

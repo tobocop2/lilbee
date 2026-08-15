@@ -18,6 +18,7 @@ from litestar.response import Response, Stream
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.providers.model_ref import default_first, with_configured_remote_chat
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -76,9 +77,11 @@ async def list_models_endpoint(request: Request) -> Response:
 def _build_models_list_payload() -> ModelsListResponse:
     """Synchronous /v1/models body: blocking registry walk + engine ctx probe."""
     services = get_services()
-    # The served window applies to the active chat model; advertise it so a
-    # client trims history to fit instead of overflowing on a long session.
+    # The served shape applies to the active chat model; advertise it so a
+    # client trims history to fit and an agent harness reads the real
+    # concurrency instead of assuming the configured target.
     served_ctx = services.provider.served_chat_ctx()
+    served_slots = services.provider.served_chat_slots()
     installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
     # A remote-configured chat model has no registry entry but is still listed,
     # configured model first (the launcher's picker order).
@@ -95,6 +98,7 @@ def _build_models_list_payload() -> ModelsListResponse:
                 if ref in installed
                 else fallback_created,
                 context_window=served_ctx if ref == cfg.chat_model else None,
+                slots=served_slots if ref == cfg.chat_model else None,
             )
             for ref in refs
         ]
@@ -133,8 +137,11 @@ async def chat_completions_endpoint(
     if rejection is not None:
         return rejection
 
+    # The request field wins over the completions_reasoning setting, so a
+    # client that can send extra body fields picks its mode per call.
+    mode = data.reasoning if data.reasoning is not None else cfg.completions_reasoning
     try:
-        req = completions_to_canonical_request(data)
+        req = completions_to_canonical_request(data, mode=mode)
     except ValueError as exc:
         # Request shape is wire-valid but carries something we can't translate
         # (e.g. image content). Surface as 400 instead of a generic 500.
@@ -162,12 +169,12 @@ async def chat_completions_endpoint(
         # generator's first iteration (its finally never runs in that case).
         return Stream(
             _gated_completions_stream(
-                req, guard, model=resolved_model, include_usage=include_usage
+                req, guard, model=resolved_model, include_usage=include_usage, mode=mode
             ),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req, guard, canonical_model=resolved_model)
+    return await _run_non_stream(req, guard, canonical_model=resolved_model, mode=mode)
 
 
 def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Response | None:
@@ -217,7 +224,11 @@ def _internal_error_response() -> Response:
 
 
 async def _run_non_stream(
-    req: CanonicalChatRequest, guard: ChatSlotGuard, *, canonical_model: str
+    req: CanonicalChatRequest,
+    guard: ChatSlotGuard,
+    *,
+    canonical_model: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
@@ -232,7 +243,9 @@ async def _run_non_stream(
         return _error_response(classified.http_status, classified.code, classified.message)
     finally:
         await guard.release()
-    body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
+    body: CompletionsResponse = canonical_to_completions_response(
+        resp, response_id=_response_id(), mode=mode
+    )
     return Response(body.model_dump(exclude_none=True), media_type="application/json")
 
 
@@ -242,6 +255,7 @@ async def _gated_completions_stream(
     *,
     model: str,
     include_usage: bool = False,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> AsyncGenerator[bytes, None]:
     """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -260,7 +274,11 @@ async def _gated_completions_stream(
         try:
             events = dispatch_chat_stream(req, canonical_model=model)
             chunks = canonical_stream_to_completions_chunks(
-                events, model=model, response_id=response_id, include_usage=include_usage
+                events,
+                model=model,
+                response_id=response_id,
+                include_usage=include_usage,
+                mode=mode,
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame

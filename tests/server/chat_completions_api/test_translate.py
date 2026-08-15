@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.server.chat_completions_api.models import (
     CompletionsRequest,
     CompletionsResponse,
@@ -1218,3 +1219,120 @@ class TestStreamCreatedIsConstant:
 
         assert len(chunks) >= 3
         assert len({c.created for c in chunks}) == 1
+
+
+class TestReasoningModePresentation:
+    """``inline`` keeps thinking in ``content`` so tag-blind clients see motion;
+    ``off`` falls back to the separate split for templates that think anyway."""
+
+    def _resp(self, text: str) -> CanonicalResponse:
+        return CanonicalResponse(
+            id="msg_abc",
+            model="m",
+            content=[TextBlock(text=text)],
+            stop_reason=StopReason.END_TURN,
+            usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+        )
+
+    def test_inline_response_keeps_think_text_in_content(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("<think>weighing</think>Answer."),
+            response_id=_RESPONSE_ID,
+            mode=ReasoningMode.INLINE,
+        )
+        message = body.choices[0].message
+        assert message.content == "<think>weighing</think>Answer."
+        assert message.reasoning_content is None
+
+    def test_off_response_still_splits_leaked_thinking(self) -> None:
+        # A template that ignores enable_thinking still thinks; presentation
+        # falls back to the separate split so content stays clean.
+        body = canonical_to_completions_response(
+            self._resp("<think>anyway</think>ok"),
+            response_id=_RESPONSE_ID,
+            mode=ReasoningMode.OFF,
+        )
+        message = body.choices[0].message
+        assert message.content == "ok"
+        assert message.reasoning_content == "anyway"
+
+    async def _inline_deltas(self, texts: list[str]) -> list[CompletionsStreamDelta]:
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            *[ContentBlockDelta(index=0, delta=TextDelta(text=t)) for t in texts],
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events),
+                model="m",
+                response_id="msg_x",
+                mode=ReasoningMode.INLINE,
+            )
+        )
+        return [c.choices[0].delta for c in chunks if c.choices]
+
+    async def test_inline_stream_carries_think_text_as_content(self) -> None:
+        deltas = await self._inline_deltas(["<think>", "why", "</think>", "hi"])
+        content = "".join(d.content or "" for d in deltas)
+        assert content == "<think>why</think>hi"
+        assert all(d.reasoning_content is None for d in deltas)
+
+    async def test_inline_stream_does_not_buffer_partial_tags(self) -> None:
+        # The splitter buffers a possible tag prefix; inline mode must not,
+        # so every model token reaches the client the moment it arrives.
+        deltas = await self._inline_deltas(["<thi", "nk>", "hm"])
+        content_deltas = [d.content for d in deltas if d.content]
+        assert content_deltas == ["<thi", "nk>", "hm"]
+
+
+class TestReasoningRequestField:
+    """The ``reasoning`` request field selects the mode; foreign shapes are ignored."""
+
+    def test_reasoning_off_sets_think_false(self) -> None:
+        req = completions_to_canonical_request(
+            CompletionsRequest.model_validate(
+                {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+            ),
+            mode=ReasoningMode.OFF,
+        )
+        assert req.think is False
+
+    def test_default_mode_leaves_think_unset(self) -> None:
+        req = _translate({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        assert req.think is None
+
+    def test_reasoning_field_parses_mode_values(self) -> None:
+        request = CompletionsRequest.model_validate(
+            {
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning": "inline",
+            }
+        )
+        assert request.reasoning is ReasoningMode.INLINE
+
+    def test_object_shaped_reasoning_is_ignored(self) -> None:
+        # OpenRouter-style clients send reasoning as an object; that is not
+        # this field, and the request must keep working as before.
+        request = CompletionsRequest.model_validate(
+            {
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning": {"effort": "high"},
+            }
+        )
+        assert request.reasoning is None
+
+    def test_unknown_reasoning_string_is_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CompletionsRequest.model_validate(
+                {
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning": "loud",
+                }
+            )

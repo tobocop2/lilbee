@@ -3,6 +3,20 @@
 from enum import StrEnum
 
 
+class ReasoningMode(StrEnum):
+    """How ``/v1/chat/completions`` presents a reasoning model's thinking.
+
+    ``separate`` reports thinking in ``reasoning_content`` (OpenAI-compatible).
+    ``inline`` keeps thinking in ``content`` as ``<think>`` text, for clients
+    that never render ``reasoning_content``. ``off`` asks the model not to
+    think; thinking templates honor the request and other templates ignore it.
+    """
+
+    SEPARATE = "separate"
+    INLINE = "inline"
+    OFF = "off"
+
+
 class ChatMode(StrEnum):
     """How chat turns route through retrieval. ``search`` uses retrieval; ``chat`` skips it."""
 

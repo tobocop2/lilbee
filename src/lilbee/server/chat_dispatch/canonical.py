@@ -106,6 +106,9 @@ class CanonicalChatRequest:
     presence_penalty: float | None = None
     stop: list[str] | None = None
     stream: bool = False
+    # Thinking-template control (chat_template_kwargs.enable_thinking); None
+    # leaves the model's template default in place.
+    think: bool | None = None
 
 
 @dataclass(frozen=True)
