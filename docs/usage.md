@@ -1519,8 +1519,6 @@ vision model is configured, it takes precedence.
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
-See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
-
 ### Tesseract
 
 [Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically

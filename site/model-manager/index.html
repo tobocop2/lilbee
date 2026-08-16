@@ -57,7 +57,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816b">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
@@ -90,12 +90,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -104,8 +102,6 @@
       <div class="menu">
         <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
         <div class="menu-panel">
-          <a href="/#install-pip">pip</a>
-          <a href="/#install-uv">uv</a>
           <a href="/#install-brew">homebrew</a>
           <a href="/#install-aur">AUR</a>
           <a href="/#install-docker">docker</a>
@@ -115,6 +111,8 @@
           <a href="/#install-scoop">scoop</a>
           <a href="/#install-binary">binary</a>
           <a href="/#install-source">source</a>
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
         </div>
       </div>
       <div class="menu">
@@ -170,7 +168,8 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline">Run and manage <strong>local AI models</strong>, in one program. lilbee browses Hugging Face, downloads a model, gives it a role, and runs it on your own GPU. It is a complete model manager, not a client of one.</h1>
-      <p class="sub">You do not need a separate model runner. lilbee places large models across multiple GPUs sized to each card, and keeps models warm or swaps them on demand.</p>
+      <p class="sub">You do not need a separate model runner. lilbee places large models across multiple GPUs, sized to each card. It keeps models warm or swaps them on demand.</p>
+      <p class="trust"><strong>Private by default.</strong> Your files stay on your machine. No telemetry, no account. A cloud model runs only when you pick one.</p>
     </section>
 
     <section>
@@ -195,7 +194,7 @@
         </div>
         <div class="cap">
           <h3>VRAM-aware multi-GPU fleet</h3>
-          <p>Large models are split across your GPUs sized to each card, and kept warm or swapped on demand. See <a href="/gpu/">will it fit your GPU</a>.</p>
+          <p>Large models are split across your GPUs, sized to each card, and kept warm or swapped on demand. See <a href="/gpu/">will it fit your GPU</a>.</p>
         </div>
       </div>
     </section>

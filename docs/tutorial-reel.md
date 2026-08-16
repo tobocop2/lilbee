@@ -154,10 +154,7 @@ Same shape against a full XML reference library. The agent indexes Godot 4's cla
 reference (810 XML files, 3449 chunks) via `lilbee-worker`, then `lilbee_search`-es
 for `AStarGrid2D`, `TileMap`, `RandomNumberGenerator`, and friends as it writes a
 procedural level generator. Every API call is backed by a
-`godot-classes/<Class>.xml:line` citation. See
-[`docs/benchmarks/godot-level-generator.md`](benchmarks/godot-level-generator.md)
-for the side-by-side against a no-RAG baseline (4 hallucinated APIs without
-lilbee, 0 with).
+`godot-classes/<Class>.xml:line` citation.
 
 ![mcp + godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
@@ -183,14 +180,8 @@ and the cited answer.
 
 ## Written walkthroughs
 
-For longer side-by-side comparisons and benchmarks, see
-[`docs/benchmarks/`](benchmarks/):
-
-- [Godot level generator](benchmarks/godot-level-generator.md): lilbee as a
-  retrieval backend for an AI coding agent, with a side-by-side against a pure
-  web-search baseline.
-- [Vision OCR model comparison](benchmarks/vision-ocr.md): output quality and
-  retrieval quality across vision OCR backends on a scanned PDF.
+For longer benchmark writeups (multi-GPU ingest, retrieval quality, wiki
+validation), see [`docs/benchmarks/`](benchmarks/).
 
 ---
 
