@@ -349,6 +349,33 @@ def self_check_cmd(
 
 _SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
 
+# The name of the functional charset-detection leg in self-check-extras output.
+_CHARSET_PROBE = "charset_detection"
+
+
+def _probe_charset_detection() -> str | None:
+    """Run the real chardet pipeline; return an error string when it is broken.
+
+    A bare `import chardet` passes even when the frozen bundle is broken:
+    chardet imports `chardet.models` (and loads its `.bin` data) lazily on the
+    first `detect()` call, and the crawl path only reaches that call for a
+    response without a charset header. This probe forces the full detection
+    pipeline offline, so the release gate fails deterministically when a
+    frozen build cannot detect charsets.
+    """
+    # Any failure below means the bundle is broken; the caller reports the
+    # error and fails the check, so nothing is swallowed.
+    try:
+        import chardet
+
+        sample = "字符集检测自检文本 用于验证冻结构建" * 8
+        result = chardet.detect(sample.encode("gb18030"))
+        if not result.get("encoding"):
+            return f"chardet.detect returned no encoding: {result!r}"
+        return None
+    except Exception as exc:
+        return str(exc)
+
 
 def self_check_extras_cmd() -> None:
     """Verify optional extras (crawler, litellm, graph) are bundled and importable."""
@@ -363,10 +390,16 @@ def self_check_extras_cmd() -> None:
             results[f"{name}_error"] = str(exc)
             failed.append(name)
 
+    probe_error = _probe_charset_detection()
+    results[_CHARSET_PROBE] = probe_error is None
+    if probe_error is not None:
+        results[f"{_CHARSET_PROBE}_error"] = probe_error
+        failed.append(_CHARSET_PROBE)
+
     if cfg.json_mode:
         json_output({"ok": not failed, **results})
     else:
-        for name in _SELF_CHECK_EXTRAS:
+        for name in (*_SELF_CHECK_EXTRAS, _CHARSET_PROBE):
             ok = results.get(name) is True
             tag = (
                 f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"

@@ -1,10 +1,9 @@
 --- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
 +++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
-@@ -446,6 +446,179 @@
- 
+@@ -447,7 +447,298 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
  static bool payload_created = false;
-+#endif
+ #endif
 +
 +// lilbee: cold-start feedback and a warm-start fast path.
 +//
@@ -47,12 +46,126 @@
 +static bool lilbee_progress_on = false;
 +static int lilbee_last_percent = -1;
 +static int lilbee_pad = 0;
-+
+ 
 +static void lilbee_stamp_path(filename_char_t *buffer, size_t size) {
 +    buffer[0] = 0;
 +    appendStringSafeFilename(buffer, payload_path, size);
 +    appendCharSafeFilename(buffer, FILENAME_SEP_CHAR, size);
 +    appendStringSafeFilename(buffer, LILBEE_STAMP_NAME, size);
++}
++
++// The manifest lists every payload entry ("<size>\t<path>" per line, -1 for
++// symlinks). The warm-start path stats each entry before trusting the cache:
++// without this, a damaged cached tree (a file deleted by a cache cleanup, or
++// a re-extraction over the shared {VERSION} dir interrupted mid-write when
++// switching binary variants) is reused on every later launch, because the
++// stamp alone only proves the payload size. Stock Nuitka re-verifies the CRC32
++// of every file on every launch and self-heals; the stat sweep restores that
++// self-healing for missing and resized files at microseconds instead of
++// seconds. A same-size content change still slips through until a cold pass
++// runs; only the full CRC path can catch that, and paying it per launch is
++// what this fast path exists to avoid.
++#define LILBEE_MANIFEST_NAME ".lilbee-bootstrap-manifest"
++
++// Defined further down; needed on the first-ever run before any file lands.
++static bool createContainingDirectory(filename_char_t const *path);
++
++static FILE *lilbee_manifest_handle = NULL;
++
++static void lilbee_manifest_paths(filename_char_t *final_buffer, filename_char_t *tmp_buffer, size_t size) {
++    final_buffer[0] = 0;
++    appendStringSafeFilename(final_buffer, payload_path, size);
++    appendCharSafeFilename(final_buffer, FILENAME_SEP_CHAR, size);
++    appendStringSafeFilename(final_buffer, LILBEE_MANIFEST_NAME, size);
++
++    tmp_buffer[0] = 0;
++    appendStringSafeFilename(tmp_buffer, final_buffer, size);
++    appendStringSafeFilename(tmp_buffer, ".tmp", size);
++}
++
++static void lilbee_manifest_begin(void) {
++    static filename_char_t manifest[4096];
++    static filename_char_t manifest_tmp[4096];
++    lilbee_manifest_paths(manifest, manifest_tmp, sizeof(manifest) / sizeof(filename_char_t));
++
++    // A stale manifest must not survive an extraction that fails to commit:
++    // the stamp is rewritten unconditionally at the end, and a stamp that
++    // matches an old manifest would validate the wrong file set.
++    unlink(manifest);
++    // On the first-ever run the payload directory does not exist yet.
++    createContainingDirectory(manifest_tmp);
++    lilbee_manifest_handle = fopen(manifest_tmp, "wb");
++}
++
++static void lilbee_manifest_note(filename_char_t const *target_path, long long file_size) {
++    if (lilbee_manifest_handle != NULL) {
++        fprintf(lilbee_manifest_handle, "%lld\t%s\n", file_size, target_path);
++    }
++}
++
++static void lilbee_manifest_commit(void) {
++    if (lilbee_manifest_handle == NULL) {
++        return;
++    }
++    fclose(lilbee_manifest_handle);
++    lilbee_manifest_handle = NULL;
++
++    static filename_char_t manifest[4096];
++    static filename_char_t manifest_tmp[4096];
++    lilbee_manifest_paths(manifest, manifest_tmp, sizeof(manifest) / sizeof(filename_char_t));
++    rename(manifest_tmp, manifest);
++}
++
++// True when every manifest entry is still present with its recorded size.
++static bool lilbee_manifest_matches(void) {
++    static filename_char_t manifest[4096];
++    static filename_char_t manifest_tmp[4096];
++    lilbee_manifest_paths(manifest, manifest_tmp, sizeof(manifest) / sizeof(filename_char_t));
++
++    FILE *handle = fopen(manifest, "rb");
++    if (handle == NULL) {
++        return false;
++    }
++
++    static char line[4200];
++    bool ok = true;
++    unsigned long entries = 0;
++
++    while (fgets(line, sizeof(line), handle) != NULL) {
++        char *sep = strchr(line, '\t');
++        if (sep == NULL) {
++            ok = false;
++            break;
++        }
++        *sep = 0;
++        char *path = sep + 1;
++        size_t length = strlen(path);
++        while (length > 0 && (path[length - 1] == '\n' || path[length - 1] == '\r')) {
++            path[--length] = 0;
++        }
++
++        long long recorded_size = strtoll(line, NULL, 10);
++        struct stat entry_stat;
++
++        if (recorded_size < 0) {
++            // Symlink: presence is all the payload records.
++            if (lstat(path, &entry_stat) != 0) {
++                ok = false;
++                break;
++            }
++        } else if (stat(path, &entry_stat) != 0 || !S_ISREG(entry_stat.st_mode) ||
++                   entry_stat.st_size != (off_t)recorded_size) {
++            ok = false;
++            break;
++        }
++
++        entries += 1;
++    }
++
++    fclose(handle);
++
++    // An empty manifest proves nothing; force the cold path.
++    return ok && entries > 0;
 +}
 +
 +// True when the stamp records this payload's size; fills first_filename from it.
@@ -82,6 +195,10 @@
 +        stamped_main[--length] = 0;
 +    }
 +    if (length == 0 || access(stamped_main, X_OK) != 0) {
++        return false;
++    }
++
++    if (!lilbee_manifest_matches()) {
 +        return false;
 +    }
 +
@@ -177,10 +294,12 @@
 +    fputs(keep_logo ? "\033[?25l" : "\033[?25h", stderr);
 +    fflush(stderr);
 +}
- #endif
- 
++#endif
++
  #define MAX_CREATED_DIRS 1024
-@@ -1151,6 +1324,13 @@
+ static filename_char_t *created_dir_paths[MAX_CREATED_DIRS];
+ int created_dir_count = 0;
+@@ -1151,6 +1442,13 @@
      wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
  #endif
  
@@ -194,7 +313,7 @@
      if (process_role == NULL) {
  #if defined(_WIN32)
          bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
-@@ -1169,6 +1349,7 @@
+@@ -1169,6 +1467,7 @@
  #endif
  
  #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
@@ -202,24 +321,35 @@
      NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
  
      char header[3];
-@@ -1202,6 +1383,11 @@
+@@ -1202,6 +1501,12 @@
  
      NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
  
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +    unsigned char const *lilbee_payload_start = payload_current;
 +    lilbee_progress_begin();
++    lilbee_manifest_begin();
 +#endif
 +
  #if _NUITKA_ONEFILE_TEMP_BOOL
      payload_created = true;
  #endif
-@@ -1336,10 +1522,22 @@
+@@ -1252,6 +1557,8 @@
+                 fatalErrorTempFileCreate(target_path);
+             }
+ 
++            lilbee_manifest_note(target_path, -1);
++
+             continue;
+         }
+ #endif
+@@ -1336,10 +1643,26 @@
                  fatalErrorTempFiles();
              }
          }
 +
 +#if !defined(_WIN32) && !defined(__MSYS__)
++        lilbee_manifest_note(target_path, (long long)file_size);
 +        lilbee_progress_update((unsigned long long)(payload_current - lilbee_payload_start), payload_size);
 +#endif
      }
@@ -230,6 +360,9 @@
 +    // argc == 1 means no user arguments: the child launches the TUI, whose splash
 +    // repaints this wordmark in place.
 +    lilbee_progress_end(argc == 1);
++    // The manifest lands before the stamp: the stamp is the commit point, so
++    // a crash between the two leaves a stamp-less cache that cold-starts.
++    lilbee_manifest_commit();
 +    lilbee_stamp_write(first_filename);
 +#endif
 +    }
