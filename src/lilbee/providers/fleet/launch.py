@@ -50,6 +50,10 @@ class InstanceLaunch:
     A vision projector's weights are the case: llama.cpp allocates them without
     emitting a "buffer size" line, so the readback total is short by exactly this
     much and the self-check would warn on a load that was sized correctly.
+
+    Log-mode readback only. An engine serving GET /memory reports the projector
+    per device in its mmproj field, so that path compares the full estimate and
+    ignores this.
     """
 
     def to_state(self) -> dict:

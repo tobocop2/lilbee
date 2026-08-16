@@ -26,8 +26,8 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 
 Scripts read these env vars:
 
-- `LLAMA_CPP_VERSION` — the llama.cpp source tag to build from (optional; the
-  build script has a default pin).
+- `LLAMA_CPP_REPO` / `LLAMA_CPP_REF` — the llama.cpp repo and ref to build
+  from (optional; the build script defaults to the pin in engine-versions.env).
 - `BACKEND` — one of `cpu`, `vulkan`, `metal`, `cu121`, `cu122`, `cu123`,
   `cu124`, `rocm`, `sycl`.
 - `LLAMA_BUILD_DIR` — output directory for the built/fetched wheel.

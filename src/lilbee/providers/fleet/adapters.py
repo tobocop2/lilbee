@@ -253,13 +253,16 @@ def build_server_argv(
     no_mmap: bool = False,
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
+    memory_endpoint: bool = False,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
     ``--ctx-size`` is the per-slot context times the slot count, since
     llama-server divides total context across parallel slots. ``n_cpu_moe``
     wins over ``cpu_moe``; the pair would offload the same tensors twice.
-
+    ``memory_endpoint`` is set only for a binary whose ``--help`` advertises
+    ``--memory`` (readback.supports_memory_readback): a stock engine dies at
+    launch on the unknown flag.
     """
     argv = [
         str(binary),
@@ -304,5 +307,9 @@ def build_server_argv(
         argv += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
         argv += ["--cpu-moe"]
+    if memory_endpoint:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        argv += [MEMORY_FLAG]
     argv += list(spec.extra_args)
     return argv
