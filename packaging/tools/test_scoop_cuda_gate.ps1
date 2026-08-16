@@ -34,14 +34,22 @@ function Test-Gate {
     )
     $script:SmiOutput = $Output
     $script:SmiArgs = @()
+    $savedPath = $env:Path
     if ($NoSmi) {
         if (Test-Path function:nvidia-smi) { Remove-Item function:nvidia-smi }
+        # On a box with a real NVIDIA card, Get-Command would still resolve
+        # nvidia-smi through PATH; clear it so absence is actually absent.
+        $env:Path = ''
     } else {
         Set-Item function:nvidia-smi $script:stub
     }
 
     $build = ''
-    . ([scriptblock]::Create($script:detect))
+    try {
+        . ([scriptblock]::Create($script:detect))
+    } finally {
+        $env:Path = $savedPath
+    }
 
     $shown = if ($build) { $build } else { 'vulkan' }
     if ($build -eq $Expect) {
