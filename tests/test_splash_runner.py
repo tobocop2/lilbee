@@ -388,13 +388,24 @@ def test_main_invalid_fd():
 
 
 def test_main_valid_fd():
-    """main runs animation_loop with a valid pipe fd."""
+    """main runs animation_loop with a valid pipe reference.
+
+    argv carries what the parent passes: the fd on POSIX, the pipe's OS
+    handle on Windows (fds do not survive process boundaries there).
+    """
     r, w = os.pipe()
     os.close(w)
 
+    if sys.platform == "win32":
+        import msvcrt
+
+        pipe_ref = str(msvcrt.get_osfhandle(r))
+    else:
+        pipe_ref = str(r)
+
     from lilbee.runtime._splash_runner import main
 
-    with patch("sys.argv", ["_splash_runner", str(r)]):
+    with patch("sys.argv", ["_splash_runner", pipe_ref]):
         main()
 
 
