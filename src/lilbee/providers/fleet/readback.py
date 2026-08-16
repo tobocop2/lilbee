@@ -1,16 +1,22 @@
-"""What the engine actually allocated, read back from its own startup report.
+"""What the engine actually allocated, read back from its own report.
 
 Compares the planner's estimate against reality per device, and warns naming the
 role, the estimate and the reality when they diverge.
 
-The log is the only source. There is no API: ``llama_model_size`` is the whole
-model's weights and nothing per device, ``llama_state_get_size`` is session
-state, the per-device figures come from ``ggml_backend_buffer_get_size`` on
-handles the server never exposes, and llama-server's HTTP surface carries none of
-it (``/props`` is metadata, ``/metrics`` is token counters; both checked against
-a running server).
+Two sources, picked per engine binary. An engine that advertises ``--memory``
+in its ``--help`` (llama.cpp PR 26130; the bundled engine is built from that
+fork) serves ``GET /memory``: per-device rows carrying model, context, compute
+and mmproj bytes under the same device names ``--device`` takes. That is the
+preferred source -- a promised JSON shape, the vision projector reported on its
+real device, and no trace-level log required.
 
-The format, from upstream source:
+An engine without the flag falls back to its startup log, which is then the
+only place these numbers exist: ``llama_model_size`` is the whole model's
+weights and nothing per device, and a stock server's HTTP surface carries none
+of it (``/props`` is metadata, ``/metrics`` is token counters; both checked
+against a running server).
+
+The log format, from upstream source:
 
     src/llama-model.cpp     "%s: %12s model buffer size = %8.2f MiB"
     src/llama-kv-cache.cpp  "%s: %10s KV buffer size = %8.2f MiB"
@@ -24,8 +30,10 @@ still finds every line. A build that stops matching is reported, not swallowed
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
+import subprocess
 from pathlib import Path
 
 from lilbee.providers.fleet.devices import FleetDevice
@@ -62,13 +70,14 @@ _MAPPED_SUFFIX = "_Mapped"
 # ggml names a row-split buffer "<backend>_Split", one allocation shared by every
 # card in the split rather than a device of its own.
 _SPLIT_SUFFIX = "_Split"
-# Host memory rather than a GPU, in two shapes from ggml: the CPU backend's own
-# buffers (CPU, CPU_Mapped, and AMX, which is a CPU extension), and every GPU
-# backend's pinned-host allocator, named "<backend>_Host" by ggml-cuda, -sycl,
-# -vulkan, -cann and -hip alike. Observed as CUDA_Host, Vulkan_Host, ROCm_Host.
-# None of it occupies VRAM; charging it to a card reports a phantom overrun on
-# every partially offloaded model.
-_HOST_PREFIXES = ("CPU", "AMX")
+# Host memory rather than a GPU, in three shapes: the CPU backend's own
+# buffers (CPU, CPU_Mapped, CPU_REPACK, and AMX, which is a CPU extension),
+# every GPU backend's pinned-host allocator, named "<backend>_Host" by
+# ggml-cuda, -sycl, -vulkan, -cann and -hip alike (observed as CUDA_Host,
+# Vulkan_Host, ROCm_Host), and the single "Host" row GET /memory aggregates
+# them into. None of it occupies VRAM; charging it to a card reports a phantom
+# overrun on every partially offloaded model.
+_HOST_PREFIXES = ("CPU", "AMX", "Host")
 _HOST_SUFFIX = "_Host"
 
 
@@ -338,6 +347,115 @@ def _report_per_device(
         estimated.get(worst_label, 0) / 1024**3,
     )
     return True
+
+
+# llama-server flag (llama.cpp PR 26130) that both enables GET /memory and
+# marks, via --help, an engine that has it. Launch argv and the swap config key
+# the readback mode off its presence.
+MEMORY_FLAG = "--memory"
+
+# The flag as --help advertises it. The lookahead keeps historic longer flags
+# (--memory-f32) from reading as support for the endpoint.
+_HELP_MEMORY_RE = re.compile(r"--memory(?!\S)")
+# --help exits from arg parsing, before any backend or model load, so this is
+# generous; a binary that cannot even print usage in this time is not one the
+# fleet should silently trust either way.
+_HELP_PROBE_TIMEOUT_S = 15.0
+
+
+@functools.lru_cache(maxsize=8)
+def supports_memory_readback(binary: Path) -> bool:
+    """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
+
+    Read from the binary's own ``--help``, once per path: a stock llama-server
+    exits with "unknown argument" when handed a flag it lacks, so the launch
+    must never carry it on advertisement it did not see. Any failure to run or
+    to answer reads as unsupported, which degrades to the log path rather than
+    a failed launch.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
+            [str(binary), "--help"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_HELP_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(_HELP_MEMORY_RE.search(f"{done.stdout}\n{done.stderr}"))
+
+
+# The per-device byte fields of one GET /memory row. Summed because the total
+# they form is the same one the estimate predicts and the log path sums from
+# its buffer lines; mmproj is the projector the log path could never see.
+_MEMORY_ROW_FIELDS = ("model", "context", "compute", "mmproj")
+
+
+def parse_memory_rows(payload: object) -> dict[str, int]:
+    """Bytes the engine reported allocating per device, from a /memory payload.
+
+    Empty for anything that is not the endpoint's ``{"data": [rows]}`` shape,
+    and per row for junk within it: this crosses a process boundary, and the
+    caller says "unverified" for an empty parse rather than crashing readiness.
+    """
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    totals: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        size = 0
+        for field in _MEMORY_ROW_FIELDS:
+            value = row.get(field, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                size += int(value)
+        totals[name] = totals.get(name, 0) + size
+    return totals
+
+
+def check_memory_report(
+    role: WorkerRole,
+    model: str,
+    estimated_bytes: int,
+    est_by_device: dict[str, int] | None,
+    payload: object,
+) -> bool:
+    """Compare a ``GET /memory`` payload against the estimate; the API-mode twin
+    of :func:`check_launch`.
+
+    No ``unreported_bytes`` adjustment exists here on purpose: the endpoint
+    reports the vision projector per device in its ``mmproj`` field, so the
+    quantity that adjustment approximates is in the rows themselves and the
+    comparison is exact where the log path had to guess.
+
+    An engine that took the flag but produced no usable rows is reported, not
+    swallowed, for the same reason a finished load with an unreadable log is:
+    silent, it looks exactly like a correct estimate.
+    """
+    per_device = {
+        label: size
+        for label, size in parse_memory_rows(payload).items()
+        if not _is_host_device(label)
+    }
+    if not per_device:
+        log.warning(
+            "The %s engine answered /memory without any per-device rows, so its "
+            "estimate is unverified. The endpoint's response shape has most likely "
+            "changed since the build lilbee's reader was written against.",
+            role.value,
+        )
+        return True
+    if est_by_device:
+        return _report_per_device(role, model, est_by_device, per_device)
+    return report_divergence(
+        role, model, estimated_bytes, sum(per_device.values()), tolerance=_TOLERANCE
+    )
 
 
 def report_missing_log(log_dir: Path, model_id: str, role: WorkerRole) -> bool:

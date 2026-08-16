@@ -5,14 +5,16 @@ The set of architectures lilbee will pull has to be the set the bundled engine c
 actually load, so it is read from the engine's own arch table rather than from a
 third-party package that happens to enumerate GGUF architecture names.
 
-``engine-versions.env`` pins the engine as a llama.cpp release tag; the tag is a
-build-time source coordinate only, not a dependency. This resolves the tag's commit
-over the GitHub API, so the architectures below are the ones the shipped binary was
-actually built with, then reads them from that commit's ``src/llama-arch.cpp``,
-which maps every ``LLM_ARCH_*`` to the ``general.architecture`` string a GGUF carries.
-Nothing here is imported at runtime, and CI needs no llama.cpp checkout.
+``engine-versions.env`` pins the engine as a repo plus ref
+(``ENGINE_LLAMA_CPP_REPO`` / ``ENGINE_LLAMA_CPP_REF``), the same coordinates
+``build_llama_server.sh`` clones and compiles llama-server from. This resolves that
+ref's commit over the GitHub API, so the architectures below are the ones the shipped
+binary was actually built with, then reads them from that commit's
+``src/llama-arch.cpp``, which maps every ``LLM_ARCH_*`` to the
+``general.architecture`` string a GGUF carries. Nothing here is imported at runtime,
+and CI needs no llama.cpp checkout.
 
-Run after bumping ``ENGINE_LLAMA_CPP_VERSION`` (``make engine-archs``); the check in
+Run after bumping ``ENGINE_LLAMA_CPP_REF`` (``make engine-archs``); the check in
 ``tests/test_engine_archs.py`` fails when the generated file is left behind.
 """
 
@@ -30,10 +32,12 @@ from jinja2 import Template
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENGINE_ENV = _REPO_ROOT / "engine-versions.env"
 _OUT = _REPO_ROOT / "src" / "lilbee" / "_generated" / "engine_archs.py"
+_README = _REPO_ROOT / "README.md"
+_README_START = "<!-- supported-archs:start -->"
+_README_END = "<!-- supported-archs:end -->"
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _TEMPLATE = "engine_archs.py.jinja"
 
-_LLAMA_CPP = "ggml-org/llama.cpp"
 _ARCH_TABLE_PATH = "src/llama-arch.cpp"
 
 # { LLM_ARCH_LLAMA, "llama" } entries of llama.cpp's LLM_ARCH_NAMES table.
@@ -53,24 +57,32 @@ def _get_json(url: str) -> dict:
     return dict(resp.json())
 
 
-def engine_version(env_path: Path) -> str:
-    """``ENGINE_LLAMA_CPP_VERSION`` from engine-versions.env."""
+def engine_pin(env_path: Path) -> tuple[str, str]:
+    """``(repo, ref)`` of the pinned llama.cpp source from engine-versions.env.
+
+    The repo is returned as the GitHub API's ``owner/name`` slug, stripped from
+    the clone URL the build script uses.
+    """
+    values: dict[str, str] = {}
     for line in env_path.read_text().splitlines():
         key, _, value = line.partition("=")
-        if key.strip() == "ENGINE_LLAMA_CPP_VERSION":
-            return value.strip()
-    raise SystemExit(f"ENGINE_LLAMA_CPP_VERSION not found in {env_path}")
+        values[key.strip()] = value.strip()
+    try:
+        repo_url, ref = values["ENGINE_LLAMA_CPP_REPO"], values["ENGINE_LLAMA_CPP_REF"]
+    except KeyError as missing:
+        raise SystemExit(f"{missing.args[0]} not found in {env_path}") from None
+    return repo_url.removeprefix("https://github.com/").removesuffix(".git"), ref
 
 
-def tag_commit(version: str) -> str:
-    """The commit the llama.cpp tag *version* points at."""
-    url = f"https://api.github.com/repos/{_LLAMA_CPP}/commits/{version}"
-    return str(_get_json(url)["sha"])
+def pinned_commit(repo: str, ref: str) -> str:
+    """The commit *ref* resolves to in *repo*, through any annotated tag."""
+    commit = _get_json(f"https://api.github.com/repos/{repo}/commits/{ref}")
+    return str(commit["sha"])
 
 
-def arch_names(commit: str) -> frozenset[str]:
+def arch_names(repo: str, commit: str) -> frozenset[str]:
     """Every ``general.architecture`` string llama.cpp maps to an arch at *commit*."""
-    url = f"https://api.github.com/repos/{_LLAMA_CPP}/contents/{_ARCH_TABLE_PATH}?ref={commit}"
+    url = f"https://api.github.com/repos/{repo}/contents/{_ARCH_TABLE_PATH}?ref={commit}"
     source = base64.b64decode(_get_json(url)["content"]).decode("utf-8", "replace")
     names = set(_ARCH_ENTRY_RE.findall(source))
     if not names:
@@ -78,7 +90,43 @@ def arch_names(commit: str) -> frozenset[str]:
     return frozenset(names - {_UNKNOWN_ARCH})
 
 
-def render(version: str, commit: str, archs: frozenset[str]) -> str:
+def render_readme_block(archs: frozenset[str]) -> str:
+    """The README's generated supported-architectures block, markers included.
+
+    A four-column table of the sorted names."""
+    names_list = sorted(archs)
+    cols = 4
+    rows = []
+    for i in range(0, len(names_list), cols):
+        cells = [f"`{a}`" for a in names_list[i : i + cols]]
+        cells += [""] * (cols - len(cells))
+        rows.append("| " + " | ".join(cells) + " |")
+    header = "|" + " |" * cols + "\n" + "|" + "---|" * cols
+    names = header + "\n" + "\n".join(rows)
+    return (
+        f"{_README_START}\n"
+        "lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF "
+        "model built on one of the architectures below. The list comes from the bundled "
+        "engine itself and grows with every engine update.\n"
+        "\n"
+        "<details>\n"
+        f"<summary><b>All {len(archs)} supported model architectures. Click to expand.</b></summary>\n"
+        "\n"
+        f"{names}\n"
+        "\n"
+        "</details>\n"
+        f"{_README_END}"
+    )
+
+
+def readme_with_block(readme: str, block: str) -> str:
+    """*readme* with the generated block replacing whatever sits between the markers."""
+    start = readme.index(_README_START)
+    end = readme.index(_README_END) + len(_README_END)
+    return readme[:start] + block + readme[end:]
+
+
+def render(ref: str, commit: str, archs: frozenset[str]) -> str:
     """The generated module, laid out as ``ruff format`` leaves it.
 
     A Python module rather than a data file on purpose: lilbee's standalone builds
@@ -92,7 +140,7 @@ def render(version: str, commit: str, archs: frozenset[str]) -> str:
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
-    return template.render(version=version, commit=commit, archs=sorted(archs))
+    return template.render(ref=ref, commit=commit, archs=sorted(archs))
 
 
 def main() -> int:
@@ -104,21 +152,24 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    version = engine_version(_ENGINE_ENV)
-    commit = tag_commit(version)
-    archs = arch_names(commit)
-    rendered = render(version, commit, archs)
+    repo, ref = engine_pin(_ENGINE_ENV)
+    commit = pinned_commit(repo, ref)
+    archs = arch_names(repo, commit)
+    rendered = render(ref, commit, archs)
+
+    readme_new = readme_with_block(_README.read_text(), render_readme_block(archs))
 
     if args.check:
         current = _OUT.read_text() if _OUT.exists() else ""
-        if current != rendered:
-            print(f"{_OUT} is out of date; run: make engine-archs", file=sys.stderr)
+        if current != rendered or _README.read_text() != readme_new:
+            print(f"{_OUT} or the README arch block is out of date; run: make engine-archs", file=sys.stderr)
             return 1
-        print(f"{_OUT} is up to date ({len(archs)} architectures)")
+        print(f"{_OUT} and the README arch block are up to date ({len(archs)} architectures)")
         return 0
 
     _OUT.write_text(rendered)
-    print(f"wrote {_OUT}: {len(archs)} architectures from llama.cpp {commit[:12]} ({version})")
+    _README.write_text(readme_new)
+    print(f"wrote {_OUT} and the README arch block: {len(archs)} architectures from llama.cpp {commit[:12]} ({ref})")
     return 0
 
 
