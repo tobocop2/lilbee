@@ -11,8 +11,8 @@ name: Build multi-GPU server wheels and executables
 on:
   workflow_dispatch:
     inputs:
-      llama_cpp_version:
-        description: "Override the llama.cpp release tag that gets built (blank = the pin in engine-versions.env)."
+      llama_cpp_ref:
+        description: "Override the llama.cpp ref to build (blank = the ENGINE_LLAMA_CPP_REF pin in engine-versions.env)."
         default: ""
         required: false
   workflow_call:
@@ -21,8 +21,8 @@ on:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
         default: ""
-      llama_cpp_version:
-        description: "Override the llama.cpp release tag that gets built (blank = the pin in engine-versions.env)."
+      llama_cpp_ref:
+        description: "Override the llama.cpp ref to build (blank = the ENGINE_LLAMA_CPP_REF pin in engine-versions.env)."
         type: string
         default: ""
 
@@ -66,7 +66,7 @@ jobs:
       # most that fits. Plain C++ backends are lighter and take four.
       ENGINE_BUILD_JOBS: ${{ (startsWith(matrix.backend, 'cu') || matrix.backend == 'rocm') && '2' || '4' }}
       LLAMA_BUILD_DIR: "/tmp/llama-build"
-      LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}
+      LLAMA_CPP_REF: ${{ inputs.llama_cpp_ref }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       PKG_DIR: packaging/engine-wheel
 
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
 
       # The mirror first, same as the executable builds. This job publishes to it
       # but used to never read it, so every warm run rebuilt engines the mirror

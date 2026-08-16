@@ -310,7 +310,7 @@ class TestEnginePin:
                 key, value = line.split("=", 1)
                 env[key.strip()] = value.strip()
         pin = lilbee_engine.get_engine_pin()
-        assert env["ENGINE_LLAMA_CPP_VERSION"] in pin
+        assert env["ENGINE_LLAMA_CPP_REF"] in pin
         assert env["ENGINE_LLAMA_SWAP_VERSION"] in pin
         assert env["ENGINE_GGUF_PARSER_REF"] in pin
 

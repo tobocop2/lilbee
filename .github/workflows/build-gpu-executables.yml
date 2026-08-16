@@ -50,14 +50,16 @@ jobs:
       matrix:
         include:
           # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
-          # cu121 pins llama-cpp-version explicitly: CUDA 12.1's nvcc can't compile
-          # newer llama.cpp CUDA kernels (half-conversion in allreduce.cu), so this
-          # cell stays at b9665 when the main pin advances past what it compiles.
+          # cu121 pins upstream b9665 explicitly: CUDA 12.1's nvcc can't compile
+          # newer llama.cpp CUDA kernels (half-conversion in allreduce.cu), so
+          # this cell stays behind when the main pin advances. b9665 predates
+          # PR 26130, so this engine uses the log-parse readback.
           - os: ubuntu-22.04
             backend: cu121
             cuda: "12.1.0"
             asset_name: lilbee-linux-x86_64-cu121
-            llama-cpp-version: "b9665"
+            llama-cpp-repo: "https://github.com/ggml-org/llama.cpp"
+            llama-cpp-ref: "b9665"
           - os: ubuntu-22.04
             backend: cu124
             cuda: "12.4.0"
@@ -244,7 +246,8 @@ jobs:
         uses: ./.github/actions/bundle-llama-server
         with:
           backend: ${{ matrix.backend }}
-          llama-cpp-version: ${{ matrix.llama-cpp-version }}
+          llama-cpp-repo: ${{ matrix.llama-cpp-repo }}
+          llama-cpp-ref: ${{ matrix.llama-cpp-ref }}
           cache-env: ${{ matrix.os }}
           toolkit-version: ${{ matrix.cuda }}
 

@@ -13,7 +13,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from lilbee.providers.fleet.readback import engine_log_env
+from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -72,9 +72,11 @@ def build_swap_config(
 
     ``engine_log_dir`` points each engine at its own log there, at the verbosity
     that reports what it allocated. llama-swap forwards none of the upstream's
-    output, so that file is the only place those numbers exist, and reading them
-    back is what tells the planner whether its estimate held
-    (:mod:`lilbee.providers.fleet.readback`).
+    output, so for an engine without ``GET /memory`` that file is the only place
+    those numbers exist, and reading them back is what tells the planner whether
+    its estimate held (:mod:`lilbee.providers.fleet.readback`). A launch carrying
+    ``--memory`` serves the same numbers over HTTP instead and gets no log env:
+    the trace-level file is exactly what the endpoint retires.
     """
     models: dict[str, object] = {}
     for launch in launches:
@@ -85,7 +87,7 @@ def build_swap_config(
             _KEY_TTL: ttl_seconds,
         }
         env = dict(launch.env_overrides)
-        if engine_log_dir is not None:
+        if engine_log_dir is not None and MEMORY_FLAG not in launch.argv:
             env.update(engine_log_env(engine_log_dir, launch.model_id))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
