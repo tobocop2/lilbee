@@ -43,8 +43,13 @@ POLL_INTERVAL = 0.01
 _BAR_FALLOFF_DENSE = 1
 _BAR_FALLOFF_LIGHT = 2
 
-# Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
+# Subprocess entry point expects exactly ``python -m ... <pipe_ref>`` (script name + 1 arg).
 _EXPECTED_ARGV_LEN = 2
+
+# Console-mode bits for the legacy Windows console (Windows Terminal has VT on
+# by default, conhost does not).
+_STD_ERROR_HANDLE = -12
+_ENABLE_VT_PROCESSING = 0x0004
 
 # Sent down the pipe by ``splash.dismiss()`` when the TUI takes over the
 # terminal: the child must exit without writing anything (no frame clear, no
@@ -187,6 +192,37 @@ def poll_pipe(pipe_fd: int) -> PipeSignal:
     return _poll_pipe_posix(pipe_fd)  # pragma: no cover  POSIX-only
 
 
+def _open_pipe_ref(ref: int) -> int:
+    """Turn the argv pipe reference into a readable fd.
+
+    POSIX passes the fd itself (pass_fds keeps the number). Windows cannot
+    pass fds, so the parent sends the pipe's OS handle number and the child
+    reopens it as a fd here.
+    """
+    if sys.platform == "win32":  # pragma: no cover  Windows-only
+        import msvcrt
+
+        return msvcrt.open_osfhandle(ref, os.O_RDONLY)
+    return ref
+
+
+def _enable_vt_win32() -> None:  # pragma: no cover  Windows-only
+    """Turn on ANSI processing for the legacy console.
+
+    Skipped silently when stderr is not a console (GetConsoleMode fails);
+    the parent only starts the splash on a tty anyway.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(_STD_ERROR_HANDLE)
+    mode = ctypes.c_ulong(0)
+    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+
+
 def animation_loop(pipe_fd: int) -> None:
     """Run the animation, exiting when the pipe signals EOF or takeover.
 
@@ -205,7 +241,9 @@ def animation_loop(pipe_fd: int) -> None:
     got_signal = False
     pipe_signal = PipeSignal.OPEN
 
-    if sys.platform != "win32":  # pragma: no cover - POSIX-only SIGTERM handler
+    if sys.platform == "win32":  # pragma: no cover - Windows-only console setup
+        _enable_vt_win32()
+    else:  # pragma: no cover - POSIX-only SIGTERM handler
 
         def handle_term(signum: int, frame: object) -> None:
             nonlocal got_signal
@@ -262,13 +300,13 @@ def _animate_frames(
 
 
 def main() -> None:
-    """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_fd>``."""
+    """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_ref>``."""
     if len(sys.argv) != _EXPECTED_ARGV_LEN:
         sys.exit(1)
 
     try:
-        pipe_fd = int(sys.argv[1])
-    except ValueError:
+        pipe_fd = _open_pipe_ref(int(sys.argv[1]))
+    except (ValueError, OSError):
         sys.exit(1)
 
     try:

@@ -35,6 +35,13 @@ class StartupGate(Screen[None]):
     # reveal_landing resolve without reflection.
     app: LilbeeApp  # type: ignore[assignment]
 
+    # The app reference every worker and UI hop uses. ``self.app`` reads a
+    # contextvar that plain threads never carry and then walks ``_parent``,
+    # which raises NoActiveAppError the moment the gate detaches -- seen on
+    # Windows first launches, where the crash left a dead loading screen.
+    # Captured once in on_mount, on the UI thread, where resolution is certain.
+    _ui_app: LilbeeApp
+
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
             yield Static(_LOGO, id="gate-logo")
@@ -42,13 +49,14 @@ class StartupGate(Screen[None]):
             yield Static(msg.STARTUP_PREPARING, id="gate-status")
 
     def on_mount(self) -> None:
-        """Retire the launcher's splash now that Textual is painting.
+        """Capture the app for the workers, then retire the launcher's splash.
 
         The splash animates over the blank alt-screen right up to this moment,
         so the wordmark never leaves the terminal. Dismissal waits on the
         subprocess, so it runs off-thread; the refresh afterwards repaints
         anything a final splash frame may have touched.
         """
+        self._ui_app = self.app
         self._retire_splash()
 
     @work(thread=True, name="splash_retire", exit_on_error=False)
@@ -88,9 +96,9 @@ class StartupGate(Screen[None]):
         """
         try:
             if peek_services() is None:
-                self.app.canonicalize_persisted_models()
-            self.app.settle_landing()
-            self.app.adopt_services()
+                self._ui_app.canonicalize_persisted_models()
+            self._ui_app.settle_landing()
+            self._ui_app.adopt_services()
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.
@@ -108,11 +116,11 @@ class StartupGate(Screen[None]):
         """Hop to the UI thread, unless the app is already tearing down."""
         if self._stopping():
             return
-        self.app.call_from_thread(callback, *args)
+        self._ui_app.call_from_thread(callback, *args)
 
     def _fail(self, error: str) -> None:
         """Surface a failed start and hand the user to the rest of the TUI to fix it."""
-        self.app.notify(msg.STARTUP_FAILED.format(error=error), severity="error", timeout=8)
+        self._ui_app.notify(msg.STARTUP_FAILED.format(error=error), severity="error", timeout=8)
         self._release()
 
     def _release(self) -> None:
@@ -123,6 +131,6 @@ class StartupGate(Screen[None]):
         itself. No widget lookup here either: the gate can resolve before compose
         has mounted its children, and a missed query would strand the user.
         """
-        if self.app.screen is not self:
+        if self._ui_app.screen is not self:
             return
-        self.app.reveal_landing()
+        self._ui_app.reveal_landing()
