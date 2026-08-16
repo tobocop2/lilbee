@@ -129,6 +129,10 @@ dev = [
     # still need it: the pin test reads its metadata, and the local source
     # below makes it a workspace path rather than an index lookup.
     "lilbee-engine",
+    # The self-check-extras charset probe and its tests call chardet directly;
+    # without this, chardet only arrives via the crawler extra, and the bare
+    # `uv sync --locked` CI test env cannot run those tests.
+    "chardet>=7",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",
