@@ -194,8 +194,15 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. It runs and manages the models on every GPU you have, and answers questions about your files, your code, and the web, every answer cited. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>.</h1>
-      <p class="sub">Private by default: your files, the index, and every question and answer stay on your machine, with no telemetry and no account. The built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU: Metal, Vulkan, CUDA, or ROCm.</p>
+      <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. It runs and manages the models on every GPU you have. It answers questions about your files, your code, and the web, and it cites every answer. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>.</h1>
+      <p class="sub">The built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU: Metal, Vulkan, CUDA, or ROCm.</p>
+      <div class="surfaces privacy">
+        <span class="surfaces-label">private by default</span>
+        <span class="surface">your files stay on your machine</span>
+        <span class="surface">no telemetry</span>
+        <span class="surface">no account</span>
+        <span class="surface">cloud only when you pick it</span>
+      </div>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -204,7 +211,7 @@
         <span class="surface">web API</span>
         <span class="surface">Python library</span>
       </div>
-      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one. No Docker, no servers, no web stack to maintain, just one file you run on demand.</p>
+      <p class="trust"><strong>It runs on your hardware.</strong> No Docker, no servers, no web stack to maintain. One file you run on demand.</p>
     </section>
 
     <section id="demos">
@@ -401,7 +408,7 @@
           <div class="tutorial-clip">
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-auto-placement.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">Automatic placement: lilbee spreads the models across every GPU on its own — one big chat model tensor-split across all the cards, the embedder copied to each — then answers a grounded question while the per-card load bars move live.</p>
+          <p class="tutorial-caption">Automatic placement: lilbee spreads the models across every GPU on its own. The chat model is tensor-split across the cards; the embedder is copied to each. It then answers a grounded question while the per-card load bars move live.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpumanual" aria-labelledby="tutorial-tab-gpumanual" hidden>
@@ -899,12 +906,12 @@
 
     <section>
       <h2 class="label">your hardware, put to work</h2>
-      <p class="lede">Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own. No token budgets, no provider to depend on; the cloud's there when you want it.</p>
+      <p class="lede">lilbee runs local models on hardware you already own. No token budgets, no provider to depend on. The cloud is there when you want it.</p>
     </section>
 
     <section>
       <h2 class="label">one program</h2>
-      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing's left running, no container to keep alive. Want long-running? Use the command line and manage it yourself.</p>
+      <p class="lede">The model, the search through your files, and the chat run in one program. Run it when you want; close it when you're done. Nothing stays running, and no container stays alive. For a long-running server, use the command line.</p>
       <div class="shape">
         <div class="shape-box many">
           <div class="shape-h">the usual local-AI setup</div>
@@ -937,27 +944,27 @@
       <div class="caps">
         <div class="cap">
           <h3>runs local AI models itself</h3>
-          <p>Browse Hugging Face, pull a model, assign it to a role. lilbee runs it on Metal, Vulkan, CUDA, or ROCm; you never point it at a server you set up.</p>
+          <p>Browse Hugging Face, pull a model, assign it to a role. lilbee runs it on Metal, Vulkan, CUDA, or ROCm. You never point it at a server you set up.</p>
         </div>
         <div class="cap">
           <h3>a real retrieval pipeline (RAG)</h3>
-          <p>A real search engine, built on published research: it ranks results by how well they answer you, so the best match comes back first. 50+ settings to tune.</p>
+          <p>A real search engine, built on published research. It ranks results by how well they answer you, so the best match comes back first. 50+ settings to tune.</p>
         </div>
         <div class="cap">
           <h3>search your files, code, and PDFs</h3>
-          <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
+          <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer names the file and line. Each project gets its own library.</p>
         </div>
         <div class="cap">
           <h3>chunked so it makes sense</h3>
-          <p>Prose and code get chunked differently, so each piece keeps its meaning instead of getting cut mid-thought. A search engine is only as good as the chunks underneath it.</p>
+          <p>Prose and code get chunked differently, so each piece keeps its meaning. A search engine is only as good as the chunks underneath it.</p>
         </div>
         <div class="cap">
           <h3>MCP server for your coding agent</h3>
-          <p>Pair it with your favorite agent over MCP. It reads the real code and docs before it answers, cites the file and line, and says "I don't know" instead of guessing.</p>
+          <p>Pair it with your favorite agent over MCP. It reads the real code and docs, cites the file and line, and says "I don't know" instead of guessing.</p>
         </div>
         <div class="cap">
           <h3>crawl websites for offline search</h3>
-          <p>Crawl a docs site or a wiki, turn it into markdown, and keep it. Search and chat with it offline, even after it goes down.</p>
+          <p>Crawl a docs site or a wiki into markdown and keep it. Search and chat with it offline, even after the site goes down.</p>
         </div>
         <div class="cap">
           <h3>scans &amp; OCR</h3>
@@ -965,18 +972,18 @@
         </div>
         <div class="cap">
           <h3>remembers what you tell it</h3>
-          <p>Turn on memory and lilbee holds onto durable facts about you and how you like your answers, then recalls the relevant ones on later turns, no matter which conversation they came from. Off by default, and it never leaks into your citations.</p>
+          <p>Turn on memory and lilbee keeps durable facts about you and how you like your answers. It recalls them in later conversations. Off by default, and it never leaks into your citations.</p>
         </div>
         <div class="cap">
           <h3>conversations that survive</h3>
-          <p>Chats save automatically as plain files, no database. Press <code>ctrl+o</code> and pick a conversation back up where it stopped. When one outgrows the model's context window, lilbee can fold the older turns into notes it keeps reading.</p>
+          <p>Chats save automatically as plain files, no database. Press <code>ctrl+o</code> to pick a conversation back up. When one outgrows the model's context window, lilbee folds the older turns into notes it keeps reading.</p>
         </div>
       </div>
     </section>
 
     <section>
       <h2 class="label">a note on answers</h2>
-      <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
+      <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults and exposes <strong>50+ settings</strong> you can tune: the search, the answers, how your files get read.</p>
     </section>
 
     <section>
@@ -1012,7 +1019,7 @@
         <a href="https://github.com/tobocop2/lilbee#a-reference-for-ai-agents"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
         <a href="coverage/"><span class="num">[6]</span><span>Coverage</span><span class="dots">·······································</span><span class="desc">100%</span></a>
         <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7]</span><span>Changelog</span><span class="dots">·······································</span><span class="desc">releases</span></a>
-        <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8]</span><span>Benchmarks</span><span class="dots">·······································</span><span class="desc">godot . ocr</span></a>
+        <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8]</span><span>Benchmarks</span><span class="dots">·······································</span><span class="desc">ingest . retrieval . wiki</span></a>
         <a href="https://obsidian.lilbee.sh/"><span class="num">[9]</span><span>Obsidian plugin</span><span class="dots">·······································</span><span class="desc">vault GUI</span></a>
       </div>
     </section>
