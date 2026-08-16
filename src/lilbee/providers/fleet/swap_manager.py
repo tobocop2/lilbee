@@ -32,7 +32,12 @@ from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_c
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.planning import clear_ctx_downshift
-from lilbee.providers.fleet.readback import check_launch, report_missing_log
+from lilbee.providers.fleet.readback import (
+    MEMORY_FLAG,
+    check_launch,
+    check_memory_report,
+    report_missing_log,
+)
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 from lilbee.runtime.engine_lock import clear_keep_warm
 
@@ -211,6 +216,11 @@ class SwapManager:
         self._log_offset = 0
         self._port: int | None = None
         self._member_ports: list[int] = []
+        # Which member port serves which model id, for the direct GET /memory
+        # readback. Only launches this manager spawned are in here: a bound
+        # manager's state record carries the ports but not the mapping, and it
+        # has no launches to check either.
+        self._member_port_by_model: dict[str, int] = {}
         # The serving contract (per-role model/ctx/slots) persisted in every
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
@@ -251,6 +261,7 @@ class SwapManager:
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
+        self._member_port_by_model = dict(member_ports)
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
         self._estimate_checked.clear()
@@ -363,6 +374,12 @@ class SwapManager:
             # get here has done its job and must not follow the role into the
             # next plan, a freed machine, or a model the user switched to.
             clear_ctx_downshift(launch.role)
+            # A launch carrying --memory serves its own report on GET /memory
+            # and was given no trace log to read (swap_config), so the log-side
+            # checks would misfire on it by construction.
+            if MEMORY_FLAG in launch.argv:
+                self._check_memory_estimate(model_id, launch)
+                continue
             # The engine is ready, so a missing log is not "too early" any more.
             if report_missing_log(self._log_path.parent, model_id, launch.role):
                 continue
@@ -377,6 +394,42 @@ class SwapManager:
                 launch.est_vram_by_device,
                 launch.est_unreported_bytes,
             )
+
+    def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
+        """Run the estimate check off the engine's own ``GET /memory``.
+
+        Straight to the member's port rather than through llama-swap: the model
+        is ready, so the server owns its port, and the proxy adds only a routing
+        layer that has nothing to route on for a bare GET. An endpoint that does
+        not answer after the engine took the flag is reported, not swallowed --
+        it is this mode's analog of a ready engine that wrote no log.
+        """
+        port = self._member_port_by_model.get(model_id)
+        if port is None:  # bound to another process's engine; nothing was planned here
+            return
+        try:
+            resp = _probe_client().get(f"http://{_HOST}:{port}/memory", timeout=_PROBE_TIMEOUT_S)
+            payload = resp.json() if resp.status_code == httpx.codes.OK else None
+        except (httpx.HTTPError, ValueError):
+            payload = None
+        if payload is None:
+            log.warning(
+                "The %s engine was launched with %s but its /memory endpoint did not "
+                "answer, so its memory use could not be checked against the estimate. "
+                "Placement estimates for this model are unverified.",
+                launch.role.value,
+                MEMORY_FLAG,
+            )
+            return
+        if launch.est_vram_bytes <= 0:
+            return
+        check_memory_report(
+            launch.role,
+            launch.model,
+            launch.est_vram_bytes,
+            launch.est_vram_by_device,
+            payload,
+        )
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""
