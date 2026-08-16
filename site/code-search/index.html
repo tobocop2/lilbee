@@ -57,7 +57,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816b">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
@@ -90,12 +90,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -104,8 +102,6 @@
       <div class="menu">
         <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
         <div class="menu-panel">
-          <a href="/#install-pip">pip</a>
-          <a href="/#install-uv">uv</a>
           <a href="/#install-brew">homebrew</a>
           <a href="/#install-aur">AUR</a>
           <a href="/#install-docker">docker</a>
@@ -115,6 +111,8 @@
           <a href="/#install-scoop">scoop</a>
           <a href="/#install-binary">binary</a>
           <a href="/#install-source">source</a>
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
         </div>
       </div>
       <div class="menu">
@@ -170,12 +168,13 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline">Ask questions about your <strong>codebase</strong>, answers cite the file and line. lilbee indexes a repo and searches it by meaning, all on your own machine.</h1>
-      <p class="sub">Local AI code search in one program. It chunks code so functions stay whole, ranks the matches that actually answer you, and points you at the exact line.</p>
+      <p class="sub">Local AI code search in one program. It chunks code so functions stay whole, ranks the matches that answer you, and points you at the exact line.</p>
+      <p class="trust"><strong>Private by default.</strong> Your code stays on your machine. No telemetry, no account. A cloud model runs only when you pick one.</p>
     </section>
 
     <section>
       <h2 class="label">search by meaning, not by pattern</h2>
-      <p class="lede">grep finds the text you typed. lilbee finds the code you meant. Ask in plain English, and it retrieves the functions and definitions that answer the question, ranks them by relevance, and replies with a citation back to the file and line. When nothing matches well, it says so rather than inventing an answer.</p>
+      <p class="lede">grep finds the text you typed. lilbee finds the code you meant. Ask in plain English. lilbee retrieves the functions and definitions that answer the question, ranks them by relevance, and cites the file and line. When nothing matches well, it says so rather than inventing an answer.</p>
     </section>
 
     <section>
@@ -202,7 +201,7 @@
 
     <section>
       <h2 class="label">for you and for your agent</h2>
-      <p class="lede">Search your own codebase from the terminal, or hand the same retrieval to your coding agent over <a href="/mcp/">MCP</a> so it reads the real code before it answers. lilbee is also a complete <a href="/model-manager/">model manager</a> and runs the models itself on Metal, Vulkan, or CUDA, or works with your existing Ollama or LM Studio setup.</p>
+      <p class="lede">Search your own codebase from the terminal, or hand the same retrieval to your coding agent over <a href="/mcp/">MCP</a>, so it reads the real code before it answers. lilbee is also a complete <a href="/model-manager/">model manager</a>: it runs the models itself on Metal, Vulkan, or CUDA, or works with your existing Ollama or LM Studio setup.</p>
     </section>
 
     <section>

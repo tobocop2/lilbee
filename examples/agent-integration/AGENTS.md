@@ -83,9 +83,8 @@ the Task / Agent tool). Wait for the worker to report done, then continue answer
 are an API or class reference (Godot XML, a software package's source, a docs site,
 vendor SDK headers), assume your training data is outdated relative to those files and
 follow the Plan / Search / Write / Verify workflow below on every code-generation task.
-**Do not skip steps to "save time."** The benchmark difference is concrete: 0 hallucinated
-APIs with this workflow vs 4 hallucinated APIs without, in the
-[godot-level-generator benchmark](docs/benchmarks/godot-level-generator.md).
+**Do not skip steps to "save time."** The workflow exists because skipping the search
+step is how hallucinated APIs get into generated code.
 
 1. **Plan.** Before writing any code, list every class, method, property, enum, signal,
    and constant your solution will need. Be exhaustive: if your solution touches 12 named
