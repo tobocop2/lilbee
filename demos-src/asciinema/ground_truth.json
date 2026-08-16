@@ -1,0 +1,245 @@
+{
+  "q1": {
+    "question": "A customer wants to tow a 3,500 lb boat trailer through the mountains in August. Walk me through the full pre-trip check: can it pull that load, what cooling and transmission precautions does the manual call for, and which fluids should I top up first?",
+    "must_contain_facts": [
+      {
+        "id": "trailer_limit",
+        "desc": "trailer max 1,500 lb",
+        "patterns": [
+          "1,500 lb",
+          "1500 lb",
+          "1,500 lbs",
+          "1500 lbs"
+        ]
+      },
+      {
+        "id": "verdict_no",
+        "desc": "explicitly says the 3,500 lb load exceeds the limit / cannot be recommended",
+        "patterns": [
+          "exceed",
+          "cannot",
+          "should not",
+          "unsafe",
+          "not.{0,20}recommend"
+        ]
+      },
+      {
+        "id": "gcw",
+        "desc": "GCW limit 6,600 lb",
+        "patterns": [
+          "6,600",
+          "6600"
+        ]
+      }
+    ],
+    "should_contain_facts": [
+      {
+        "id": "tongue",
+        "desc": "tongue load 10-15%",
+        "patterns": [
+          "10.{0,3}15\\s*%",
+          "10-15%",
+          "10\u201315%"
+        ]
+      },
+      {
+        "id": "speed",
+        "desc": "70 mph limit first 500 miles",
+        "patterns": [
+          "70 mph"
+        ]
+      },
+      {
+        "id": "descent",
+        "desc": "lower gear on descents, no continuous braking",
+        "patterns": [
+          "lower gear"
+        ]
+      },
+      {
+        "id": "cooling_park",
+        "desc": "P (park) while idling in heat/traffic",
+        "patterns": [
+          "\\bP\\b.{0,30}(gear|park)",
+          "park",
+          "\\(P\\)"
+        ]
+      }
+    ],
+    "must_not": [
+      {
+        "id": "wrong_gcw",
+        "desc": "must not claim 6,000 lb GCW",
+        "patterns": [
+          "6,000 lb",
+          "6000 lb"
+        ]
+      }
+    ]
+  },
+  "q2": {
+    "question": "Blower only works on high and the AC cuts out at idle. Give me the diagnostic order, with fuse numbers and panel locations.",
+    "must_contain_facts": [
+      {
+        "id": "blower_feed",
+        "desc": "PDB fuse 101 = 40A blower relay feed",
+        "patterns": [
+          "101"
+        ]
+      },
+      {
+        "id": "panels",
+        "desc": "names both panels: power distribution box (engine compartment) + passenger fuse panel",
+        "patterns": [
+          "power distribution box"
+        ]
+      },
+      {
+        "id": "resistor",
+        "desc": "blower motor resistor as high-only root cause",
+        "patterns": [
+          "resistor"
+        ]
+      }
+    ],
+    "should_contain_facts": [
+      {
+        "id": "ac_clutch_feed",
+        "desc": "PDB fuse 11 = 15A A/C clutch relay feed (downgraded: unextractable association in every extraction config tested; absence acceptable, wrong number still fatal via must_not)",
+        "patterns": [
+          "\\b11\\b"
+        ]
+      },
+      {
+        "id": "blower_relay",
+        "desc": "relay 303 = blower",
+        "patterns": [
+          "303"
+        ]
+      },
+      {
+        "id": "ac_relay",
+        "desc": "relay 201 = A/C clutch",
+        "patterns": [
+          "201"
+        ]
+      },
+      {
+        "id": "pass15",
+        "desc": "passenger panel fuse 15 = A/C blower relay coil",
+        "patterns": [
+          "\\b15\\b"
+        ]
+      },
+      {
+        "id": "idle_note",
+        "desc": "manual's designed MAX A/C idle behavior in extreme heat",
+        "patterns": [
+          "idle",
+          "idling"
+        ]
+      }
+    ],
+    "must_not": [
+      {
+        "id": "wrong_fuse31",
+        "desc": "must not cite fuse 31 as blower relay feed",
+        "patterns": [
+          "fuse 31",
+          "Fuse 31"
+        ]
+      },
+      {
+        "id": "wrong_fuse10",
+        "desc": "must not cite fuse 10 (30A) for blower",
+        "patterns": [
+          "fuse 10 ",
+          "Fuse 10 "
+        ]
+      },
+      {
+        "id": "wrong_fuse24",
+        "desc": "must not cite fuse 24 as blower relay feed",
+        "patterns": [
+          "[Ff]use.{0,3}24.{0,40}[Bb]lower relay feed",
+          "24\\*.{0,30}[Bb]lower relay feed"
+        ]
+      }
+    ]
+  },
+  "q2b": {
+    "question": "A customer's Crown Vic has a dead battery. Walk me through jump-starting it safely: the exact cable connection order, what to do before connecting, and any warnings specific to this car.",
+    "must_contain_facts": [
+      {
+        "id": "pos_dead_first",
+        "desc": "positive cable to discharged battery first",
+        "patterns": [
+          "positive.{0,40}(discharged|dead|disabled)"
+        ]
+      },
+      {
+        "id": "ground_last",
+        "desc": "final negative connection away from dead battery (engine ground/metal)",
+        "patterns": [
+          "engine|metal surface|away from the battery|ground"
+        ]
+      },
+      {
+        "id": "no_push_start",
+        "desc": "never push-start the automatic transmission",
+        "patterns": [
+          "push.?start"
+        ]
+      },
+      {
+        "id": "twelve_volt",
+        "desc": "12-volt supply only",
+        "patterns": [
+          "12.?volt",
+          "12 V",
+          "12V"
+        ]
+      }
+    ],
+    "should_contain_facts": [
+      {
+        "id": "heater_fan",
+        "desc": "turn heater fan on to absorb surges",
+        "patterns": [
+          "heater fan|blower.{0,30}surge|fan on.{0,40}surge"
+        ]
+      },
+      {
+        "id": "three_min",
+        "desc": "run both engines ~3 minutes before disconnecting",
+        "patterns": [
+          "three minutes|3 minutes"
+        ]
+      },
+      {
+        "id": "no_touch",
+        "desc": "vehicles must not touch",
+        "patterns": [
+          "not touch|do not touch"
+        ]
+      },
+      {
+        "id": "corrosion",
+        "desc": "clean terminal corrosion / vent caps tight",
+        "patterns": [
+          "corrosion|vent caps"
+        ]
+      }
+    ],
+    "must_not": [
+      {
+        "id": "neg_first",
+        "desc": "must not connect negative to dead battery first",
+        "patterns": [
+          "[Ff]irst.{0,60}negative.{0,40}(discharged|dead)",
+          "negative.{0,25}(discharged|dead).{0,30}first"
+        ]
+      }
+    ]
+  }
+}

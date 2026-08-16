@@ -1,0 +1,210 @@
+{
+ "qwen3-235b": {
+  "source": "--hf-repo unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF --hf-file UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf",
+  "ctx": 65536,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 155.9,
+    "total_gb": 155.9,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 83.8,
+    "total_gb": 165.2,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 59.1,
+    "total_gb": 174.4,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 46.8,
+    "total_gb": 183.6,
+    "devices": 4
+   }
+  }
+ },
+ "qwen3-30b": {
+  "source": "--hf-repo unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --hf-file Qwen3-30B-A3B-Instruct-2507-Q8_0.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 38.2,
+    "total_gb": 38.2,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 20.8,
+    "total_gb": 40.8,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 15.0,
+    "total_gb": 43.4,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 12.1,
+    "total_gb": 45.9,
+    "devices": 4
+   }
+  }
+ },
+ "gemma4-31b": {
+  "source": "--hf-repo unsloth/gemma-4-31b-it-GGUF --hf-file gemma-4-31B-it-Q8_0.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 35.7,
+    "total_gb": 35.7,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 19.9,
+    "total_gb": 38.7,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 14.7,
+    "total_gb": 41.4,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 12.1,
+    "total_gb": 44.2,
+    "devices": 4
+   }
+  }
+ },
+ "qwen36-35b": {
+  "source": "--hf-repo unsloth/Qwen3.6-35B-A3B-GGUF --hf-file Qwen3.6-35B-A3B-Q8_0.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 41.0,
+    "total_gb": 41.0,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 21.7,
+    "total_gb": 42.5,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 15.0,
+    "total_gb": 44.0,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 12.1,
+    "total_gb": 45.5,
+    "devices": 4
+   }
+  }
+ },
+ "gptoss-20b": {
+  "source": "--path /workspace/models/models--unsloth--gpt-oss-20b-GGUF/snapshots/d449b42d93e1c2c7bda5312f5c25c8fb91dfa9b4/gpt-oss-20b-F16.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 19.3,
+    "total_gb": 19.3,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 12.3,
+    "total_gb": 24.1,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 10.1,
+    "total_gb": 28.8,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 9.0,
+    "total_gb": 33.5,
+    "devices": 4
+   }
+  }
+ },
+ "gptoss-120b": {
+  "source": "--hf-repo unsloth/gpt-oss-120b-GGUF --hf-file gpt-oss-120b-F16.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 71.7,
+    "total_gb": 71.7,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 39.3,
+    "total_gb": 76.5,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 28.4,
+    "total_gb": 81.2,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 22.9,
+    "total_gb": 85.9,
+    "devices": 4
+   }
+  }
+ },
+ "glm45-air": {
+  "source": "--hf-repo unsloth/GLM-4.5-Air-GGUF --hf-file Q6_K/GLM-4.5-Air-Q6_K-00001-of-00002.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 111.9,
+    "total_gb": 111.9,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 60.2,
+    "total_gb": 118.9,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 42.7,
+    "total_gb": 125.8,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 33.7,
+    "total_gb": 132.6,
+    "devices": 4
+   }
+  }
+ },
+ "glm46": {
+  "source": "--hf-repo unsloth/GLM-4.6-GGUF --hf-file Q3_K_M/GLM-4.6-Q3_K_M-00001-of-00004.gguf",
+  "ctx": 32768,
+  "by_gpu_count": {
+   "1": {
+    "max_device_gb": 189.9,
+    "total_gb": 189.9,
+    "devices": 1
+   },
+   "2": {
+    "max_device_gb": 100.3,
+    "total_gb": 196.8,
+    "devices": 2
+   },
+   "3": {
+    "max_device_gb": 69.2,
+    "total_gb": 203.7,
+    "devices": 3
+   },
+   "4": {
+    "max_device_gb": 55.1,
+    "total_gb": 210.6,
+    "devices": 4
+   }
+  }
+ }
+}
