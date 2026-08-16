@@ -117,12 +117,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -197,7 +195,7 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline">The <strong>whole local AI stack</strong> in <strong>one executable</strong>. It runs and manages the models on every GPU you have, and answers questions about your files, your code, and the web, every answer cited. It crawls sites into your library, <a href="/mcp/">plugs into your coding agents</a>, and backs the <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a>.</h1>
-      <p class="sub">The built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU: Metal, Vulkan, CUDA, or ROCm.</p>
+      <p class="sub">Private by default: your files, the index, and every question and answer stay on your machine, with no telemetry and no account. The built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU: Metal, Vulkan, CUDA, or ROCm.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -230,6 +228,8 @@
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-palette"  aria-controls="tutorial-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-memory" aria-controls="tutorial-pane-memory" aria-selected="false" tabindex="-1">memory</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-wiki" aria-controls="tutorial-pane-wiki" aria-selected="false" tabindex="-1">wiki</button>
             </div>
           </div>
           <div class="tutorialtabs-row">
@@ -244,13 +244,10 @@
           <div class="tutorialtabs-row">
             <span class="tutorialtabs-group" aria-hidden="true">agents</span>
             <div class="tutorialtabs-chips">
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-agent"    aria-controls="tutorial-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">agents: qwen3 coder</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-memory" aria-controls="tutorial-pane-memory" aria-selected="false" tabindex="-1">memory</button>
-              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-wiki" aria-controls="tutorial-pane-wiki" aria-selected="false" tabindex="-1">wiki</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gemma4" aria-controls="tutorial-pane-gemma4" aria-selected="false" tabindex="-1">agents: gemma 4</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-qwen36" aria-controls="tutorial-pane-qwen36" aria-selected="false" tabindex="-1">agents: qwen3.6</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-solo123b" aria-controls="tutorial-pane-solo123b" aria-selected="false" tabindex="-1">agent: devstral 123b</button>
             </div>
           </div>
         </div>
@@ -346,19 +343,7 @@
           <p class="tutorial-caption">50+ settings: search depth, reranking, sampling, parsers. Sane defaults; tune the moment you want to.</p>
         </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-agent" aria-labelledby="tutorial-tab-agent" hidden>
-          <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-          </div>
-          <p class="tutorial-caption">lilbee talking to lilbee. An agent indexes <em>lilbee's own source</em> through <em>lilbee's MCP server</em>, then answers questions about how lilbee works, with file:line citations.</p>
-        </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-pdf" aria-labelledby="tutorial-tab-pdf" hidden>
-          <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-          </div>
-          <p class="tutorial-caption">Same setup, talking to a PDF: the agent asks lilbee to index <code>cv-manual.pdf</code>, then builds a fuse table with page citations.</p>
-        </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-palette" aria-labelledby="tutorial-tab-palette" hidden>
           <div class="tutorial-clip">
@@ -367,25 +352,34 @@
           <p class="tutorial-caption"><kbd>Ctrl+P</kbd> opens the command palette; <code>/help</code> opens the slash-command catalog. Every action is discoverable.</p>
         </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-index" aria-labelledby="tutorial-tab-index" hidden>
-          <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-          </div>
-          <p class="tutorial-caption">Agent indexes a small Godot 4 pathfinding subset live, then cites methods method-by-method against the local files.</p>
-        </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-godot" aria-labelledby="tutorial-tab-godot" hidden>
-          <div class="tutorial-clip">
-            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-          </div>
-          <p class="tutorial-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
-        </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
           <div class="tutorial-clip">
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
-          <p class="tutorial-caption">Four agents at once against a single local model, Qwen3 Coder Next, 45GB across three RTX 4090s. Each works in its own clone of this repository through lilbee.</p>
+          <p class="tutorial-caption">Four agents at once against a single local model, Qwen3 Coder Next, 45GB across three RTX 4090s at 138 tokens a second. Each works in its own clone of this repository through lilbee.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gemma4" aria-labelledby="tutorial-tab-gemma4" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">The same four tasks on Gemma 4 26B, a thinking model. lilbee streams its reasoning as visible text, so every pane shows the model working through the problem before it answers.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-qwen36" aria-labelledby="tutorial-tab-qwen36" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Qwen3.6 27B, also thinking out loud: each agent states what it expects, then reads the code to check itself.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-solo123b" aria-labelledby="tutorial-tab-solo123b" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Devstral 2 123B, 70GB across two A100 80GB cards. One agent gets the model's full 14 tokens a second; a model this size trades pane count for depth.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-memory" aria-labelledby="tutorial-tab-memory" hidden>
@@ -1015,7 +1009,7 @@
         <a href="https://pypi.org/project/lilbee/"><span class="num">[2]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">package</span></a>
         <a href="api/"><span class="num">[3]</span><span>API docs</span><span class="dots">·······································</span><span class="desc">openapi</span></a>
         <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md"><span class="num">[4]</span><span>Usage guide</span><span class="dots">·······································</span><span class="desc">commands</span></a>
-        <a href="https://github.com/tobocop2/lilbee#agent-integration"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
+        <a href="https://github.com/tobocop2/lilbee#a-reference-for-ai-agents"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
         <a href="coverage/"><span class="num">[6]</span><span>Coverage</span><span class="dots">·······································</span><span class="desc">100%</span></a>
         <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7]</span><span>Changelog</span><span class="dots">·······································</span><span class="desc">releases</span></a>
         <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8]</span><span>Benchmarks</span><span class="dots">·······································</span><span class="desc">godot . ocr</span></a>
