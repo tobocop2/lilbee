@@ -332,11 +332,6 @@ section[id] { scroll-margin-top: 4.2rem; }
   padding: 2px 9px;
   cursor: default;
 }
-.privacy .surfaces-label { color: var(--trust); }
-.privacy .surface {
-  border-color: var(--trust);
-  color: var(--ink);
-}
 
 /* section labels ----------------------------------------------------- */
 .label {
