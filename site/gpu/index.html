@@ -57,7 +57,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816b">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
@@ -90,12 +90,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -104,8 +102,6 @@
       <div class="menu">
         <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
         <div class="menu-panel">
-          <a href="/#install-pip">pip</a>
-          <a href="/#install-uv">uv</a>
           <a href="/#install-brew">homebrew</a>
           <a href="/#install-aur">AUR</a>
           <a href="/#install-docker">docker</a>
@@ -115,6 +111,8 @@
           <a href="/#install-scoop">scoop</a>
           <a href="/#install-binary">binary</a>
           <a href="/#install-source">source</a>
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
         </div>
       </div>
       <div class="menu">
@@ -171,16 +169,17 @@
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline"><strong>Will this model fit your GPU?</strong> See before you download. lilbee reads the model file and your hardware, then tells you whether it fits, and splits big models across GPUs.</h1>
       <p class="sub">No more downloading a 40 GB model only to watch it fail to load. lilbee estimates VRAM up front from the real GGUF file and the devices it finds on your machine.</p>
+      <p class="trust"><strong>Private by default.</strong> Your files stay on your machine. No telemetry, no account. A cloud model runs only when you pick one.</p>
     </section>
 
     <section>
       <h2 class="label">the problem with guesswork</h2>
-      <p class="lede">Picking a local model is usually trial and error: download something, try to load it, watch it run out of memory, pick a smaller quant, try again. lilbee does the arithmetic before the download. It reads the GGUF headers, checks the free and total VRAM on each device, and tells you whether the model and its context window will fit.</p>
+      <p class="lede">Picking a local model is usually trial and error: download something, try to load it, watch it run out of memory, pick a smaller quant, try again. lilbee does the arithmetic before the download. It reads the GGUF headers and checks the free and total VRAM on each device. Then it tells you whether the model and its context window will fit.</p>
     </section>
 
     <section>
       <h2 class="label">a rough VRAM guide</h2>
-      <p class="lede">A starting point for a common 4-bit quant. Your exact numbers depend on the quant, the context length, and the runtime, which is why lilbee estimates from the actual file rather than a table.</p>
+      <p class="lede">A starting point for a common 4-bit quant. Your exact numbers depend on the quant, the context length, and the runtime. That is why lilbee estimates from the actual file rather than a table.</p>
       <div class="caps">
         <div class="cap"><h3>7B</h3><p>about 5 GB at a 4-bit quant. Comfortable on an 8 GB card.</p></div>
         <div class="cap"><h3>13B</h3><p>about 9 GB at a 4-bit quant. Fits a 12 GB card with room for context.</p></div>
@@ -191,7 +190,7 @@
 
     <section>
       <h2 class="label">multiple GPUs, sized to each card</h2>
-      <p class="lede">When a model is too big for one card, lilbee spreads it across the GPUs you have, with a tensor split sized to each device's free VRAM rather than an even cut that overflows the smallest card. It runs on Metal, Vulkan, CUDA, and ROCm, and can offload part of a model to system RAM when you want to stretch a tight setup. This is part of lilbee's <a href="/model-manager/">model manager</a>.</p>
+      <p class="lede">When a model is too big for one card, lilbee spreads it across the GPUs you have. The tensor split is sized to each device's free VRAM, not an even cut that overflows the smallest card. It runs on Metal, Vulkan, CUDA, and ROCm. It can also offload part of a model to system RAM when you want to stretch a tight setup. This is part of lilbee's <a href="/model-manager/">model manager</a>.</p>
     </section>
 
     <section>
