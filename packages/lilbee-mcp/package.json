@@ -1,0 +1,39 @@
+{
+  "name": "lilbee-mcp",
+  "version": "0.1.0",
+  "description": "Run lilbee's MCP server from npx: bootstraps the lilbee binary locally, or bridges to a remote lilbee server.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "lilbee-mcp": "bin/lilbee-mcp.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "mcp-remote": "^0.1.38"
+  },
+  "lilbee": {
+    "repo": "tobocop2/lilbee",
+    "release": "v0.6.90b423"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tobocop2/lilbee.git",
+    "directory": "packages/lilbee-mcp"
+  },
+  "keywords": [
+    "mcp",
+    "lilbee",
+    "local-ai",
+    "rag"
+  ]
+}
