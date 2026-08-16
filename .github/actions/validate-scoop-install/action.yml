@@ -21,9 +21,12 @@ runs:
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
         # The hosted runner is admin, so Scoop needs -RunAsAdmin to install.
-        Invoke-WebRequest -UseBasicParsing get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-        & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
+        # A job can validate two manifests, so skip the install the second time.
         $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
+        if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
+          Invoke-WebRequest -UseBasicParsing get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
+        }
         # Resolve to a backslash path so Scoop reads it as a local manifest file
         # instead of parsing the forward slash as a <bucket>/<app> reference.
         $manifest = (Resolve-Path $env:MANIFEST).Path

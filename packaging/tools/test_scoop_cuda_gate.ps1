@@ -34,14 +34,22 @@ function Test-Gate {
     )
     $script:SmiOutput = $Output
     $script:SmiArgs = @()
+    $savedPath = $env:Path
     if ($NoSmi) {
         if (Test-Path function:nvidia-smi) { Remove-Item function:nvidia-smi }
+        # On a box with a real NVIDIA card, Get-Command would still resolve
+        # nvidia-smi through PATH; clear it so absence is actually absent.
+        $env:Path = ''
     } else {
         Set-Item function:nvidia-smi $script:stub
     }
 
     $build = ''
-    . ([scriptblock]::Create($script:detect))
+    try {
+        . ([scriptblock]::Create($script:detect))
+    } finally {
+        $env:Path = $savedPath
+    }
 
     $shown = if ($build) { $build } else { 'vulkan' }
     if ($build -eq $Expect) {
@@ -95,6 +103,25 @@ foreach ($flavor in @('cu125', 'cu124')) {
         Write-Host "  FAIL $flavor has no pinned sha256 in post_install"
         $failures++
     }
+}
+
+# The lilbee-cuda manifest promises one download: its post_install must parse
+# and must not fetch anything.
+$cudaPath = Join-Path (Split-Path $manifestPath) 'lilbee-cuda.json'
+$cudaScript = (@((Get-Content $cudaPath -Raw | ConvertFrom-Json).post_install) -join "`n")
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($cudaScript, [ref]$null, [ref]$parseErrors)
+if ($parseErrors) {
+    Write-Host "  FAIL lilbee-cuda post_install does not parse: $($parseErrors[0].Message)"
+    $failures++
+} else {
+    Write-Host "  ok   lilbee-cuda post_install parses"
+}
+if ($cudaScript -match 'Invoke-WebRequest|Start-BitsTransfer') {
+    Write-Host "  FAIL lilbee-cuda post_install downloads something, but the app promises one download"
+    $failures++
+} else {
+    Write-Host "  ok   lilbee-cuda post_install downloads nothing"
 }
 
 if ($failures -gt 0) { throw "$failures CUDA gate check(s) failed" }
