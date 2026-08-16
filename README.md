@@ -73,7 +73,6 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
-- [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
 - [Wiki](#wiki)
@@ -86,7 +85,7 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
-- **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
+- **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [A reference for AI agents](#a-reference-for-ai-agents).
 
 Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, MCP, env vars, or `config.toml`. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
 
@@ -101,7 +100,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 - **It brings and runs the models itself,** on Metal, Vulkan, or CUDA, with no server to point at and no cloud account. Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, rerank).
 - **A model too big for one card runs across all of them,** sized with gguf-parser and tensor-split automatically, or pinned by hand. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
 - **Already on Ollama or LM Studio? Keep them.** lilbee's own manager handles everything across the same [model families](#tested-model-families) they run, and their models also show up in the same pickers.
-- **One install, many surfaces:** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
+- **One install, many surfaces:** TUI, CLI, [MCP server](#a-reference-for-ai-agents), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
 - **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
 - **Per-project libraries.** One library for everything, or one per project.
 
@@ -243,11 +242,15 @@ It tunes itself, too. Tell a small local model to widen lilbee's search when a f
 
 ### A reference for AI agents
 
-Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library.
+Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) is the single entry point: drop it into `.opencode/skills/` or `.claude/skills/` and it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
 
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
+
+The citations pay for themselves at scale. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and an agent writes a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
+
+![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
 ### Offline copies of websites
 
@@ -574,20 +577,6 @@ command for your hardware, so it is recoverable rather than mysterious, but it
 is a step you have to take.
 
 </details>
-
-## Agent integration
-
-Drop the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
-
-**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** To run the agent itself on a local model instead, see [Launch your coding agent on local models](#launch-your-coding-agent-on-local-models) above.
-
-Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
-
-![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
-
-It scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the same opencode + cloud setup writes a procedural level generator, every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
-
-![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
 ## HTTP Server
 
