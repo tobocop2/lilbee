@@ -59,12 +59,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -166,14 +164,8 @@
       <nav class="tutorial-toc" aria-label="Agent track contents">
         <a class="tutorial-toc-title" href="#agent">Put it behind an agent <span>· MCP</span></a>
         <ul>
-          <li class="toc-group"><a href="#agent-code-docs">Code &amp; docs over MCP</a></li>
-          <li><a href="#agent-code">Agent: code (lilbee talking to lilbee)</a></li>
-          <li><a href="#agent-pdf">Agent: PDF</a></li>
           <li class="toc-group"><a href="#agent-self-tune">It tunes itself</a></li>
           <li><a href="#agent-fine-tune">Agent fine-tunes mid-conversation</a></li>
-          <li class="toc-group"><a href="#agent-going-big">Going big</a></li>
-          <li><a href="#agent-index">Agent: live indexing</a></li>
-          <li><a href="#agent-godot">Agent: Godot codegen</a></li>
         </ul>
       </nav>
     </div>
@@ -371,29 +363,8 @@
     <section class="tutorial-track" id="agent">
       <h2 class="tutorial-track-head"><a href="#agent">Put it behind an agent <span class="track-sub">· MCP</span></a></h2>
 
-      <h3 class="tutorial-group" id="agent-code-docs"><a href="#agent-code-docs">Code &amp; docs over MCP</a></h3>
 
-      <section class="tutorial-section" id="agent-code">
-        <h4><a href="#agent-code">Agent: code (lilbee talking to lilbee)</a></h4>
-        <p>An agent indexes lilbee's own source through lilbee's MCP server, then answers with <code>src/lilbee/.../file.py:LINE</code> citations.</p>
-        <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4">agent: code (MP4)</a>
-          </video>
-        </div>
-      </section>
 
-      <section class="tutorial-section" id="agent-pdf">
-        <h4><a href="#agent-pdf">Agent: PDF</a></h4>
-        <p>The agent finds <code>cv-manual.pdf</code>, delegates indexing to <code>lilbee-worker</code>, then answers with page citations.</p>
-        <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4">agent: PDF (MP4)</a>
-          </video>
-        </div>
-      </section>
 
       <h3 class="tutorial-group" id="agent-self-tune"><a href="#agent-self-tune">It tunes itself</a></h3>
 
@@ -408,29 +379,8 @@
         </div>
       </section>
 
-      <h3 class="tutorial-group" id="agent-going-big"><a href="#agent-going-big">Going big</a></h3>
 
-      <section class="tutorial-section" id="agent-index">
-        <h4><a href="#agent-index">Agent: live indexing</a></h4>
-        <p>A coding agent indexes a small Godot 4 subset, then searches and answers method-by-method against the local files.</p>
-        <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4">agent: live indexing (MP4)</a>
-          </video>
-        </div>
-      </section>
 
-      <section class="tutorial-section" id="agent-godot">
-        <h4><a href="#agent-godot">Agent: Godot codegen against the full class reference</a></h4>
-        <p>The agent indexes Godot 4's full 810-file class reference, then writes a procedural level generator with every API call backed by a <code>godot-classes/&lt;Class&gt;.xml:line</code> citation. <a href="https://github.com/tobocop2/lilbee/blob/main/docs/benchmarks/godot-level-generator.md">Benchmark vs no-RAG</a>: 4 hallucinated APIs → 0.</p>
-        <div class="tutorial-clip">
-          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.png">
-            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" type="video/mp4">
-            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4">agent: Godot codegen (MP4)</a>
-          </video>
-        </div>
-      </section>
 
       <section class="tutorial-section" id="agents-qwen3-coder">
         <h4><a href="#agents-qwen3-coder">Four agents on one local model</a></h4>
