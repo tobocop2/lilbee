@@ -83,6 +83,15 @@ jobs:
           - os: ubuntu-22.04
             backend: rocm
             asset_name: lilbee-linux-x86_64-rocm
+          # Pre-Haswell-safe ROCm cell: same model as the compat CUDA cell above
+          # (stock lancedb swapped for +compat, launcher held to x86-64-v2). The
+          # ROCm engine is AVX-baseline (cmake_args.sh), so the practical floor
+          # is Sandy Bridge; ROCm itself also needs a board with PCIe atomics.
+          - os: ubuntu-22.04
+            backend: rocm
+            asset_name: lilbee-compat-linux-x86_64-rocm
+            compat: true
+            march: "x86-64-v2"
           # Windows cu121 dropped: MSVC 14.44 on windows-2022 requires CUDA 12.4+.
           - os: windows-2022
             backend: cu124
