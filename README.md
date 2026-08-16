@@ -118,12 +118,12 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 | **AUR**      | `paru -S lilbee-cuda`                                                                                                                                                        |
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-cuda`                                                                                                                                 |
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.cuda`                                                                                                                      |
-| **Scoop**    | `scoop install lilbee` (auto-picks the CUDA build when an NVIDIA driver is present)                                                                                          |
+| **Scoop**    | `scoop install lilbee-cuda` (cu125 in one download, driver 555.85+; the plain `lilbee` install also auto-picks CUDA, but downloads the Vulkan build first)                    |
 | **Binary**   | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 | **pip** (devs) | `pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                                             |
 | **uv** (devs)  | `uv tool install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/`                                                                            |
 
-Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
+Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first, and on Scoop run `scoop uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
 </details>
 

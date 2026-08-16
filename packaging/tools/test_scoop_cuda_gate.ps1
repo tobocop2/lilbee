@@ -97,5 +97,24 @@ foreach ($flavor in @('cu125', 'cu124')) {
     }
 }
 
+# The lilbee-cuda manifest promises one download: its post_install must parse
+# and must not fetch anything.
+$cudaPath = Join-Path (Split-Path $manifestPath) 'lilbee-cuda.json'
+$cudaScript = (@((Get-Content $cudaPath -Raw | ConvertFrom-Json).post_install) -join "`n")
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($cudaScript, [ref]$null, [ref]$parseErrors)
+if ($parseErrors) {
+    Write-Host "  FAIL lilbee-cuda post_install does not parse: $($parseErrors[0].Message)"
+    $failures++
+} else {
+    Write-Host "  ok   lilbee-cuda post_install parses"
+}
+if ($cudaScript -match 'Invoke-WebRequest|Start-BitsTransfer') {
+    Write-Host "  FAIL lilbee-cuda post_install downloads something, but the app promises one download"
+    $failures++
+} else {
+    Write-Host "  ok   lilbee-cuda post_install downloads nothing"
+}
+
 if ($failures -gt 0) { throw "$failures CUDA gate check(s) failed" }
 Write-Host "all CUDA gate checks passed"
