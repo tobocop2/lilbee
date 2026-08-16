@@ -45,6 +45,27 @@ def _render_default(content: str, args: argparse.Namespace) -> str:
     return content
 
 
+def _render_cuda(content: str, args: argparse.Namespace) -> str:
+    # The CUDA manifest is a plain single-arch package whose Scoop-verified
+    # download is the cu125 exe: version, the version in its download URL, and
+    # the hash. post_install only warns on old drivers; it downloads nothing.
+    content = _replace_once(
+        content, re.compile(r'"version": "[^"]*"'), f'"version": "{args.version}"', "version line"
+    )
+    content = _replace_once(
+        content,
+        re.compile(r"(releases/download/v)[^/]+(/lilbee-windows-x86_64-cu125\.exe)"),
+        rf"\g<1>{args.version}\g<2>",
+        "cu125 download URL",
+    )
+    return _replace_once(
+        content,
+        re.compile(r'("hash": ")[0-9a-f]{64}(")'),
+        rf"\g<1>{args.sha_windows_cu125}\g<2>",
+        "cu125 hash",
+    )
+
+
 def _render_compat(content: str, args: argparse.Namespace) -> str:
     # The pre-Haswell manifest is a plain single-arch package: version, the
     # version in its download URL, and the Scoop-verified hash. No cu125 path.
@@ -69,10 +90,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--version", required=True)
-    parser.add_argument(
+    variant = parser.add_mutually_exclusive_group()
+    variant.add_argument(
         "--compat",
         action="store_true",
         help="Render the lilbee-compat (pre-Haswell CPU) manifest.",
+    )
+    variant.add_argument(
+        "--cuda",
+        action="store_true",
+        help="Render the lilbee-cuda (cu125-only) manifest.",
     )
     parser.add_argument("--sha-windows")
     parser.add_argument("--sha-windows-cu125")
@@ -83,6 +110,9 @@ def main() -> None:
     if args.compat:
         if not args.sha_windows_compat:
             parser.error("--compat requires --sha-windows-compat")
+    elif args.cuda:
+        if not args.sha_windows_cu125:
+            parser.error("--cuda requires --sha-windows-cu125")
     else:
         missing = [
             flag
@@ -97,7 +127,12 @@ def main() -> None:
             parser.error(f"missing required arguments: {', '.join(missing)}")
 
     content = args.manifest.read_text()
-    content = _render_compat(content, args) if args.compat else _render_default(content, args)
+    if args.compat:
+        content = _render_compat(content, args)
+    elif args.cuda:
+        content = _render_cuda(content, args)
+    else:
+        content = _render_default(content, args)
     args.manifest.write_text(content)
 
 

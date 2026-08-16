@@ -218,10 +218,23 @@ jobs:
           python packaging/tools/render_scoop_manifest.py bucket/lilbee.json \
             --version "$VERSION" --sha-windows "$SHA_WINDOWS" \
             --sha-windows-cu125 "$SHA_WINDOWS_CU125" --sha-windows-cu124 "$SHA_WINDOWS_CU124"
+          python packaging/tools/render_scoop_manifest.py bucket/lilbee-cuda.json \
+            --cuda --version "$VERSION" --sha-windows-cu125 "$SHA_WINDOWS_CU125"
       - name: Install from the rendered manifest and smoke test
         uses: ./.github/actions/validate-scoop-install
         with:
           manifest-path: bucket/lilbee.json
+          expected-version: lilbee ${{ needs.resolve.outputs.version }}
+      - name: Uninstall lilbee so lilbee-cuda can claim the shim
+        shell: pwsh
+        run: |
+          $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
+          scoop uninstall lilbee
+          if ($LASTEXITCODE -ne 0) { throw "scoop uninstall failed" }
+      - name: Install from the rendered CUDA manifest and smoke test
+        uses: ./.github/actions/validate-scoop-install
+        with:
+          manifest-path: bucket/lilbee-cuda.json
           expected-version: lilbee ${{ needs.resolve.outputs.version }}
       - name: Commit and push the manifest
         shell: bash
@@ -231,7 +244,7 @@ jobs:
           set -euo pipefail
           git config user.name "lilbee-bot"
           git config user.email "lilbee-bot@users.noreply.github.com"
-          git add bucket/lilbee.json
+          git add bucket/lilbee.json bucket/lilbee-cuda.json
           if git diff --cached --quiet; then
             echo "no manifest changes; skipping push"
             exit 0
