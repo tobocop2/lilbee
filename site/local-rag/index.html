@@ -57,7 +57,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816a">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
@@ -168,46 +168,53 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline"><strong>Local RAG</strong>: cited answers from your own documents, fully offline. lilbee indexes your files, code, and PDFs, then answers in plain English with a link to the exact source.</h1>
-      <p class="sub">Retrieval-augmented generation that runs on your own machine. It is one program: the model runtime and the search index live inside it, so there is no model server and no vector database to stand up.</p>
+      <p class="sub">Retrieval-augmented generation that runs on your own machine. It is one program: the model runtime and the search index live inside it. There is no model server and no vector database to stand up.</p>
+      <div class="surfaces privacy">
+        <span class="surfaces-label">private by default</span>
+        <span class="surface">your files stay on your machine</span>
+        <span class="surface">no telemetry</span>
+        <span class="surface">no account</span>
+        <span class="surface">cloud only when you pick it</span>
+      </div>
     </section>
 
     <section>
       <h2 class="label">what local RAG means here</h2>
-      <p class="lede">Point lilbee at a folder and it builds a real retrieval pipeline over it: your documents are chunked, embedded, and ranked by how well they answer the question you asked. The best passage comes back first, and the answer cites the file and line it came from, so you can check it. When lilbee does not find a good match, it says so instead of guessing.</p>
+      <p class="lede">Point lilbee at a folder and it builds a real retrieval pipeline over it. Your documents are chunked, embedded, and ranked by how well they answer your question. The best passage comes back first. The answer cites the file and line it came from, so you can check it. When lilbee does not find a good match, it says so instead of guessing.</p>
     </section>
 
     <section>
       <h2 class="label">one program, not a stack</h2>
-      <p class="lede">The usual local-RAG setup is a model server, a vector database, glue code to connect them, and an app on top. lilbee folds all of that into a single program. The model runtime is llama.cpp and the index is LanceDB, both running inside lilbee. You install one thing, point it at your files, and ask.</p>
+      <p class="lede">The usual local-RAG setup is a model server, a vector database, glue code to connect them, and an app on top. lilbee folds all of that into one program. The model runtime is llama.cpp and the index is LanceDB; both run inside lilbee. You install one thing, point it at your files, and ask.</p>
       <div class="caps">
         <div class="cap">
           <h3>chunked so it makes sense</h3>
-          <p>Prose and code are chunked differently, so each piece keeps its meaning instead of being cut mid-thought. A retrieval pipeline is only as good as the chunks underneath it.</p>
+          <p>Prose and code are chunked differently, so each piece keeps its meaning. A retrieval pipeline is only as good as the chunks underneath it.</p>
         </div>
         <div class="cap">
           <h3>every answer is sourced</h3>
-          <p>Replies carry citations back to the file and line, and a scoped library per project keeps one domain from bleeding into another.</p>
+          <p>Replies carry citations back to the file and line. A scoped library per project keeps one domain out of another.</p>
         </div>
         <div class="cap">
           <h3>more than text</h3>
-          <p>PDFs, office files, ebooks, and scanned images go through extraction and OCR, and whole websites can be crawled to markdown and searched offline.</p>
+          <p>PDFs, office files, ebooks, and scanned images go through extraction and OCR. Whole websites can be crawled to markdown and searched offline.</p>
         </div>
         <div class="cap">
           <h3>tune it when you want</h3>
-          <p>Sane defaults out of the install, with 50+ settings for search depth, reranking, and how your files are read once you want to push quality further.</p>
+          <p>Sane defaults out of the install. 50+ settings cover search depth, reranking, and how your files are read when you want to push quality further.</p>
         </div>
       </div>
     </section>
 
     <section>
       <h2 class="label">it runs the models too</h2>
-      <p class="lede">lilbee is also a complete <a href="/model-manager/">model manager</a>: it browses Hugging Face, downloads a model, and runs it on Metal, Vulkan, or CUDA, so you do not need a separate runner. If you already run Ollama or LM Studio, point lilbee at your setup instead. A cloud model is there when you want one, and never used unless you pick it.</p>
+      <p class="lede">lilbee is also a complete <a href="/model-manager/">model manager</a>: it browses Hugging Face, downloads a model, and runs it on Metal, Vulkan, or CUDA. You do not need a separate runner. If you already run Ollama or LM Studio, point lilbee at your setup instead. A cloud model is there when you want one, and never used unless you pick it.</p>
     </section>
 
     <section>
       <h2 class="label">questions</h2>
       <div class="faq">
-        <details><summary>What is local RAG?</summary><p>Local RAG means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee finds the passages that answer your question and writes a reply that cites them, with nothing sent to a cloud service.</p></details>
+        <details><summary>What is local RAG?</summary><p>Local RAG means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee finds the passages that answer your question and writes a reply that cites them. Nothing is sent to a cloud service.</p></details>
         <details><summary>Does lilbee need a separate vector database?</summary><p>No. The vector index (LanceDB) runs inside lilbee, so there is no database server to stand up or keep alive.</p></details>
         <details><summary>Can it run fully offline?</summary><p>Yes. lilbee downloads and runs local models, so once your models are in place it answers with no internet connection. A cloud model is used only if you pick one.</p></details>
         <details><summary>What can it index?</summary><p>Text and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>

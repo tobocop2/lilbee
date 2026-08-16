@@ -25,7 +25,7 @@
 <meta property="og:image:width" content="1400">
 <meta property="og:image:height" content="900">
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816a">
 <link rel="stylesheet" href="tutorial.css?v=20260604">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
@@ -234,7 +234,7 @@
 
       <section class="tutorial-section" id="sessions">
         <h4><a href="#sessions">Leave, come back, keep going</a></h4>
-        <p>Conversations save automatically. <code>ctrl+o</code> opens the drawer, a few letters filter, <code>enter</code> resumes a 240-message conversation. It no longer fits the model's context window, so lilbee folds the older turns into notes the model keeps, marks the spot in the transcript where its view begins, and answers the next question with the page cited.</p>
+        <p>Conversations save automatically. <code>ctrl+o</code> opens the drawer, a few letters filter, <code>enter</code> resumes a 240-message conversation. It no longer fits the model's context window, so lilbee folds the older turns into notes the model keeps. It marks the spot in the transcript where its view begins, then answers the next question with the page cited.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.mp4" type="video/mp4">
@@ -267,7 +267,7 @@
 
       <section class="tutorial-section" id="crawl-site">
         <h4><a href="#crawl-site">Crawl a whole site</a></h4>
-        <p>Leave recursive crawling on and <code>/crawl</code> follows the links at depth 1 and indexes the whole site. Here it crawls hundreds of Wikipedia pages (fast-forwarded), then asks one multipart question that synthesizes across them, cited, with Qwen3-8B and a reranker.</p>
+        <p>Leave recursive crawling on and <code>/crawl</code> follows the links at depth 1 and indexes the whole site. Here it crawls hundreds of Wikipedia pages (fast-forwarded). Then one multipart question synthesizes across them, cited, on Qwen3-8B and a reranker.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.mp4" type="video/mp4">
@@ -313,7 +313,7 @@
 
       <section class="tutorial-section" id="unsupported">
         <h4><a href="#unsupported">Unsupported architectures, surfaced before the download</a></h4>
-        <p>lilbee tags GGUFs the bundled llama.cpp can't load with an <code>unsupported</code> pill before you pull. Press <kbd>f</kbd> to hide them. Clip searches for <code>gemma-4</code>, an architecture upstream hasn't shipped yet.</p>
+        <p>lilbee tags GGUFs the bundled llama.cpp can't load with an <code>unsupported</code> pill before you pull. Press <kbd>f</kbd> to hide them. The clip searches for <code>gemma-4</code>, an architecture upstream hasn't shipped yet.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.mp4" type="video/mp4">
@@ -384,7 +384,7 @@
 
       <section class="tutorial-section" id="agents-qwen3-coder">
         <h4><a href="#agents-qwen3-coder">Four agents on one local model</a></h4>
-        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next, 45GB across three RTX 4090s at 138 tokens a second, each in its own clone of this repository through lilbee.</p>
+        <p>One model serves as many agents as you want to run. Four work at once here against Qwen3 Coder Next: 45GB across three RTX 4090s, at 138 tokens a second. Each works in its own clone of this repository through lilbee.</p>
         <div class="tutorial-clip">
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.mp4" type="video/mp4">
