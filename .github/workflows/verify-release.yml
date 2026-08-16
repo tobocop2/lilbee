@@ -90,6 +90,7 @@ jobs:
           lilbee-linux-x86_64-cu124
           lilbee-linux-x86_64-cu125
           lilbee-compat-linux-x86_64-cu124
+          lilbee-compat-linux-x86_64-rocm
           lilbee-windows-x86_64-cu124.exe
           lilbee-windows-x86_64-cu125.exe
           lilbee-linux-x86_64-rocm

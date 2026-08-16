@@ -152,7 +152,7 @@ Then check it runs and pick a model:
 
 ```bash
 lilbee self-check    # ~90 MB download; runs an inference + an embedding; "SELF-CHECK PASSED" on success
-lilbee               # launch the terminal app; pick a chat + embedding model on the welcome screen
+lilbee               # launch the terminal app; pick your models from the catalog on first run
 ```
 
 The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, CLI, HTTP server, MCP, env vars, and `config.toml`.
@@ -266,7 +266,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
-- **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
+- **Run `lilbee`** for the full-screen terminal app. On first run you pick a chat model straight from the catalog, fit-checked against your hardware, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
 - **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [A reference for AI agents](#a-reference-for-ai-agents).
 
 Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, MCP, env vars, or `config.toml`. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
@@ -284,7 +284,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 - **A model too big for one card runs across all of them,** sized with gguf-parser and tensor-split automatically, or pinned by hand. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
 - **Already on Ollama or LM Studio? Keep them.** lilbee's own manager covers the same [architectures](#supported-models) they run, and their models also show up in the same pickers.
 - **One install, many surfaces:** TUI, CLI, [MCP server](#a-reference-for-ai-agents), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
-- **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
+- **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~360-530 MB, or ~0.7-1.3 GB with CUDA; it loads on demand and nothing stays running.
 - **Per-project libraries.** One library for everything, or one per project.
 
 ## Why lilbee
@@ -572,11 +572,11 @@ Tell it something about yourself and it remembers, across conversations rather t
 
 ![remember a fact and a preference, then answer from them in a brand new chat](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-memory.gif)
 
-Every setting is editable in the app, and a first run walks you through picking models.
+Every setting is editable in the app, and the first run opens the model catalog to get you started.
 
 ![walk every settings pane without leaving the terminal](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
-![the first-run wizard: pick a chat model and an embedding model, and go](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif)
+![first run: pick a model from the catalog, and go](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif)
 
 Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
