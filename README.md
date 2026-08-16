@@ -48,6 +48,8 @@
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
+And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry, needs no account, and makes no cloud call unless you configure a cloud model yourself.
+
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
 It's all one program: no separate model server, [vector database](#built-on), or container to stand up. lilbee runs the models and keeps the index itself. Reach it as a terminal app, CLI, Model Context Protocol server, HTTP API, or Python library. Close it and it's gone, or run it as a service to keep it warm. Everything runs on your computer; it uses a cloud model only when you pick one.
@@ -91,6 +93,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 
 ## Highlights
 
+- **Private by default.** The models, the index, and every question and answer stay on your machine. No telemetry, no account, no cloud calls unless you add a cloud model yourself.
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line; when the answer isn't in your library, lilbee says so instead of inventing one.
 - **It works, and the demos prove it.** Every GIF and reel here is recorded live on real hardware, nothing staged, backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **One command to running.** Install, run `lilbee`, pick a model that fits your machine from the catalog, and you're chatting.
@@ -99,7 +102,7 @@ Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, 
 - **A real [search engine](docs/architecture.md#search-pipeline) on top,** ranking every result by how well it answers you, with 50+ [tunable knobs](docs/usage.md#settings-screen) and sane defaults.
 - **It brings and runs the models itself,** on Metal, Vulkan, or CUDA, with no server to point at and no cloud account. Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, rerank).
 - **A model too big for one card runs across all of them,** sized with gguf-parser and tensor-split automatically, or pinned by hand. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
-- **Already on Ollama or LM Studio? Keep them.** lilbee's own manager handles everything across the same [model families](#tested-model-families) they run, and their models also show up in the same pickers.
+- **Already on Ollama or LM Studio? Keep them.** lilbee's own manager covers the same [model families](#tested-model-families) they run, and their models also show up in the same pickers.
 - **One install, many surfaces:** TUI, CLI, [MCP server](#a-reference-for-ai-agents), [REST API](https://lilbee.sh/api/), and Python library, so your coding agent answers from your real files, with citations.
 - **Everything in one file, nothing to operate.** The binary bundles the whole stack (search engine, crawler, MCP + HTTP servers, TUI, Python, llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA; it loads on demand and nothing stays running.
 - **Per-project libraries.** One library for everything, or one per project.
@@ -113,7 +116,7 @@ lilbee does all of it in one install: it runs the models, processes your [docume
 - **An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) over your own files.** Build a library from your documents and saved web pages, then read it and ask questions of it in the terminal.
 - **A reference layer for code.** Point it at your project, dependencies, and API docs, and your coding agent answers from what's actually there, with file:line citations, instead of guessing function names.
 
-> **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets and no provider to depend on; the cloud's there only when you want it.
+> **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets, no provider to depend on, and nothing about your files leaving your machine; the cloud's there only when you want it.
 
 ## How lilbee compares
 
@@ -198,9 +201,9 @@ Measured with a small chat model (Qwen3 0.6B):
 | First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
 | Answers after that | model speed | model speed |
 
-Bigger models load longer; the bubble shows real progress while weights are read.
-How the engine lifecycle works, and how to keep it warm so relaunches skip the
-load entirely, lives in the [usage guide](docs/usage.md#the-engine-lifecycle).
+Bigger models load longer; the bubble shows real progress while the weights load.
+The [usage guide](docs/usage.md#the-engine-lifecycle) explains the engine
+lifecycle and how to keep the engine warm so relaunches skip the load.
 
 ## What you can do with it
 
@@ -244,13 +247,7 @@ It tunes itself, too. Tell a small local model to widen lilbee's search when a f
 
 Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) is the single entry point: drop it into `.opencode/skills/` or `.claude/skills/` and it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
 
-Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
-
-![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
-
-The citations pay for themselves at scale. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and an agent writes a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
-
-![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
+Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets with file and line. The agent reels above show this live: each pane reads and searches this repository through lilbee.
 
 ### Offline copies of websites
 
@@ -274,15 +271,15 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 ### Pick and tune your models
 
-Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
+You install and switch chat, embedding, vision, and reranking models from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
 ### Tested GPUs and backends
 
-Placement reads what the engine reports about your hardware, and every backend words that differently, so each is checked on real silicon rather than inferred from the last one. CUDA from an RTX 3090 up to H200, and up to eight A100s at once, Vulkan on NVIDIA and Intel, ROCm on an AMD Instinct MI300X, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) lists every machine and what each run settled. Captures from hardware not listed are welcome.
+Placement reads what the engine reports about your hardware, and every backend words that differently, so lilbee checks each backend on real silicon rather than inferring it from the last one. CUDA from an RTX 3090 up to H200, and up to eight A100s at once, Vulkan on NVIDIA and Intel, ROCm on an AMD Instinct MI300X, Metal on Apple Silicon, and a CPU-only host. [docs/tested-gpus.md](docs/tested-gpus.md) lists every machine and what each run settled. Send captures from hardware the table does not list.
 
 ### Tested model families
 
-One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.
+One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if the table lists a model's family, expect its variants and quants to work.
 
 <details>
 <summary><b>The family tables, per role. Click to expand.</b></summary>
@@ -623,7 +620,7 @@ Document extraction powered by [Xberg], code chunking by [tree-sitter]. lilbee h
 | Archives     | `.zip`, `.tar`, `.gz`, `.7z`, `.pst` (combined contents extracted)                                                                                      | none                                                                                                                                                                                             |
 | Code         | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none                                                                                                                                                                                             |
 
-Plus notebooks, bibliographies, iWork, and audio/video, among others. See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
+Plus notebooks, bibliographies, iWork, and audio/video, among others. See the [usage guide](docs/usage.md#ocr) for OCR setup.
 
 </details>
 
