@@ -57,7 +57,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="../style.css?v=20260731a">
+<link rel="stylesheet" href="../style.css?v=20260816b">
 <script src="../main.js?v=20260731a" defer></script>
 </head>
 <body>
@@ -90,12 +90,10 @@
             <a href="/#demo-ollama">ollama</a>
             <a href="/#demo-lmstudio">lm studio</a>
             <div class="menu-group">agents</div>
-            <a href="/#demo-agent">agent: code</a>
-            <a href="/#demo-pdf">agent: pdf</a>
-            <a href="/#demo-index">agent: index</a>
-            <a href="/#demo-godot">agent: godot</a>
-            <a href="/#demo-launchoc">launch: opencode</a>
-            <a href="/#demo-launchhm">launch: hermes</a>
+            <a href="/#demo-launchoc">agents: qwen3 coder</a>
+            <a href="/#demo-gemma4">agents: gemma 4</a>
+            <a href="/#demo-qwen36">agents: qwen3.6</a>
+            <a href="/#demo-solo123b">agent: devstral 123b</a>
             <div class="menu-group">reel</div>
             <a class="menu-hl" href="/tutorial/">&#9654; full tutorial reel</a>
           </div>
@@ -104,8 +102,6 @@
       <div class="menu">
         <button type="button" class="menu-btn" aria-expanded="false" aria-haspopup="true">install</button>
         <div class="menu-panel">
-          <a href="/#install-pip">pip</a>
-          <a href="/#install-uv">uv</a>
           <a href="/#install-brew">homebrew</a>
           <a href="/#install-aur">AUR</a>
           <a href="/#install-docker">docker</a>
@@ -115,6 +111,8 @@
           <a href="/#install-scoop">scoop</a>
           <a href="/#install-binary">binary</a>
           <a href="/#install-source">source</a>
+          <a href="/#install-pip">pip</a>
+          <a href="/#install-uv">uv</a>
         </div>
       </div>
       <div class="menu">
@@ -170,12 +168,13 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline">An <strong>MCP server</strong> that gives your coding agent local search. Point your agent at lilbee and it reads your real code and docs before it answers, with file and line citations.</h1>
-      <p class="sub">lilbee speaks the Model Context Protocol, so any MCP-aware agent can search the files and code on your own machine. Retrieval stays local; nothing is shipped to a cloud service to answer.</p>
+      <p class="sub">lilbee speaks the Model Context Protocol, so any MCP-aware agent can search the files and code on your own machine. Retrieval stays local. Nothing is sent to a cloud service.</p>
+      <p class="trust"><strong>Private by default.</strong> Your code stays on your machine. No telemetry, no account. A cloud model runs only when you pick one.</p>
     </section>
 
     <section>
       <h2 class="label">why retrieval before the answer</h2>
-      <p class="lede">An agent that guesses from memory is confident and wrong. With lilbee in the loop, the agent retrieves the relevant passages from your indexed code and docs first, answers from what it actually found, and cites the file and line so you can check it. When there is no good match, it says so instead of inventing one.</p>
+      <p class="lede">An agent that guesses from memory is confident and wrong. With lilbee in the loop, the agent first retrieves the relevant passages from your indexed code and docs. It answers from what it found and cites the file and line, so you can check it. When there is no good match, it says so instead of inventing one.</p>
     </section>
 
     <section>
@@ -183,7 +182,7 @@
       <div class="caps">
         <div class="cap">
           <h3>search</h3>
-          <p>Ranked retrieval over a project library, the same pipeline the terminal app uses, returned in a shape an agent can act on.</p>
+          <p>Ranked retrieval over a project library, through the same pipeline the terminal app uses. Results come back in a shape an agent can act on.</p>
         </div>
         <div class="cap">
           <h3>add &amp; sync</h3>
@@ -202,7 +201,7 @@
 
     <section>
       <h2 class="label">it runs the models too</h2>
-      <p class="lede">lilbee is not only the retrieval layer. It is a complete <a href="/model-manager/">model manager</a> that downloads and runs the models itself on Metal, Vulkan, or CUDA, so one program covers both the search and the model behind it. Already running Ollama or LM Studio? Point lilbee at your setup and keep it.</p>
+      <p class="lede">lilbee is not only the retrieval layer. It is a complete <a href="/model-manager/">model manager</a>: it downloads and runs the models itself on Metal, Vulkan, or CUDA. One program covers both the search and the model behind it. Already running Ollama or LM Studio? Point lilbee at your setup and keep it.</p>
     </section>
 
     <section>

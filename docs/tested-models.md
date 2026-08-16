@@ -2,6 +2,8 @@
 
 lilbee's placement planner and engine are exercised against real models on real GPUs, one representative per architecture family, covering every role a model can hold: chat, embedding, vision, and rerank. Every family below was pulled with `lilbee model pull` and run through the full pipeline on consumer hardware, with nothing staged by hand. For chat families verified against coding agents and tool calling, see [agent-models](agent-models.md).
 
+This is not a compatibility list. lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model whose architecture is in the bundled engine's [supported list](../README.md#supported-models). The tables below record what has been exercised end to end on real hardware.
+
 The vision families ran on a single 12 GB RTX 3080 Ti with the chat and embed defaults resident beside them: the model indexed an image-only scanned PDF through OCR and answered a question whose answer exists only in the scanned text. The text families ran the same pipeline (index a document, search it, answer from it) with each candidate swapped into its role next to the other defaults.
 
 ## Vision
@@ -33,6 +35,19 @@ One representative per memory-architecture class, since context sizing and KV be
 | Multi-head latent attention | `mradermacher/DeepSeek-V2-Lite-Chat-GGUF` |
 | Mixture of experts | `bartowski/OLMoE-1B-7B-0924-Instruct-GGUF` |
 | Hybrid SSM | `LiquidAI/LFM2-1.2B-GGUF` |
+
+### Models in the README reels
+
+The README's demo reels add larger datapoints on top of the family representatives. Each agent reel serves coding agents from one model through `lilbee serve`:
+
+| Model | Pulled with | In the reel |
+|-------|-------------|-------------|
+| Qwen3 Coder Next 80B-A3B | `unsloth/Qwen3-Coder-Next-GGUF` | Four agents on three RTX 4090s |
+| Gemma 4 26B-A4B | `unsloth/gemma-4-26B-A4B-it-GGUF` | Four agents, reasoning streamed as visible text |
+| Qwen3.6 27B | `unsloth/Qwen3.6-27B-GGUF` | Four agents |
+| Devstral 2 123B | `unsloth/Devstral-2-123B-Instruct-2512-GGUF` | One agent on two A100 80GB cards |
+
+The TUI reels run on the Qwen3 dense family above: Qwen3 0.6B for the launch timings and Qwen3 8B for the site-crawl answer.
 
 ## Embedding
 
