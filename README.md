@@ -72,6 +72,7 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 - [Why lilbee](#why-lilbee)
 - [First start](#first-start)
 - [What you can do with it](#what-you-can-do-with-it)
+- [Agents](#agents)
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
@@ -217,38 +218,6 @@ Ask it something with a real answer at stake and you get the answer, not a parap
 
 ![ask what the manual says about towing a trailer; lilbee answers from the indexed PDF and cites the page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
-### Launch your coding agent on local models
-
-`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
-
-One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
-
-![four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.gif)
-
-Qwen3 Coder Next, 45GB across three RTX 4090s: four agents on one model, 138 tokens a second warm.
-
-![four agents on Gemma 4 26B, its reasoning streamed as visible text](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.gif)
-
-Gemma 4 26B is a thinking model, and lilbee streams its reasoning as visible text: every pane shows the model working through the problem before it answers.
-
-![four agents on Qwen3.6 27B, thinking out loud on the same tasks](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.gif)
-
-Qwen3.6 27B on the same four tasks: each agent states what it expects, then reads the code to check itself.
-
-![one agent on Devstral 2 123B, walking through lilbee's GPU placement code](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.gif)
-
-And the same setup scales up: Devstral 2 123B, 70GB across two A100 80GB cards, one agent at the model's full 14 tokens a second.
-
-It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
-
-![agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
-
-### A reference for AI agents
-
-Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) is the single entry point: drop it into `.opencode/skills/` or `.claude/skills/` and it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
-
-Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets with file and line. The agent reels above show this live: each pane reads and searches this repository through lilbee.
-
 ### Offline copies of websites
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
@@ -361,6 +330,42 @@ lilbee runs entirely on your machine by default. Two ways to use a cloud model w
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
+
+## Agents
+
+lilbee serves your coding agents two ways, both local: it runs the models they talk to, and it answers their searches with cited snippets from your library.
+
+### Launch your coding agent on local models
+
+`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
+
+One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
+
+![four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-coder-next.gif)
+
+Qwen3 Coder Next, 45GB across three RTX 4090s: four agents on one model, 138 tokens a second warm.
+
+![four agents on Gemma 4 26B, its reasoning streamed as visible text](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-gemma4.gif)
+
+Gemma 4 26B is a thinking model, and lilbee streams its reasoning as visible text: every pane shows the model working through the problem before it answers.
+
+![four agents on Qwen3.6 27B, thinking out loud on the same tasks](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-qwen36.gif)
+
+Qwen3.6 27B on the same four tasks: each agent states what it expects, then reads the code to check itself.
+
+![one agent on Devstral 2 123B, walking through lilbee's GPU placement code](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agents-devstral-123b-solo.gif)
+
+And the same setup scales up: Devstral 2 123B, 70GB across two A100 80GB cards, one agent at the model's full 14 tokens a second.
+
+It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
+
+![agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
+
+### A reference for AI agents
+
+Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) is the single entry point: drop it into `.opencode/skills/` or `.claude/skills/` and it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
+
+Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets with file and line. The agent reels above show this live: each pane reads and searches this repository through lilbee.
 
 ## Run a model bigger than one card
 
