@@ -426,3 +426,11 @@ def test_animation_loop_sleeps_during_startup_then_exits(monkeypatch):
     monkeypatch.setattr(sr, "poll_pipe", fake_poll)
     sr.animation_loop(0)
     assert sleeps == [sr.POLL_INTERVAL]
+
+
+def test_open_pipe_ref_returns_the_fd_on_posix(monkeypatch):
+    """POSIX passes the fd through unchanged; only Windows converts a handle."""
+    monkeypatch.setattr("sys.platform", "linux")
+    from lilbee.runtime._splash_runner import _open_pipe_ref
+
+    assert _open_pipe_ref(7) == 7
