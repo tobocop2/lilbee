@@ -1263,7 +1263,8 @@ lilbee add https://docs.example.com https://wiki.example.com
 ```
 
 Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI
-(`/crawl`).
+(`/crawl`). The MCP tool defaults to a single page (`depth=0`); agents pass a
+depth, or `depth=null` for the whole site.
 
 **Configuration (all optional):**
 
