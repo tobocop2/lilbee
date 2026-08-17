@@ -21,6 +21,7 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
         weights = 4 * _GB
         floor = _analytic_footprint_floor(
             weights,
+            role=WorkerRole.CHAT,
             meta={
                 "block_count": "32",
                 "head_count_kv": "8",
@@ -41,8 +42,10 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
             "key_length": "128",
             "value_length": "128",
         }
-        one = _analytic_footprint_floor(4 * _GB, meta=meta, ctx=8192, slots=1)
-        four = _analytic_footprint_floor(4 * _GB, meta=meta, ctx=8192, slots=4)
+        one = _analytic_footprint_floor(4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=1)
+        four = _analytic_footprint_floor(
+            4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=4
+        )
         assert four > one
 
     def test_unknown_metadata_still_charges_more_than_weights(self) -> None:
@@ -50,7 +53,10 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
         # because zero KV is the one answer that is certainly wrong.
         from lilbee.providers.fleet.planning import _analytic_footprint_floor
 
-        assert _analytic_footprint_floor(4 * _GB, meta=None, ctx=8192, slots=1) > 4 * _GB
+        assert (
+            _analytic_footprint_floor(4 * _GB, role=WorkerRole.CHAT, meta=None, ctx=8192, slots=1)
+            > 4 * _GB
+        )
 
 
 class TestTheFallbackIsUsedAndSaidOutLoud:

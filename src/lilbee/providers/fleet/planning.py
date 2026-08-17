@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.core.config.enums import KvCacheType
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.system import is_network_path
 from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
@@ -1022,7 +1022,7 @@ def _admit_estimate(
 
 
 def _analytic_footprint_floor(
-    weights: int, *, meta: dict[str, str] | None, ctx: int, slots: int
+    weights: int, *, role: WorkerRole, meta: dict[str, str] | None, ctx: int, slots: int
 ) -> int:
     """The least this instance can occupy: weights, its KV cache, and overhead.
 
@@ -1040,7 +1040,11 @@ def _analytic_footprint_floor(
     """
 
     kv_bytes = (
-        model_cache.kv_bytes_per_token(meta, engine_params._kv_elem_bytes_for_cfg())
+        model_cache.kv_bytes_per_token(
+            meta,
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type_v(role)],
+        )
         * ctx
         * max(slots, 1)
     )
@@ -1135,7 +1139,7 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
         path = None
     ctx = _placement_estimate_ctx(role, path, meta) if path is not None else _MIN_USABLE_CHAT_CTX
     return _analytic_footprint_floor(
-        weights, meta=meta, ctx=ctx, slots=_placement_estimate_slots(role, meta)
+        weights, role=role, meta=meta, ctx=ctx, slots=_placement_estimate_slots(role, meta)
     )
 
 

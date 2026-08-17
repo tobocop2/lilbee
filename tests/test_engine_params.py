@@ -86,7 +86,7 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
         monkeypatch.setattr(ep, "get_available_memory", lambda _frac: 10**10)
-        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, _b: 1000)
+        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, *_b: 1000)
         monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 6000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
@@ -98,7 +98,7 @@ class TestResolveChatCtx:
         seen: dict = {}
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 99999)
         monkeypatch.setattr(ep, "get_available_memory", lambda _frac: 10**10)
-        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, _b: 1000)
+        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, *_b: 1000)
 
         def _capture(**kwargs):
             seen.update(kwargs)
@@ -110,12 +110,65 @@ class TestResolveChatCtx:
         ep.resolve_chat_ctx(model, None)
         assert seen["ceiling"] == 4096  # explicit num_ctx_max caps below training_ctx
 
+    def test_quantized_kv_widens_the_grant(self, monkeypatch, tmp_path) -> None:
+        """The field case: a quantized-KV config must grant the wider window its
+        smaller cache affords, not one budgeted at a rounded-up byte cost.
+
+        Meta shaped like a dense GQA model (48 layers, 8 KV heads, 128-dim
+        K and V). With q4_0 K+V the per-token cache is 55296 bytes; the old
+        1-byte-per-element charge said 98304 and granted 9984 tokens where
+        17920 fit."""
+        from lilbee.core.config.enums import KvCacheType
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 10**6)
+        meta = {
+            "block_count": "48",
+            "head_count": "32",
+            "head_count_kv": "8",
+            "key_length": "128",
+            "value_length": "128",
+        }
+        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        monkeypatch.setattr(cfg, "num_ctx_max", None)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 200000)
+        assert ep.resolve_chat_ctx(model, meta, available_bytes=10**9) == 17920
+
     def test_falls_back_to_static_cap_on_stat_error(self, monkeypatch) -> None:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 4096)
         # A nonexistent path makes .stat() raise OSError -> static min(training, target).
         assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None) == 4096
+
+
+class TestChatKvElemBytes:
+    def test_quantized_kv_costs_its_block_bytes(self, monkeypatch) -> None:
+        from lilbee.core.config.enums import KvCacheType
+
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        assert ep.chat_kv_elem_bytes() == (18 / 32, 18 / 32)
+
+    def test_q8_0_costs_more_than_a_byte(self, monkeypatch) -> None:
+        # 34-byte block per 32 elements: rounding down to 1 over-grants.
+        from lilbee.core.config.enums import KvCacheType
+
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        assert ep.chat_kv_elem_bytes() == (34 / 32, 34 / 32)
+
+    def test_v_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
+        """The launch leaves V at f16 without flash attention (llama.cpp refuses
+        a quantized V cache there); budgeting V at the quantized cost would
+        grant a window the card cannot hold."""
+        from lilbee.core.config.enums import KvCacheType
+
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
+        monkeypatch.setattr(cfg, "flash_attention", False)
+        assert ep.chat_kv_elem_bytes() == (18 / 32, 2.0)
 
 
 class TestChatCtxCeiling:
