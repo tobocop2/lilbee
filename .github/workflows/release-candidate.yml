@@ -293,11 +293,15 @@ jobs:
           engine_whls=(engine/lilbee_engine-*.whl); engine_whl="${engine_whls[0]}"
           [ -f "${lilbee_whl}" ] || { echo "no lilbee wheel in wheels/" >&2; ls -la wheels/; exit 1; }
           [ -f "${engine_whl}" ] || { echo "no engine wheel in engine/" >&2; ls -la engine/; exit 1; }
-          # Install the engine wheel first, then the lilbee wheel with its
-          # crawler extra straight off the built file; the extra's own deps
-          # (crawl4ai etc.) resolve from PyPI.
+          # Install the engine wheel first, then the lilbee wheel straight off
+          # the built file; the extras' own deps resolve from PyPI. The extra
+          # set matches the `release` extra the executables bundle, because
+          # leg 0 of the smoke (self-check-extras) asserts litellm, crawl4ai,
+          # spacy and graspologic_native. Spelled out rather than [release],
+          # which self-references `lilbee` and makes pip resolve the name from
+          # PyPI instead of the wheel under test.
           "${bin}/pip" install "${engine_whl}"
-          "${bin}/pip" install "${lilbee_whl}[crawler]"
+          "${bin}/pip" install "${lilbee_whl}[crawler,litellm,graph]"
           LILBEE_EXE="${bin}/lilbee" bash tools/qa/artifact_smoke.sh
 
   # Auto-dispatch publish.yml once every core artifact is attached to the
