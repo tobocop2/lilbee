@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from lilbee.runtime._splash_runner import TAKEOVER_BYTE
 
@@ -39,13 +40,32 @@ _active_handle: SplashHandle | None = None
 
 def _should_skip() -> bool:
     """Return True when the splash animation should be suppressed."""
-    if sys.platform == "win32":
-        # The splash hands its child a pipe fd via pass_fds, which subprocess
-        # does not support on Windows.
-        return True
     if not os.isatty(2):
         return True
     return bool(os.environ.get("LILBEE_NO_SPLASH", ""))
+
+
+def _spawn_args(read_fd: int) -> tuple[str, dict[str, Any]]:
+    """Per-platform argv reference and Popen kwargs for the pipe's read end.
+
+    POSIX passes the fd itself; pass_fds keeps only read_fd open in the child
+    (close_fds=False would leak all open descriptors, including any held by
+    libraries). subprocess cannot pass fds on Windows, so the child gets the
+    pipe's OS handle number on argv instead and reopens it as a fd
+    (msvcrt.open_osfhandle in the runner; inherited handles keep their value
+    in the child). handle_list restricts inheritance to exactly this handle,
+    the same no-leak guarantee pass_fds gives on POSIX.
+    """
+    if sys.platform == "win32":  # pragma: no cover - Windows-only, covered on the Windows CI leg
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(read_fd)
+        os.set_handle_inheritable(handle, True)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.lpAttributeList = {"handle_list": [handle]}
+        return str(handle), {"startupinfo": startupinfo}
+    os.set_inheritable(read_fd, True)
+    return str(read_fd), {"pass_fds": (read_fd,)}
 
 
 def start() -> SplashHandle | None:
@@ -59,18 +79,16 @@ def start() -> SplashHandle | None:
         return None
 
     read_fd, write_fd = os.pipe()
-    os.set_inheritable(read_fd, True)
+    pipe_ref, spawn_kwargs = _spawn_args(read_fd)
 
     # Trusted: sys.executable is this interpreter, module path is static,
-    # the one runtime value (read_fd) is an int from os.pipe().
-    # pass_fds keeps only read_fd open in the child (close_fds=False would
-    # leak all open descriptors, including any held by libraries).
+    # the one runtime value (pipe_ref) derives from an int from os.pipe().
     proc = subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "lilbee.runtime._splash_runner", str(read_fd)],
-        pass_fds=(read_fd,),
+        [sys.executable, "-m", "lilbee.runtime._splash_runner", pipe_ref],
         stderr=None,
         stdout=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
+        **spawn_kwargs,
     )
 
     os.close(read_fd)

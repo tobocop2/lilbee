@@ -91,6 +91,8 @@ def _gate_with_app():
 
     ``_stopping`` needs a live worker context and a mounted screen, neither of
     which a direct call to the worker body has, so it is stubbed to "keep going".
+    The app lands in ``_ui_app`` exactly as ``on_mount`` leaves it: the workers
+    read the captured reference, never the ``app`` property.
     """
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
@@ -98,7 +100,43 @@ def _gate_with_app():
     app = mock.MagicMock()
     app.call_from_thread.side_effect = lambda fn, *a: fn(*a)
     app.screen = gate  # the gate owns the screen, as it does in production
+    gate._ui_app = app
     return gate, app
+
+
+async def test_boot_worker_never_resolves_app_from_the_thread():
+    """Regression: the boot thread has no Textual app context, so resolving
+    ``self.app`` there raised NoActiveAppError mid-boot on Windows first
+    launches and left a dead loading screen. The worker must run on the
+    reference captured at mount, even when the property cannot resolve."""
+    from textual._context import NoActiveAppError
+
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate, app = _gate_with_app()
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(side_effect=NoActiveAppError())),
+        mock.patch.object(StartupGate, "query_one"),
+        mock.patch.object(StartupGate, "_stopping", return_value=False),
+    ):
+        StartupGate._boot_worker.__wrapped__(gate)
+    app.settle_landing.assert_called_once_with()
+    app.reveal_landing.assert_called_once_with()
+
+
+async def test_mount_captures_the_app_for_the_workers():
+    """on_mount runs on the UI thread, the one place ``self.app`` always
+    resolves, so that is where the workers' reference is captured."""
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate = StartupGate()
+    app = mock.MagicMock()
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "_retire_splash"),
+    ):
+        gate.on_mount()
+    assert gate._ui_app is app
 
 
 async def test_gate_release_reveals_chat():
@@ -108,10 +146,8 @@ async def test_gate_release_reveals_chat():
     gate = StartupGate()
     app = mock.MagicMock()
     app.screen = gate
-    with (
-        mock.patch.object(StartupGate, "query_one"),
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-    ):
+    gate._ui_app = app
+    with mock.patch.object(StartupGate, "query_one"):
         gate._release()
     app.reveal_landing.assert_called_once_with()
 
@@ -130,7 +166,6 @@ async def test_gate_releases_once_services_build_even_with_a_cold_engine(monkeyp
     app.adopt_services.side_effect = lambda: order.append("adopt")
     app.reveal_landing.side_effect = lambda: order.append("reveal")
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -147,10 +182,8 @@ async def test_gate_failure_surfaces_the_error_and_still_reveals_chat():
     gate = StartupGate()
     app = mock.MagicMock()
     app.screen = gate
-    with (
-        mock.patch.object(StartupGate, "query_one"),
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-    ):
+    gate._ui_app = app
+    with mock.patch.object(StartupGate, "query_one"):
         gate._fail("no such file")
     notified = [c.args[0] for c in app.notify.call_args_list if c.args]
     assert msg.STARTUP_FAILED.format(error="no such file") in notified
@@ -168,7 +201,6 @@ async def test_gate_builds_the_container_even_with_nothing_configured(monkeypatc
 
     gate, app = _gate_with_app()
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -194,7 +226,6 @@ async def test_gate_settles_setup_before_it_hands_over(monkeypatch):
     app.reveal_landing.side_effect = lambda: order.append("reveal")
     monkeypatch.setattr(gate_mod, "peek_services", lambda: mock.MagicMock())
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -211,7 +242,6 @@ async def test_gate_surfaces_a_failure_to_build_services(monkeypatch):
     gate, app = _gate_with_app()
     app.adopt_services.side_effect = OSError("disk gone")
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -227,10 +257,8 @@ async def test_marshal_skips_the_ui_hop_once_the_app_is_tearing_down():
 
     gate = StartupGate()
     app = mock.MagicMock()
-    with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-        mock.patch.object(StartupGate, "_stopping", return_value=True),
-    ):
+    gate._ui_app = app
+    with mock.patch.object(StartupGate, "_stopping", return_value=True):
         gate._marshal(gate._release)
     app.call_from_thread.assert_not_called()
     app.reveal_landing.assert_not_called()
@@ -402,10 +430,8 @@ async def test_gate_does_not_steal_a_screen_pushed_over_it(monkeypatch):
     gate = StartupGate()
     app = mock.MagicMock()
     app.screen = _Other()  # something else owns the screen now
-    with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-        mock.patch.object(StartupGate, "query_one"),
-    ):
+    gate._ui_app = app
+    with mock.patch.object(StartupGate, "query_one"):
         gate._release()
     app.reveal_landing.assert_not_called()
 
@@ -417,10 +443,8 @@ async def test_gate_hands_over_when_it_still_owns_the_screen():
     gate = StartupGate()
     app = mock.MagicMock()
     app.screen = gate
-    with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-        mock.patch.object(StartupGate, "query_one"),
-    ):
+    gate._ui_app = app
+    with mock.patch.object(StartupGate, "query_one"):
         gate._release()
     app.reveal_landing.assert_called_once_with()
 
@@ -467,7 +491,6 @@ async def test_boot_worker_canonicalizes_before_the_setup_check(monkeypatch):
     app.canonicalize_persisted_models.side_effect = lambda: order.append("canonicalize")
     app.settle_landing.side_effect = lambda: order.append("setup")
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -484,7 +507,6 @@ async def test_boot_worker_surfaces_a_canonicalization_failure(monkeypatch):
     app.canonicalize_persisted_models.side_effect = OSError("registry unreadable")
     monkeypatch.setattr(gate_mod, "peek_services", lambda: None)
     with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(StartupGate, "_stopping", return_value=False),
     ):
@@ -499,13 +521,10 @@ async def test_gate_mount_retires_the_splash_then_repaints(monkeypatch):
     the dismissal then repaints anything a final frame touched."""
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
-    gate, app = _gate_with_app()
+    gate, _app = _gate_with_app()
     order: list[str] = []
     monkeypatch.setattr("lilbee.runtime.splash.dismiss", lambda: order.append("dismiss"))
     monkeypatch.setattr(gate, "_repaint", lambda: order.append("refresh"), raising=False)
-    with (
-        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
-        mock.patch.object(StartupGate, "_stopping", return_value=False),
-    ):
+    with mock.patch.object(StartupGate, "_stopping", return_value=False):
         StartupGate._retire_splash.__wrapped__(gate)
     assert order == ["dismiss", "refresh"]
