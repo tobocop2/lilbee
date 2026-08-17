@@ -196,10 +196,17 @@ def _apply_fast_download_mode() -> None:
 
 
 _STALL_WINDOW_S = 60.0
-"""Seconds without a progress pulse before a transfer counts as stalled.
+"""Seconds per measurement window; a transfer below the byte floor for a
+whole window counts as stalled.
 
 Well past the hub's own 10s read timeout and its resume retries, so the
 guard only fires on transfers those mechanisms cannot wake."""
+
+_STALL_FLOOR_BYTES = 256 * 1024
+"""Minimum bytes per window for a transfer to count as alive.
+
+A wedged connection can trickle a few bytes a minute, which an any-activity
+check reads as progress; ~4 KB/s is far below any usable model download."""
 
 _STALL_POLL_S = 5.0
 
@@ -224,23 +231,31 @@ class _StallGuard:
     """Aborts a transfer that reports no bytes for the stall window.
 
     A wedged transfer blocks forever with the task showing active: hf_xet
-    can deadlock before its first byte, and a dead socket never wakes the
-    plain path's read. The guard rides the same progress stream the task
-    bar shows; when it goes quiet, the abort makes the blocked thread
-    raise, and the caller resumes from the .incomplete file.
+    can deadlock before its first byte, a dead socket never wakes the
+    plain path's read, and a dying connection can trickle bytes too slowly
+    to ever finish. The guard rides the same progress stream the task bar
+    shows; when a window passes under the byte floor, the abort makes the
+    blocked thread raise, and the caller resumes from the .incomplete file.
     """
 
-    def __init__(self, window_s: float = _STALL_WINDOW_S, poll_s: float = _STALL_POLL_S) -> None:
+    def __init__(
+        self,
+        window_s: float = _STALL_WINDOW_S,
+        poll_s: float = _STALL_POLL_S,
+        floor_bytes: int = _STALL_FLOOR_BYTES,
+    ) -> None:
         self._window_s = window_s
         self._poll_s = poll_s
-        self._last_pulse = time.monotonic()
+        self._floor_bytes = floor_bytes
+        self._window_start = time.monotonic()
+        self._window_bytes = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.fired = False
 
-    def pulse(self) -> None:
-        """Record transfer activity; called from the download thread's tqdm."""
-        self._last_pulse = time.monotonic()
+    def pulse(self, n: float = 0) -> None:
+        """Count transferred bytes; called from the download thread's tqdm."""
+        self._window_bytes += int(n)
 
     def wrap_tqdm(self, tqdm_class: Any) -> Any:
         """Subclass *tqdm_class* (or the hub's default) to pulse on every update.
@@ -256,7 +271,7 @@ class _StallGuard:
 
         class _Pulsing(base):  # type: ignore[misc, valid-type]
             def update(self, n: float = 1) -> bool | None:
-                guard.pulse()
+                guard.pulse(n)
                 super().update(n)
                 return None
 
@@ -265,7 +280,7 @@ class _StallGuard:
 
         class _PulsingTransfer(_Pulsing):
             def update_transfer(self, n: float = 1) -> bool | None:
-                guard.pulse()
+                guard.pulse(n)
                 super().update_transfer(n)
                 return None
 
@@ -278,10 +293,15 @@ class _StallGuard:
 
     def _keep_watching(self) -> bool:
         """One tick: True to keep watching, False once fired or stopped."""
-        if time.monotonic() - self._last_pulse <= self._window_s:
+        now = time.monotonic()
+        if now - self._window_start < self._window_s:
             return True
         if self._stop.is_set():
             return False  # the transfer finished while this tick was deciding
+        if self._window_bytes >= self._floor_bytes:
+            self._window_start = now
+            self._window_bytes = 0
+            return True
         self.fired = True
         _abort_stalled_transfer()
         return False
@@ -326,9 +346,9 @@ def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> P
                 _STALL_RETRIES + 1,
             )
     raise RuntimeError(
-        f"Download of {entry.hf_repo} stalled {_STALL_RETRIES + 1} times with no data "
-        "arriving. Check the network connection and retry; the finished part is kept "
-        "and the download resumes where it stopped."
+        f"Download of {entry.hf_repo} stalled {_STALL_RETRIES + 1} times with almost "
+        "no data arriving. Check the network connection and retry; the finished part "
+        "is kept and the download resumes where it stopped."
     ) from last_error
 
 

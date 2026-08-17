@@ -41,7 +41,7 @@ class TestStallGuard:
         aborts: list[str] = []
         monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
 
-        with dl._StallGuard(window_s=0.0, poll_s=0.01) as guard:
+        with dl._StallGuard(window_s=0.0, poll_s=0.01, floor_bytes=1) as guard:
             deadline = time.monotonic() + 5.0
             while not guard.fired and time.monotonic() < deadline:
                 time.sleep(0.01)
@@ -59,16 +59,16 @@ class TestStallGuard:
         assert not guard.fired
         assert aborts == []
 
-    def test_wrapped_tqdm_pulses_on_update(self) -> None:
+    def test_wrapped_tqdm_pulses_the_byte_count(self) -> None:
         guard = dl._StallGuard()
-        pulses: list[str] = []
-        guard.pulse = lambda: pulses.append("pulse")  # type: ignore[method-assign]
+        pulses: list[float] = []
+        guard.pulse = lambda n=0: pulses.append(n)  # type: ignore[method-assign]
 
         cls = guard.wrap_tqdm(None)
         bar = cls(total=10, disable=True)
         bar.update(5)
 
-        assert pulses == ["pulse"]
+        assert pulses == [5]
 
     def test_wrapped_tqdm_pulses_on_the_transfer_stream(self) -> None:
         """A base exposing update_transfer (the xet stream) keeps it, pulsed."""
@@ -82,15 +82,15 @@ class TestStallGuard:
                 calls.append(("update_transfer", n))
 
         guard = dl._StallGuard()
-        pulses: list[str] = []
-        guard.pulse = lambda: pulses.append("pulse")  # type: ignore[method-assign]
+        pulses: list[float] = []
+        guard.pulse = lambda n=0: pulses.append(n)  # type: ignore[method-assign]
 
         bar = guard.wrap_tqdm(_Base)()
         bar.update(3)
         bar.update_transfer(4)
 
         assert calls == [("update", 3), ("update_transfer", 4)]
-        assert pulses == ["pulse", "pulse"]
+        assert pulses == [3, 4]
 
     def test_wrapping_does_not_invent_the_transfer_stream(self) -> None:
         """The hub feature-detects update_transfer; a base without it must not
@@ -214,29 +214,45 @@ class TestGuardIsOnEveryTransfer:
 
 
 class TestWatchTick:
-    def test_a_quiet_window_fires_the_abort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_window_under_the_floor_fires_the_abort(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         aborts: list[str] = []
         monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
-        guard = dl._StallGuard(window_s=0.0)
-        guard._last_pulse -= 1.0
+        guard = dl._StallGuard(window_s=0.0, floor_bytes=1024)
+        guard._window_start -= 1.0
+        guard.pulse(1023)  # a trickle is not progress
 
         assert guard._keep_watching() is False
         assert guard.fired
         assert aborts == ["abort"]
 
-    def test_a_recent_pulse_keeps_watching(self) -> None:
+    def test_a_window_before_expiry_keeps_watching(self) -> None:
         guard = dl._StallGuard(window_s=60.0)
-        guard.pulse()
         assert guard._keep_watching() is True
         assert not guard.fired
+
+    def test_a_window_at_the_floor_starts_the_next_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        aborts: list[str] = []
+        monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
+        guard = dl._StallGuard(window_s=0.0, floor_bytes=1024)
+        guard._window_start -= 1.0
+        guard.pulse(1024)
+
+        assert guard._keep_watching() is True
+        assert not guard.fired
+        assert aborts == []
+        assert guard._window_bytes == 0
 
     def test_a_finished_transfer_is_not_aborted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The exit path can win the race against an expiring tick; the tick
         must stand down instead of closing the next transfer's client."""
         aborts: list[str] = []
         monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
-        guard = dl._StallGuard(window_s=0.0)
-        guard._last_pulse -= 1.0
+        guard = dl._StallGuard(window_s=0.0, floor_bytes=1024)
+        guard._window_start -= 1.0
         guard._stop.set()
 
         assert guard._keep_watching() is False
