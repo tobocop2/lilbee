@@ -2152,7 +2152,9 @@ class CatalogScreen(Screen[None]):
         """
 
         def _adopt() -> None:
-            self.app.call_from_thread(self._adopt_first_download, model)
+            # Runs on the download worker thread; the safe wrapper drops the
+            # hop on a detached screen instead of crashing the worker.
+            call_from_thread(self, self._adopt_first_download, model)
 
         if model.compat is ModelCompat.UNSUPPORTED:
 

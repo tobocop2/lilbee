@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -47,10 +46,15 @@ class TestShouldSkip:
         ):
             assert _should_skip() is False
 
-    def test_win32_always_skips(self) -> None:
-        # pass_fds is unsupported on Windows, so the splash never starts there.
-        with patch("lilbee.runtime.splash.sys.platform", "win32"):
-            assert _should_skip() is True
+    def test_win32_tty_does_not_skip(self) -> None:
+        # Windows passes the pipe as an inheritable OS handle instead of an
+        # fd, so the splash runs there like everywhere else.
+        with (
+            patch("lilbee.runtime.splash.sys.platform", "win32"),
+            patch("lilbee.runtime.splash.os.isatty", return_value=True),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            assert _should_skip() is False
 
 
 class TestStartStop:
@@ -61,7 +65,6 @@ class TestStartStop:
     def test_stop_none_is_noop(self) -> None:
         stop(None)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="splash child needs pass_fds")
     def test_start_and_stop(self) -> None:
         with patch("lilbee.runtime.splash._should_skip", return_value=False):
             handle = start()
@@ -72,7 +75,6 @@ class TestStartStop:
             assert handle.process.poll() is not None  # exited
             assert _SPLASH_FD_ENV not in os.environ
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="splash child needs pass_fds")
     def test_start_sets_env_var(self) -> None:
         with patch("lilbee.runtime.splash._should_skip", return_value=False):
             handle = start()
@@ -144,7 +146,6 @@ class TestDismiss:
         finally:
             splash_mod._active_handle = original
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="splash child needs pass_fds")
     def test_dismiss_waits_for_process_and_clears_handle(self) -> None:
         """dismiss() waits for the subprocess and clears _active_handle
         so atexit does not re-run stop() while Textual owns the terminal.

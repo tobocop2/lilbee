@@ -1,8 +1,9 @@
 """Standalone splash animation process: stdlib plus the shared wordmark.
 
-Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
-and animates until the pipe signals EOF (parent closed its write end, or
-parent died). This guarantees no orphan/zombie animation processes.
+Launched as a subprocess by ``splash.start()``. Reads a pipe reference from
+argv (the fd on POSIX, the pipe's OS handle on Windows) and animates until
+the pipe signals EOF (parent closed its write end, or parent died). This
+guarantees no orphan/zombie animation processes.
 """
 
 from __future__ import annotations
@@ -43,8 +44,14 @@ POLL_INTERVAL = 0.01
 _BAR_FALLOFF_DENSE = 1
 _BAR_FALLOFF_LIGHT = 2
 
-# Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
+# Subprocess entry point expects exactly ``python -m ... <pipe_ref>`` (script name + 1 arg).
 _EXPECTED_ARGV_LEN = 2
+
+# Console-mode bits for the legacy Windows console (Windows Terminal has VT on
+# by default, conhost does not).
+_STD_ERROR_HANDLE = -12
+_ENABLE_VT_PROCESSING = 0x0004
+_UTF8_CODEPAGE = 65001
 
 # Sent down the pipe by ``splash.dismiss()`` when the TUI takes over the
 # terminal: the child must exit without writing anything (no frame clear, no
@@ -187,6 +194,53 @@ def poll_pipe(pipe_fd: int) -> PipeSignal:
     return _poll_pipe_posix(pipe_fd)  # pragma: no cover  POSIX-only
 
 
+def _open_pipe_ref(ref: int) -> int:
+    """Turn the argv pipe reference into a readable fd.
+
+    POSIX passes the fd itself (pass_fds keeps the number). Windows cannot
+    pass fds, so the parent sends the pipe's OS handle number and the child
+    reopens it as a fd here.
+    """
+    if sys.platform == "win32":  # pragma: no cover  Windows-only
+        import msvcrt
+
+        return msvcrt.open_osfhandle(ref, os.O_RDONLY)
+    return ref
+
+
+def _setup_console_win32() -> int:  # pragma: no cover  Windows-only
+    """Make the console render this process's output: VT on, UTF-8 out.
+
+    ANSI processing is off on the legacy console (Windows Terminal has it
+    on), and the default output codepage mangles the loading bar's block
+    characters, which the frames carry as UTF-8 bytes. Returns the previous
+    codepage so the caller can restore it; 0 when there is no console
+    (GetConsoleMode fails -- the parent only starts the splash on a tty).
+    """
+    if sys.platform != "win32":
+        return 0
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(_STD_ERROR_HANDLE)
+    mode = ctypes.c_ulong(0)
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return 0
+    kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+    previous_cp = int(kernel32.GetConsoleOutputCP())
+    kernel32.SetConsoleOutputCP(_UTF8_CODEPAGE)
+    return previous_cp
+
+
+def _restore_console_win32(previous_cp: int) -> None:  # pragma: no cover  Windows-only
+    """Put the console codepage back so the parent shell keeps its own."""
+    if sys.platform != "win32" or not previous_cp:
+        return
+    import ctypes
+
+    ctypes.windll.kernel32.SetConsoleOutputCP(previous_cp)
+
+
 def animation_loop(pipe_fd: int) -> None:
     """Run the animation, exiting when the pipe signals EOF or takeover.
 
@@ -219,11 +273,12 @@ def animation_loop(pipe_fd: int) -> None:
             pipe_signal = poll_pipe(pipe_fd)
         return got_signal or pipe_signal is not PipeSignal.OPEN
 
-    for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
-        if should_stop():
-            return  # nothing drawn yet, nothing to clean up
-        time.sleep(POLL_INTERVAL)
+    if _stopped_during_startup_delay(should_stop):
+        return  # nothing drawn yet, nothing to clean up
 
+    previous_cp = 0
+    if sys.platform == "win32":  # pragma: no cover - Windows-only console setup
+        previous_cp = _setup_console_win32()
     try:
         os.write(fd, HIDE_CURSOR.encode())
         _animate_frames(fd, logo_frames, knight_frames, pad, frame_height, should_stop)
@@ -233,6 +288,17 @@ def animation_loop(pipe_fd: int) -> None:
         if pipe_signal is not PipeSignal.TAKEOVER:
             with contextlib.suppress(OSError):
                 os.write(fd, clear_screen(frame_height))
+        if sys.platform == "win32":  # pragma: no cover - Windows-only console restore
+            _restore_console_win32(previous_cp)
+
+
+def _stopped_during_startup_delay(should_stop: Callable[[], bool]) -> bool:
+    """Poll through the startup delay; True when the splash should not draw."""
+    for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
+        if should_stop():
+            return True
+        time.sleep(POLL_INTERVAL)
+    return False
 
 
 def _animate_frames(
@@ -262,13 +328,13 @@ def _animate_frames(
 
 
 def main() -> None:
-    """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_fd>``."""
+    """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_ref>``."""
     if len(sys.argv) != _EXPECTED_ARGV_LEN:
         sys.exit(1)
 
     try:
-        pipe_fd = int(sys.argv[1])
-    except ValueError:
+        pipe_fd = _open_pipe_ref(int(sys.argv[1]))
+    except (ValueError, OSError):
         sys.exit(1)
 
     try:

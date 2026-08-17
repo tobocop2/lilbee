@@ -13,10 +13,6 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="splash e2e exercises POSIX fd inheritance"
-)
-
 
 def _run_lilbee(
     *args: str, env_extra: dict[str, str] | None = None
@@ -84,6 +80,7 @@ class TestSplashE2ENonTTY:
 class TestSplashSubprocessLifecycle:
     """Tests that the splash subprocess starts and stops reliably."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="spawns the runner via pass_fds")
     def test_runner_takeover_emits_no_cursor_show(self) -> None:
         """A real runner subprocess dismissed via takeover never writes cursor-show."""
         import time
