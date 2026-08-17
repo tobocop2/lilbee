@@ -33,10 +33,11 @@ prints the npm version. CI runs it; nothing is committed back.
    - Organization or user: `tobocop2`
    - Repository: `lilbee`
    - Workflow filename: `publish-packages.yml`
-   - Environment: leave empty
+   - Environment: `npm`
 
-   The workflow filename must match exactly. Renaming or moving the publish job
-   to another file breaks the publish until this is updated.
+   The workflow filename and environment name must match exactly — the job is
+   pinned to `environment: npm` the same way the PyPI job is pinned to
+   `pypi`. Renaming either side breaks the publish until they agree.
 
 4. Turn the job on:
 

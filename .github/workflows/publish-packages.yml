@@ -266,6 +266,9 @@ jobs:
     needs: resolve
     if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
     runs-on: ubuntu-latest
+    # Mirrors the PyPI job: the `npm` environment name is pinned by npm's
+    # trusted-publisher config (like `pypi` in publish.yml) -- don't rename.
+    environment: npm
     permissions:
       contents: read
       id-token: write   # OIDC for trusted publishing
