@@ -1604,10 +1604,14 @@ class ChatScreen(Screen[None]):
             # A deliberate cancel severs the transport, which surfaces here as a
             # stream error; the cancel already wrote its note into the bubble.
             if not self._stream_worker_cancelled():
+                # A severed engine socket names the OS error, not the problem.
+                error_text = (
+                    msg.STREAM_DISCONNECTED
+                    if isinstance(exc, ConnectionError)
+                    else msg.STREAM_ERROR.format(error=exc)
+                )
                 with contextlib.suppress(Exception):
-                    call_from_thread(
-                        self, widget.append_content, msg.STREAM_ERROR.format(error=exc)
-                    )
+                    call_from_thread(self, widget.append_content, error_text)
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)

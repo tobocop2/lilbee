@@ -90,6 +90,27 @@ class TestStreamResponseDispatch:
         services.searcher.ask_stream.assert_not_called()
         screen._finalize_stream.assert_called_once()
 
+    def test_a_dropped_connection_reads_as_a_dropped_connection(self):
+        """A severed engine socket (quit mid-answer, engine death) must not
+        surface the OS error text (WinError 10054) in the answer bubble."""
+        screen = self._screen()
+        widget = MagicMock()
+        services = MagicMock()
+        services.searcher.ask_stream.side_effect = ConnectionResetError(
+            10054, "An existing connection was forcibly closed by the remote host"
+        )
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_stream_response("q", widget, None)
+        rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
+        assert "forcibly closed" not in rendered
+        assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
+
     def test_other_error_shows_stream_error(self):
         screen = self._screen()
         widget = MagicMock()
