@@ -35,11 +35,10 @@ class StartupGate(Screen[None]):
     # reveal_landing resolve without reflection.
     app: LilbeeApp  # type: ignore[assignment]
 
-    # The app reference every worker and UI hop uses. ``self.app`` reads a
+    # The app reference every worker and UI hop uses: ``self.app`` reads a
     # contextvar that plain threads never carry and then walks ``_parent``,
-    # which raises NoActiveAppError the moment the gate detaches -- seen on
-    # Windows first launches, where the crash left a dead loading screen.
-    # Captured once in on_mount, on the UI thread, where resolution is certain.
+    # which raises NoActiveAppError the moment the gate detaches. Captured
+    # once in on_mount, on the UI thread, where resolution is certain.
     _ui_app: LilbeeApp
 
     def compose(self) -> ComposeResult:

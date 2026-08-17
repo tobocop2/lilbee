@@ -162,11 +162,9 @@ def _disable_xet_where_it_stalls() -> None:
     """Fall back to the plain HTTP download path on Windows.
 
     hf_xet transfers stall or deadlock on Windows (xet-core issues #446,
-    #789, #850; reproduced on the Windows verification box with hf_xet
-    1.5.2), while the plain path downloads at line speed. Everywhere else
-    xet stays on deliberately: it is the fast path, and the old global
-    disable was removed once the transfer-progress stream landed. A user
-    who exported the variable keeps whatever they chose. huggingface_hub
+    #789, #850), while the plain path downloads at line speed. Everywhere
+    else xet stays on deliberately: it is the fast path. A user who
+    exported the variable keeps whatever they chose. huggingface_hub
     parses the variable once at import, so the hub constant must change
     too; the environment write covers worker subprocesses, which parse it
     fresh.
@@ -227,10 +225,9 @@ class _StallGuard:
 
     A wedged transfer blocks forever with the task showing active: hf_xet
     can deadlock before its first byte, and a dead socket never wakes the
-    plain path's read (seen on the Windows verification box, where the
-    read outlived a 15-minute stall). The guard rides the same progress
-    stream the task bar shows; when it goes quiet, the abort makes the
-    blocked thread raise, and the caller resumes from the .incomplete file.
+    plain path's read. The guard rides the same progress stream the task
+    bar shows; when it goes quiet, the abort makes the blocked thread
+    raise, and the caller resumes from the .incomplete file.
     """
 
     def __init__(self, window_s: float = _STALL_WINDOW_S, poll_s: float = _STALL_POLL_S) -> None:
@@ -276,10 +273,18 @@ class _StallGuard:
 
     def _watch(self) -> None:
         while not self._stop.wait(self._poll_s):
-            if time.monotonic() - self._last_pulse > self._window_s:
-                self.fired = True
-                _abort_stalled_transfer()
+            if not self._keep_watching():
                 return
+
+    def _keep_watching(self) -> bool:
+        """One tick: True to keep watching, False once fired or stopped."""
+        if time.monotonic() - self._last_pulse <= self._window_s:
+            return True
+        if self._stop.is_set():
+            return False  # the transfer finished while this tick was deciding
+        self.fired = True
+        _abort_stalled_transfer()
+        return False
 
     def __enter__(self) -> "_StallGuard":
         self._thread = threading.Thread(

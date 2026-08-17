@@ -211,3 +211,34 @@ class TestGuardIsOnEveryTransfer:
         call(_entry())
 
         assert guarded, "the transfer bypassed the stall guard"
+
+
+class TestWatchTick:
+    def test_a_quiet_window_fires_the_abort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        aborts: list[str] = []
+        monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
+        guard = dl._StallGuard(window_s=0.0)
+        guard._last_pulse -= 1.0
+
+        assert guard._keep_watching() is False
+        assert guard.fired
+        assert aborts == ["abort"]
+
+    def test_a_recent_pulse_keeps_watching(self) -> None:
+        guard = dl._StallGuard(window_s=60.0)
+        guard.pulse()
+        assert guard._keep_watching() is True
+        assert not guard.fired
+
+    def test_a_finished_transfer_is_not_aborted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The exit path can win the race against an expiring tick; the tick
+        must stand down instead of closing the next transfer's client."""
+        aborts: list[str] = []
+        monkeypatch.setattr(dl, "_abort_stalled_transfer", lambda: aborts.append("abort"))
+        guard = dl._StallGuard(window_s=0.0)
+        guard._last_pulse -= 1.0
+        guard._stop.set()
+
+        assert guard._keep_watching() is False
+        assert not guard.fired
+        assert aborts == []
