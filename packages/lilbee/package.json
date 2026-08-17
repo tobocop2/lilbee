@@ -1,6 +1,6 @@
 {
   "name": "lilbee",
-  "version": "0.1.0",
+  "version": "0.6.90",
   "description": "Run lilbee from npm: bootstraps the standalone binary on first use, then passes every command through. Includes an MCP entry point.",
   "license": "MIT",
   "type": "module",
