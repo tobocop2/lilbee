@@ -6,7 +6,7 @@
  * Windows, and `-compat` AVX-baseline builds for older x86-64 CPUs.
  */
 
-const VARIANTS = new Set(["", "cu121", "cu124", "cu125", "rocm", "compat"]);
+const VARIANTS = new Set(["", "cu121", "cu124", "cu125", "rocm", "compat", "compat-cu124", "compat-rocm"]);
 
 /**
  * Return the release asset name for a host, or throw with a clear message.
@@ -18,11 +18,12 @@ const VARIANTS = new Set(["", "cu121", "cu124", "cu125", "rocm", "compat"]);
 export function assetNameFor(platform, arch, variant = "") {
   if (!VARIANTS.has(variant)) {
     throw new Error(
-      `Unknown LILBEE_VARIANT "${variant}". Valid: cu121, cu124, cu125, rocm, compat, or unset.`
+      `Unknown LILBEE_VARIANT "${variant}". Valid: cu121, cu124, cu125, rocm, compat, compat-cu124, compat-rocm, or unset.`
     );
   }
-  const compat = variant === "compat";
-  const gpu = compat || variant === "" ? "" : `-${variant}`;
+  const compat = variant === "compat" || variant.startsWith("compat-");
+  const gpuPart = compat ? variant.replace(/^compat-?/, "") : variant;
+  const gpu = gpuPart === "" ? "" : `-${gpuPart}`;
   const prefix = compat ? "lilbee-compat" : "lilbee";
 
   if (platform === "darwin") {

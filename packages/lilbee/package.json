@@ -20,7 +20,8 @@
     "test": "node --test test/"
   },
   "dependencies": {
-    "mcp-remote": "^0.1.38"
+    "mcp-remote": "^0.1.38",
+    "undici": "^6.19.0"
   },
   "lilbee": {
     "repo": "tobocop2/lilbee",

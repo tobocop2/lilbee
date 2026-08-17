@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assetNameFor } from "./assets.mjs";
+import { detectVariant } from "./detect.mjs";
 import { download } from "./download.mjs";
 import { exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
 import { resolveBinary } from "./resolve.mjs";
@@ -65,7 +66,14 @@ function spawnAndForward({ cmd, args }) {
 async function resolveLocalBinary(env) {
   const { release, repo } = pinnedRelease();
   const effectiveRelease = env.LILBEE_RELEASE || release;
-  const assetName = assetNameFor(process.platform, process.arch, env.LILBEE_VARIANT || "");
+  // Explicit LILBEE_VARIANT wins; otherwise detect the host's GPU and CPU
+  // baseline so the bootstrap grabs the right build automatically, the way
+  // brew or flatpak would.
+  const variant =
+    env.LILBEE_VARIANT !== undefined && env.LILBEE_VARIANT !== ""
+      ? env.LILBEE_VARIANT
+      : detectVariant(process.platform, process.arch, { execFileSync, existsSync: fs.existsSync, readFileSync: fs.readFileSync }, console.error);
+  const assetName = assetNameFor(process.platform, process.arch, variant);
   const resolved = await resolveBinary({
     env: { LILBEE_REPO: repo, ...env },
     release: effectiveRelease,

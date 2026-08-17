@@ -13,10 +13,32 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { createHash } from "node:crypto";
 
+/**
+ * Corporate proxies: Node's built-in fetch ignores HTTP(S)_PROXY env vars
+ * (unlike curl and npm itself). Route through undici's env-aware agent when
+ * a proxy is configured, so the bootstrap works behind the same proxy npm
+ * installed the package through.
+ */
+async function configureProxyFromEnv() {
+  const proxy =
+    process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (!proxy) return;
+  try {
+    const { EnvHttpProxyAgent, setGlobalDispatcher } = await import("undici");
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+  } catch {
+    console.error("lilbee: HTTPS_PROXY is set but the proxy agent is unavailable; downloading directly.");
+  }
+}
+const proxyReady = configureProxyFromEnv();
+
+
+
 const USER_AGENT = "lilbee-npm-launcher";
 const DOWNLOAD_ATTEMPTS = 2;
 
 async function fetchJson(url) {
+  await proxyReady;
   const res = await fetch(url, {
     headers: { "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
   });
@@ -79,6 +101,7 @@ export async function download({ env, release, assetName, dest, log = console.er
   for (;;) {
     attempt += 1;
     try {
+      await proxyReady;
       const res = await fetch(url, { headers: { "user-agent": USER_AGENT } });
       if (!res.ok || !res.body) throw new Error(`GET ${url} -> HTTP ${res.status}`);
       const hash = createHash("sha256");
