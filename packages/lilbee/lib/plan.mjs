@@ -46,15 +46,22 @@ export function selectMode(env) {
  * argv for mcp-remote in remote mode. `mcpRemoteBin` is the resolved path to
  * mcp-remote's executable script; it runs under the current node.
  */
-export function remoteExec(env, mcpRemoteBin) {
+// Pinned bridge version for remote mode. Fetched on demand via npx so the
+// launcher itself installs with zero runtime dependencies: local-mode users
+// (the majority) never download the bridge's tree, and its engine floor
+// never gates installing lilbee.
+export const MCP_REMOTE_SPEC = "mcp-remote@0.1.38";
+
+export function remoteExec(env) {
   // Bought, not built: mcp-remote owns the stdio<->streamable-http bridge.
   // The bearer header rides argv (mcp-remote's contract), which is visible in
   // the process list; acceptable for a single-user machine.
-  const args = [mcpRemoteBin, env.LILBEE_URL, "--transport", "http-only"];
+  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+  const args = ["-y", MCP_REMOTE_SPEC, env.LILBEE_URL, "--transport", "http-only"];
   if (env.LILBEE_TOKEN) {
     args.push("--header", `Authorization: Bearer ${env.LILBEE_TOKEN}`);
   }
-  return { cmd: process.execPath, args };
+  return { cmd: npx, args };
 }
 
 /** argv for the lilbee binary on the mcp route. */

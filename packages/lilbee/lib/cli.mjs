@@ -38,14 +38,6 @@ function whichSync(name) {
   }
 }
 
-function mcpRemoteBin() {
-  const require = createRequire(import.meta.url);
-  const pkgJson = require.resolve("mcp-remote/package.json");
-  const pkg = JSON.parse(fs.readFileSync(pkgJson, "utf8"));
-  const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin["mcp-remote"];
-  return path.join(path.dirname(pkgJson), rel);
-}
-
 function spawnAndForward({ cmd, args }) {
   const child = spawn(cmd, args, { stdio: "inherit" });
   child.on("exit", (code, signal) => {
@@ -106,7 +98,7 @@ export async function run(argv) {
       );
     }
     log(`lilbee: bridging MCP to ${env.LILBEE_URL}`);
-    spawnAndForward(remoteExec(env, mcpRemoteBin()));
+    spawnAndForward(remoteExec(env));
     return;
   }
 

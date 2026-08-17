@@ -6,6 +6,7 @@ import {
   parseMcpArgs,
   selectMode,
   remoteExec,
+  MCP_REMOTE_SPEC,
   mcpExec,
   passthroughExec,
 } from "../lib/plan.mjs";
@@ -31,22 +32,24 @@ test("selectMode: LILBEE_URL toggles remote", () => {
   assert.equal(selectMode({ LILBEE_URL: "http://localhost:8383/mcp" }), "remote");
 });
 
-test("remoteExec: url + http-only transport + bearer header when token set", () => {
+test("remoteExec: npx-launched bridge, http-only transport, bearer header when token set", () => {
   const env = { LILBEE_URL: "http://localhost:8383/mcp", LILBEE_TOKEN: "tok123" };
-  const { cmd, args } = remoteExec(env, "/deps/mcp-remote/proxy.js");
-  assert.equal(cmd, process.execPath);
+  const { cmd, args } = remoteExec(env);
+  assert.match(cmd, /^npx(\.cmd)?$/);
   assert.deepEqual(args, [
-    "/deps/mcp-remote/proxy.js",
+    "-y",
+    MCP_REMOTE_SPEC,
     "http://localhost:8383/mcp",
     "--transport",
     "http-only",
     "--header",
     "Authorization: Bearer tok123",
   ]);
+  assert.match(MCP_REMOTE_SPEC, /^mcp-remote@\d/);
 });
 
 test("remoteExec: no header without a token", () => {
-  const { args } = remoteExec({ LILBEE_URL: "http://h/mcp" }, "/p");
+  const { args } = remoteExec({ LILBEE_URL: "http://h/mcp" });
   assert.ok(!args.includes("--header"));
 });
 

@@ -46,6 +46,15 @@ audits reject), no wasted download in CI paths that never run the binary.
 - No HTTP Range resume (a full restart on retry). Playwright resumes;
   worth adding if first-run reports show flaky networks. Minor.
 
+## Footprint
+
+Zero runtime dependencies. The remote-mode bridge (mcp-remote) is fetched
+on demand via npx only when `LILBEE_URL` is set, so local installs carry
+no third-party tree, no engine warnings, and no audit surface. The proxy
+agent (undici) is an `optionalDependencies` entry: installs that skip it
+still work, minus env-proxy downloads. `engines.node >= 18` — the launcher
+itself is a couple of small ESM files around a native binary.
+
 ## Environment behavior
 
 - `HTTPS_PROXY`/`HTTP_PROXY` honored (new): Node's fetch ignores proxy
