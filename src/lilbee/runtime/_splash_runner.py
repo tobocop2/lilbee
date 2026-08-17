@@ -50,6 +50,7 @@ _EXPECTED_ARGV_LEN = 2
 # by default, conhost does not).
 _STD_ERROR_HANDLE = -12
 _ENABLE_VT_PROCESSING = 0x0004
+_UTF8_CODEPAGE = 65001
 
 # Sent down the pipe by ``splash.dismiss()`` when the TUI takes over the
 # terminal: the child must exit without writing anything (no frame clear, no
@@ -206,21 +207,37 @@ def _open_pipe_ref(ref: int) -> int:
     return ref
 
 
-def _enable_vt_win32() -> None:  # pragma: no cover  Windows-only
-    """Turn on ANSI processing for the legacy console.
+def _setup_console_win32() -> int:  # pragma: no cover  Windows-only
+    """Make the console render this process's output: VT on, UTF-8 out.
 
-    Skipped silently when stderr is not a console (GetConsoleMode fails);
-    the parent only starts the splash on a tty anyway.
+    ANSI processing is off on the legacy console (Windows Terminal has it
+    on), and the default output codepage mangles the loading bar's block
+    characters, which the frames carry as UTF-8 bytes. Returns the previous
+    codepage so the caller can restore it; 0 when there is no console
+    (GetConsoleMode fails -- the parent only starts the splash on a tty).
     """
     if sys.platform != "win32":
-        return
+        return 0
     import ctypes
 
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.GetStdHandle(_STD_ERROR_HANDLE)
     mode = ctypes.c_ulong(0)
-    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return 0
+    kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+    previous_cp = int(kernel32.GetConsoleOutputCP())
+    kernel32.SetConsoleOutputCP(_UTF8_CODEPAGE)
+    return previous_cp
+
+
+def _restore_console_win32(previous_cp: int) -> None:  # pragma: no cover  Windows-only
+    """Put the console codepage back so the parent shell keeps its own."""
+    if sys.platform != "win32" or not previous_cp:
+        return
+    import ctypes
+
+    ctypes.windll.kernel32.SetConsoleOutputCP(previous_cp)
 
 
 def animation_loop(pipe_fd: int) -> None:
@@ -241,9 +258,7 @@ def animation_loop(pipe_fd: int) -> None:
     got_signal = False
     pipe_signal = PipeSignal.OPEN
 
-    if sys.platform == "win32":  # pragma: no cover - Windows-only console setup
-        _enable_vt_win32()
-    else:  # pragma: no cover - POSIX-only SIGTERM handler
+    if sys.platform != "win32":  # pragma: no cover - POSIX-only SIGTERM handler
 
         def handle_term(signum: int, frame: object) -> None:
             nonlocal got_signal
@@ -257,11 +272,12 @@ def animation_loop(pipe_fd: int) -> None:
             pipe_signal = poll_pipe(pipe_fd)
         return got_signal or pipe_signal is not PipeSignal.OPEN
 
-    for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
-        if should_stop():
-            return  # nothing drawn yet, nothing to clean up
-        time.sleep(POLL_INTERVAL)
+    if _stopped_during_startup_delay(should_stop):
+        return  # nothing drawn yet, nothing to clean up
 
+    previous_cp = 0
+    if sys.platform == "win32":  # pragma: no cover - Windows-only console setup
+        previous_cp = _setup_console_win32()
     try:
         os.write(fd, HIDE_CURSOR.encode())
         _animate_frames(fd, logo_frames, knight_frames, pad, frame_height, should_stop)
@@ -271,6 +287,17 @@ def animation_loop(pipe_fd: int) -> None:
         if pipe_signal is not PipeSignal.TAKEOVER:
             with contextlib.suppress(OSError):
                 os.write(fd, clear_screen(frame_height))
+        if sys.platform == "win32":  # pragma: no cover - Windows-only console restore
+            _restore_console_win32(previous_cp)
+
+
+def _stopped_during_startup_delay(should_stop: Callable[[], bool]) -> bool:
+    """Poll through the startup delay; True when the splash should not draw."""
+    for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
+        if should_stop():
+            return True
+        time.sleep(POLL_INTERVAL)
+    return False
 
 
 def _animate_frames(
