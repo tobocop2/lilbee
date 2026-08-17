@@ -404,7 +404,8 @@ async def add(
             except ValueError as exc:
                 errors.append(f"{url}: {exc}")
                 continue
-            crawled_paths = await crawl_and_save(url, render_mode=render_mode)
+            # add fetches single pages (depth=0); site crawls go through the crawl tool
+            crawled_paths = await crawl_and_save(url, depth=0, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
     # Registration touches config.toml (a locked read-modify-write); keep the
@@ -435,13 +436,14 @@ async def add(
 @_tool_if(crawler_available)
 async def crawl(
     url: str,
-    depth: int | None = None,
+    depth: int | None = 0,
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
     include_subdomains: bool = False,
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
-    ``depth=None`` = whole site, ``0`` = single URL. ``render_mode``: "http"/"browser"."""
+    ``depth=0`` (default) = single URL, ``N`` = follow links N levels,
+    ``null`` = whole site. ``render_mode``: "http"/"browser"."""
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
@@ -449,7 +451,7 @@ async def crawl(
     # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
     # not an unbounded crawl.
     if depth is not None and depth < 0:
-        return _error("depth must be 0 or greater (omit it to crawl the whole site)")
+        return _error("depth must be 0 or greater (pass depth=null to crawl the whole site)")
     if max_pages is not None and max_pages < 0:
         return _error("max_pages must be 0 or greater (0 = unlimited, omit for the safety cap)")
     try:
