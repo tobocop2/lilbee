@@ -810,6 +810,17 @@ class TestAddWithUrls:
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_url_fetches_single_page(
+        self, mock_crawl, mock_sync, _mock_avail, isolated_env
+    ):
+        """add() fetches a URL as one page (depth=0), like CLI add without --crawl."""
+        mock_crawl.return_value = []
+        await add(paths=["https://example.com"])
+        assert mock_crawl.call_args.kwargs["depth"] == 0
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
         mock_crawl.return_value = []
@@ -852,11 +863,31 @@ class TestCrawl:
         assert result["url"] == "https://example.com"
         mock_start.assert_called_once_with(
             "https://example.com",
-            depth=None,
+            depth=0,
             max_pages=None,
             render_mode=None,
             include_subdomains=False,
         )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_default_depth_is_single_page(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        """Omitted depth crawls one page, not the whole site (bb-dotjq)."""
+        await crawl(url="https://en.wikipedia.org/wiki/Sauna")
+        assert mock_start.call_args.kwargs["depth"] == 0
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_explicit_null_depth_crawls_whole_site(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        """depth=None stays the explicit whole-site opt-in."""
+        await crawl(url="https://example.com", depth=None)
+        assert mock_start.call_args.kwargs["depth"] is None
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
@@ -911,7 +942,7 @@ class TestCrawl:
         await crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
         mock_start.assert_called_once_with(
             "https://example.com",
-            depth=None,
+            depth=0,
             max_pages=None,
             render_mode=CrawlRenderMode.BROWSER,
             include_subdomains=False,

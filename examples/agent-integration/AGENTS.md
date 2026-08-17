@@ -74,7 +74,9 @@ the Task / Agent tool). Wait for the worker to report done, then continue answer
   path is instant; you can call it unconditionally instead of probing first. The worker
   runs `lilbee_init` for you if no `.lilbee/` exists.
 - `lilbee_sync` — re-index after the watched paths change.
-- `lilbee_crawl` — fetch a docs site (worker polls `lilbee_crawl_status` to completion).
+- `lilbee_crawl` — crawl a docs site: pass a `depth` (or `depth=null` for the whole
+  site); the default fetches only the given page. The worker polls `lilbee_crawl_status`
+  to completion.
 - `lilbee_model_pull` — download a model from Hugging Face.
 
 ## Writing code against an indexed API reference
