@@ -59,6 +59,14 @@ export function cachedBinaryPath(env, release, assetName, platform = process.pla
  * @param {string} opts.assetName release asset for this host
  * @param {object} opts.deps      { existsSync, whichSync, download }
  */
+function safeRealpath(realpathSync, p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 export async function resolveBinary({ env, release, assetName, deps }) {
   if (env.LILBEE_BIN) {
     if (!deps.existsSync(env.LILBEE_BIN)) {
@@ -67,8 +75,17 @@ export async function resolveBinary({ env, release, assetName, deps }) {
     return { path: env.LILBEE_BIN, source: "env" };
   }
 
-  const onPath = deps.whichSync("lilbee");
-  if (onPath) return { path: onPath, source: "path" };
+  // A PATH hit must be a real installed lilbee, not an npm bin shim. Under
+  // npx (and global npm installs) node_modules/.bin leads the PATH and the
+  // entry there is THIS launcher — accepting it made `prepare` a silent
+  // no-op and every passthrough command spawn itself without bound. Scan
+  // every PATH candidate so a real install behind the shim still wins.
+  for (const onPath of deps.whichAllSync("lilbee")) {
+    const real = deps.realpathSync ? safeRealpath(deps.realpathSync, onPath) : onPath;
+    const isNpmShim = /[\\/]node_modules[\\/]/.test(real);
+    const isSelf = deps.selfPath ? real === deps.selfPath : false;
+    if (!isNpmShim && !isSelf) return { path: onPath, source: "path" };
+  }
 
   const shared = sharedRootBinary(env);
   if (deps.existsSync(shared)) return { path: shared, source: "shared-root" };

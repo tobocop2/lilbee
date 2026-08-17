@@ -21,25 +21,73 @@ import { resolveBinary } from "./resolve.mjs";
 
 const log = (msg) => console.error(msg);
 
-function pinnedRelease() {
+function pkgMeta() {
   const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  return JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+}
+
+function pinnedRelease() {
+  const pkg = pkgMeta();
   return { release: pkg.lilbee.release, repo: pkg.lilbee.repo };
 }
 
-function whichSync(name) {
+function whichAllSync(name) {
   try {
     const tool = process.platform === "win32" ? "where.exe" : "which";
-    const out = execFileSync(tool, [name], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const first = out.split(/\r?\n/).find(Boolean);
-    return first || null;
+    const args = process.platform === "win32" ? [name] : ["-a", name];
+    const out = execFileSync(tool, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return out.split(/\r?\n/).filter(Boolean);
   } catch {
-    return null;
+    return [];
+  }
+}
+
+// Belt and braces against self-spawn: if a launcher ever execs another
+// launcher (a resolution bug, or an exotic PATH), the child sees the
+// sentinel and stops with a clear message instead of recursing forever.
+const LAUNCHER_SENTINEL = "LILBEE_LAUNCHER_ACTIVE";
+
+export function assertNotRecursing(env = process.env) {
+  if (env[LAUNCHER_SENTINEL] === "1") {
+    log(
+      "lilbee: the launcher resolved another copy of itself instead of a real lilbee binary. " +
+        "Point LILBEE_BIN at your lilbee install, or remove the npm shim from the front of PATH."
+    );
+    process.exit(1);
+  }
+}
+
+/** Fail before a multi-hundred-MB download the binary could never run. */
+export function assertGlibcFloor(env = process.env) {
+  if (process.platform !== "linux" || env.LILBEE_SKIP_GLIBC_CHECK === "1") return;
+  const floor = pkgMeta().lilbee?.glibcFloor;
+  if (!floor) return;
+  let version = "";
+  try {
+    version = execFileSync("getconf", ["GNU_LIBC_VERSION"], { encoding: "utf8" }).trim().split(" ").pop() || "";
+  } catch {
+    return; // musl or no getconf: let the download proceed, the exec will speak for itself
+  }
+  const num = (v) => v.split(".").map(Number);
+  const [fa, fb] = num(floor);
+  const [va, vb] = num(version);
+  if (Number.isFinite(va) && (va < fa || (va === fa && vb < fb))) {
+    log(
+      `lilbee: this build needs glibc >= ${floor} (Ubuntu 22.04+/Debian 12+); this system has ${version}. ` +
+        "Use the flatpak or 'pip install lilbee' instead, or set LILBEE_SKIP_GLIBC_CHECK=1 to try anyway."
+    );
+    process.exit(1);
   }
 }
 
 function spawnAndForward({ cmd, args }) {
-  const child = spawn(cmd, args, { stdio: "inherit" });
+  const child = spawn(cmd, args, {
+    stdio: "inherit",
+    // argv0 keeps the binary's own help reading `lilbee`, not the cache
+    // filename; the sentinel stops accidental launcher-in-launcher chains.
+    argv0: "lilbee",
+    env: { ...process.env, [LAUNCHER_SENTINEL]: "1" },
+  });
   child.on("exit", (code, signal) => {
     // Re-raising a trapped signal would loop through our own forwarder, so
     // exit with the conventional 128+signum code instead.
@@ -70,13 +118,23 @@ async function resolveLocalBinary(env) {
     env: { LILBEE_REPO: repo, ...env },
     release: effectiveRelease,
     assetName,
-    deps: { existsSync: fs.existsSync, whichSync, download: (o) => download({ ...o, log }) },
+    deps: {
+      existsSync: fs.existsSync,
+      whichAllSync,
+      realpathSync: fs.realpathSync,
+      selfPath: fileURLToPath(import.meta.url),
+      download: async (o) => {
+        assertGlibcFloor();
+        return download({ ...o, log });
+      },
+    },
   });
   log(`lilbee: using binary from ${resolved.source} (${resolved.path})`);
   return resolved;
 }
 
 export async function run(argv) {
+  assertNotRecursing();
   const env = process.env;
   if (argv[0] === "--launcher-help") {
     log(HELP);

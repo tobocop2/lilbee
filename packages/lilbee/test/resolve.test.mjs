@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { cacheDir, cachedBinaryPath, dataRoot, resolveBinary, sharedRootBinary } from "../lib/resolve.mjs";
 
-const noDeps = { existsSync: () => false, whichSync: () => null, download: async () => {} };
+const noDeps = { existsSync: () => false, whichAllSync: () => [], download: async () => {} };
 
 test("cacheDir honors LILBEE_MCP_CACHE and platform conventions", () => {
   assert.equal(cacheDir({ LILBEE_MCP_CACHE: "/tmp/c" }), "/tmp/c");
@@ -32,7 +32,7 @@ test("PATH beats cache beats download", async () => {
     env: {},
     release: "r",
     assetName: "a",
-    deps: { ...noDeps, whichSync: () => "/usr/local/bin/lilbee" },
+    deps: { ...noDeps, whichAllSync: () => ["/usr/local/bin/lilbee"] },
   });
   assert.deepEqual(onPath, { path: "/usr/local/bin/lilbee", source: "path" });
 
@@ -72,7 +72,7 @@ test("shared-root binary beats cache, loses to PATH", async () => {
     env,
     release: "v1",
     assetName: "a",
-    deps: { ...noDeps, whichSync: () => "/usr/local/bin/lilbee", existsSync: (p) => p === shared },
+    deps: { ...noDeps, whichAllSync: () => ["/usr/local/bin/lilbee"], existsSync: (p) => p === shared },
   });
   assert.equal(onPath.source, "path");
 });
