@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import os
 import signal
 import sys
 import threading
@@ -435,15 +436,40 @@ class _EngineLifecycle:
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
 
 
+_FORCE_QUIT_EXIT_CODE = 130
+
+_STOPPING_NOTE = "lilbee: stopping the engine. Press Ctrl-C again to force quit.\n"
+
+_FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
+
+
+def _write_exit_note(note: str) -> None:
+    """Print an exit-path status line; stderr may already be gone at exit."""
+    try:
+        sys.stderr.write(note)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def wait_for_hard_exit_teardown() -> None:
     """Block until any teardown thread (signal-driven or exit-driven) finishes.
 
     Lets ``serve`` hold its OS locks through the fleet stop, so a successor
     cannot acquire them while this server's models still occupy memory.
+
+    An interrupt while waiting force-quits the process: waiting is the only
+    thing left, the interpreter would otherwise still join the non-daemon
+    teardown thread, and every platform's child guard reaps the engine when
+    the process dies (kill-on-close job object, pdeathsig, death pipe).
     """
-    for thread in threading.enumerate():
-        if thread.name == _HARD_EXIT_THREAD_NAME:
-            thread.join()
+    try:
+        for thread in threading.enumerate():
+            if thread.name == _HARD_EXIT_THREAD_NAME:
+                thread.join()
+    except KeyboardInterrupt:
+        _write_exit_note(_FORCE_QUIT_NOTE)
+        os._exit(_FORCE_QUIT_EXIT_CODE)
 
 
 def reset_services_on_exit() -> None:
@@ -451,12 +477,13 @@ def reset_services_on_exit() -> None:
 
     Engine release waits on the fleet build lock before it releases anything, so
     a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
-    singleton is already cleared. The teardown thread is non-daemon and takes no
-    signals, so an interrupt breaks only the join here.
+    singleton is already cleared. The teardown thread is non-daemon and takes
+    no signals; the wait names what is happening and how to skip it.
     """
     if peek_services() is None:
         return
     threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
+    _write_exit_note(_STOPPING_NOTE)
     wait_for_hard_exit_teardown()
 
 

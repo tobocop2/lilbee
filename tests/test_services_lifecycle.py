@@ -210,23 +210,50 @@ def test_exit_teardown_runs_off_the_main_thread():
     assert peek_services() is None
 
 
-def test_exit_teardown_finishes_after_the_wait_is_interrupted(monkeypatch):
-    """A second Ctrl-C must abandon only the wait, never the fleet stop."""
-    provider = _install_stub_services()
-    release = threading.Event()
-    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
-    monkeypatch.setattr(
-        services_mod,
-        "wait_for_hard_exit_teardown",
-        MagicMock(side_effect=KeyboardInterrupt),
-    )
+def test_a_second_interrupt_force_quits_instead_of_waiting(monkeypatch):
+    """A second Ctrl-C force-quits: the child guard reaps the engine, and the
+    interpreter would otherwise still join the non-daemon teardown thread."""
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod.os, "_exit", exits.append)
 
-    with pytest.raises(KeyboardInterrupt):
-        reset_services_on_exit()
+    class _Interrupted:
+        name = services_mod._HARD_EXIT_THREAD_NAME
+        daemon = True  # the leak-check fixture enumerates threads too
 
-    release.set()
-    _join_teardown()
-    provider.shutdown.assert_called_once()
+        def join(self) -> None:
+            raise KeyboardInterrupt
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(services_mod.threading, "enumerate", lambda: [_Interrupted()])
+
+    services_mod.wait_for_hard_exit_teardown()
+
+    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+def test_exit_teardown_names_the_wait_and_the_way_out(capsys):
+    """The engine stop is silent work; the exit line says what is happening."""
+    _install_stub_services()
+
+    reset_services_on_exit()
+
+    assert "stopping the engine" in capsys.readouterr().err
+
+
+def test_exit_note_survives_a_closed_stderr(monkeypatch):
+    """atexit can run after stderr is gone; the note must not raise."""
+
+    class _Closed:
+        def write(self, _note: str) -> int:
+            raise ValueError("I/O operation on closed file")
+
+        def flush(self) -> None:  # pragma: no cover - never reached
+            raise ValueError
+
+    monkeypatch.setattr(services_mod.sys, "stderr", _Closed())
+    services_mod._write_exit_note("note")
 
 
 def test_exit_teardown_without_services_starts_no_thread(monkeypatch):
