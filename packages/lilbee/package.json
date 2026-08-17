@@ -1,10 +1,11 @@
 {
-  "name": "lilbee-mcp",
+  "name": "lilbee",
   "version": "0.1.0",
-  "description": "Run lilbee's MCP server from npx: bootstraps the lilbee binary locally, or bridges to a remote lilbee server.",
+  "description": "Run lilbee from npm: bootstraps the standalone binary on first use, then passes every command through. Includes an MCP entry point.",
   "license": "MIT",
   "type": "module",
   "bin": {
+    "lilbee": "bin/lilbee.mjs",
     "lilbee-mcp": "bin/lilbee-mcp.mjs"
   },
   "files": [
@@ -28,11 +29,11 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tobocop2/lilbee.git",
-    "directory": "packages/lilbee-mcp"
+    "directory": "packages/lilbee"
   },
   "keywords": [
-    "mcp",
     "lilbee",
+    "mcp",
     "local-ai",
     "rag"
   ]
