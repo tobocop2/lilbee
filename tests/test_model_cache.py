@@ -57,6 +57,34 @@ class TestKvBytesPerToken:
     def test_returns_default_on_missing_keys(self) -> None:
         assert kv_bytes_per_token({"block_count": "abc"}) == _KV_BYTES_PER_CTX_TOKEN
 
+    def test_quantized_kv_charges_the_real_block_bytes(self) -> None:
+        """q4_0 stores 32 elements in an 18-byte block (0.5625 bytes/element).
+
+        Charging it a whole byte per element nearly halved the context window
+        the dynamic picker granted on a quantized-KV config."""
+        meta = {
+            "block_count": "32",
+            "head_count": "32",
+            "head_count_kv": "8",
+            "key_length": "128",
+            "value_length": "128",
+        }
+        # 32 layers * 8 heads * (128 + 128) elements * 18/32 bytes
+        assert kv_bytes_per_token(meta, 18 / 32, 18 / 32) == 36864
+
+    def test_k_and_v_costs_are_charged_separately(self) -> None:
+        """A quantized V cache needs flash attention, so a launch can quantize
+        K while V stays f16; the estimate must charge each at its own cost."""
+        meta = {
+            "block_count": "32",
+            "head_count": "32",
+            "head_count_kv": "8",
+            "key_length": "128",
+            "value_length": "128",
+        }
+        # 32 layers * 8 heads * (128 * 18/32 + 128 * 2)
+        assert kv_bytes_per_token(meta, 18 / 32, 2.0) == 83968
+
 
 class TestEstimateModelMemory:
     def test_zero_bytes_when_path_missing(self, tmp_path: Path) -> None:

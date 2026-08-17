@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
-from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.base import (
     CONTEXT_WINDOW_MARGIN_TOKENS,
     GENERATION_RESERVE_TOKENS,
@@ -142,9 +142,24 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     )
 
 
-def _kv_elem_bytes_for_cfg() -> int:
-    """Bytes per KV element implied by the configured cache type."""
-    return KV_CACHE_TYPE_BYTES[cfg.kv_cache_type]
+def chat_kv_elem_bytes() -> tuple[float, float]:
+    """Per-element (K, V) byte costs of the KV cache a chat launch allocates.
+
+    Reads the same flags the launch passes
+    (:func:`lilbee.providers.fleet.planning.chat_cache_type_flags`): K carries
+    ``cfg.kv_cache_type``, while V carries it only when flash attention is
+    certain to be on, because llama.cpp refuses a quantized V cache without it
+    and the launch then leaves V at f16. Budgeting from the launch flags keeps
+    the granted window in step with the cache the engine actually allocates.
+    """
+    # call-time import: planning imports this module at load
+    from lilbee.providers.fleet.planning import chat_cache_type_flags
+
+    def elem_bytes(flag: str | None) -> float:
+        return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
+
+    k_flag, v_flag = chat_cache_type_flags()
+    return elem_bytes(k_flag), elem_bytes(v_flag)
 
 
 def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
@@ -176,7 +191,7 @@ def resolve_chat_ctx(
 
     try:
         model_bytes = model_path.stat().st_size
-        kv_per_tok = kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg())
+        kv_per_tok = kv_bytes_per_token(meta, *chat_kv_elem_bytes())
         if available_bytes is None:
             available_bytes = get_available_memory(cfg.gpu_memory_fraction)
         return compute_dynamic_ctx(
