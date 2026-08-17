@@ -17,7 +17,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test"
   },
   "dependencies": {
     "mcp-remote": "^0.1.38",
