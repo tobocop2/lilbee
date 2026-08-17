@@ -1,8 +1,9 @@
 name: Publish Packages
 
 # Updates the Homebrew formula, AUR PKGBUILD, and Nix flake to pin a tag's
-# GH-release binaries. Dispatched by publish.yml / emergency-publish.yml
-# (and by hand) once the binaries are attached.
+# GH-release binaries, and publishes the npm launcher packages. Dispatched by
+# publish.yml / emergency-publish.yml (and by hand) once the binaries are
+# attached.
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +13,7 @@ on:
       channels:
         # Flatpak is not here: every variant publishes from publish-flatpak.yml,
         # which serializes them against the shared OSTree repo.
-        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,snap,scoop."
+        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,snap,scoop,npm."
         required: false
         default: "all"
 
@@ -252,3 +253,58 @@ jobs:
           git commit -m "lilbee ${VERSION} (scoop)"
           # nix-flake commits to main from a sibling job; rebase-retry on a race.
           bash tools/ci/git_push_retry.sh
+
+  # Publishes the npm launcher. It downloads the release binaries at first run,
+  # so it must publish after they are attached -- `resolve` is that gate.
+  # Nothing is committed back: the version is stamped into the working copy
+  # only. Auth is npm trusted publishing: the registry takes the job's OIDC
+  # token, so there is no npm token anywhere and provenance is automatic. That
+  # trust is configured per package on npmjs.com and names this filename, so
+  # renaming this workflow breaks the publish -- see
+  # packages/lilbee/docs/publishing.md.
+  npm:
+    needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC for trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Use an npm that can do trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest   # trusted publishing needs npm >= 11.5.1
+          npm --version
+
+      # Before the stamp: `npm ci` wants the lockfile to match package.json.
+      - name: Install launcher dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: packages/lilbee
+
+      - name: Test the npm launcher
+        run: npm test
+        working-directory: packages/lilbee
+
+      - name: Stamp the release into the package
+        id: stamp
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node packages/lilbee/tools/stamp-release.mjs "${TAG}")
+          echo "${TAG} -> npm ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish lilbee
+        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+        run: npm publish --access public
+        working-directory: packages/lilbee
+
+      - name: Say why nothing published
+        if: vars.NPM_TRUSTED_PUBLISHING != 'enabled'
+        run: echo "The repository variable NPM_TRUSTED_PUBLISHING is not 'enabled', so ${{ steps.stamp.outputs.version }} did not publish to npm. Finish the one-time npmjs setup in packages/lilbee/docs/publishing.md, then set the variable."
