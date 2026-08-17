@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -195,6 +197,136 @@ def _apply_fast_download_mode() -> None:
         os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
 
 
+_STALL_WINDOW_S = 60.0
+"""Seconds without a progress pulse before a transfer counts as stalled.
+
+Well past the hub's own 10s read timeout and its resume retries, so the
+guard only fires on transfers those mechanisms cannot wake."""
+
+_STALL_POLL_S = 5.0
+
+_STALL_RETRIES = 2
+
+
+def _abort_stalled_transfer() -> None:
+    """Break a wedged transfer so the blocked download thread raises.
+
+    Covers both transports: the xet session abort stops a deadlocked Rust
+    transfer (a no-op without one), and closing the hub's shared client
+    closes the plain path's socket under its blocked read. The next hub
+    call builds a fresh client.
+    """
+    from huggingface_hub.utils._http import close_session
+
+    abort_active_download()
+    close_session()
+
+
+class _StallGuard:
+    """Aborts a transfer that reports no bytes for the stall window.
+
+    A wedged transfer blocks forever with the task showing active: hf_xet
+    can deadlock before its first byte, and a dead socket never wakes the
+    plain path's read (seen on the Windows verification box, where the
+    read outlived a 15-minute stall). The guard rides the same progress
+    stream the task bar shows; when it goes quiet, the abort makes the
+    blocked thread raise, and the caller resumes from the .incomplete file.
+    """
+
+    def __init__(self, window_s: float = _STALL_WINDOW_S, poll_s: float = _STALL_POLL_S) -> None:
+        self._window_s = window_s
+        self._poll_s = poll_s
+        self._last_pulse = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.fired = False
+
+    def pulse(self) -> None:
+        """Record transfer activity; called from the download thread's tqdm."""
+        self._last_pulse = time.monotonic()
+
+    def wrap_tqdm(self, tqdm_class: Any) -> Any:
+        """Subclass *tqdm_class* (or the hub's default) to pulse on every update.
+
+        ``update_transfer`` is only defined when the base has it: the hub
+        feature-detects the method, so adding it to a base that lacks it
+        would advertise a stream the base cannot aggregate.
+        """
+        from huggingface_hub.utils.tqdm import tqdm as hub_tqdm
+
+        guard = self
+        base = tqdm_class if tqdm_class is not None else hub_tqdm
+
+        class _Pulsing(base):  # type: ignore[misc, valid-type]
+            def update(self, n: float = 1) -> bool | None:
+                guard.pulse()
+                super().update(n)
+                return None
+
+        if not hasattr(base, "update_transfer"):
+            return _Pulsing
+
+        class _PulsingTransfer(_Pulsing):
+            def update_transfer(self, n: float = 1) -> bool | None:
+                guard.pulse()
+                super().update_transfer(n)
+                return None
+
+        return _PulsingTransfer
+
+    def _watch(self) -> None:
+        while not self._stop.wait(self._poll_s):
+            if time.monotonic() - self._last_pulse > self._window_s:
+                self.fired = True
+                _abort_stalled_transfer()
+                return
+
+    def __enter__(self) -> "_StallGuard":
+        self._thread = threading.Thread(
+            target=self._watch, name="download-stall-guard", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._poll_s + 1)
+
+
+def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run the transfer under the stall guard, resuming after each stall.
+
+    huggingface_hub resumes from the .incomplete file, so a retry costs only
+    the bytes since the stall. A failure with the guard quiet is a real
+    error and propagates on the first attempt; cancellation always does.
+    """
+    last_error: Exception | None = None
+    for attempt in range(_STALL_RETRIES + 1):
+        guard = _StallGuard()
+        guarded = config.model_copy(update={"tqdm_class": guard.wrap_tqdm(config.tqdm_class)})
+        try:
+            with guard:
+                return _hf_download_or_translate(entry, guarded)
+        except TaskCancelledError:
+            raise
+        except Exception as exc:
+            if not guard.fired:
+                raise
+            last_error = exc
+            log.warning(
+                "Transfer of %s stalled (attempt %d/%d); resuming.",
+                entry.hf_repo,
+                attempt + 1,
+                _STALL_RETRIES + 1,
+            )
+    raise RuntimeError(
+        f"Download of {entry.hf_repo} stalled {_STALL_RETRIES + 1} times with no data "
+        "arriving. Check the network connection and retry; the finished part is kept "
+        "and the download resumes where it stopped."
+    ) from last_error
+
+
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
@@ -305,7 +437,7 @@ def download_model(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_path = _hf_download_or_translate(entry, config)
+        shard_path = _download_with_stall_guard(entry, config)
         shard_paths.append(shard_path)
         if tracker is not None:
             tracker.shard_done(shard_path.stat().st_size)
@@ -361,8 +493,8 @@ def download_mmproj(
     tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
     _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
-    # The projector gets the same error translation as the GGUF.
-    path = _hf_download_or_translate(
+    # The projector gets the same error translation and stall guard as the GGUF.
+    path = _download_with_stall_guard(
         entry,
         DownloadConfig(
             repo_id=entry.hf_repo,
