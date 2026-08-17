@@ -247,5 +247,10 @@ jobs:
           [ -f "${lilbee_whl}" ] || { echo "no lilbee wheel downloaded" >&2; ls -la wheels/; exit 1; }
           [ -f "${engine_whl}" ] || { echo "no engine wheel downloaded" >&2; ls -la engine/; exit 1; }
           "${bin}/pip" install "${engine_whl}"
-          "${bin}/pip" install "${lilbee_whl}[crawler]"
+          # The extra set matches the `release` extra the executables bundle,
+          # because leg 0 of the smoke (self-check-extras) asserts litellm,
+          # crawl4ai, spacy and graspologic_native. Spelled out rather than
+          # [release], which self-references `lilbee` and makes pip resolve the
+          # name from PyPI instead of the wheel under test.
+          "${bin}/pip" install "${lilbee_whl}[crawler,litellm,graph]"
           LILBEE_EXE="${bin}/lilbee" bash tools/qa/artifact_smoke.sh
