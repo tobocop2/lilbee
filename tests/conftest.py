@@ -155,6 +155,20 @@ def _raised_in_loop_selector(excinfo: pytest.ExceptionInfo) -> bool:  # type: ig
 
 
 @pytest.fixture(autouse=True)
+def _restore_interactive_intent():
+    """Snapshot the interactive-session flag around every test.
+
+    mark_interactive_session flips process state; a leak arms the TUI's
+    straggler exit inside a test worker, which then exits the worker.
+    """
+    from lilbee.app import services as services_mod
+
+    before = services_mod._state.interactive
+    yield
+    services_mod._state.interactive = before
+
+
+@pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
