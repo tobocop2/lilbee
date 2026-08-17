@@ -187,8 +187,9 @@ class ModelRegistry:
     def resolve(self, ref: str) -> Path:
         """Return the loadable GGUF path for *ref*; ``KeyError`` if not installed.
 
-        A single-file GGUF resolves to its content-hashed blob; a split GGUF to
-        its first shard's snapshot symlink (so llama.cpp finds the sibling shards).
+        A single-file GGUF resolves to its content-hashed blob (the snapshot
+        file on a cache without symlinks); a split GGUF to its first shard's
+        snapshot symlink (so llama.cpp finds the sibling shards).
 
         The canonical *ref* is ``<org>/<repo>/<file>.gguf`` resolved via the
         lilbee manifest. Two other shapes are accepted as a backwards-compat
@@ -208,10 +209,10 @@ class ModelRegistry:
         if len(shards) > 1:
             return self._resolve_split(ref, hf_repo, shards)
         manifest = self._read_manifest(hf_repo, gguf_filename)
-        if manifest is not None and manifest.blob is not None:
-            blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-            if _blob_size_matches(blob_file, manifest.size_bytes):
-                return blob_file
+        if manifest is not None:
+            backing = self._manifest_backing_file(manifest)
+            if backing is not None:
+                return backing
         recovered = self._find_cached_gguf(hf_repo, gguf_filename)
         if recovered is not None:
             self._reregister_from_cache(hf_repo, gguf_filename, recovered)
@@ -273,11 +274,11 @@ class ModelRegistry:
             # to the slower huggingface_hub cache recovery.
             for mf in sorted(manifest_dir.rglob("*.gguf.json")):
                 manifest = self._load_manifest_file(mf)
-                if manifest is None or manifest.blob is None:
+                if manifest is None:
                     continue
-                blob = self._repo_cache_dir(hf_repo) / "blobs" / manifest.blob
-                if blob.exists():
-                    return blob
+                backing = self._manifest_backing_file(manifest)
+                if backing is not None:
+                    return backing
         for filename in sorted(self._cached_gguf_names(hf_repo)):
             shards = split_shard_filenames(filename)
             if len(shards) > 1:
@@ -407,7 +408,9 @@ class ModelRegistry:
                     size_bytes=blob_path.stat().st_size,
                     task=task,
                     downloaded_at=datetime.now(UTC).isoformat(),
-                    blob=blob_path.name,  # the blob's filename is its sha in the HF cache
+                    # Only a file under blobs/ is named by its sha; a symlink-less
+                    # snapshot file is not, so no digest is recorded for it.
+                    blob=blob_path.name if blob_path.parent.name == "blobs" else None,
                     total_size_bytes=total_size,
                     shard_blobs=shard_blobs,
                 )
@@ -481,16 +484,31 @@ class ModelRegistry:
         repo_dir = manifest_path.parent
         if repo_dir.exists() and not any(repo_dir.iterdir()):
             repo_dir.rmdir()
+        self._unlink_snapshot_entries(manifest)
         # Free the primary blob and every extra shard blob; a split GGUF has more
         # than one, and leaving the others orphans them when a sibling quant keeps
         # the repo cache dir alive. The surviving manifests for this repo are read
         # once here rather than per digest (list_installed walks the whole tree).
+        # A symlink-less recovery records no digest; GC still runs once so an
+        # unused repo cache dir is pruned.
         siblings = [m for m in self.list_installed() if m.hf_repo == manifest.hf_repo]
-        for digest in [manifest.blob, *shard_blobs]:
-            if digest is not None:
-                self._gc_blob(manifest.hf_repo, digest, siblings=siblings)
+        digests: list[str | None] = [d for d in [manifest.blob, *shard_blobs] if d is not None]
+        for digest in digests or [None]:
+            self._gc_blob(manifest.hf_repo, digest, siblings=siblings)
         log.info("Removed model %s", ref)
         return True
+
+    def _unlink_snapshot_entries(self, manifest: ModelManifest) -> None:
+        """Drop the snapshot entries for *manifest*'s shards.
+
+        On a symlink-less cache they hold the bytes and would resurrect the
+        model via cache recovery; on a symlinked cache they would dangle once
+        the blob is gc'd.
+        """
+        for shard in split_shard_filenames(manifest.gguf_filename):
+            snapshot_entry = self._snapshot_gguf_path(manifest.hf_repo, shard)
+            if snapshot_entry is not None:
+                snapshot_entry.unlink(missing_ok=True)
 
     def _recover_legacy_shard_blobs(self, ref: str) -> list[str]:
         """Extra shard blob digests for a pre-accounting split GGUF, best-effort.
@@ -505,10 +523,12 @@ class ModelRegistry:
         return []
 
     def _gc_blob(
-        self, hf_repo: str, digest: str, *, siblings: list[ModelManifest] | None = None
+        self, hf_repo: str, digest: str | None, *, siblings: list[ModelManifest] | None = None
     ) -> None:
         """Drop blob bytes and HuggingFace cache cruft now that *digest*
-        and possibly the whole repo are unused.
+        and possibly the whole repo are unused. A None *digest* (a manifest
+        recovered on a symlink-less cache records no digest) only prunes the
+        repo dir when no installed manifest is left.
 
         When the per-repo ``models--<repo>/`` directory has no installed
         manifests left, the whole directory is wiped so HF's ``refs/``,
@@ -531,6 +551,8 @@ class ModelRegistry:
         if not siblings:
             if cache_path.exists():
                 shutil.rmtree(cache_path)
+            return
+        if digest is None:  # no digest recorded (symlink-less recovery): dir-prune only
             return
         if any(digest == m.blob or digest in m.shard_blobs for m in siblings):
             return
@@ -568,11 +590,25 @@ class ModelRegistry:
         return manifests
 
     def _blob_present(self, manifest: ModelManifest) -> bool:
-        """True iff *manifest* points at a blob whose on-disk size matches."""
-        if manifest.blob is None:
-            return False
-        blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-        return _blob_size_matches(blob_file, manifest.size_bytes)
+        """True iff *manifest*'s bytes are on disk with a matching size."""
+        return self._manifest_backing_file(manifest) is not None
+
+    def _manifest_backing_file(self, manifest: ModelManifest) -> Path | None:
+        """The on-disk file holding *manifest*'s bytes, or None if absent/truncated.
+
+        Normally the content-hashed blob; on a cache without symlinks (the
+        Windows default) the bytes live at the snapshot path, so that is the
+        fallback. ``resolve`` and ``list_installed`` must both gate on this
+        one predicate, or installed-ness disagrees between ``pull`` and ``ask``.
+        """
+        if manifest.blob is not None:
+            blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
+            if _blob_size_matches(blob_file, manifest.size_bytes):
+                return blob_file
+        recovered = self._find_cached_gguf(manifest.hf_repo, manifest.gguf_filename)
+        if recovered is not None and _blob_size_matches(recovered, manifest.size_bytes):
+            return recovered
+        return None
 
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
