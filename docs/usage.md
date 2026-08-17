@@ -1002,7 +1002,7 @@ something feels off.
 | `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
 | `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
-| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer. When thinking passes the cap, lilbee stops it and asks the model to answer directly. Applies to chat, search, and both chat APIs; `0` removes the cap. On `/v1/messages`, a request's `thinking.budget_tokens` tightens it further (about 4 chars per token) but never raises it |
+| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer. When thinking passes the cap, lilbee stops it and asks the model to answer directly. Applies to chat, search, and both chat APIs; `0` removes the cap. On `/v1/messages`, a request's `thinking.budget_tokens` tightens it further (about 4 chars per token) but never raises it; the budget must be 1024 or more, as Anthropic's API requires |
 | `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
 | `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 

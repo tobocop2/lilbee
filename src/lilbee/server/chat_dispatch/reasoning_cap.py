@@ -54,11 +54,17 @@ ratio; the cap is a runaway-loop guard, not an accounting boundary.
 def budget_capped_chars(cap_chars: int, budget_tokens: int | None) -> int:
     """Tighten *cap_chars* with a per-request token budget.
 
-    ``0`` means unlimited on both sides. A budget may only tighten: a caller
+    ``cap_chars`` of ``0`` means unlimited. A budget may only tighten: a caller
     asking for more thinking than the operator configured still gets the
     configured cap.
+
+    A budget of zero or less is no budget at all, not a request for unlimited
+    thinking. Reading it the other way would let a caller erase the configured
+    cap, so the sign check keeps the tightening rule true whatever the caller
+    sends. The wire is validated too (see ``MIN_THINKING_BUDGET_TOKENS``); this
+    keeps the function honest for every other caller.
     """
-    if budget_tokens is None or budget_tokens < 0:
+    if budget_tokens is None or budget_tokens <= 0:
         return cap_chars
     budget_chars = budget_tokens * CHARS_PER_TOKEN
     if cap_chars <= 0:

@@ -542,19 +542,47 @@ class TestReasoningCapOnRoute:
         assert next(b["text"] for b in blocks if b["type"] == "text") == "forced answer"
         assert services_with_chat_model.provider.chat.call_count == 2
 
-    async def test_budget_tokens_tightens_the_cap(
+    async def test_zero_budget_is_rejected_and_cannot_erase_the_cap(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
-        """A 2-token budget caps thinking at 8 chars, well under the setting."""
+        """0 chars reads as unlimited downstream, so the wire refuses it."""
+        self._cap(monkeypatch, 10)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(thinking={"type": "enabled", "budget_tokens": 0}),
+                headers=_h(),
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+        services_with_chat_model.provider.chat.assert_not_called()
+
+    async def test_budget_below_the_anthropic_floor_is_rejected(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 64_000)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(thinking={"type": "enabled", "budget_tokens": 1023}),
+                headers=_h(),
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+
+    async def test_budget_at_the_floor_tightens_the_cap(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """1024 tokens is 4096 chars, well under the configured 64000."""
         self._cap(monkeypatch, 64_000)
         services_with_chat_model.provider.chat.side_effect = [
-            FakeProviderStream(["<think>", "x" * 40, "</think>", "ignored"]),
+            FakeProviderStream(["<think>", "x" * 5000, "</think>", "ignored"]),
             FakeProviderStream(["forced answer"]),
         ]
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
                 "/v1/messages",
-                json=_body(stream=True, thinking={"type": "enabled", "budget_tokens": 2}),
+                json=_body(stream=True, thinking={"type": "enabled", "budget_tokens": 1024}),
                 headers=_h(),
             )
         events = _sse_events(resp.content)
@@ -564,6 +592,30 @@ class TestReasoningCapOnRoute:
             if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
         )
         assert text == "forced answer"
+        assert services_with_chat_model.provider.chat.call_count == 2
+
+    async def test_absent_budget_leaves_the_configured_cap(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """4096 chars of thinking is under the 64000 cap, so nothing fires."""
+        self._cap(monkeypatch, 64_000)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 5000, "</think>", "answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
+        events = _sse_events(resp.content)
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        assert text == "answer"
+        assert services_with_chat_model.provider.chat.call_count == 1
 
     async def test_budget_tokens_cannot_loosen_the_configured_cap(
         self, services_with_chat_model, _auth_token, monkeypatch

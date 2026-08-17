@@ -116,6 +116,13 @@ class TestBudgetCappedChars:
     def test_negative_budget_is_ignored(self):
         assert budget_capped_chars(64_000, -1) == 64_000
 
+    def test_zero_budget_does_not_erase_the_cap(self):
+        """0 chars would read as unlimited downstream, inverting the rule."""
+        assert budget_capped_chars(64_000, 0) == 64_000
+
+    def test_zero_budget_leaves_unlimited_unlimited(self):
+        assert budget_capped_chars(0, 0) == 0
+
 
 class TestNudgedRequest:
     def test_appends_the_continuation_prompt_and_keeps_tools(self):

@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _THINKING_TYPES = frozenset({"enabled", "disabled"})
 
+MIN_THINKING_BUDGET_TOKENS = 1024
+"""Anthropic's documented minimum for ``thinking.budget_tokens``."""
+
 
 class AnthropicEventType(StrEnum):
     """SSE event vocabulary of the Anthropic Messages stream."""
@@ -131,13 +134,18 @@ class AnthropicToolChoice(_AnthropicModel):
 class AnthropicThinking(_AnthropicModel):
     """The ``thinking`` parameter: whether the model may reason on this call.
 
-    ``budget_tokens`` parses so a client that sends it gets a 200, but lilbee
-    does not cap thinking on this surface: the reasoning cap belongs to the
-    retrieval path, and neither chat API applies it.
+    ``budget_tokens`` tightens the reasoning cap for this call, at roughly four
+    characters per token. It may only tighten: a budget above the configured
+    cap leaves the configured cap in place.
+
+    The ``1024`` floor is Anthropic's own documented minimum, and it is what
+    keeps the tightening rule true. The cap reads ``0`` as unlimited, so a
+    budget that resolved to zero characters would turn a per-request limit into
+    no limit at all.
     """
 
     type: Literal["enabled", "disabled"]
-    budget_tokens: int | None = None
+    budget_tokens: int | None = Field(default=None, ge=MIN_THINKING_BUDGET_TOKENS)
 
 
 class MessagesRequest(_AnthropicModel):
