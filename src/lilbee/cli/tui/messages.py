@@ -245,6 +245,7 @@ CMD_WIKI_WIPE_WARNING = (
 )
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
+STREAM_DISCONNECTED = "\n\n*The engine connection dropped before the answer finished.*"
 STREAM_CANCELLED = "\n\n*Response cancelled.*"
 SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"

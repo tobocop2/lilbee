@@ -388,13 +388,24 @@ def test_main_invalid_fd():
 
 
 def test_main_valid_fd():
-    """main runs animation_loop with a valid pipe fd."""
+    """main runs animation_loop with a valid pipe reference.
+
+    argv carries what the parent passes: the fd on POSIX, the pipe's OS
+    handle on Windows (fds do not survive process boundaries there).
+    """
     r, w = os.pipe()
     os.close(w)
 
+    if sys.platform == "win32":
+        import msvcrt
+
+        pipe_ref = str(msvcrt.get_osfhandle(r))
+    else:
+        pipe_ref = str(r)
+
     from lilbee.runtime._splash_runner import main
 
-    with patch("sys.argv", ["_splash_runner", str(r)]):
+    with patch("sys.argv", ["_splash_runner", pipe_ref]):
         main()
 
 
@@ -415,3 +426,11 @@ def test_animation_loop_sleeps_during_startup_then_exits(monkeypatch):
     monkeypatch.setattr(sr, "poll_pipe", fake_poll)
     sr.animation_loop(0)
     assert sleeps == [sr.POLL_INTERVAL]
+
+
+def test_open_pipe_ref_returns_the_fd_on_posix(monkeypatch):
+    """POSIX passes the fd through unchanged; only Windows converts a handle."""
+    monkeypatch.setattr("sys.platform", "linux")
+    from lilbee.runtime._splash_runner import _open_pipe_ref
+
+    assert _open_pipe_ref(7) == 7

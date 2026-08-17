@@ -19,9 +19,11 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import os
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -435,15 +437,57 @@ class _EngineLifecycle:
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
 
 
+_FORCE_QUIT_EXIT_CODE = 130
+
+_STOPPING_NOTE = "lilbee: stopping the engine. Press Ctrl-C again to force quit.\n"
+
+_STOPPING_NOTE_GRACE_S = 1.0
+"""Seconds a teardown may run silently; a fast exit stays as quiet as ever."""
+
+_FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
+
+_STRAGGLER_BUDGET_S = 5.0
+"""Seconds every leftover non-daemon thread gets, together, before the exit."""
+
+_STRAGGLER_NOTE = "lilbee: a background task would not stop; exiting anyway.\n"
+
+
+def _write_exit_note(note: str) -> None:
+    """Print an exit-path status line; stderr may already be gone at exit."""
+    try:
+        sys.stderr.write(note)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _all_threads() -> list[threading.Thread]:
+    """Seam over threading.enumerate, so tests never patch the stdlib global."""
+    return threading.enumerate()
+
+
 def wait_for_hard_exit_teardown() -> None:
     """Block until any teardown thread (signal-driven or exit-driven) finishes.
 
     Lets ``serve`` hold its OS locks through the fleet stop, so a successor
     cannot acquire them while this server's models still occupy memory.
+
+    An interrupt while waiting force-quits the process: waiting is the only
+    thing left, the interpreter would otherwise still join the non-daemon
+    teardown thread, and every platform's child guard reaps the engine when
+    the process dies (kill-on-close job object, pdeathsig, death pipe).
     """
-    for thread in threading.enumerate():
-        if thread.name == _HARD_EXIT_THREAD_NAME:
-            thread.join()
+    try:
+        for thread in _all_threads():
+            if thread.name != _HARD_EXIT_THREAD_NAME:
+                continue
+            thread.join(_STOPPING_NOTE_GRACE_S)
+            if thread.is_alive():
+                _write_exit_note(_STOPPING_NOTE)
+                thread.join()
+    except KeyboardInterrupt:
+        _write_exit_note(_FORCE_QUIT_NOTE)
+        os._exit(_FORCE_QUIT_EXIT_CODE)
 
 
 def reset_services_on_exit() -> None:
@@ -451,13 +495,49 @@ def reset_services_on_exit() -> None:
 
     Engine release waits on the fleet build lock before it releases anything, so
     a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
-    singleton is already cleared. The teardown thread is non-daemon and takes no
-    signals, so an interrupt breaks only the join here.
+    singleton is already cleared. The teardown thread is non-daemon and takes
+    no signals; a wait that outlives the grace names what is happening.
     """
     if peek_services() is None:
         return
     threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
     wait_for_hard_exit_teardown()
+
+
+def _straggler_threads() -> list[threading.Thread]:
+    """Non-daemon threads the interpreter would join at shutdown, besides us."""
+    return [
+        thread
+        for thread in _all_threads()
+        if thread.is_alive()
+        and not thread.daemon
+        and thread is not threading.main_thread()
+        and thread is not threading.current_thread()
+    ]
+
+
+def exit_when_stragglers_would_hang() -> None:
+    """Exit rather than let interpreter shutdown join a wedged thread forever.
+
+    threading joins every non-daemon thread after atexit, so one worker
+    blocked in an unbounded network read hangs the process after all real
+    work is done. Stragglers share a short budget; whatever remains cannot
+    finish, and the child guard reaps the engine when the process dies.
+    Called from the TUI's own exit path and inert elsewhere: a test process
+    or embedding host owns its threads, and an exit would take them with it.
+    """
+    if not _state.interactive:
+        return
+    try:
+        deadline = time.monotonic() + _STRAGGLER_BUDGET_S
+        for thread in _straggler_threads():
+            thread.join(max(0.0, deadline - time.monotonic()))
+        if _straggler_threads():
+            _write_exit_note(_STRAGGLER_NOTE)
+            os._exit(0)
+    except KeyboardInterrupt:
+        _write_exit_note(_FORCE_QUIT_NOTE)
+        os._exit(_FORCE_QUIT_EXIT_CODE)
 
 
 def _teardown_for_signal(signum: int) -> None:
