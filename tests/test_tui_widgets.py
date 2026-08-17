@@ -3654,6 +3654,7 @@ class TestRunTuiKeyboardInterrupt:
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor"),
                 mock.patch("lilbee.cli.tui.reset_services_on_exit"),
+                mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang"),
             ):
                 from lilbee.cli.tui import run_tui
 
@@ -3666,12 +3667,14 @@ class TestRunTuiKeyboardInterrupt:
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor") as mock_shutdown,
                 mock.patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
+                mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as mock_straggler,
             ):
                 from lilbee.cli.tui import run_tui
 
                 run_tui()
                 mock_shutdown.assert_called_once()
                 mock_reset.assert_called_once()
+                mock_straggler.assert_called_once()
 
 
 class _ViewTabsApp(LilbeeAppHost):

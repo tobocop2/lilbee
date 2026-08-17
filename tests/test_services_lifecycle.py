@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -220,26 +221,48 @@ def test_a_second_interrupt_force_quits_instead_of_waiting(monkeypatch):
         name = services_mod._HARD_EXIT_THREAD_NAME
         daemon = True  # the leak-check fixture enumerates threads too
 
-        def join(self) -> None:
+        def join(self, timeout: float | None = None) -> None:
             raise KeyboardInterrupt
 
         def is_alive(self) -> bool:
             return False
 
-    monkeypatch.setattr(services_mod.threading, "enumerate", lambda: [_Interrupted()])
+    monkeypatch.setattr(services_mod, "_all_threads", lambda: [_Interrupted()])
 
     services_mod.wait_for_hard_exit_teardown()
 
     assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
 
 
-def test_exit_teardown_names_the_wait_and_the_way_out(capsys):
-    """The engine stop is silent work; the exit line says what is happening."""
+def test_a_slow_exit_names_the_wait_and_the_way_out(capsys, monkeypatch):
+    """A teardown that outlives the grace says what is happening."""
+    monkeypatch.setattr(services_mod, "_STOPPING_NOTE_GRACE_S", 0.0)
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+
+    try:
+        waiter = threading.Thread(target=reset_services_on_exit)
+        waiter.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if "stopping the engine" in capsys.readouterr().err:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("the slow exit never named the wait")
+    finally:
+        release.set()
+        waiter.join(timeout=5)
+
+
+def test_a_fast_exit_stays_silent(capsys):
+    """A teardown inside the grace keeps the exit as quiet as it always was."""
     _install_stub_services()
 
     reset_services_on_exit()
 
-    assert "stopping the engine" in capsys.readouterr().err
+    assert "stopping the engine" not in capsys.readouterr().err
 
 
 def test_exit_note_survives_a_closed_stderr(monkeypatch):
@@ -265,3 +288,78 @@ def test_exit_teardown_without_services_starts_no_thread(monkeypatch):
     reset_services_on_exit()
 
     spawned.assert_not_called()
+
+
+class _Wedged:
+    """A non-daemon thread facade that never finishes joining."""
+
+    daemon = False
+    name = "wedged-straggler"  # the leak-check fixture reads thread names
+
+    def is_alive(self) -> bool:
+        return True
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+
+class TestStragglerExit:
+    @pytest.fixture(autouse=True)
+    def _interactive(self, monkeypatch):
+        monkeypatch.setattr(services_mod._state, "interactive", True)
+
+    def test_a_non_interactive_process_keeps_its_threads(self, monkeypatch) -> None:
+        """A test host or library embedder owns its threads; never exit them."""
+        monkeypatch.setattr(services_mod._state, "interactive", False)
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        threads = self._fake_enumerate(monkeypatch, [_Wedged()])
+
+        services_mod.exit_when_stragglers_would_hang()
+        del threads[1:]
+
+        assert exits == []
+
+    def _fake_enumerate(self, monkeypatch, extra):
+        """Patch enumerate with a mutable list, cleared before teardown so the
+        leak-check fixture never meets the fakes."""
+        threads = [threading.main_thread(), *extra]
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: list(threads))
+        return threads
+
+    def test_a_wedged_thread_exits_instead_of_hanging(self, monkeypatch, capsys) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+        threads = self._fake_enumerate(monkeypatch, [_Wedged()])
+
+        services_mod.exit_when_stragglers_would_hang()
+        del threads[1:]
+
+        assert exits == [0]
+        assert "would not stop" in capsys.readouterr().err
+
+    def test_a_clean_shutdown_exits_normally(self, monkeypatch, capsys) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        self._fake_enumerate(monkeypatch, [])
+
+        services_mod.exit_when_stragglers_would_hang()
+
+        assert exits == []
+        assert capsys.readouterr().err == ""
+
+    def test_an_interrupt_during_the_budget_force_quits(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+
+        class _Interruptible(_Wedged):
+            def join(self, timeout: float | None = None) -> None:
+                raise KeyboardInterrupt
+
+        threads = self._fake_enumerate(monkeypatch, [_Interruptible()])
+
+        services_mod.exit_when_stragglers_would_hang()
+        del threads[1:]
+
+        assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
