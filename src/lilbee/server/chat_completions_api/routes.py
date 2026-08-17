@@ -20,6 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
 from lilbee.providers.model_ref import default_first, with_configured_remote_chat
+from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
@@ -45,10 +46,10 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
 )
 from lilbee.server.chat_dispatch.dispatch import (
-    dispatch_chat,
     dispatch_chat_stream,
     preflight_chat_request,
 )
+from lilbee.server.chat_dispatch.reasoning_cap import cap_aware_chat, cap_aware_chat_stream
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.validation_format import format_validation
 
@@ -232,10 +233,15 @@ async def _run_non_stream(
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
-        # dispatch_chat blocks for the whole generation; run it off the event loop
+        # The dispatch blocks for the whole generation; run it off the event loop
         # so a slow chat does not stall other admitted requests. The preflight
         # already resolved the model, so hand it in to avoid re-running it.
-        resp = await asyncio.to_thread(dispatch_chat, req, canonical_model=canonical_model)
+        resp = await asyncio.to_thread(
+            cap_aware_chat,
+            req,
+            canonical_model=canonical_model,
+            cap_chars=effective_reasoning_cap(),
+        )
     except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
@@ -272,7 +278,12 @@ async def _gated_completions_stream(
     response_id = _response_id()
     try:
         try:
-            events = dispatch_chat_stream(req, canonical_model=model)
+            events = cap_aware_chat_stream(
+                dispatch_chat_stream(req, canonical_model=model),
+                req,
+                canonical_model=model,
+                cap_chars=effective_reasoning_cap(),
+            )
             chunks = canonical_stream_to_completions_chunks(
                 events,
                 model=model,

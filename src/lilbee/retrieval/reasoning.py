@@ -9,9 +9,13 @@ Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
 - ``stream_chat_with_cap``: the high-level orchestrator. Wraps a
   provider call with the filter; when the cap fires, re-issues the
   chat with a "stop thinking, answer directly" nudge. The ask/search
-  streaming path and CLI/TUI consume it directly; the canonical
-  chat-dispatch path mirrors the same filter + cap-nudge behavior over
-  its own async driver.
+  streaming path and CLI/TUI consume it directly. Two other drivers
+  mirror the same filter + cap-nudge behavior over async streams:
+  the RAG handler's, which needs the reasoning/answer split for its
+  SSE channels, and
+  :mod:`lilbee.server.chat_dispatch.reasoning_cap`, which keeps the
+  canonical event stream intact so the chat surfaces still carry tool
+  calls.
 - ``effective_reasoning_cap``: resolves the cap from the global config
   with per-model ``ModelDefaults`` overrides.
 """

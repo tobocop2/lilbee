@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -35,7 +34,6 @@ from lilbee.retrieval.query.searcher import (
     RagContext,
 )
 from lilbee.retrieval.reasoning import (
-    CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
     REASONING_EXHAUSTED_NOTICE,
     CapNotice,
@@ -64,6 +62,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     dispatch_chat,
     dispatch_chat_stream,
 )
+from lilbee.server.chat_dispatch.reasoning_cap import nudged_request
 from lilbee.server.handlers.sse import (
     SseErrorCodeValue,
     SseStream,
@@ -702,7 +701,7 @@ async def _cap_aware_chat_events(
 
     if cap_chars > 0 and first_parser.reasoning_chars > cap_chars:
         yield CapNotice(cap_chars=cap_chars)
-        nudged = _nudged_request(req)
+        nudged = nudged_request(req)
         cont_parser = TagParser(show=show)
         async for tok in _drive_stream(dispatch_chat_stream(nudged), cont_parser, cap_chars=0):
             answered = answered or bool(tok.content)
@@ -739,17 +738,6 @@ async def _drive_stream(
     tail = parser.flush()
     if tail is not None and tail.content:
         yield tail
-
-
-def _nudged_request(req: CanonicalChatRequest) -> CanonicalChatRequest:
-    """Append the cap-continuation user prompt to *req*'s messages."""
-    return dataclasses.replace(
-        req,
-        messages=[
-            *req.messages,
-            CanonicalMessage.from_string(role="user", text=CAP_CONTINUATION_PROMPT),
-        ],
-    )
 
 
 async def _aclose(stream: AsyncIterator[Any]) -> None:

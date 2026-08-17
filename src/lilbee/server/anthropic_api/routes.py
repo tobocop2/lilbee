@@ -15,6 +15,7 @@ from litestar.response import Response, Stream
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
+from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.models import (
     AnthropicEventType,
@@ -40,9 +41,13 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
 )
 from lilbee.server.chat_dispatch.dispatch import (
-    dispatch_chat,
     dispatch_chat_stream,
     preflight_chat_request,
+)
+from lilbee.server.chat_dispatch.reasoning_cap import (
+    budget_capped_chars,
+    cap_aware_chat,
+    cap_aware_chat_stream,
 )
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.validation_format import format_validation
@@ -73,6 +78,7 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     # The request's thinking parameter wins over the messages_reasoning setting,
     # so an agent turns thinking off per call.
     mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
+    cap_chars = budget_capped_chars(effective_reasoning_cap(), _budget_tokens(data))
     try:
         req = messages_to_canonical_request(data, mode=mode)
     except ValueError as exc:
@@ -99,11 +105,26 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
         # The after-send hook frees the slot when a disconnect lands before the
         # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_messages_stream(req, guard, model=resolved_model, mode=mode),
+            _gated_messages_stream(
+                req, guard, model=resolved_model, mode=mode, cap_chars=cap_chars
+            ),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req, guard, canonical_model=resolved_model, mode=mode)
+    return await _run_non_stream(
+        req, guard, canonical_model=resolved_model, mode=mode, cap_chars=cap_chars
+    )
+
+
+def _budget_tokens(data: MessagesRequest) -> int | None:
+    """The thinking budget this request asks for, if it enabled thinking.
+
+    ``disabled`` carries no budget to honor, and a budget on a disabled request
+    would otherwise read as a cap the caller never asked for.
+    """
+    if data.thinking is None or data.thinking.type == "disabled":
+        return None
+    return data.thinking.budget_tokens
 
 
 async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response:
@@ -123,10 +144,13 @@ async def _run_non_stream(
     *,
     canonical_model: str,
     mode: ReasoningMode = ReasoningMode.SEPARATE,
+    cap_chars: int = 0,
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the envelope."""
     try:
-        resp = await asyncio.to_thread(dispatch_chat, req, canonical_model=canonical_model)
+        resp = await asyncio.to_thread(
+            cap_aware_chat, req, canonical_model=canonical_model, cap_chars=cap_chars
+        )
     except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
@@ -146,6 +170,7 @@ async def _gated_messages_stream(
     *,
     model: str,
     mode: ReasoningMode = ReasoningMode.SEPARATE,
+    cap_chars: int = 0,
 ) -> AsyncGenerator[bytes, None]:
     """Drive dispatch -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -156,7 +181,12 @@ async def _gated_messages_stream(
     response_id = _response_id()
     try:
         try:
-            events = dispatch_chat_stream(req, canonical_model=model)
+            events = cap_aware_chat_stream(
+                dispatch_chat_stream(req, canonical_model=model),
+                req,
+                canonical_model=model,
+                cap_chars=cap_chars,
+            )
             pairs = canonical_stream_to_anthropic_events(
                 events, model=model, response_id=response_id, mode=mode
             )

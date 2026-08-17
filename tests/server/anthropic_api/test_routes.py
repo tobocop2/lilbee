@@ -302,7 +302,7 @@ class TestErrorPaths:
         def _overflow(_req, canonical_model):
             raise ProviderError("context overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
 
-        monkeypatch.setattr("lilbee.server.anthropic_api.routes.dispatch_chat", _overflow)
+        monkeypatch.setattr("lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat", _overflow)
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.status_code == 400
@@ -314,7 +314,7 @@ class TestErrorPaths:
         def _boom(_req, canonical_model):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr("lilbee.server.anthropic_api.routes.dispatch_chat", _boom)
+        monkeypatch.setattr("lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat", _boom)
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.status_code == 500
@@ -476,3 +476,156 @@ class TestThinkingControlOnRoute:
                 "/v1/messages", json=_body(thinking={"type": "adaptive"}), headers=_h()
             )
         assert resp.status_code == 200
+
+
+class TestReasoningCapOnRoute:
+    """The reasoning cap bounds thinking on /v1/messages, both paths."""
+
+    @pytest.fixture(autouse=True)
+    def _no_model_defaults(self):
+        """A per-model override would beat the cap these tests set."""
+        from lilbee.core.config import cfg
+
+        previous = cfg.model_defaults
+        cfg.clear_model_defaults()
+        yield
+        cfg.apply_model_defaults(previous)
+
+    def _cap(self, monkeypatch, chars: int) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "max_reasoning_chars", chars)
+
+    async def test_streaming_cap_stops_thinking_and_forces_an_answer(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 40, "still thinking", "</think>", "ignored"]),
+            FakeProviderStream(["forced answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+        events = _sse_events(resp.content)
+        thinking = "".join(
+            p["delta"]["thinking"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "thinking_delta"
+        )
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        # The cap notice rides the thinking channel, and the answer is the
+        # continuation's -- the capped stream's own answer never arrives.
+        assert "reasoning capped at 10 chars" in thinking
+        assert text == "forced answer"
+        assert "ignored" not in text
+
+    async def test_non_streaming_reasoning_only_turn_is_re_issued(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            ChatResult(
+                text="<think>" + "x" * 50 + "</think>",
+                tool_calls=(),
+                finish_reason=FinishReason.STOP,
+            ),
+            ChatResult(text="forced answer", tool_calls=(), finish_reason=FinishReason.STOP),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        blocks = resp.json()["content"]
+        assert {b["type"] for b in blocks} == {"thinking", "text"}
+        assert next(b["text"] for b in blocks if b["type"] == "text") == "forced answer"
+        assert services_with_chat_model.provider.chat.call_count == 2
+
+    async def test_budget_tokens_tightens_the_cap(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """A 2-token budget caps thinking at 8 chars, well under the setting."""
+        self._cap(monkeypatch, 64_000)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 40, "</think>", "ignored"]),
+            FakeProviderStream(["forced answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled", "budget_tokens": 2}),
+                headers=_h(),
+            )
+        events = _sse_events(resp.content)
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        assert text == "forced answer"
+
+    async def test_budget_tokens_cannot_loosen_the_configured_cap(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """A huge budget must not buy more thinking than the operator allows."""
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 40, "</think>", "ignored"]),
+            FakeProviderStream(["forced answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled", "budget_tokens": 1_000_000}),
+                headers=_h(),
+            )
+        events = _sse_events(resp.content)
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        assert text == "forced answer"
+        assert services_with_chat_model.provider.chat.call_count == 2
+
+    async def test_per_model_override_flows_through_the_cap(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """ModelDefaults beats the global setting, as effective_reasoning_cap says."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.model_defaults import ModelDefaults
+
+        monkeypatch.setattr(cfg, "max_reasoning_chars", 64_000)
+        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=10))
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 40, "</think>", "ignored"]),
+            FakeProviderStream(["forced answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+        events = _sse_events(resp.content)
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        assert text == "forced answer"
+
+    async def test_uncapped_setting_leaves_long_reasoning_alone(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 0)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 400, "</think>", "answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+        events = _sse_events(resp.content)
+        text = "".join(
+            p["delta"]["text"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
+        )
+        assert text == "answer"
+        assert services_with_chat_model.provider.chat.call_count == 1
