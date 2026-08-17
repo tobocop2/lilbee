@@ -97,11 +97,14 @@ class KvCacheType(StrEnum):
     Q4_0 = "q4_0"
 
 
-# Bytes per KV element for memory budgeting. The quantized variants are
-# ~1 byte of data plus shared scales, close enough for context-fit math.
-KV_CACHE_TYPE_BYTES: dict[KvCacheType, int] = {
-    KvCacheType.F16: 2,
-    KvCacheType.F32: 4,
-    KvCacheType.Q8_0: 1,
-    KvCacheType.Q4_0: 1,
+# Bytes per KV element for memory budgeting, from llama.cpp's block layouts:
+# q8_0 stores 32 elements in 34 bytes (2-byte scale + 32 data bytes) and q4_0
+# stores 32 elements in 18 bytes (2-byte scale + 16 bytes of packed nibbles).
+# Rounding q4_0 up to a whole byte charged its cache at almost twice the real
+# size and nearly halved the context window the dynamic picker granted.
+KV_CACHE_TYPE_BYTES: dict[KvCacheType, float] = {
+    KvCacheType.F16: 2.0,
+    KvCacheType.F32: 4.0,
+    KvCacheType.Q8_0: 34 / 32,
+    KvCacheType.Q4_0: 18 / 32,
 }

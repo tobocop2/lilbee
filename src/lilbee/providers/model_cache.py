@@ -41,27 +41,37 @@ _DYNAMIC_CTX_QUANTUM = 256
 _KV_ELEM_BYTES_F16 = 2
 
 
-def kv_bytes_per_token(meta: dict[str, str] | None, kv_elem_bytes: int = _KV_ELEM_BYTES_F16) -> int:
+def kv_bytes_per_token(
+    meta: dict[str, str] | None,
+    k_elem_bytes: float = _KV_ELEM_BYTES_F16,
+    v_elem_bytes: float | None = None,
+) -> int:
     """Estimate per-token KV cache size in bytes from GGUF metadata.
 
-    Formula: 2 (K + V) * n_layers * n_kv_heads * head_dim * elem_bytes.
-    Falls back to ``_KV_BYTES_PER_CTX_TOKEN`` when metadata is missing.
+    Formula: n_layers * n_kv_heads * (k_dim * k_elem_bytes + v_dim * v_elem_bytes).
+    K and V are charged separately because a launch can quantize one and not the
+    other: a quantized V cache needs flash attention, so the engine keeps V at
+    f16 when flash attention is not certain. ``v_elem_bytes`` defaults to the K
+    cost for callers whose caches match. Falls back to
+    ``_KV_BYTES_PER_CTX_TOKEN`` when metadata is missing.
     """
+    if v_elem_bytes is None:
+        v_elem_bytes = k_elem_bytes
     if not meta:
         return _KV_BYTES_PER_CTX_TOKEN
     try:
         n_layers = int(meta["block_count"])
         head_count_kv = int(meta.get("head_count_kv") or meta["head_count"])
         if "key_length" in meta and "value_length" in meta:
-            kv_dim = int(meta["key_length"]) + int(meta["value_length"])
+            k_dim = int(meta["key_length"])
+            v_dim = int(meta["value_length"])
         else:
             embed = int(meta["embedding_length"])
             head_count = int(meta.get("head_count") or head_count_kv)
-            head_dim = embed // head_count
-            kv_dim = 2 * head_dim
+            k_dim = v_dim = embed // head_count
     except (KeyError, ValueError, ZeroDivisionError):
         return _KV_BYTES_PER_CTX_TOKEN
-    return n_layers * head_count_kv * kv_dim * kv_elem_bytes
+    return int(n_layers * head_count_kv * (k_dim * k_elem_bytes + v_dim * v_elem_bytes))
 
 
 def estimate_model_memory(
