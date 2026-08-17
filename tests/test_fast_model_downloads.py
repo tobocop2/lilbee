@@ -83,9 +83,7 @@ def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"], ids=["windows", "posix"])
-def test_xet_is_disabled_only_on_windows(
-    monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
+def test_xet_is_disabled_only_on_windows(monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
     """hf_xet transfers stall or deadlock on Windows (xet-core #446/#789/#850),
     so lilbee falls back to the plain HTTP path there."""
     from huggingface_hub import constants
