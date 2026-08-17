@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.app.services import reset_services_on_exit
+from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 
 
@@ -113,3 +113,4 @@ def run_tui(*, initial_view: str | None = None) -> None:
         _restore_native_stderr(stderr_redirect)
         shutdown_executor()
         reset_services_on_exit()
+        exit_when_stragglers_would_hang()
