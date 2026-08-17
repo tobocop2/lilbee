@@ -161,10 +161,13 @@ def _disable_xet_where_it_stalls() -> None:
 
     hf_xet transfers stall or deadlock on Windows (xet-core issues #446,
     #789, #850; reproduced on the Windows verification box with hf_xet
-    1.5.2), while the plain path downloads at line speed. A user who
-    exported the variable keeps whatever they chose. huggingface_hub parses
-    the variable once at import, so the hub constant must change too; the
-    environment write covers worker subprocesses, which parse it fresh.
+    1.5.2), while the plain path downloads at line speed. Everywhere else
+    xet stays on deliberately: it is the fast path, and the old global
+    disable was removed once the transfer-progress stream landed. A user
+    who exported the variable keeps whatever they chose. huggingface_hub
+    parses the variable once at import, so the hub constant must change
+    too; the environment write covers worker subprocesses, which parse it
+    fresh.
     """
     if sys.platform != "win32":
         return

@@ -1,8 +1,9 @@
 """Standalone splash animation process: stdlib plus the shared wordmark.
 
-Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
-and animates until the pipe signals EOF (parent closed its write end, or
-parent died). This guarantees no orphan/zombie animation processes.
+Launched as a subprocess by ``splash.start()``. Reads a pipe reference from
+argv (the fd on POSIX, the pipe's OS handle on Windows) and animates until
+the pipe signals EOF (parent closed its write end, or parent died). This
+guarantees no orphan/zombie animation processes.
 """
 
 from __future__ import annotations

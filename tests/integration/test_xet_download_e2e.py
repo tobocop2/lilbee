@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -40,6 +41,10 @@ pytestmark = [
     pytest.mark.skipif(
         not os.environ.get("LILBEE_E2E_DOWNLOADS"),
         reason="moves ~1.1GB; set LILBEE_E2E_DOWNLOADS=1 to run",
+    ),
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="lilbee routes Windows downloads to plain HTTP (xet stalls there)",
     ),
 ]
 

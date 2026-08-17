@@ -136,3 +136,37 @@ def test_the_xet_disable_variable_name_is_the_one_the_hub_reads() -> None:
     from huggingface_hub import constants
 
     assert hasattr(constants, dl._XET_DISABLE_ENV)
+
+
+def test_the_download_path_disables_xet_before_transferring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback must land before the transfer starts, like the
+    fast-download mode above."""
+    calls: list[str] = []
+    monkeypatch.setattr(dl, "_apply_fast_download_mode", lambda: None)
+    monkeypatch.setattr(dl, "_disable_xet_where_it_stalls", lambda: calls.append("disabled"))
+
+    def _fake_download(**_kw: object) -> str:
+        calls.append("downloaded")
+        return "/tmp/file"
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+
+    from lilbee.catalog.models import CatalogModel
+
+    entry = CatalogModel(
+        hf_repo="user/repo",
+        gguf_filename="f.gguf",
+        size_gb=1.0,
+        min_ram_gb=2,
+        description="d",
+        featured=False,
+        downloads=0,
+        task="chat",
+    )
+    dl._hf_download_or_translate(
+        entry, dl.DownloadConfig(repo_id="user/repo", filename="f.gguf", token=None)
+    )
+
+    assert calls == ["disabled", "downloaded"]
