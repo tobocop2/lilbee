@@ -55,6 +55,29 @@ def _write_source(tmp_path: Path, content: bytes = b"GGUF\x00\x00") -> Path:
 _FAKE_REV = "0123456789abcdef0123456789abcdef01234567"  # 40-hex commit-hash-shaped revision
 
 
+def _seed_hf_cache_symlinkless(
+    models_dir: Path,
+    *,
+    repo: str = _REPO,
+    filename: str = _FILENAME,
+    content: bytes = b"GGUF\x00\x00",
+) -> Path:
+    """Lay down the symlink-less HuggingFace cache layout (the Windows default).
+
+    When symlinks are unavailable, ``huggingface_hub`` moves the downloaded blob
+    to ``snapshots/<rev>/<filename>`` as a real file, leaving ``blobs/`` empty.
+    Returns the snapshot file path.
+    """
+    cache = models_dir / f"models--{repo_to_dir(repo)}"
+    (cache / "blobs").mkdir(parents=True, exist_ok=True)
+    snapshot_file = cache / "snapshots" / _FAKE_REV / filename
+    snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_file.write_bytes(content)
+    (cache / "refs").mkdir(parents=True, exist_ok=True)
+    (cache / "refs" / "main").write_text(_FAKE_REV, encoding="utf-8")
+    return snapshot_file
+
+
 def _seed_hf_cache(
     models_dir: Path,
     *,
@@ -760,6 +783,60 @@ class TestModelRegistryResolve:
         bad.parent.mkdir(parents=True, exist_ok=True)
         bad.write_text('{"repo": "old-format", "extra": "fields the current schema lacks"}')
         assert registry.resolve(_REF) == blob.resolve()
+
+    def test_symlinkless_recovery_agrees_between_resolve_and_listing(self, tmp_path: Path) -> None:
+        """On a symlink-less cache (the Windows default), a recovered model must
+        count as installed everywhere, not only in ``resolve``.
+
+        ``resolve`` recovers the snapshot file, but the recovered manifest used to
+        record the snapshot's filename as its blob digest, so ``list_installed``
+        (the gate ``ask`` uses) filtered it out while ``is_installed`` (the gate
+        ``pull`` uses) passed: ask refused with 'No chat model is installed' and
+        the suggested re-pull short-circuited with 'already installed'.
+        """
+        registry = ModelRegistry(tmp_path)
+        snapshot_file = _seed_hf_cache_symlinkless(tmp_path)
+        assert registry.resolve(_REF) == snapshot_file
+        assert registry.is_installed(_REF)
+        assert [m.ref for m in registry.list_installed()] == [_REF]
+
+    def test_symlinkless_resolve_does_not_rewrite_manifest_every_call(self, tmp_path: Path) -> None:
+        """After the first recovery writes a manifest, later resolves trust it.
+
+        The old code's blob check could never pass on a symlink-less cache, so
+        every resolve took the recovery path and rewrote the manifest."""
+        registry = ModelRegistry(tmp_path)
+        snapshot_file = _seed_hf_cache_symlinkless(tmp_path)
+        registry.resolve(_REF)  # first call recovers and writes the manifest
+        with mock.patch.object(ModelRegistry, "_write_manifest") as write_manifest:
+            assert registry.resolve(_REF) == snapshot_file
+        write_manifest.assert_not_called()
+
+    def test_symlinkless_recovered_model_removes_cleanly(self, tmp_path: Path) -> None:
+        """A cache-recovered model on a symlink-less cache can be removed."""
+        registry = ModelRegistry(tmp_path)
+        _seed_hf_cache_symlinkless(tmp_path)
+        registry.resolve(_REF)
+        assert registry.remove(_REF)
+        assert not registry.is_installed(_REF)
+        assert registry.list_installed() == []
+        assert not (tmp_path / f"models--{repo_to_dir(_REPO)}").exists()
+
+    def test_symlinkless_remove_keeps_sibling_quant(self, tmp_path: Path) -> None:
+        """Removing one symlink-less quant leaves a sibling quant installed.
+
+        No digest is recorded for either, so GC must prune only the removed
+        model's snapshot file, not the shared repo cache dir."""
+        registry = ModelRegistry(tmp_path)
+        other = "Qwen3-0.6B-Q8_0.gguf"
+        _seed_hf_cache_symlinkless(tmp_path)
+        _seed_hf_cache_symlinkless(tmp_path, filename=other, content=b"GGUF\x08")
+        registry.resolve(_REF)
+        registry.resolve(f"{_REPO}/{other}")
+        assert registry.remove(_REF)
+        assert not registry.is_installed(_REF)
+        assert [m.ref for m in registry.list_installed()] == [f"{_REPO}/{other}"]
+        assert registry.resolve(f"{_REPO}/{other}").exists()
 
     def test_recovery_ignores_snapshot_symlink_escaping_root(self, tmp_path: Path) -> None:
         """A snapshot entry symlinking outside the registry root is not followed."""
