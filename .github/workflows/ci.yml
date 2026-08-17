@@ -61,6 +61,24 @@ jobs:
       - name: Check imports resolve
         run: make imports-check
 
+  npm-launcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install launcher dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: packages/lilbee
+
+      - name: Test the npm launcher
+        run: npm test
+        working-directory: packages/lilbee
+
   # Seeded TUI fuzz: fixed seeds, deterministic, fails on any invariant break.
   fuzz-smoke:
     runs-on: ubuntu-latest

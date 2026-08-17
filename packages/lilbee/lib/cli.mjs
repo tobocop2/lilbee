@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { assetNameFor } from "./assets.mjs";
 import { download } from "./download.mjs";
-import { HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
+import { exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
 import { resolveBinary } from "./resolve.mjs";
 
 const log = (msg) => console.error(msg);
@@ -48,7 +48,9 @@ function mcpRemoteBin() {
 function spawnAndForward({ cmd, args }) {
   const child = spawn(cmd, args, { stdio: "inherit" });
   child.on("exit", (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
+    // Re-raising a trapped signal would loop through our own forwarder, so
+    // exit with the conventional 128+signum code instead.
+    if (signal) process.exit(exitCodeForSignal(signal));
     else process.exit(code ?? 0);
   });
   child.on("error", (err) => {
@@ -76,9 +78,9 @@ async function resolveLocalBinary(env) {
 
 export async function run(argv) {
   const env = process.env;
-  if (argv[0] === "--launcher-help" || (argv[0] === "--help" && argv.length === 1)) {
+  if (argv[0] === "--launcher-help") {
     log(HELP);
-    if (argv[0] === "--launcher-help") return;
+    return;
   }
   const route = routeArgv(argv);
 

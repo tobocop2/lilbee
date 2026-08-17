@@ -13,7 +13,8 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { createHash } from "node:crypto";
 
-const USER_AGENT = "lilbee-mcp";
+const USER_AGENT = "lilbee-npm-launcher";
+const DOWNLOAD_ATTEMPTS = 2;
 
 async function fetchJson(url) {
   const res = await fetch(url, {
@@ -47,7 +48,7 @@ function progressReporter(total, log) {
       const pct = total ? Math.floor((done / total) * 100) : 0;
       if (pct >= lastPct + 10) {
         lastPct = pct;
-        log(`lilbee-mcp: downloading… ${pct}% (${Math.floor(done / 1048576)}MB)`);
+        log(`lilbee: downloading… ${pct}% (${Math.floor(done / 1048576)}MB)`);
       }
       cb(null, chunk);
     },
@@ -62,12 +63,17 @@ export async function download({ env, release, assetName, dest, log = console.er
   const repo = env.LILBEE_REPO || "tobocop2/lilbee";
   const { url, size, digest } = await releaseAsset(repo, release, assetName);
   log(
-    `lilbee-mcp: first run — downloading ${assetName} (${Math.ceil(size / 1048576)}MB) ` +
-      `from ${repo}@${release}. Cached for next time; run "lilbee-mcp prepare" to do this ahead of time.`
+    `lilbee: first run — downloading ${assetName} (${Math.ceil(size / 1048576)}MB) ` +
+      `from ${repo}@${release}. Cached for next time; run "lilbee prepare" to do this ahead of time.`
   );
 
+  if (!digest) {
+    log(`lilbee: release asset ${assetName} has no published digest; skipping sha256 verification.`);
+  }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const tmp = `${dest}.download`;
+  // Per-process temp file: concurrent first runs (e.g. two agents spawning at
+  // once) must not interleave writes into one temp path.
+  const tmp = `${dest}.download.${process.pid}`;
 
   let attempt = 0;
   for (;;) {
@@ -95,12 +101,16 @@ export async function download({ env, release, assetName, dest, log = console.er
       break;
     } catch (err) {
       fs.rmSync(tmp, { force: true });
-      if (attempt >= 2) throw err;
-      log(`lilbee-mcp: download failed (${err.message}), retrying once…`);
+      if (fs.existsSync(dest)) {
+        log("lilbee: another process finished this download first; using it.");
+        return;
+      }
+      if (attempt >= DOWNLOAD_ATTEMPTS) throw err;
+      log(`lilbee: download failed (${err.message}), retrying once…`);
     }
   }
 
   fs.chmodSync(tmp, 0o755);
   fs.renameSync(tmp, dest);
-  log(`lilbee-mcp: installed ${dest}`);
+  log(`lilbee: installed ${dest}`);
 }

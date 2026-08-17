@@ -29,6 +29,14 @@ export function parseMcpArgs(argv) {
   return out;
 }
 
+const EXIT_CODE_BY_SIGNAL = { SIGHUP: 129, SIGINT: 130, SIGQUIT: 131, SIGTERM: 143 };
+const EXIT_CODE_SIGNAL_DEFAULT = 128;
+
+/** Conventional 128+signum exit code for a child killed by *signal*. */
+export function exitCodeForSignal(signal) {
+  return EXIT_CODE_BY_SIGNAL[signal] ?? EXIT_CODE_SIGNAL_DEFAULT;
+}
+
 /** "remote" when LILBEE_URL is set (non-empty), else "local". */
 export function selectMode(env) {
   return env.LILBEE_URL ? "remote" : "local";
@@ -39,6 +47,9 @@ export function selectMode(env) {
  * mcp-remote's executable script; it runs under the current node.
  */
 export function remoteExec(env, mcpRemoteBin) {
+  // Bought, not built: mcp-remote owns the stdio<->streamable-http bridge.
+  // The bearer header rides argv (mcp-remote's contract), which is visible in
+  // the process list; acceptable for a single-user machine.
   const args = [mcpRemoteBin, env.LILBEE_URL, "--transport", "http-only"];
   if (env.LILBEE_TOKEN) {
     args.push("--header", `Authorization: Bearer ${env.LILBEE_TOKEN}`);
@@ -72,6 +83,7 @@ Environment:
   LILBEE_URL       remote lilbee server; \`mcp\` bridges to <url> instead of a local binary
   LILBEE_TOKEN     bearer session token for LILBEE_URL
   LILBEE_BIN       explicit path to a lilbee binary
+  LILBEE_DATA      lilbee data root (also where a shared-root binary is found)
   LILBEE_DATA_DIR  library location for \`mcp\` (same as --data-dir)
   LILBEE_VARIANT   download variant: cu121 | cu124 | cu125 | rocm | compat
   LILBEE_RELEASE   override the pinned lilbee release tag
