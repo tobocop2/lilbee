@@ -370,7 +370,7 @@ async def add(
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
-    Paths must be absolute; URLs are crawled as markdown."""
+    Paths must be absolute. URLs are fetched as single pages; use ``crawl`` for sites."""
     from lilbee.app.ingest import register_sources
     from lilbee.data.ingest import sync as run_sync
 

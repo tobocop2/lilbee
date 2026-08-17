@@ -106,7 +106,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 |---|---|
 | `lilbee_add(paths, force, enable_ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
 | `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
-| `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
+| `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Default `depth=0` fetches one page; pass a depth (or `null` for the whole site) to follow links. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
@@ -148,9 +148,9 @@ lilbee-worker:   lilbee_add(["/path/to/dir", "https://docs.example.com/page"])
 lilbee_status                           # confirm new sources appeared
 ```
 
-`lilbee_add` accepts absolute paths, directories (recursive), and URLs (which get crawled
-to markdown). It runs `lilbee_sync` after copying, so the new content is indexed in one
-call. For continuous web monitoring, use `lilbee_crawl` instead.
+`lilbee_add` accepts absolute paths, directories (recursive), and URLs (fetched as single
+pages). It runs `lilbee_sync` after copying, so the new content is indexed in one call.
+For multi-page site crawls or continuous web monitoring, use `lilbee_crawl` instead.
 
 ### 3. User wants to crawl a docs site
 
