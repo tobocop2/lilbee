@@ -80,3 +80,61 @@ def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.Mo
         )
 
     assert calls == ["applied", "downloaded"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"], ids=["windows", "posix"])
+def test_xet_is_disabled_only_on_windows(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """hf_xet transfers stall or deadlock on Windows (xet-core #446/#789/#850),
+    so lilbee falls back to the plain HTTP path there."""
+    from huggingface_hub import constants
+
+    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.delenv(dl._XET_DISABLE_ENV, raising=False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_XET", False)
+
+    dl._disable_xet_where_it_stalls()
+
+    on_windows = platform == "win32"
+    assert (os.environ.get(dl._XET_DISABLE_ENV) == "1") is on_windows
+    assert constants.HF_HUB_DISABLE_XET is on_windows
+
+
+def test_an_explicit_xet_choice_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A user who exported the variable keeps whatever they chose."""
+    from huggingface_hub import constants
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setenv(dl._XET_DISABLE_ENV, "0")
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_XET", False)
+
+    dl._disable_xet_where_it_stalls()
+
+    assert os.environ[dl._XET_DISABLE_ENV] == "0"
+    assert constants.HF_HUB_DISABLE_XET is False
+
+
+def test_xet_disable_mutates_the_hub_constant_not_just_the_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """huggingface_hub parses the variable once at import, so setting the
+    environment alone after that parse changes nothing in this process."""
+    from huggingface_hub import constants
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delenv(dl._XET_DISABLE_ENV, raising=False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_XET", False)
+
+    dl._disable_xet_where_it_stalls()
+
+    from huggingface_hub.utils._runtime import is_xet_available
+
+    assert is_xet_available() is False
+
+
+def test_the_xet_disable_variable_name_is_the_one_the_hub_reads() -> None:
+    """A rename upstream must fail here, not silently stop applying."""
+    from huggingface_hub import constants
+
+    assert hasattr(constants, dl._XET_DISABLE_ENV)

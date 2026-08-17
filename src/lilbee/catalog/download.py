@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -152,6 +153,28 @@ def abort_active_download() -> None:
 
 _XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
 
+_XET_DISABLE_ENV = "HF_HUB_DISABLE_XET"
+
+
+def _disable_xet_where_it_stalls() -> None:
+    """Fall back to the plain HTTP download path on Windows.
+
+    hf_xet transfers stall or deadlock on Windows (xet-core issues #446,
+    #789, #850; reproduced on the Windows verification box with hf_xet
+    1.5.2), while the plain path downloads at line speed. A user who
+    exported the variable keeps whatever they chose. huggingface_hub parses
+    the variable once at import, so the hub constant must change too; the
+    environment write covers worker subprocesses, which parse it fresh.
+    """
+    if sys.platform != "win32":
+        return
+    if _XET_DISABLE_ENV in os.environ:
+        return
+    from huggingface_hub import constants
+
+    os.environ[_XET_DISABLE_ENV] = "1"
+    constants.HF_HUB_DISABLE_XET = True
+
 
 def _apply_fast_download_mode() -> None:
     """Publish the high-performance setting to xet before it builds a session.
@@ -175,6 +198,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
     _apply_fast_download_mode()
+    _disable_xet_where_it_stalls()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
