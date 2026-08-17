@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.server.anthropic_api.models import MessagesRequest
-from lilbee.server.anthropic_api.translate import messages_to_canonical_request
+from lilbee.core.config.enums import ReasoningMode
+from lilbee.server.anthropic_api.models import AnthropicThinking, MessagesRequest
+from lilbee.server.anthropic_api.translate import (
+    messages_to_canonical_request,
+    resolve_reasoning_mode,
+)
 from lilbee.server.chat_dispatch.canonical import (
     TextBlock,
     ToolResultBlock,
@@ -272,3 +276,51 @@ def test_empty_system_message_is_dropped():
         )
     )
     assert [m.role for m in req.messages] == ["user"]
+
+
+class TestThinkingParameterOnRequest:
+    """``thinking`` picks the reasoning mode; the setting supplies the default."""
+
+    def test_disabled_request_asks_the_template_not_to_think(self):
+        req = messages_to_canonical_request(_request(), mode=ReasoningMode.OFF)
+        assert req.think is False
+
+    def test_separate_leaves_the_template_default(self):
+        req = messages_to_canonical_request(_request(), mode=ReasoningMode.SEPARATE)
+        assert req.think is None
+
+    def test_inline_leaves_the_template_default(self):
+        req = messages_to_canonical_request(_request(), mode=ReasoningMode.INLINE)
+        assert req.think is None
+
+    def test_thinking_disabled_maps_to_off(self):
+        assert (
+            resolve_reasoning_mode(
+                AnthropicThinking(type="disabled"), default=ReasoningMode.SEPARATE
+            )
+            is ReasoningMode.OFF
+        )
+
+    def test_absent_thinking_keeps_the_configured_default(self):
+        assert resolve_reasoning_mode(None, default=ReasoningMode.INLINE) is ReasoningMode.INLINE
+
+    def test_thinking_enabled_keeps_the_configured_presentation(self):
+        mode = resolve_reasoning_mode(
+            AnthropicThinking(type="enabled", budget_tokens=1024), default=ReasoningMode.INLINE
+        )
+        assert mode is ReasoningMode.INLINE
+
+    def test_thinking_enabled_overrides_an_off_default(self):
+        """A request that asks for thinking must get it, whatever the setting says."""
+        mode = resolve_reasoning_mode(AnthropicThinking(type="enabled"), default=ReasoningMode.OFF)
+        assert mode is ReasoningMode.SEPARATE
+
+    def test_budget_tokens_parses_and_is_not_an_error(self):
+        request = _request(thinking={"type": "enabled", "budget_tokens": 4096})
+        assert request.thinking is not None
+        assert request.thinking.budget_tokens == 4096
+
+    def test_unknown_thinking_shape_falls_back_to_the_setting(self):
+        """A shape this surface does not know must not 400 the agent."""
+        assert _request(thinking={"type": "adaptive"}).thinking is None
+        assert _request(thinking="on").thinking is None

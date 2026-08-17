@@ -1236,6 +1236,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 
 ### REST API (Litestar)
 - OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions` (streaming + tools). Errors use the OpenAI envelope with the codes in `src/lilbee/server/chat_completions_api/errors.py::CompletionsErrorCode` (`invalid_request`, `model_not_found`, `model_does_not_support_tools`, `context_length_exceeded`, `invalid_api_key`, `rate_limit_exceeded`, `internal_error`). The active model's `/v1/models` entry carries the granted engine shape (`context_window`, `slots`); a `reasoning` request field (`separate`/`inline`/`off`, default from the `completions_reasoning` setting) picks how thinking is presented.
+- Anthropic-compatible: `POST /v1/messages` (streaming + tools), the route Claude Code talks to. Errors reuse the completions codes in the Anthropic envelope. The `thinking` request parameter (`{"type": "disabled"}` / `{"type": "enabled"}`) turns reasoning off or on for one call, over the `messages_reasoning` setting (`separate`/`inline`/`off`) that picks how thinking is presented.
 - Search: `GET /api/search`, `POST /api/ask`, `POST /api/chat`, `POST /api/ask/stream`, `POST /api/chat/stream` (SSE)
 - Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`

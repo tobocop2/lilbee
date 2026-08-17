@@ -7,10 +7,12 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Literal
 
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.anthropic_api.models import (
     AnthropicEventType,
     AnthropicMessage,
+    AnthropicThinking,
     AnthropicTool,
     AnthropicToolChoice,
     AnthropicUsage,
@@ -67,7 +69,27 @@ _ANTHROPIC_CHOICE_MODES: dict[str, str] = {
 }
 
 
-def messages_to_canonical_request(request: MessagesRequest) -> CanonicalChatRequest:
+def resolve_reasoning_mode(
+    thinking: AnthropicThinking | None, *, default: ReasoningMode
+) -> ReasoningMode:
+    """Pick the reasoning mode for one call from the request and the setting.
+
+    The ``thinking`` parameter only says whether the model may reason; the
+    setting says how lilbee presents the reasoning. ``disabled`` therefore maps
+    to ``off``, and ``enabled`` keeps the configured presentation -- except
+    against an ``off`` setting, where the request asked for thinking and
+    ``separate`` is the Anthropic-native way to report it.
+    """
+    if thinking is None:
+        return default
+    if thinking.type == "disabled":
+        return ReasoningMode.OFF
+    return ReasoningMode.SEPARATE if default is ReasoningMode.OFF else default
+
+
+def messages_to_canonical_request(
+    request: MessagesRequest, *, mode: ReasoningMode = ReasoningMode.SEPARATE
+) -> CanonicalChatRequest:
     """Translate a validated ``MessagesRequest`` to the canonical request."""
     messages: list[CanonicalMessage] = []
     for msg in request.messages:
@@ -84,6 +106,9 @@ def messages_to_canonical_request(request: MessagesRequest) -> CanonicalChatRequ
         max_tokens=request.max_tokens,
         stop=list(request.stop_sequences) if request.stop_sequences else None,
         stream=request.stream,
+        # OFF asks the template to skip thinking; the other modes only change
+        # presentation, so the template default stands.
+        think=False if mode is ReasoningMode.OFF else None,
     )
 
 
@@ -208,16 +233,23 @@ def _tool_choice_from_request(
 
 
 def canonical_to_messages_response(
-    resp: CanonicalResponse, *, response_id: str
+    resp: CanonicalResponse, *, response_id: str, mode: ReasoningMode = ReasoningMode.SEPARATE
 ) -> MessagesResponse:
     """Translate a canonical chat response to the Anthropic message shape.
 
     lilbee carries a reasoning model's thinking inline as ``<think>...</think>``;
-    the Anthropic surface reports it as a leading ``thinking`` block so clients
-    render a clean answer.
+    SEPARATE reports it as a leading ``thinking`` block so clients render a
+    clean answer. INLINE folds it into the answer text with the markers
+    stripped, for clients that never render thinking blocks. OFF drops it: the
+    caller asked for no thinking, and a template that ignores the request still
+    thinks, so the block would contradict the answer the caller asked for.
     """
     text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
     reasoning, answer = split_reasoning("".join(text_parts))
+    if mode is ReasoningMode.INLINE and reasoning:
+        answer = f"{reasoning}\n\n{answer}" if answer else reasoning
+    if mode is not ReasoningMode.SEPARATE:
+        reasoning = ""
     content: list[dict[str, Any]] = []
     if reasoning:
         content.append({"type": "thinking", "thinking": reasoning})
@@ -246,10 +278,15 @@ class _AnthropicStreamMapper:
     format wants thinking and answer text in separate indexed blocks; the
     mapper re-blocks the stream, closing the open block whenever the token
     kind (thinking / text / tool_use) changes.
+
+    INLINE routes reasoning into the text block instead, and OFF drops it: a
+    parser built with ``show=False`` reports reasoning tokens with empty
+    content, which never opens a block or emits a delta.
     """
 
-    def __init__(self) -> None:
-        self._reasoning = TagParser(show=True)
+    def __init__(self, *, mode: ReasoningMode = ReasoningMode.SEPARATE) -> None:
+        self._reasoning = TagParser(show=mode is not ReasoningMode.OFF)
+        self._inline = mode is ReasoningMode.INLINE
         self._next_index = 0
         self._open: _BlockKind | None = None
 
@@ -292,12 +329,13 @@ class _AnthropicStreamMapper:
         for token in tokens:
             if not token.content:
                 continue
-            kind = _BlockKind.THINKING if token.is_reasoning else _BlockKind.TEXT
+            thinking = token.is_reasoning and not self._inline
+            kind = _BlockKind.THINKING if thinking else _BlockKind.TEXT
             events.extend(self._ensure_block(kind))
             index = self._next_index - 1
             delta = (
                 {"type": "thinking_delta", "thinking": token.content}
-                if token.is_reasoning
+                if thinking
                 else {"type": "text_delta", "text": token.content}
             )
             events.append(
@@ -388,9 +426,10 @@ async def canonical_stream_to_anthropic_events(
     *,
     model: str,
     response_id: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> AsyncIterator[tuple[AnthropicEventType, dict[str, Any]]]:
     """Turn canonical stream events into Anthropic SSE ``(type, payload)`` pairs."""
-    mapper = _AnthropicStreamMapper()
+    mapper = _AnthropicStreamMapper(mode=mode)
     yield (
         AnthropicEventType.MESSAGE_START,
         {

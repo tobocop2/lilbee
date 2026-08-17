@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_THINKING_TYPES = frozenset({"enabled", "disabled"})
 
 
 class AnthropicEventType(StrEnum):
@@ -24,9 +26,9 @@ class AnthropicEventType(StrEnum):
 class _AnthropicModel(BaseModel):
     """Base for request models: unknown fields parse and are ignored.
 
-    Anthropic clients send fields this surface does not act on (``thinking``,
-    ``metadata``, ``cache_control``, ``output_config``, ``betas``). Rejecting
-    them with a 400 hard-fails Claude Code, so they are tolerated instead.
+    Anthropic clients send fields this surface does not act on (``metadata``,
+    ``cache_control``, ``output_config``, ``betas``). Rejecting them with a 400
+    hard-fails Claude Code, so they are tolerated instead.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -126,8 +128,24 @@ class AnthropicToolChoice(_AnthropicModel):
     name: str | None = None
 
 
+class AnthropicThinking(_AnthropicModel):
+    """The ``thinking`` parameter: whether the model may reason on this call.
+
+    ``budget_tokens`` parses so a client that sends it gets a 200, but lilbee
+    does not cap thinking on this surface: the reasoning cap belongs to the
+    retrieval path, and neither chat API applies it.
+    """
+
+    type: Literal["enabled", "disabled"]
+    budget_tokens: int | None = None
+
+
 class MessagesRequest(_AnthropicModel):
-    """The ``POST /v1/messages`` request body."""
+    """The ``POST /v1/messages`` request body.
+
+    ``thinking`` picks the reasoning mode for this call, overriding the
+    ``messages_reasoning`` setting.
+    """
 
     model: str
     max_tokens: int
@@ -140,6 +158,17 @@ class MessagesRequest(_AnthropicModel):
     top_k: int | None = None
     stop_sequences: list[str] | None = None
     stream: bool = False
+    thinking: AnthropicThinking | None = None
+
+    @field_validator("thinking", mode="before")
+    @classmethod
+    def _known_thinking_shapes_only(cls, value: object) -> object:
+        # Anthropic defines enabled/disabled today. A shape this surface does
+        # not know falls back to the setting instead of failing the request,
+        # because a 400 here stops the agent mid-session.
+        if value is None or (isinstance(value, dict) and value.get("type") in _THINKING_TYPES):
+            return value
+        return None
 
 
 class AnthropicUsage(BaseModel):

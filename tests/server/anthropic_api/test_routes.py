@@ -352,3 +352,127 @@ class TestErrorPaths:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.status_code == 401
         assert resp.json()["error"]["type"] == "authentication_error"
+
+
+class TestThinkingControlOnRoute:
+    """The reasoning mode: the ``thinking`` parameter first, then the setting."""
+
+    _THINKING_TEXT = "<think>weighing</think>Answer."
+
+    def _thinking_provider(self, services) -> None:
+        services.provider.chat.return_value = ChatResult(
+            text=self._THINKING_TEXT, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+
+    def _set_mode(self, monkeypatch, mode) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "messages_reasoning", mode)
+
+    async def test_default_reports_thinking_in_its_own_block(
+        self, services_with_chat_model, _auth_token
+    ):
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.json()["content"] == [
+            {"type": "thinking", "thinking": "weighing"},
+            {"type": "text", "text": "Answer."},
+        ]
+
+    async def test_thinking_disabled_drops_the_block(self, services_with_chat_model, _auth_token):
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "disabled"}), headers=_h()
+            )
+        assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
+
+    async def test_thinking_disabled_sends_think_false_to_the_provider(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            await client.post(
+                "/v1/messages", json=_body(thinking={"type": "disabled"}), headers=_h()
+            )
+        opts = services_with_chat_model.provider.chat.call_args.kwargs["options"]
+        assert opts["think"] is False
+
+    async def test_thinking_enabled_with_budget_is_accepted(
+        self, services_with_chat_model, _auth_token
+    ):
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(thinking={"type": "enabled", "budget_tokens": 2048}),
+                headers=_h(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["content"][0] == {"type": "thinking", "thinking": "weighing"}
+
+    async def test_setting_off_applies_without_the_request_parameter(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config.enums import ReasoningMode
+
+        self._set_mode(monkeypatch, ReasoningMode.OFF)
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
+
+    async def test_request_enabled_overrides_the_off_setting(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config.enums import ReasoningMode
+
+        self._set_mode(monkeypatch, ReasoningMode.OFF)
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "enabled"}), headers=_h()
+            )
+        assert resp.json()["content"][0] == {"type": "thinking", "thinking": "weighing"}
+
+    async def test_request_disabled_overrides_the_separate_setting(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config.enums import ReasoningMode
+
+        self._set_mode(monkeypatch, ReasoningMode.SEPARATE)
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "disabled"}), headers=_h()
+            )
+        assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
+
+    async def test_disabled_streaming_emits_no_thinking_delta(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["<think>", "why", "</think>", "hi"]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "disabled"}),
+                headers=_h(),
+            )
+        events = _sse_events(resp.content)
+        deltas = [p["delta"] for t, p in events if t == "content_block_delta"]
+        assert deltas == [{"type": "text_delta", "text": "hi"}]
+        starts = [p["content_block"]["type"] for t, p in events if t == "content_block_start"]
+        assert starts == ["text"]
+
+    async def test_unknown_thinking_shape_does_not_fail_the_request(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Claude Code must keep working when it sends a shape this surface
+        does not know."""
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "adaptive"}), headers=_h()
+            )
+        assert resp.status_code == 200

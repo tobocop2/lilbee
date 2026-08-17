@@ -13,6 +13,8 @@ from litestar.exceptions import NotAuthorizedException, ValidationException
 from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.models import (
     AnthropicEventType,
@@ -24,6 +26,7 @@ from lilbee.server.anthropic_api.translate import (
     canonical_stream_to_anthropic_events,
     canonical_to_messages_response,
     messages_to_canonical_request,
+    resolve_reasoning_mode,
 )
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -67,8 +70,11 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     event stream; the request body picks the arm, matching Anthropic's own
     contract.
     """
+    # The request's thinking parameter wins over the messages_reasoning setting,
+    # so an agent turns thinking off per call.
+    mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     try:
-        req = messages_to_canonical_request(data)
+        req = messages_to_canonical_request(data, mode=mode)
     except ValueError as exc:
         # Wire-valid but untranslatable (image content, bare tool choice).
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
@@ -93,11 +99,11 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
         # The after-send hook frees the slot when a disconnect lands before the
         # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_messages_stream(req, guard, model=resolved_model),
+            _gated_messages_stream(req, guard, model=resolved_model, mode=mode),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req, guard, canonical_model=resolved_model)
+    return await _run_non_stream(req, guard, canonical_model=resolved_model, mode=mode)
 
 
 async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response:
@@ -112,7 +118,11 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
 
 
 async def _run_non_stream(
-    req: CanonicalChatRequest, guard: ChatSlotGuard, *, canonical_model: str
+    req: CanonicalChatRequest,
+    guard: ChatSlotGuard,
+    *,
+    canonical_model: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the envelope."""
     try:
@@ -124,7 +134,9 @@ async def _run_non_stream(
         return _error_response(classified.http_status, classified.code, classified.message)
     finally:
         await guard.release()
-    body: MessagesResponse = canonical_to_messages_response(resp, response_id=_response_id())
+    body: MessagesResponse = canonical_to_messages_response(
+        resp, response_id=_response_id(), mode=mode
+    )
     return Response(body.model_dump(), media_type="application/json")
 
 
@@ -133,6 +145,7 @@ async def _gated_messages_stream(
     guard: ChatSlotGuard,
     *,
     model: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> AsyncGenerator[bytes, None]:
     """Drive dispatch -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -145,7 +158,7 @@ async def _gated_messages_stream(
         try:
             events = dispatch_chat_stream(req, canonical_model=model)
             pairs = canonical_stream_to_anthropic_events(
-                events, model=model, response_id=response_id
+                events, model=model, response_id=response_id, mode=mode
             )
             async for frame in encode_anthropic_sse(pairs):
                 yield frame

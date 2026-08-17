@@ -472,6 +472,13 @@ class Config(BaseSettings):
         default=ReasoningMode.SEPARATE, writable=True
     )
 
+    # How /v1/messages presents a reasoning model's thinking. ``separate`` reports
+    # it as a ``thinking`` block (Anthropic-compatible); ``inline`` folds it into
+    # the answer text for clients that never render thinking blocks; ``off`` asks
+    # the model not to think and drops any thinking it produces anyway. A
+    # request's ``thinking`` parameter overrides this per call.
+    messages_reasoning: ReasoningMode = ConfigField(default=ReasoningMode.SEPARATE, writable=True)
+
     # Maximum reasoning characters before lilbee forces the model to answer.
     # Per-model overrides apply on top of this default. Approx N/4 tokens.
     # 0 disables the cap (unlimited reasoning; accept the runaway-loop risk).

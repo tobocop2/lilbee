@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.server.anthropic_api.translate import canonical_to_messages_response
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalResponse,
@@ -62,3 +65,39 @@ def test_tool_use_response_maps_blocks_and_stop_reason():
 def test_empty_content_still_emits_text_block():
     body = canonical_to_messages_response(_response([]), response_id="msg_1")
     assert body.content == [{"type": "text", "text": ""}]
+
+
+class TestReasoningModeOnResponse:
+    """How each mode presents a thinking model's ``<think>`` text."""
+
+    _THINKING: ClassVar = [TextBlock(text="<think>plan</think>answer")]
+
+    def test_separate_keeps_the_thinking_block(self):
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.SEPARATE
+        )
+        assert body.content == [
+            {"type": "thinking", "thinking": "plan"},
+            {"type": "text", "text": "answer"},
+        ]
+
+    def test_inline_folds_the_thinking_into_the_text_block(self):
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.INLINE
+        )
+        assert body.content == [{"type": "text", "text": "plan\n\nanswer"}]
+
+    def test_off_drops_the_thinking_entirely(self):
+        """A template that ignores the request still thinks; the answer stays clean."""
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.OFF
+        )
+        assert body.content == [{"type": "text", "text": "answer"}]
+
+    def test_off_with_only_thinking_still_emits_a_text_block(self):
+        body = canonical_to_messages_response(
+            _response([TextBlock(text="<think>plan</think>")]),
+            response_id="msg_1",
+            mode=ReasoningMode.OFF,
+        )
+        assert body.content == [{"type": "text", "text": ""}]
