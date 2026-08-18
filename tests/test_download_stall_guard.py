@@ -105,9 +105,10 @@ class TestStallGuard:
 
     def test_abort_stops_xet_and_closes_the_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import huggingface_hub.utils._http as hub_http
+        import huggingface_hub.utils._xet as hub_xet
 
         calls: list[str] = []
-        monkeypatch.setattr(dl, "abort_active_download", lambda: calls.append("xet"))
+        monkeypatch.setattr(hub_xet, "abort_xet_session", lambda: calls.append("xet"))
         monkeypatch.setattr(hub_http, "close_session", lambda: calls.append("client"))
 
         dl._abort_stalled_transfer()
@@ -206,7 +207,7 @@ class TestGuardIsOnEveryTransfer:
         monkeypatch.setattr(dl, "resolve_filename", lambda entry: "f.gguf")
         monkeypatch.setattr(dl, "fetch_expected_file_size", lambda *a: 1)
         monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
-        monkeypatch.setattr(dl, "_finalize_download", lambda entry, dest, **k: dest)
+        monkeypatch.setattr(dl, "repo_has_mmproj", lambda repo: False)
 
         call(_entry())
 

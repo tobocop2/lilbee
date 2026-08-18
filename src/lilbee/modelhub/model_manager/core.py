@@ -12,6 +12,7 @@ from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.local_servers import LOCAL_SERVERS, local_server_for_key
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         allow_unsupported: bool = False,
+        cancel: CancelSignal | None = None,
     ) -> Path | None:
         """Download a native GGUF model and return its path.
 
@@ -181,6 +183,8 @@ class ModelManager:
         Native pulls of architectures the bundled llama.cpp doesn't support
         are refused with ``UnsupportedArchError`` unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
+        A *cancel* signal makes the download cancellable mid-transfer; see
+        :func:`~lilbee.catalog.download_model`.
         """
         if source is not ModelSource.NATIVE:
             spec = local_server_for_key(source.value)
@@ -192,7 +196,7 @@ class ModelManager:
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
-            return self._pull_native(model, on_bytes=on_bytes)
+            return self._pull_native(model, on_bytes=on_bytes, cancel=cancel)
         finally:
             self._invalidate_installed_cache()
 
@@ -220,6 +224,7 @@ class ModelManager:
         model: str,
         *,
         on_bytes: Callable[[int, int], None] | None = None,
+        cancel: CancelSignal | None = None,
     ) -> Path:
         """Download a featured or ad-hoc HuggingFace model to the native GGUF directory."""
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
@@ -232,7 +237,9 @@ class ModelManager:
                 f"Model '{model}' not recognized. "
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
-        path = download_model(entry, on_progress=on_bytes, on_complete=register_downloaded_model)
+        path = download_model(
+            entry, on_progress=on_bytes, on_complete=register_downloaded_model, cancel=cancel
+        )
         log.info("Downloaded %s to %s", model, path)
         return path
 

@@ -1206,6 +1206,7 @@ async def model_pull(
                 src,
                 on_update=on_update,
                 allow_unsupported=allow_unsupported,
+                cancel=cancel,
             )
         except UnsupportedArchError as exc:
             return {
