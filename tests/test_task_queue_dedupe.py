@@ -128,7 +128,7 @@ async def test_controller_refuses_a_second_pull_of_the_same_model() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             while not release[0]:
                 time.sleep(0.01)
 

@@ -114,7 +114,7 @@ class _FakeManager:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False):
+    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
         self.pull_calls.append((model, source))
         if on_bytes is not None:
             on_bytes(50, 100)
