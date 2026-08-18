@@ -9,19 +9,31 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install ollama, start daemon, pull model
+    - name: Install ollama and start the daemon
       shell: bash
-      env:
-        OLLAMA_MODEL: ${{ inputs.model }}
       run: |
         set -euo pipefail
         curl -fsSL https://ollama.com/install.sh | sh
+        # Stop the systemd service install.sh starts: it holds port 11434 as the
+        # 'ollama' user, so the daemon below would lose the bind and die.
+        sudo systemctl disable --now ollama
         OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
         for _ in $(seq 1 60); do
           if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
           sleep 0.5
         done
-        ollama pull "${OLLAMA_MODEL}"
+
+    - name: Pull the model
+      uses: ./.github/actions/ollama-pull
+      with:
+        models: ${{ inputs.model }}
+
+    - name: Export QA env vars
+      shell: bash
+      env:
+        OLLAMA_MODEL: ${{ inputs.model }}
+      run: |
+        set -euo pipefail
         {
           echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1"
           echo "LILBEE_QA_OLLAMA_PORT=11434"
