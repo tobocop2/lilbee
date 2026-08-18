@@ -143,11 +143,6 @@ _FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_
 # batching slots, leaving room for the weights and any co-located role.
 _VISION_VRAM_FRACTION = 0.5
 
-# Cap chat's footprint at this fraction of usable VRAM when sizing its batching
-# slots, reserving room for the co-located embed/rerank servers and the decode
-# compute buffers (which the flat overhead term only partly covers).
-_CHAT_VRAM_FRACTION = 0.8
-
 # Cap an LLM reranker's footprint at this fraction of usable VRAM when sizing its
 # slots; its per-slot ctx is tiny, so a normal GPU fits the full fan-out and a
 # small one steps down toward 1.
@@ -286,8 +281,16 @@ def _resolve_chat_slots(
     device: FleetDevice | None = None,
 ) -> int:
     """Largest chat slot count (<= ``_CHAT_SLOTS``) whose footprint fits the budget
-    after reserving the search roles; steps to 1 when none fit."""
-    budget = _slot_budget(_CHAT_VRAM_FRACTION, unified_budget, device) - chat_reservation
+    after reserving the search roles; steps to 1 when none fit.
+
+    The budget is the whole serve budget less the search roles' measured
+    footprint. ``cfg.gpu_memory_fraction`` is already the margin held back from
+    the card, and the room for co-located embed/rerank is ``chat_reservation``,
+    which is what those servers were sized at rather than a flat share. A second
+    fraction on top charged that room twice and left a fifth of the card unused
+    on a box with no search roles at all.
+    """
+    budget = _slot_budget(unified_budget, device) - chat_reservation
     return _fit_slots(
         _CHAT_SLOTS,
         WorkerRole.CHAT,
@@ -321,7 +324,7 @@ def _resolve_vision_slots(
         ctx,
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
-        budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget, device),
+        budget=_slot_budget(unified_budget, device, vram_fraction=_VISION_VRAM_FRACTION),
     )
 
 
@@ -341,18 +344,25 @@ def _resolve_llm_rerank_slots(
         ctx,
         mmproj_path=None,
         unified=unified_budget is not None,
-        budget=_slot_budget(_LLM_RERANK_VRAM_FRACTION, unified_budget, device),
+        budget=_slot_budget(unified_budget, device, vram_fraction=_LLM_RERANK_VRAM_FRACTION),
         rerank_mode=RerankMode.LLM,
     )
 
 
 def _slot_budget(
-    vram_fraction: float, unified_budget: int | None, device: FleetDevice | None = None
+    unified_budget: int | None,
+    device: FleetDevice | None = None,
+    *,
+    vram_fraction: float = 1.0,
 ) -> int:
-    """Memory budget for slot sizing: *vram_fraction* of the usable memory on *device*
-    (the fleet's smallest when placement has not chosen one yet), capped by
-    ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
-    steps down to fit free memory instead of overcommitting."""
+    """Memory budget for slot sizing: the usable memory on *device* (the fleet's
+    smallest when placement has not chosen one yet), capped by ``unified_budget``
+    (free system RAM) when there is no discrete GPU so the count steps down to fit
+    free memory instead of overcommitting.
+
+    *vram_fraction* takes less than the whole for a role that shares its card by
+    design. Chat takes all of it and subtracts what the search roles were sized
+    at, which is the same room stated as a measurement rather than a share."""
     budget = int(plan_sizing_budget(device) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)

@@ -234,7 +234,7 @@ def test_slots_for_llm_rerank_steps_down_when_vram_tight(monkeypatch) -> None:
 def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
     # Chat is no longer a fixed 4: a giant on a ~24GB Metal budget steps down.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    # budget = 24e9 * 0.75 * _CHAT_VRAM_FRACTION(0.8) = 14.4e9; 17e9 base never fits.
+    # budget = 24e9 * 0.75 = 18e9; a 17e9 base leaves no room for a second slot.
     monkeypatch.setattr(
         planning_mod,
         "estimate_instance_footprint",
@@ -257,7 +257,7 @@ def test_resolve_chat_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None
 
 
 def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None:
-    # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (19.2e9) -> 1.
+    # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (18e9) -> 1.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
         planning_mod,
@@ -286,6 +286,40 @@ def test_resolve_chat_slots_steps_down_to_fit_unified_budget(monkeypatch) -> Non
     )
 
 
+def test_resolve_chat_slots_claims_the_whole_serve_budget(monkeypatch) -> None:
+    # The card that fits a second slot must be granted one. gpu_memory_fraction is
+    # already the serve margin; charging a second fraction on top held back a fifth
+    # of the card for co-located roles that the reservation below accounts for
+    # exactly, and that here do not exist.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
+    )
+    # 45e9 card -> 33.75e9 serve budget. Two slots cost 31e9 and fit; the old
+    # 0.8 cut the budget to 27e9 and refused them.
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, device=_card(45 * 10**9)) == 2
+
+
+def test_resolve_chat_slots_still_yields_to_the_search_reservation(monkeypatch) -> None:
+    # The room for embed/rerank comes from their measured footprint, not from a
+    # flat fraction, so a reservation that leaves no space for the second slot
+    # still takes it away.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
+    )
+    assert (
+        planning_mod._resolve_chat_slots(
+            Path("/m/c.gguf"), 65536, chat_reservation=5 * 10**9, device=_card(45 * 10**9)
+        )
+        == 1
+    )
+
+
 def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
     # The search reservation is subtracted from the chat budget, so a chat that
     # fits 4 slots with no reservation steps down once embed/rerank are held back.
@@ -295,13 +329,13 @@ def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
         "estimate_instance_footprint",
         _slotted_estimator(base=30 * 10**9, per_slot=2 * 10**9),
     )
-    # Budget = 64e9 * 0.75 * 0.8 = 38.4e9. No reservation: 4 slots (38e9) fits.
+    # Budget = 64e9 * 0.75 = 48e9. No reservation: 4 slots (38e9) fits.
     card = _card(64 * 10**9)
     assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, device=card) == 4
-    # Reserve 9e9 for search -> budget 29.4e9; even 2 slots (34e9) overruns -> 1.
+    # Reserve 15e9 for search -> budget 33e9; even 2 slots (34e9) overruns -> 1.
     assert (
         planning_mod._resolve_chat_slots(
-            Path("/m/c.gguf"), 65536, chat_reservation=9 * 10**9, device=card
+            Path("/m/c.gguf"), 65536, chat_reservation=15 * 10**9, device=card
         )
         == 1
     )
