@@ -2104,6 +2104,88 @@ class TestPlanProbe:
         assert planning_mod.plan_sizing_budget() == int(32 * _GB * cfg.gpu_memory_fraction)
 
 
+class TestPlanSizingIsUnified:
+    """Which memory model a single-device ctx fit charges its estimate against."""
+
+    def _live(self, monkeypatch, devices) -> None:
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: devices)
+
+    def test_a_dedicated_card_is_charged_its_vram(self, monkeypatch) -> None:
+        self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
+        assert not planning_mod.plan_sizing_is_unified()
+
+    def test_a_shared_memory_device_is_charged_its_whole_footprint(self, monkeypatch) -> None:
+        self._live(monkeypatch, [FleetDevice("Metal", 0, "M", 24 * _GB, 24 * _GB, unified=True)])
+        assert planning_mod.plan_sizing_is_unified()
+
+    def test_one_dedicated_card_among_shared_ones_decides(self, monkeypatch) -> None:
+        # Mixed hosts plan as dedicated, the same call placement makes, so the two
+        # cannot disagree about which pool a role is charged to.
+        self._live(
+            monkeypatch,
+            [
+                FleetDevice("Vulkan", 0, "igpu", 8 * _GB, 8 * _GB, unified=True),
+                FleetDevice("Vulkan", 1, "card", 16 * _GB, 16 * _GB),
+            ],
+        )
+        assert not planning_mod.plan_sizing_is_unified()
+
+    def test_a_box_with_no_gpu_is_shared_memory(self, monkeypatch) -> None:
+        # The fleet runs on the CPU; its "VRAM" is the system's RAM.
+        self._live(monkeypatch, [])
+        assert planning_mod.plan_sizing_is_unified()
+
+    def test_the_plan_snapshot_wins_over_a_live_probe(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod,
+            "_resolve_devices_and_refusal",
+            lambda _b: ([FleetDevice("Metal", 0, "M", 24 * _GB, 24 * _GB, unified=True)], False),
+        )
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 32 * _GB)
+        planning_mod.capture_plan_probe()
+        try:
+            self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
+            assert planning_mod.plan_sizing_is_unified()
+        finally:
+            planning_mod.clear_plan_probe()
+
+
+class TestFitChatCtx:
+    """The chat role's arguments to the single-device fit."""
+
+    def test_it_sizes_one_slot_at_the_launch_flags(self, monkeypatch, tmp_path) -> None:
+        # Slots stay at one because _slots_for grows the count afterwards, against
+        # what this window leaves; passing more here would charge the cache twice.
+        from lilbee.core.config.enums import KvCacheType
+
+        seen: dict = {}
+
+        def _fit(path, **kwargs):
+            seen.update(model_path=path, **kwargs)
+            return 32768
+
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", _fit)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        model = tmp_path / "m.gguf"
+        meta = {"arch": "x"}
+
+        assert (
+            planning_mod.fit_chat_ctx(model, meta, available_bytes=40 * _GB, ctx_ceiling=262144)
+            == 32768
+        )
+        assert seen["model_path"] == model
+        assert seen["meta"] == meta
+        assert seen["slots"] == 1
+        assert seen["available_bytes"] == 40 * _GB
+        assert seen["ctx_ceiling"] == 262144
+        assert seen["unified"] is False
+        assert seen["kv_cache_type"] is KvCacheType.Q4_0
+
+
 class TestPlacementChargesAgainstFreeMemory:
     """VRAM another process is holding is not headroom the fleet can plan into."""
 

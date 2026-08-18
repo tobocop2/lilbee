@@ -42,6 +42,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
         # Large by default so the fit-logic tests are gated by the monkeypatched
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,
+        "expert_offload": (),
     }
     kwargs.update(overrides)
     return fit_split_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -176,3 +177,116 @@ class TestFitSplitCtx:
         monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
         _fit(Path("/m.gguf"), slots=1, ratio=(), per_device_free_bytes=[24 * _GB])
         assert seen and all(r == () for r in seen)
+
+
+def _single_estimator(vram_for, unified_for=None, seen=None):
+    seen = [] if seen is None else seen
+    """Fake estimate_instance_footprint for the single-device fit.
+
+    *vram_for* maps total ctx (per-slot x slots) to discrete-GPU bytes;
+    *unified_for* does the same for the unified figure, defaulting to zero so a
+    test that charges VRAM cannot pass by reading the wrong field. Every probe's
+    kwargs land in *seen*.
+    """
+
+    def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+        seen.append(kw)
+        total = int(kw["ctx"]) * int(kw["slots"])  # type: ignore[arg-type]
+        return GgufVramEstimate(
+            vram_bytes=vram_for(total),
+            ram_bytes=0,
+            unified_bytes=unified_for(total) if unified_for else 0,
+        )
+
+    return fake
+
+
+def _fit_single(model_path: Path, **overrides: object) -> int:
+    kwargs: dict[str, object] = {
+        "meta": {"arch": "x"},
+        "slots": 1,
+        "available_bytes": 40 * _GB,
+        "gpu_layers": -1,
+        "flash_attn": True,
+        "kv_cache_type": KvCacheType.F16,
+        "kv_cache_type_v": KvCacheType.F16,
+        "unified": False,
+        "ctx_ceiling": 1_000_000,
+        "expert_offload": (),
+    }
+    kwargs.update(overrides)
+    return ctx_mod.fit_single_ctx(model_path, **kwargs)  # type: ignore[arg-type]
+
+
+class TestFitSingleCtx:
+    def test_returns_floor_when_there_is_no_budget(self, monkeypatch) -> None:
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1))
+        assert _fit_single(Path("/m.gguf"), available_bytes=0) == _DYNAMIC_CTX_FLOOR
+
+    def test_returns_floor_when_even_the_floor_overflows(self, monkeypatch) -> None:
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+        monkeypatch.setattr(
+            ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 999 * _GB)
+        )
+        assert _fit_single(Path("/m.gguf")) == _DYNAMIC_CTX_FLOOR
+
+    def test_returns_the_quantized_ceiling_when_everything_fits(self, monkeypatch) -> None:
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1))
+        result = _fit_single(Path("/m.gguf"))
+        assert (result - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
+        assert 32768 - _DYNAMIC_CTX_QUANTUM < result <= 32768
+
+    def test_bisects_to_the_largest_window_the_budget_backs(self, monkeypatch) -> None:
+        # 1 GiB of weights plus 1 MiB per token: 20 GiB backs just under 19456 tokens.
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+        monkeypatch.setattr(
+            ctx_mod,
+            "estimate_instance_footprint",
+            _single_estimator(lambda c: _GB + c * 1024**2),
+        )
+        result = _fit_single(Path("/m.gguf"), available_bytes=20 * _GB)
+        assert result == 19456
+
+    def test_a_unified_host_is_charged_its_unified_footprint(self, monkeypatch) -> None:
+        # VRAM reads as free all the way up; only the unified figure bounds the fit,
+        # so a fit that read the wrong field would return the ceiling.
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+        monkeypatch.setattr(
+            ctx_mod,
+            "estimate_instance_footprint",
+            _single_estimator(lambda _c: 0, unified_for=lambda c: _GB + c * 1024**2),
+        )
+        result = _fit_single(Path("/m.gguf"), available_bytes=20 * _GB, unified=True)
+        assert result == 19456
+
+
+class TestTheFitChargesWhatTheLaunchRuns:
+    """A probe that prices tensors the launch will not hold is not the launch."""
+
+    def test_the_single_fit_passes_the_expert_offload_through(self, monkeypatch) -> None:
+        # cpu_moe moves the experts to system memory. Charging them to VRAM
+        # shrinks the window for exactly the giant MoE models that need it.
+        seen: list[dict] = []
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
+        monkeypatch.setattr(
+            ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1, seen=seen)
+        )
+        _fit_single(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
+        assert seen, "the fit never called the estimator"
+        assert all(kw["expert_offload"] == ("blk.*ffn.*exps.*=CPU",) for kw in seen)
+
+    def test_the_split_fit_passes_the_expert_offload_through(self, monkeypatch) -> None:
+        seen: list[dict] = []
+
+        def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+            seen.append(kw)
+            return GgufVramEstimate(
+                vram_bytes=1, ram_bytes=0, unified_bytes=0, per_device_vram=(1,)
+            )
+
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        _fit(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
+        assert seen, "the fit never called the estimator"
+        assert all(kw["expert_offload"] == ("blk.*ffn.*exps.*=CPU",) for kw in seen)

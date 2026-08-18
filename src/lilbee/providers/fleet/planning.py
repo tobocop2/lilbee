@@ -395,6 +395,34 @@ def _fit_slots(
     return 1
 
 
+def fit_chat_ctx(
+    model_path: Path,
+    meta: dict[str, str] | None,
+    *,
+    available_bytes: int,
+    ctx_ceiling: int,
+) -> int:
+    """The chat window gguf-parser says *available_bytes* backs, at the launch flags.
+
+    Sizes one slot, as :func:`_slots_for` then grows the slot count against what
+    the window leaves. Raises when the estimator cannot answer, which sends
+    :func:`engine_params.resolve_chat_ctx` to its header-math fallback.
+    """
+    return fleet_ctx.fit_single_ctx(
+        model_path,
+        meta=meta,
+        slots=1,
+        available_bytes=available_bytes,
+        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+        flash_attn=_role_flash(WorkerRole.CHAT),
+        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+        kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
+        unified=plan_sizing_is_unified(),
+        ctx_ceiling=ctx_ceiling,
+        expert_offload=_role_expert_offload(model_path),
+    )
+
+
 def _role_ctx(
     role: WorkerRole,
     model_path: Path,
@@ -807,6 +835,7 @@ def _chat_split_ctx_objective(
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
             kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
+            expert_offload=_role_expert_offload(path),
         )
 
     return fit, target
@@ -1495,6 +1524,7 @@ def _launch_for(
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
                 kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
+                expert_offload=_role_expert_offload(model_path),
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
@@ -2142,6 +2172,20 @@ def plan_sizing_budget(device: FleetDevice | None = None) -> int:
     if probe is not None:
         return probe.sizing_budget
     return _device_sizing_budget(_live_sizing_devices())
+
+
+def plan_sizing_is_unified() -> bool:
+    """Whether ctx sizing charges the shared-memory footprint rather than VRAM.
+
+    True when no device has memory of its own -- an integrated GPU, an Apple
+    Silicon Mac, or no GPU at all -- because there a model's would-be VRAM and
+    its host bytes are the same memory, and charging only the VRAM half
+    under-reports the load by everything it maps. The same test decides the pool
+    placement charges against (:func:`_unified_memory_budget`).
+    """
+    probe = _plan_probe_store.get()
+    devices = list(probe.devices) if probe is not None else _live_sizing_devices()
+    return all(dev.unified for dev in devices)
 
 
 def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:

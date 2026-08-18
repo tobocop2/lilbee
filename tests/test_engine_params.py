@@ -81,6 +81,57 @@ class TestResolveModelPath:
 
 
 class TestResolveChatCtx:
+    """The single-GPU grant: a gguf-parser fit, with header math behind it."""
+
+    @pytest.fixture(autouse=True)
+    def estimator_unavailable(self, monkeypatch):
+        """Default the fit to unanswerable, so each test picks its path on purpose."""
+        from lilbee.providers.fleet import planning
+
+        def _unavailable(*_a: object, **_k: object) -> int:
+            raise ProviderError("gguf-parser is not installed", provider="llama-server")
+
+        monkeypatch.setattr(planning, "fit_chat_ctx", _unavailable)
+
+    def test_the_gguf_parser_fit_decides_the_window(self, tmp_path, monkeypatch) -> None:
+        # The field case: header math prices every layer as dense attention and
+        # under-grants a hybrid model. The fit answers from the real cache.
+        from lilbee.providers.fleet import planning
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 100)
+        seen: dict = {}
+
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+            seen.update(available_bytes=available_bytes, ctx_ceiling=ctx_ceiling)
+            return 249856
+
+        monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
+        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
+        monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 131072)
+        monkeypatch.setattr(cfg, "num_ctx_max", None)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
+        assert ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=40 * 1024**3) == 249856
+        assert seen == {"available_bytes": 40 * 1024**3, "ctx_ceiling": 262144}
+
+    def test_the_fit_is_capped_by_num_ctx_max_and_the_target(self, tmp_path, monkeypatch) -> None:
+        from lilbee.providers.fleet import planning
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 100)
+        seen: dict = {}
+
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+            seen["ctx_ceiling"] = ctx_ceiling
+            return ctx_ceiling
+
+        monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
+        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
+        monkeypatch.setattr(cfg, "num_ctx_max", 65536)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 131072)
+        assert ep.resolve_chat_ctx(model, None, available_bytes=40 * 1024**3) == 65536
+        assert seen["ctx_ceiling"] == 65536
+
     def test_uses_dynamic_sizing(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 100)
