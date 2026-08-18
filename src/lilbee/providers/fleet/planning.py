@@ -959,7 +959,7 @@ def _estimate_or_fallback(
     """Size *role* for placement, degrading rather than refusing.
 
     A missing model is skipped and recorded; a sizing failure on an installed
-    model falls back to its weight bytes; weights alone exceeding the physical
+    model falls back to the analytic floor; weights alone exceeding the physical
     VRAM refuse with a plain message (ground truth, not an estimate).
     """
     from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -1055,9 +1055,8 @@ def _analytic_footprint_floor(
 def _estimate_is_implausible(*, estimated: int, floor: int) -> bool:
     """Whether *estimated* describes a load that cannot exist.
 
-    Below the analytic floor, which is the model's own weight bytes plus the
-    cache and buffers it was asked to hold, there is no arrangement of memory
-    that serves it. A floor of zero means nothing could be computed to compare
+    Below the bytes the card must hold there is no arrangement of memory that
+    serves the model. A floor of zero means nothing could be computed to compare
     against, and a guess is not grounds to discard the only measurement there is.
     """
     return floor > 0 and 0 < estimated < floor
@@ -1066,25 +1065,32 @@ def _estimate_is_implausible(*, estimated: int, floor: int) -> bool:
 def _floor_implausible_estimate(
     estimate: ModelPlacementInput, role: WorkerRole, ref: str
 ) -> ModelPlacementInput:
-    """*estimate*, or the analytic floor when the estimator returned less than one.
+    """*estimate*, or the model's weight bytes when it reports less than those.
 
-    The fallback floor otherwise fires only when the estimator cannot answer, so
-    an answer that is well formed and impossible went straight through, and
-    placement committed a card against a number the load then overran.
+    The bound is the weights alone, not the analytic footprint. That figure
+    sizes a KV cache as though every layer ran dense attention over the whole
+    window, which linear-attention, sliding-window and MLA models do not, so it
+    sits far above what they hold. Weights are architecture-independent, which
+    makes an estimate under them the one answer the planner can call impossible
+    without modelling attention.
+
+    Offload lifts the bound: the layers in system memory are weight bytes the
+    card never holds.
     """
-    floor = _fallback_floor_for(role, ref, _role_weights_bytes(role, ref))
-    if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=floor):
+    if _cpu_offload_in_play():
+        return estimate
+    weights = _role_weights_bytes(role, ref)
+    if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=weights):
         return estimate
     log.warning(
-        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB its "
-        "weights and cache alone need. Charging the floor instead; the estimate "
-        "cannot be describing this load.",
+        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB of "
+        "weights the card has to hold. Charging the weights instead.",
         role.value,
         ref,
         estimate.est_vram_bytes / 1024**3,
-        floor / 1024**3,
+        weights / 1024**3,
     )
-    return replace(estimate, est_vram_bytes=floor)
+    return replace(estimate, est_vram_bytes=weights)
 
 
 def _sizing_failure_fallback(
