@@ -99,3 +99,28 @@ def test_slots_are_folded_into_the_context_not_passed_through(parser, tiny_gguf)
     folded = _estimate(tiny_gguf, ctx=2048, slots=2)
     doubled = _estimate(tiny_gguf, ctx=4096, slots=1)
     assert folded.vram_bytes == doubled.vram_bytes
+
+
+def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_gguf) -> None:
+    # The bisection against the real parser, not a stub of it: the window it
+    # returns fits the budget and the next step up does not.
+    from lilbee.providers.fleet.ctx import fit_single_ctx
+    from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
+
+    budget = _estimate(tiny_gguf, ctx=2048, slots=1).vram_bytes
+    fitted = fit_single_ctx(
+        tiny_gguf,
+        meta=None,
+        slots=1,
+        available_bytes=budget,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+        kv_cache_type_v=KvCacheType.F16,
+        unified=False,
+        ctx_ceiling=4096,
+        expert_offload=(),
+    )
+    assert (fitted - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
+    assert _estimate(tiny_gguf, ctx=fitted, slots=1).vram_bytes <= budget
+    assert _estimate(tiny_gguf, ctx=fitted + _DYNAMIC_CTX_QUANTUM, slots=1).vram_bytes > budget

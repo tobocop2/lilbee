@@ -1,13 +1,15 @@
-"""Per-device context sizing for a tensor-split chat model in the fleet.
+"""Context sizing for a chat model, from gguf-parser estimates.
 
-Single-GPU chat ctx lives in ``engine_params.resolve_chat_ctx``; this is its
-multi-GPU counterpart, sizing the per-slot context against the busiest card's
-headroom rather than the summed pool. See docs/architecture.md (VRAM estimation).
+:func:`fit_single_ctx` sizes one device against the budget the planner scaled;
+:func:`fit_split_ctx` sizes a tensor split against the busiest card's headroom
+rather than the summed pool. Both bisect the same quantized grid.
+``engine_params.resolve_chat_ctx`` is the entry point for the single-device fit
+and holds the header-math fallback. See docs/architecture.md (VRAM estimation).
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
@@ -25,6 +27,74 @@ from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTU
 _MAIN_GPU_SKEW_RESERVE_BYTES = 0
 
 
+def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
+    """The largest quantized per-slot n_ctx at or below *upper* that *fits*.
+
+    The grid is ``_DYNAMIC_CTX_FLOOR`` plus whole ``_DYNAMIC_CTX_QUANTUM`` steps,
+    so every probe is a context the engine launches with cleanly. Returns the
+    floor when even the floor overflows, which leaves the caller to refuse a
+    window too small to serve.
+    """
+    if not fits(_DYNAMIC_CTX_FLOOR):
+        return _DYNAMIC_CTX_FLOOR
+    steps = max(0, (upper - _DYNAMIC_CTX_FLOOR) // _DYNAMIC_CTX_QUANTUM)
+    lo, hi, best = 0, steps, 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fits(_DYNAMIC_CTX_FLOOR + mid * _DYNAMIC_CTX_QUANTUM):
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    return _DYNAMIC_CTX_FLOOR + best * _DYNAMIC_CTX_QUANTUM
+
+
+def fit_single_ctx(
+    model_path: Path,
+    *,
+    meta: dict[str, str] | None,
+    slots: int,
+    available_bytes: int,
+    gpu_layers: int,
+    flash_attn: bool,
+    kv_cache_type: KvCacheType,
+    kv_cache_type_v: KvCacheType,
+    unified: bool,
+    ctx_ceiling: int,
+    expert_offload: tuple[str, ...],
+) -> int:
+    """Largest quantized n_ctx whose gguf-parser estimate fits *available_bytes*.
+
+    The estimator prices the cache each layer of this architecture actually
+    holds, so a linear-attention, sliding-window or MLA model is granted the
+    window it can serve rather than one budgeted for dense attention everywhere.
+
+    *available_bytes* is the budget the caller already scaled
+    (``planning.plan_sizing_budget``), so no further fraction applies here.
+    *unified* charges the shared-memory figure, which is the whole resident
+    footprint on a host whose GPU memory is the system's memory.
+    *expert_offload* names the tensors the launch moves to system memory, so a
+    mixture-of-experts model is not charged VRAM for experts it will not hold.
+    """
+    if available_bytes <= 0:
+        return _DYNAMIC_CTX_FLOOR
+    upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
+
+    def _fits(per_slot: int) -> bool:
+        est = estimate_instance_footprint(
+            model_path,
+            ctx=per_slot,
+            slots=slots,
+            gpu_layers=gpu_layers,
+            flash_attn=flash_attn,
+            kv_cache_type=kv_cache_type,
+            kv_cache_type_v=kv_cache_type_v,
+            expert_offload=expert_offload,
+        )
+        return est.footprint(unified=unified) <= available_bytes
+
+    return _largest_fitting_ctx(upper, _fits)
+
+
 def fit_split_ctx(
     model_path: Path,
     *,
@@ -37,6 +107,7 @@ def fit_split_ctx(
     kv_cache_type: KvCacheType,
     kv_cache_type_v: KvCacheType,
     ctx_ceiling: int,
+    expert_offload: tuple[str, ...],
 ) -> int:
     """Largest quantized per-slot n_ctx that fits every card, capped at *ctx_ceiling*.
 
@@ -85,6 +156,7 @@ def fit_split_ctx(
             kv_cache_type=kv_cache_type,
             kv_cache_type_v=kv_cache_type_v,
             tensor_split=ratio,
+            expert_offload=expert_offload,
         )
         shares = est.per_device_vram
         if len(shares) != len(headrooms):
@@ -92,14 +164,4 @@ def fit_split_ctx(
             return est.peak_footprint(unified=False) <= min(headrooms)
         return all(share <= room for share, room in zip(shares, headrooms, strict=True))
 
-    if not _peak_fits(_DYNAMIC_CTX_FLOOR):
-        return _DYNAMIC_CTX_FLOOR
-    steps = max(0, (upper - _DYNAMIC_CTX_FLOOR) // _DYNAMIC_CTX_QUANTUM)
-    lo, hi, best = 0, steps, 0
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if _peak_fits(_DYNAMIC_CTX_FLOOR + mid * _DYNAMIC_CTX_QUANTUM):
-            best, lo = mid, mid + 1
-        else:
-            hi = mid - 1
-    return _DYNAMIC_CTX_FLOOR + best * _DYNAMIC_CTX_QUANTUM
+    return _largest_fitting_ctx(upper, _peak_fits)

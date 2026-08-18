@@ -175,10 +175,16 @@ def resolve_chat_ctx(
 ) -> int:
     """Pick a single-GPU n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
-    When ``cfg.num_ctx_max`` is ``None`` the model's training_ctx is the only
-    ceiling, so a long-context model can grow past the target if the host has
-    the RAM to back it. A multi-GPU tensor-split chat is sized separately by the
-    fleet against its per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
+    A gguf-parser fit answers first
+    (:func:`lilbee.providers.fleet.planning.fit_chat_ctx`), because it prices the
+    cache each layer of this architecture holds. Header math takes over when the
+    estimator cannot answer; it charges every layer as dense attention over the
+    whole window, which under-grants linear-attention, sliding-window and MLA
+    models. Either way the window stops at the smallest of the trained context,
+    ``cfg.num_ctx_max`` and the target.
+
+    A multi-GPU tensor-split chat is sized separately by the fleet against its
+    per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
     ``available_bytes`` overrides the live host-memory read, and every caller
     that is sizing a real launch passes it: the fleet and the surfaces that
     mirror it hand over
@@ -186,14 +192,23 @@ def resolve_chat_ctx(
     memory of the GPU that will run the model and holds a clean-box snapshot so
     a reload sizes ctx like the boot did.
     """
+    # call-time import: planning imports this module at load
+    from lilbee.providers.fleet.planning import fit_chat_ctx
+
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
+    if available_bytes is None:
+        available_bytes = get_available_memory(cfg.gpu_memory_fraction)
+    upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
+
+    try:
+        return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
+    except (ProviderError, OSError, ValueError):
+        log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
 
     try:
         model_bytes = model_path.stat().st_size
         kv_per_tok = kv_bytes_per_token(meta, *chat_kv_elem_bytes())
-        if available_bytes is None:
-            available_bytes = get_available_memory(cfg.gpu_memory_fraction)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
             available_bytes=available_bytes,
