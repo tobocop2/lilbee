@@ -150,14 +150,23 @@ def _relay_until_done(
         if cancel.is_set():
             raise TaskCancelledError
         if receiver.poll(_POLL_INTERVAL_S):
-            verdict = _apply(receiver.recv(), on_progress)
+            try:
+                message = receiver.recv()
+            except EOFError:
+                # The child died mid-message (OOM kill is the usual reason).
+                raise _died_silently(entry, worker) from None
+            verdict = _apply(message, on_progress)
             if verdict is not None:
                 return verdict
         elif not worker.is_alive() and not receiver.poll():
-            raise RuntimeError(
-                f"Download of {entry.hf_repo} stopped: "
-                f"its process exited with code {worker.exitcode}."
-            )
+            raise _died_silently(entry, worker)
+
+
+def _died_silently(entry: CatalogModel, worker: _Worker) -> RuntimeError:
+    """The error for a child that exited without reporting a verdict."""
+    return RuntimeError(
+        f"Download of {entry.hf_repo} stopped: its process exited with code {worker.exitcode}."
+    )
 
 
 def _apply(message: _ChildMessage, on_progress: ProgressCallback | None) -> Path | None:

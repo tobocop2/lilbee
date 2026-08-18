@@ -423,3 +423,16 @@ def test_the_spawned_child_is_daemonic(monkeypatch: pytest.MonkeyPatch, tmp_path
     dp._start_worker(_entry(), tmp_path, None)
 
     assert recorded[0].kwargs["daemon"] is True
+
+
+def test_a_child_that_dies_mid_message_reads_as_a_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A pipe that closes mid-message must fail with the exit code, not a bare EOFError."""
+    receiver, sender = _pipe()
+    worker = _FakeWorker(alive=False, exitcode=-9)
+    _wire(monkeypatch, worker, receiver)
+    sender.close()  # closed pipe: poll() reports readable, recv() raises EOFError
+
+    with pytest.raises(RuntimeError, match="exited with code -9"):
+        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
