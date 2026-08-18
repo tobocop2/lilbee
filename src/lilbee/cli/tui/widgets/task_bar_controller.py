@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 from textual.app import App
 
-from lilbee.catalog.download import abort_active_download
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus, TaskType
@@ -25,9 +24,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# hf_xet aborts at session granularity, so a concurrent transfer dies with the
-# cancelled one.
-_DOWNLOAD_CONCURRENCY = 1
+# Each download runs in its own child process (catalog.download_process), so
+# transfers neither share a xet session nor die with a cancelled sibling.
+_DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
 
 
@@ -50,28 +49,20 @@ class ProgressReporter:
     def __init__(self, controller: TaskBarController, task_id: str) -> None:
         self._controller = controller
         self._task_id = task_id
-        self._aborted = False
 
     @property
     def task_id(self) -> str:
         return self._task_id
 
-    def check_cancelled(self) -> None:
-        """Raise ``TaskCancelledError`` if the task was cancelled from the UI.
-
-        A cancelled download aborts here too: the progress callback only runs
-        while a transfer is live, whereas ``cancel_task`` can fire before the
-        session exists.
-        """
+    def is_set(self) -> bool:
+        """True once the UI cancelled this task; the ``CancelSignal`` a download polls."""
         task = self._controller.queue.get_task(self._task_id)
-        if task is None or task.status is not TaskStatus.CANCELLED:
-            return
-        if task.task_type == TaskType.DOWNLOAD.value and not self._aborted:
-            # Once per task: a later abort would fall on whichever transfer the
-            # queue has since promoted.
-            self._aborted = True
-            abort_active_download()
-        raise TaskCancelledError
+        return task is not None and task.status is TaskStatus.CANCELLED
+
+    def check_cancelled(self) -> None:
+        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
+        if self.is_set():
+            raise TaskCancelledError
 
     def update(
         self, progress: float, detail: str = "", *, indeterminate: bool | None = None
@@ -180,30 +171,20 @@ class TaskBarController:
         self._advance_all(self._task_type_of(task_id))
 
     def cancel_task(self, task_id: str) -> None:
-        """Mark a task cancelled, aborting the transfer if a download is running.
+        """Mark a task cancelled; its worker notices at the next cancel checkpoint.
 
-        The row alone does not stop xet: it drives the progress callback from a
-        thread it owns, where a raise is swallowed.
+        A download worker polls the row's status and terminates its child
+        process, which stops the bytes; other workers raise out of their next
+        progress update.
         """
-        task = self.queue.get_task(task_id)
-        was_running_download = (
-            task is not None
-            and task.task_type == TaskType.DOWNLOAD.value
-            and task.status is TaskStatus.ACTIVE
-        )
         started = task_id in self._task_targets
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
-        if was_running_download:
-            # Session-wide abort: only for the running transfer.
-            abort_active_download()
         if not started:
             # Rows put straight on the queue have no worker whose exit advances
             # it, so the cancel must. A started row either has a worker that
-            # finalizes, or is queued and holds no slot worth freeing.
-            # Advancing an active one here would run its successor while the
-            # cancelled transfer is still winding down, and the session-wide
-            # abort would take both.
+            # finalizes and advances when it exits, or is queued and holds no
+            # slot worth freeing.
             self._advance_all(task_type)
 
     def _after_done_hooks(self, task_type: str | None) -> None:
@@ -529,6 +510,7 @@ def _download_target(
             ModelSource.NATIVE,
             on_update=_on_progress,
             allow_unsupported=allow_unsupported,
+            cancel=reporter,
         )
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc

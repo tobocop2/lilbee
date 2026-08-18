@@ -511,7 +511,11 @@ class TestModelManagerPull:
         fake_entry.name = "test-model"
 
         def fake_download(
-            entry: object, *, on_progress: object = None, on_complete: object = None
+            entry: object,
+            *,
+            on_progress: object = None,
+            on_complete: object = None,
+            cancel: object = None,
         ) -> Path:
             path = models_dir / f"{entry.name}.gguf"
             path.write_text("fake model")
@@ -543,7 +547,11 @@ class TestModelManagerPull:
         captured: list[object] = []
 
         def fake_download(
-            entry: object, *, on_progress: object = None, on_complete: object = None
+            entry: object,
+            *,
+            on_progress: object = None,
+            on_complete: object = None,
+            cancel: object = None,
         ) -> Path:
             captured.append(entry)
             path = models_dir / "adhoc.gguf"

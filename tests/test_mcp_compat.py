@@ -57,7 +57,7 @@ async def test_model_pull_returns_unsupported_arch_error() -> None:
 async def test_model_pull_accepts_allow_unsupported() -> None:
     seen: dict[str, object] = {}
 
-    def _capture(ref, src, *, on_update, allow_unsupported):
+    def _capture(ref, src, *, on_update, allow_unsupported, cancel=None):
         seen["ref"] = ref
         seen["allow_unsupported"] = allow_unsupported
         from lilbee.app.models import PullResult, PullStatus

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from lilbee.catalog.types import ModelSource
     from lilbee.modelhub.model_manager import RemoteModel
     from lilbee.modelhub.registry import ModelManifest
+    from lilbee.runtime.cancellation import CancelSignal
 
 
 _BYTES_PER_GB = 1024**3  # Model sizes are reported to users in GiB.
@@ -354,13 +355,15 @@ def pull_model_data(
     *,
     on_update: Callable[[DownloadProgress], None] | None = None,
     allow_unsupported: bool = False,
+    cancel: CancelSignal | None = None,
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
 
     Only native models are downloadable; a non-native *source* is refused by
     :meth:`ModelManager.pull`. Progress updates are throttled by
     :func:`~lilbee.catalog.make_download_callback`, so callers see at most
-    roughly 10 Hz of progress events.
+    roughly 10 Hz of progress events. A *cancel* signal makes the download
+    cancellable mid-transfer; see :func:`~lilbee.catalog.download_model`.
     """
     # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import make_download_callback
@@ -380,6 +383,7 @@ def pull_model_data(
         source,
         on_bytes=bytes_cb,
         allow_unsupported=allow_unsupported,
+        cancel=cancel,
     )
     return PullResult(
         model=ref,
