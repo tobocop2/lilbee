@@ -51,21 +51,24 @@ def test_the_variable_name_is_the_one_hf_xet_reads() -> None:
     assert hasattr(constants, dl._XET_HIGH_PERFORMANCE_ENV)
 
 
-def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_download_path_applies_it_before_transferring(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     """Xet caches its config when the session is built, so this has to run
-    before the transfer, not after."""
+    before the transfer, not after. It also has to run in the parent, so a
+    download child process inherits the variable through its environment."""
     calls: list[str] = []
     monkeypatch.setattr(dl, "_apply_fast_download_mode", lambda: calls.append("applied"))
+    monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
 
-    def _fake_download(**_kw: object) -> str:
+    def _fake_fetch(entry: object, models_dir: object, token: object, **_kw: object) -> object:
         calls.append("downloaded")
         raise RuntimeError("stop here")
 
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+    monkeypatch.setattr(dl, "fetch_model_files", _fake_fetch)
 
-    config = dl.DownloadConfig(repo_id="acme/x", filename="x.gguf", token=None)
     with pytest.raises(RuntimeError):
-        dl._hf_download_or_translate(
+        dl.download_model(
             dl.CatalogModel(
                 hf_repo="acme/x",
                 gguf_filename="x.gguf",
@@ -75,8 +78,7 @@ def test_the_download_path_applies_it_before_transferring(monkeypatch: pytest.Mo
                 featured=False,
                 downloads=0,
                 task="chat",
-            ),
-            config,
+            )
         )
 
     assert calls == ["applied", "downloaded"]
@@ -144,7 +146,6 @@ def test_the_download_path_disables_xet_before_transferring(
     """The fallback must land before the transfer starts, like the
     fast-download mode above."""
     calls: list[str] = []
-    monkeypatch.setattr(dl, "_apply_fast_download_mode", lambda: None)
     monkeypatch.setattr(dl, "_disable_xet_where_it_stalls", lambda: calls.append("disabled"))
 
     def _fake_download(**_kw: object) -> str:

@@ -251,7 +251,7 @@ async def test_start_download_enqueues_under_download_type() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -275,7 +275,7 @@ async def test_start_download_progress_flows_through_queue() -> None:
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             on_progress(10, 100)
             on_progress(60, 100)
             on_progress(100, 100)
@@ -299,7 +299,7 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             raise PermissionError("401 Unauthorized")
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
@@ -364,7 +364,7 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -392,8 +392,8 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
 
 
 @pytest.mark.asyncio
-async def test_downloads_run_one_at_a_time() -> None:
-    """Submit 3 distinct models: one goes ACTIVE, the rest wait.
+async def test_downloads_run_four_at_a_time() -> None:
+    """Submit 5 distinct models: four go ACTIVE, the fifth waits.
 
     The models must differ: _make_model derives hf_repo from *display*, so
     identical names would exercise dedupe instead of capacity.
@@ -403,18 +403,18 @@ async def test_downloads_run_one_at_a_time() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None):
+        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
             while not release[0]:
                 time.sleep(0.01)
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
-            ids = [controller.start_download(_make_model(display=f"Model {i}")) for i in range(3)]
-            _wait_until(lambda: len(controller.queue.active_tasks) == 1)
+            ids = [controller.start_download(_make_model(display=f"Model {i}")) for i in range(5)]
+            _wait_until(lambda: len(controller.queue.active_tasks) == 4)
 
             active_ids = {t.task_id for t in controller.queue.active_tasks}
             queued_ids = {t.task_id for t in controller.queue.queued_tasks}
-            assert len(active_ids) == 1
-            assert len(queued_ids) == 2
+            assert len(active_ids) == 4
+            assert len(queued_ids) == 1
             assert active_ids | queued_ids == set(ids)
 
             release[0] = True
