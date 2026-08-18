@@ -425,14 +425,28 @@ def test_the_spawned_child_is_daemonic(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert recorded[0].kwargs["daemon"] is True
 
 
+@pytest.mark.parametrize("error", [EOFError(), BrokenPipeError(109, "The pipe has been ended")])
 def test_a_child_that_dies_mid_message_reads_as_a_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: Exception
 ) -> None:
-    """A pipe that closes mid-message must fail with the exit code, not a bare EOFError."""
-    receiver, sender = _pipe()
+    """A pipe that closes mid-message must fail with the exit code, not a raw pipe error.
+
+    POSIX raises EOFError there and Windows BrokenPipeError, so both are driven
+    here rather than only whichever the host produces.
+    """
+
+    class _DeadPipe:
+        def poll(self, timeout: float | None = None) -> bool:
+            return True
+
+        def recv(self) -> object:
+            raise error
+
+        def close(self) -> None:
+            return None
+
     worker = _FakeWorker(alive=False, exitcode=-9)
-    _wire(monkeypatch, worker, receiver)
-    sender.close()  # closed pipe: poll() reports readable, recv() raises EOFError
+    monkeypatch.setattr(dp, "_start_worker", lambda entry, models_dir, token: (worker, _DeadPipe()))
 
     with pytest.raises(RuntimeError, match="exited with code -9"):
         dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())

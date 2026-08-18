@@ -152,8 +152,10 @@ def _relay_until_done(
         if receiver.poll(_POLL_INTERVAL_S):
             try:
                 message = receiver.recv()
-            except EOFError:
+            except (EOFError, OSError):
                 # The child died mid-message (OOM kill is the usual reason).
+                # POSIX reports the closed pipe as EOFError, Windows as
+                # BrokenPipeError.
                 raise _died_silently(entry, worker) from None
             verdict = _apply(message, on_progress)
             if verdict is not None:
