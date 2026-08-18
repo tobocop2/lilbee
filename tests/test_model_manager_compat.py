@@ -50,7 +50,7 @@ def test_pull_bypassed_with_allow_unsupported(
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, on_bytes: captured.append(model) or models_dir / "x.gguf",
+        lambda model, on_bytes, cancel: captured.append(model) or models_dir / "x.gguf",
     )
 
     mgr.pull("acme/foo-GGUF", ModelSource.NATIVE, allow_unsupported=True)
@@ -68,7 +68,7 @@ def test_pull_proceeds_for_supported_arch(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, on_bytes: captured.append(model) or models_dir / "x.gguf",
+        lambda model, on_bytes, cancel: captured.append(model) or models_dir / "x.gguf",
     )
     mgr.pull("acme/foo-GGUF", ModelSource.NATIVE)
     assert captured == ["acme/foo-GGUF"]
@@ -82,7 +82,7 @@ def test_pull_proceeds_for_unknown_arch(tmp_path: Path, monkeypatch: pytest.Monk
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     mgr = ModelManager(models_dir)
-    monkeypatch.setattr(mgr, "_pull_native", lambda model, on_bytes: models_dir / "x.gguf")
+    monkeypatch.setattr(mgr, "_pull_native", lambda model, on_bytes, cancel: models_dir / "x.gguf")
     result = mgr.pull("acme/foo-GGUF", ModelSource.NATIVE)
     assert result is not None
 

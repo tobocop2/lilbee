@@ -18,6 +18,11 @@ from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from tests._lilbee_app_test_host import LilbeeAppHost
 
+# The download slots plus one queued row, so promotion is observable.
+_SUBMITTED = 5
+_SLOTS = 4
+_NAMES = [f"task-{index}" for index in range(_SUBMITTED)]
+
 
 class _Host(LilbeeAppHost):
     def compose(self) -> ComposeResult:
@@ -34,11 +39,6 @@ async def test_finishing_a_task_starts_exactly_one_successor(
     Counting runs per task also pins the opposite failure: a successor spawned
     twice would run two transfers for one row.
     """
-    monkeypatch.setattr(
-        "lilbee.cli.tui.widgets.task_bar_controller.abort_active_download",
-        lambda: None,
-        raising=False,
-    )
     runs: collections.Counter[str] = collections.Counter()
     gate = threading.Event()
 
@@ -54,35 +54,35 @@ async def test_finishing_a_task_starts_exactly_one_successor(
         controller = TaskBarController(app)
         ids = {
             name: controller.start_task(name, TaskType.DOWNLOAD, target(name), dedupe_key=name)
-            for name in ("A", "B", "C")
+            for name in _NAMES
         }
 
         for _ in range(60):
-            if runs:
+            if len(runs) == _SLOTS:
                 break
             await pilot.pause()
-        assert dict(runs) == {"A": 1}, f"expected only A running, got {dict(runs)}"
-        assert controller.queue.get_task(ids["B"]).status is TaskStatus.QUEUED  # ty: ignore
+        assert set(runs) == set(_NAMES[:_SLOTS]), f"expected a full set of slots, got {dict(runs)}"
+        last = _NAMES[-1]
+        assert controller.queue.get_task(ids[last]).status is TaskStatus.QUEUED  # ty: ignore
 
-        getattr(controller, finish)(ids["A"])
+        getattr(controller, finish)(ids[_NAMES[0]])
 
         for _ in range(120):
-            if len(runs) > 1:
+            if last in runs:
                 break
             await pilot.pause()
         gate.set()
         for _ in range(40):
             await pilot.pause()
 
-    assert runs["B"] == 1, f"successor never started after {finish}: {dict(runs)}"
+    assert runs[last] == 1, f"successor never started after {finish}: {dict(runs)}"
     assert all(count == 1 for count in runs.values()), f"task ran twice: {dict(runs)}"
 
 
 @pytest.mark.timeout(90)
 async def test_the_successor_waits_for_the_cancelled_worker_to_exit() -> None:
-    """Promoting on the cancel keypress overlaps the two transfers, and the xet
-    abort is session-wide, so the successor dies with the cancelled one. The
-    worker's own exit is what may advance the queue."""
+    """Promotion happens at worker exit: the queued row must not start while the
+    cancelled worker is still winding down its transfer."""
     started: list[str] = []
     release = threading.Event()
 
@@ -96,33 +96,37 @@ async def test_the_successor_waits_for_the_cancelled_worker_to_exit() -> None:
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
-        first = controller.start_task("A", TaskType.DOWNLOAD, target("A"), dedupe_key="a")
-        controller.start_task("B", TaskType.DOWNLOAD, target("B"), dedupe_key="b")
+        ids = {
+            name: controller.start_task(name, TaskType.DOWNLOAD, target(name), dedupe_key=name)
+            for name in _NAMES
+        }
 
         for _ in range(60):
-            if started:
+            if len(started) == _SLOTS:
                 break
             await pilot.pause()
-        assert started == ["A"]
+        assert set(started) == set(_NAMES[:_SLOTS])
 
-        controller.cancel_task(first)
+        last = _NAMES[-1]
+        controller.cancel_task(ids[_NAMES[0]])
         for _ in range(40):
             await pilot.pause()
-        assert started == ["A"], f"B started while A was still running: {started}"
+        assert last not in started, f"{last} started while its predecessors ran: {started}"
 
         release.set()
         for _ in range(120):
-            if len(started) > 1:
+            if last in started:
                 break
             await pilot.pause()
 
-    assert started == ["A", "B"], f"B never ran after A exited: {started}"
+    assert last in started, f"{last} never ran after the workers exited: {started}"
 
 
 @pytest.mark.timeout(90)
 async def test_cancelling_a_queued_row_leaves_the_queue_draining() -> None:
     """A queued row holds no slot, so cancelling it advances nothing, and the
-    rows behind it must still run once the active one finishes."""
+    rows behind it must still run once an active one finishes."""
+    names = [*_NAMES, "task-behind"]
     started: list[str] = []
     release = threading.Event()
 
@@ -136,22 +140,24 @@ async def test_cancelling_a_queued_row_leaves_the_queue_draining() -> None:
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
-        controller.start_task("A", TaskType.DOWNLOAD, target("A"), dedupe_key="a")
-        second = controller.start_task("B", TaskType.DOWNLOAD, target("B"), dedupe_key="b")
-        controller.start_task("C", TaskType.DOWNLOAD, target("C"), dedupe_key="c")
+        ids = {
+            name: controller.start_task(name, TaskType.DOWNLOAD, target(name), dedupe_key=name)
+            for name in names
+        }
 
         for _ in range(60):
-            if started:
+            if len(started) == _SLOTS:
                 break
             await pilot.pause()
-        assert started == ["A"]
+        assert set(started) == set(names[:_SLOTS])
 
-        controller.cancel_task(second)  # queued, never ran
+        controller.cancel_task(ids[names[_SLOTS]])  # queued, never ran
         release.set()
 
         for _ in range(160):
-            if len(started) > 1:
+            if names[-1] in started:
                 break
             await pilot.pause()
 
-    assert started == ["A", "C"], f"queue did not drain past the cancelled row: {started}"
+    assert names[_SLOTS] not in started, f"the cancelled row ran anyway: {started}"
+    assert names[-1] in started, f"queue did not drain past the cancelled row: {started}"

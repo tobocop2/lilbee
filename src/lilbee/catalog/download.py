@@ -27,7 +27,7 @@ from lilbee.catalog.hf_client import (
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN, pick_best_gguf
 from lilbee.catalog.types import ModelTask
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
 
@@ -140,19 +140,6 @@ def _raise_if_disk_exhausted(
     ) from None
 
 
-_XET_CANCELLED_MARKER = "Operation cancelled"
-
-
-def abort_active_download() -> None:
-    """Stop the xet transfer running in this process.
-
-    Aborts at session granularity; hf_xet exposes nothing finer.
-    """
-    from huggingface_hub.utils._xet import abort_xet_session
-
-    abort_xet_session()
-
-
 _XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
 
 _XET_DISABLE_ENV = "HF_HUB_DISABLE_XET"
@@ -219,11 +206,14 @@ def _abort_stalled_transfer() -> None:
     Covers both transports: the xet session abort stops a deadlocked Rust
     transfer (a no-op without one), and closing the hub's shared client
     closes the plain path's socket under its blocked read. The next hub
-    call builds a fresh client.
+    call builds a fresh client. The session abort is safe here because a
+    process runs at most one download; concurrent downloads each run in
+    their own child process.
     """
     from huggingface_hub.utils._http import close_session
+    from huggingface_hub.utils._xet import abort_xet_session
 
-    abort_active_download()
+    abort_xet_session()
     close_session()
 
 
@@ -357,7 +347,6 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
-    _apply_fast_download_mode()
     _disable_xet_where_it_stalls()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
@@ -375,9 +364,6 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
-        if _XET_CANCELLED_MARKER in str(exc):
-            # An aborted session surfaces as a bare RuntimeError.
-            raise TaskCancelledError(str(exc)) from None
         _raise_if_disk_exhausted(entry, config, exc)
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
@@ -408,13 +394,18 @@ def download_model(
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path:
     """Download a GGUF model from HuggingFace to the models dir.
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
-    The optional *on_complete(entry, file_path)* callback runs after the file
+    The optional *on_complete(entry, file_path)* callback runs after every file
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
+
+    With a *cancel* signal the transfer runs in its own child process, and a
+    set signal terminates that process mid-transfer; without one the transfer
+    runs in this process and only ``on_progress`` raising can stop it.
 
     A split GGUF has every shard fetched before the model is finalized, so the
     registry manifest (and thus "installed") only lands once the full set is on
@@ -424,10 +415,38 @@ def download_model(
     Raises:
         PermissionError: gated repo requiring authentication
         RuntimeError: repo not found or download failure with details
+        TaskCancelledError: the cancel signal was set
     """
+    _apply_fast_download_mode()
     models_dir = _models_dir()
     models_dir.mkdir(parents=True, exist_ok=True)
+    token = hf_token()
+    if cancel is None:
+        dest = fetch_model_files(entry, models_dir, token, on_progress=on_progress)
+    else:
+        # circular: download -> download_process via fetch_model_files
+        from lilbee.catalog.download_process import download_in_subprocess
 
+        dest = download_in_subprocess(
+            entry, models_dir, token, on_progress=on_progress, cancel=cancel
+        )
+    if on_complete is not None:
+        on_complete(entry, dest)
+    return dest
+
+
+def fetch_model_files(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: str | None,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Fetch *entry*'s GGUF shards, plus its projector when the repo ships one.
+
+    Takes the models dir and token as arguments so a download child process
+    can run it without reading cfg. Writes no registry state.
+    """
     filename = resolve_filename(entry)
     shards = split_shard_filenames(filename)
     dest = models_dir / shards[0]
@@ -440,7 +459,8 @@ def download_model(
         if on_progress is not None:
             size = sum((models_dir / shard).stat().st_size for shard in shards)
             on_progress(size, size)  # Report 100% immediately (every shard)
-        return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
+        _ensure_projector(entry, models_dir, token, on_progress=on_progress)
+        return dest
 
     shard_sizes = [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
     sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
@@ -458,7 +478,7 @@ def download_model(
         config = DownloadConfig(
             repo_id=entry.hf_repo,
             filename=shard,
-            token=hf_token(),
+            token=token,
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
@@ -473,30 +493,25 @@ def download_model(
         if not tracker or not tracker.was_used:
             log.info("Model found in HuggingFace cache: %s", first_shard_path)
         on_progress(total_size, total_size)
-    return _finalize_download(
-        entry, first_shard_path, on_progress=on_progress, on_complete=on_complete
-    )
+    _ensure_projector(entry, models_dir, token, on_progress=on_progress)
+    return first_shard_path
 
 
-def _finalize_download(
+def _ensure_projector(
     entry: CatalogModel,
-    dest: Path,
+    models_dir: Path,
+    token: str | None,
     *,
     on_progress: ProgressCallback | None = None,
-    on_complete: CompleteCallback | None = None,
-) -> Path:
-    """Run post-download hooks: registry write (via on_complete) + mmproj fetch.
+) -> None:
+    """Fetch the projector whenever the repo ships one, not only for VISION entries.
 
-    The mmproj is fetched whenever the repo ships one, not only for VISION-task
-    entries: dual-use VL repos (Qwen-VL, InternVL, SmolVLM, gemma-3) classify as
-    chat by name and arch, and without their projector the vision role dies at
-    plan time with a missing-mmproj warning a re-pull cannot cure.
+    Dual-use VL repos (Qwen-VL, InternVL, SmolVLM, gemma-3) classify as chat by
+    name and arch, and without their projector the vision role dies at plan
+    time with a missing-mmproj warning a re-pull cannot cure.
     """
-    if on_complete is not None:
-        on_complete(entry, dest)
     if entry.task == ModelTask.VISION or repo_has_mmproj(entry.hf_repo):
-        download_mmproj(entry, on_progress=on_progress)
-    return dest
+        _fetch_mmproj(entry, models_dir, token, on_progress=on_progress)
 
 
 def download_mmproj(
@@ -509,12 +524,23 @@ def download_mmproj(
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
+    _apply_fast_download_mode()
+    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress)
+
+
+def _fetch_mmproj(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: str | None,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path | None:
+    """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
     if not mmproj_filename:
         log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
         return None
 
-    models_dir = _models_dir()
     tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
     _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
@@ -524,7 +550,7 @@ def download_mmproj(
         DownloadConfig(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
-            token=hf_token(),
+            token=token,
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         ),
