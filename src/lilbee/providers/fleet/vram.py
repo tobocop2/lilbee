@@ -253,9 +253,15 @@ def estimator_argv(
 
     ``ctx`` is the per-slot context, as it is for the launch argv, and
     ``--ctx-size`` carries the total across slots. The parser's ``--parallel``
-    does not divide the context the way llama-server's does: the KV estimate is
-    identical for every value of it, so the multiply has to reach the parser
-    through ``--ctx-size`` or the cache is under-reserved by the slot count.
+    does not divide the context the way llama-server's does, so the multiply has
+    to reach the parser through ``--ctx-size`` or the attention cache is
+    under-reserved by the slot count.
+
+    ``--parallel`` is still passed, and it is not inert. A hybrid or recurrent
+    model holds a per-sequence recurrent state that scales with the sequence
+    count and not with the context, exactly as llama.cpp sizes it, so the parser
+    reads the slot count from this flag. Both flags are load-bearing, for
+    different halves of the memory.
     """
     argv = [
         str(resolve_gguf_parser()),
