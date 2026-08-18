@@ -3057,7 +3057,7 @@ class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -3100,7 +3100,7 @@ class TestModelsPull:
         aborted: list[bool] = []
         mock_manager = MagicMock()
 
-        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False):
+        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
             on_bytes(100, 1000)
             barrier.wait(timeout=2)
             try:
@@ -4517,7 +4517,7 @@ class TestModelPullProgressCancel:
         progress_called = threading.Event()
         aborted = threading.Event()
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
             progress_called.set()
             try:
                 on_bytes(500, 1000)

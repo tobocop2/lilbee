@@ -576,6 +576,7 @@ async def models_pull(
                 src,
                 on_bytes=_on_bytes,
                 allow_unsupported=allow_unsupported,
+                cancel=sse.cancel,
             )
         except TaskCancelledError:
             log.info("Model pull for %s aborted: client disconnected", model)

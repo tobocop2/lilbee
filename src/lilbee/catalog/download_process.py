@@ -119,13 +119,19 @@ def download_in_subprocess(
 def _start_worker(
     entry: CatalogModel, models_dir: Path, token: str | None
 ) -> tuple[_Worker, Connection]:
-    """Spawn the download child; fork is unsafe under the parent's threads."""
+    """Spawn the download child; fork is unsafe under the parent's threads.
+
+    Daemonic on purpose: at interpreter exit multiprocessing terminates daemon
+    children but joins live non-daemon ones, and quitting the app mid-download
+    must not wait for a multi-GB transfer.
+    """
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     worker = context.Process(
         target=_run_download_child,
         args=(sender, entry, str(models_dir), token),
         name=f"lilbee-download-{entry.hf_repo}",
+        daemon=True,
     )
     worker.start()
     sender.close()

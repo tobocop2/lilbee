@@ -76,7 +76,9 @@ async def test_pull_native_with_allow_unsupported_skips_precheck() -> None:
     """allow_unsupported=True must bypass the pre-stream gate entirely."""
     mock_manager = MagicMock()
 
-    def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+    def fake_pull(
+        model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False, cancel=None
+    ):
         return None
 
     mock_manager.pull.side_effect = fake_pull
@@ -104,7 +106,9 @@ async def test_pull_remote_skips_arch_precheck() -> None:
     """REMOTE source never invokes the pre-stream gate."""
     mock_manager = MagicMock()
 
-    def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+    def fake_pull(
+        model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False, cancel=None
+    ):
         return None
 
     mock_manager.pull.side_effect = fake_pull

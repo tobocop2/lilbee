@@ -394,3 +394,32 @@ def test_silence_output_swallows_writes(tmp_path: Path, capfd: pytest.CaptureFix
             os.close(capture)
 
     assert (tmp_path / "out").read_bytes() == b""
+
+
+def test_the_spawned_child_is_daemonic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Interpreter exit terminates daemon children but joins live non-daemon
+    ones; quitting the app mid-download must not wait for the transfer."""
+
+    class _Recorder:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            recorded.append(self)
+
+        def start(self) -> None:
+            return None
+
+    real_context = multiprocessing.get_context("spawn")
+
+    class _Context:
+        Process = _Recorder
+
+        @staticmethod
+        def Pipe(duplex: bool) -> Any:
+            return real_context.Pipe(duplex=duplex)
+
+    recorded: list[_Recorder] = []
+    monkeypatch.setattr(dp.multiprocessing, "get_context", lambda method: _Context)
+
+    dp._start_worker(_entry(), tmp_path, None)
+
+    assert recorded[0].kwargs["daemon"] is True
