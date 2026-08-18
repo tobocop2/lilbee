@@ -230,3 +230,21 @@ class TestTheEstimatePlausibilityBand:
     def test_an_unknown_floor_rejects_nothing(self, estimated: int) -> None:
         assume(estimated > 0)
         assert not planning._estimate_is_implausible(estimated=estimated, floor=0)
+
+    @given(
+        weights=st.integers(min_value=1, max_value=200 * _GB),
+        headroom=st.integers(min_value=0, max_value=300 * _GB),
+    )
+    def test_an_estimate_covering_the_weights_is_never_raised(
+        self, weights: int, headroom: int
+    ) -> None:
+        # Above the weights, how much more a load takes is the estimator's to
+        # report: the planner does not know how much cache the architecture holds.
+        from lilbee.providers.fleet.placement import ModelPlacementInput
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(planning, "_cpu_offload_in_play", lambda: False)
+            mp.setattr(planning, "_role_weights_bytes", lambda *_a: weights)
+            estimate = ModelPlacementInput(WorkerRole.CHAT, weights + headroom)
+            kept = planning._floor_implausible_estimate(estimate, WorkerRole.CHAT, "org/m")
+        assert kept.est_vram_bytes == weights + headroom
