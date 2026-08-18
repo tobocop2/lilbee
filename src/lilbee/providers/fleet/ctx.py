@@ -60,6 +60,7 @@ def fit_single_ctx(
     kv_cache_type_v: KvCacheType,
     unified: bool,
     ctx_ceiling: int,
+    expert_offload: tuple[str, ...],
 ) -> int:
     """Largest quantized n_ctx whose gguf-parser estimate fits *available_bytes*.
 
@@ -71,6 +72,8 @@ def fit_single_ctx(
     (``planning.plan_sizing_budget``), so no further fraction applies here.
     *unified* charges the shared-memory figure, which is the whole resident
     footprint on a host whose GPU memory is the system's memory.
+    *expert_offload* names the tensors the launch moves to system memory, so a
+    mixture-of-experts model is not charged VRAM for experts it will not hold.
     """
     if available_bytes <= 0:
         return _DYNAMIC_CTX_FLOOR
@@ -85,6 +88,7 @@ def fit_single_ctx(
             flash_attn=flash_attn,
             kv_cache_type=kv_cache_type,
             kv_cache_type_v=kv_cache_type_v,
+            expert_offload=expert_offload,
         )
         return est.footprint(unified=unified) <= available_bytes
 
@@ -103,6 +107,7 @@ def fit_split_ctx(
     kv_cache_type: KvCacheType,
     kv_cache_type_v: KvCacheType,
     ctx_ceiling: int,
+    expert_offload: tuple[str, ...],
 ) -> int:
     """Largest quantized per-slot n_ctx that fits every card, capped at *ctx_ceiling*.
 
@@ -151,6 +156,7 @@ def fit_split_ctx(
             kv_cache_type=kv_cache_type,
             kv_cache_type_v=kv_cache_type_v,
             tensor_split=ratio,
+            expert_offload=expert_offload,
         )
         shares = est.per_device_vram
         if len(shares) != len(headrooms):

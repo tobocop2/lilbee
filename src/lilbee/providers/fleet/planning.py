@@ -419,6 +419,7 @@ def fit_chat_ctx(
         kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
         unified=plan_sizing_is_unified(),
         ctx_ceiling=ctx_ceiling,
+        expert_offload=_role_expert_offload(model_path),
     )
 
 
@@ -834,6 +835,7 @@ def _chat_split_ctx_objective(
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
             kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
+            expert_offload=_role_expert_offload(path),
         )
 
     return fit, target
@@ -1522,6 +1524,7 @@ def _launch_for(
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
                 kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
+                expert_offload=_role_expert_offload(model_path),
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)

@@ -42,6 +42,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
         # Large by default so the fit-logic tests are gated by the monkeypatched
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,
+        "expert_offload": (),
     }
     kwargs.update(overrides)
     return fit_split_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -178,15 +179,18 @@ class TestFitSplitCtx:
         assert seen and all(r == () for r in seen)
 
 
-def _single_estimator(vram_for, unified_for=None):
+def _single_estimator(vram_for, unified_for=None, seen=None):
+    seen = [] if seen is None else seen
     """Fake estimate_instance_footprint for the single-device fit.
 
     *vram_for* maps total ctx (per-slot x slots) to discrete-GPU bytes;
     *unified_for* does the same for the unified figure, defaulting to zero so a
-    test that charges VRAM cannot pass by reading the wrong field.
+    test that charges VRAM cannot pass by reading the wrong field. Every probe's
+    kwargs land in *seen*.
     """
 
     def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+        seen.append(kw)
         total = int(kw["ctx"]) * int(kw["slots"])  # type: ignore[arg-type]
         return GgufVramEstimate(
             vram_bytes=vram_for(total),
@@ -208,6 +212,7 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "kv_cache_type_v": KvCacheType.F16,
         "unified": False,
         "ctx_ceiling": 1_000_000,
+        "expert_offload": (),
     }
     kwargs.update(overrides)
     return ctx_mod.fit_single_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -254,3 +259,34 @@ class TestFitSingleCtx:
         )
         result = _fit_single(Path("/m.gguf"), available_bytes=20 * _GB, unified=True)
         assert result == 19456
+
+
+class TestTheFitChargesWhatTheLaunchRuns:
+    """A probe that prices tensors the launch will not hold is not the launch."""
+
+    def test_the_single_fit_passes_the_expert_offload_through(self, monkeypatch) -> None:
+        # cpu_moe moves the experts to system memory. Charging them to VRAM
+        # shrinks the window for exactly the giant MoE models that need it.
+        seen: list[dict] = []
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
+        monkeypatch.setattr(
+            ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1, seen=seen)
+        )
+        _fit_single(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
+        assert seen, "the fit never called the estimator"
+        assert all(kw["expert_offload"] == ("blk.*ffn.*exps.*=CPU",) for kw in seen)
+
+    def test_the_split_fit_passes_the_expert_offload_through(self, monkeypatch) -> None:
+        seen: list[dict] = []
+
+        def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+            seen.append(kw)
+            return GgufVramEstimate(
+                vram_bytes=1, ram_bytes=0, unified_bytes=0, per_device_vram=(1,)
+            )
+
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        _fit(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
+        assert seen, "the fit never called the estimator"
+        assert all(kw["expert_offload"] == ("blk.*ffn.*exps.*=CPU",) for kw in seen)

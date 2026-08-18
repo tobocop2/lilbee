@@ -119,6 +119,7 @@ def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_g
         kv_cache_type_v=KvCacheType.F16,
         unified=False,
         ctx_ceiling=4096,
+        expert_offload=(),
     )
     assert (fitted - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
     assert _estimate(tiny_gguf, ctx=fitted, slots=1).vram_bytes <= budget
