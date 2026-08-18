@@ -412,7 +412,7 @@ jobs:
       # generation on a loaded runner overruns the request timeout ("Couldn't
       # reach the provider ... or it timed out"). The warm-up calls pay the
       # load cost here, where nothing is timing the request.
-      - name: Start Ollama and pull models (Linux/macOS)
+      - name: Start Ollama (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > /dev/null 2>&1 &
@@ -420,13 +420,23 @@ jobs:
             curl -fsS localhost:11434/api/version >/dev/null 2>&1 && break
             sleep 1
           done
-          ollama pull qwen3:0.6b
-          ollama pull nomic-embed-text
+
+      - name: Pull Ollama models (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: ./.github/actions/ollama-pull
+        with:
+          models: |
+            qwen3:0.6b
+            nomic-embed-text
+
+      - name: Warm up Ollama models (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
           ollama run qwen3:0.6b "warm up" >/dev/null
           curl -fsS localhost:11434/api/embed \
             -d '{"model":"nomic-embed-text","input":"warm up"}' >/dev/null
 
-      - name: Start Ollama and pull models (Windows)
+      - name: Start Ollama (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -436,8 +446,20 @@ jobs:
             try { Invoke-RestMethod "http://localhost:11434/api/version" | Out-Null; break }
             catch { Start-Sleep -Seconds 1 }
           }
-          & C:\ollama\ollama.exe pull qwen3:0.6b
-          & C:\ollama\ollama.exe pull nomic-embed-text
+
+      - name: Pull Ollama models (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/ollama-pull
+        with:
+          ollama: C:/ollama/ollama.exe
+          models: |
+            qwen3:0.6b
+            nomic-embed-text
+
+      - name: Warm up Ollama models (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           & C:\ollama\ollama.exe run qwen3:0.6b "warm up" | Out-Null
           Invoke-RestMethod -Method Post -Uri "http://localhost:11434/api/embed" `
             -Body '{"model":"nomic-embed-text","input":"warm up"}' | Out-Null
