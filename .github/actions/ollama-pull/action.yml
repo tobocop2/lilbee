@@ -1,0 +1,61 @@
+name: Pull Ollama models with retries
+description: "Pull one or more models from the Ollama registry, retrying on transient registry errors. A model already in the local store satisfies the pull."
+
+inputs:
+  models:
+    description: "Model refs to pull, one per line (e.g. qwen3:0.6b)."
+    required: true
+  host:
+    description: "Base URL of the running Ollama daemon."
+    required: false
+    default: "http://127.0.0.1:11434"
+  ollama:
+    description: "Path to the ollama binary. Use forward slashes on Windows."
+    required: false
+    default: "ollama"
+
+runs:
+  using: composite
+  steps:
+    # registry.ollama.ai returns 503 often enough to kill whole CI runs, and a
+    # warm ~/.ollama/models cache does not help: pull always fetches the
+    # manifest first. So retry with backoff, and after each failure ask the
+    # local daemon whether it already has the model.
+    - name: Pull models
+      shell: bash
+      env:
+        OLLAMA_MODELS_TO_PULL: ${{ inputs.models }}
+        OLLAMA_API: ${{ inputs.host }}
+        OLLAMA_BIN: ${{ inputs.ollama }}
+      run: |
+        set -euo pipefail
+
+        have_locally() {
+          curl -sf -o /dev/null "${OLLAMA_API}/api/show" -d "{\"model\":\"$1\"}"
+        }
+
+        pull_model() {
+          local model="$1" delay=10 attempt
+          for attempt in 1 2 3 4 5; do
+            if "${OLLAMA_BIN}" pull "${model}"; then
+              return 0
+            fi
+            if have_locally "${model}"; then
+              echo "::warning::The registry pull of ${model} failed. The local model store has it, so the job continues."
+              return 0
+            fi
+            if [ "${attempt}" -lt 5 ]; then
+              echo "Pull of ${model} failed (attempt ${attempt}/5). Retry in ${delay}s."
+              sleep "${delay}"
+              delay=$((delay * 2))
+            fi
+          done
+          echo "::error::Cannot pull ${model} after 5 attempts and it is not in the local model store."
+          return 1
+        }
+
+        # Read the list on fd 3: ollama pull owns stdin.
+        while IFS= read -r model <&3; do
+          [ -n "${model}" ] || continue
+          pull_model "${model}"
+        done 3<<< "${OLLAMA_MODELS_TO_PULL}"
