@@ -376,20 +376,32 @@ jobs:
       # nothing ever wrote ~/.cache/huggingface/hub. The cache block that used to
       # sit here only churned a key off pyproject.toml and consumed the cap.
 
-      # Linux only, deliberately. The pull is ~2 min; the entry is ~750 MB per OS,
-      # and the repo cache sits against a hard 10 GB cap where every GB evicts an
-      # engine cache worth ~50 min to a release build. Windows/macOS re-pull.
+      # Linux only, deliberately. The entry is ~750 MB per OS, and the repo cache
+      # sits against a hard 10 GB cap where every GB evicts an engine cache worth
+      # ~50 min to a release build. Windows/macOS re-pull.
+      #
+      # This is the runner's model store, which only works because the step below
+      # stops the daemon that install.sh runs as the 'ollama' user. The v1 entry
+      # was written against that other store and never fed a pull, so start a
+      # fresh key here.
       - name: Cache Ollama models
         if: runner.os == 'Linux'
         uses: actions/cache@v6
         with:
           path: ~/.ollama/models
-          key: ollama-models-${{ runner.os }}-qwen3-nomic-v1
-          restore-keys: ollama-models-${{ runner.os }}-
+          key: ollama-models-${{ runner.os }}-qwen3-nomic-v2
 
+      # install.sh also registers a systemd service that runs the daemon as the
+      # 'ollama' user, whose model store is /usr/share/ollama/.ollama/models.
+      # That daemon takes port 11434 first, so the 'ollama serve' below loses the
+      # bind and dies, every pull writes to a store no cache covers, and
+      # OLLAMA_KEEP_ALIVE never reaches the daemon that serves the tests. Stop it
+      # and serve the models ourselves.
       - name: Install Ollama (Linux)
         if: runner.os == 'Linux'
-        run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${OLLAMA_PIN}" sh
+        run: |
+          curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${OLLAMA_PIN}" sh
+          sudo systemctl disable --now ollama
 
       - name: Install Ollama (macOS)
         if: runner.os == 'macOS'
@@ -428,6 +440,18 @@ jobs:
           models: |
             qwen3:0.6b
             nomic-embed-text
+
+      # Guards the cache against a silent return to a daemon with its own store:
+      # if the pull did not land here, there is nothing to save and the next run
+      # re-downloads ~800 MB.
+      - name: Check the models landed in the cached store (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -d ~/.ollama/models/blobs ]; then
+            echo "::error::The pull did not write to ~/.ollama/models. Another daemon owns port 11434."
+            exit 1
+          fi
+          du -sh ~/.ollama/models
 
       - name: Warm up Ollama models (Linux/macOS)
         if: runner.os != 'Windows'
