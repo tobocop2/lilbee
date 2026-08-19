@@ -1202,6 +1202,58 @@ class TestShowModelNotFound:
         assert provider.show_model("nonexistent-model-xyz") is None
 
 
+class TestChatCapacityComesFromTheAdoptedLaunch:
+    """The admission ceiling is the engine's own --parallel.
+
+    The gate admits up to whatever capacity its caller reports, and the caller is
+    ``max_concurrent_chats``. That number has to be the slot count the chat server
+    was actually launched with, or concurrent requests either serialize against an
+    engine with room or oversubscribe one without it. The launch record carries it,
+    which is the same value ``build_server_argv`` puts after ``--parallel``.
+    """
+
+    def _adopt_chat(self, slots: int):
+        from unittest.mock import MagicMock
+
+        from lilbee.providers.fleet.groups import SwapGroup
+        from lilbee.providers.fleet.launch import InstanceLaunch
+        from lilbee.providers.fleet.provider import FleetProvider
+        from lilbee.providers.roles import WorkerRole
+
+        provider = FleetProvider()
+        swap = MagicMock()
+        swap.endpoint.return_value = "http://127.0.0.1:9"
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["llama-server", "--parallel", str(slots)],
+            env_overrides={},
+            model="org/chat.gguf",
+            slots=slots,
+            ctx=65536,
+        )
+        with provider._lock:
+            provider._adopt_group(SwapGroup.CHAT, swap, [launch])
+        return provider, launch
+
+    def test_the_ceiling_is_the_launched_slot_count(self) -> None:
+        provider, launch = self._adopt_chat(3)
+        assert provider.max_concurrent_chats() == 3
+        assert provider.served_chat_slots() == 3
+        # The same number the engine was started with, not a separate guess.
+        assert launch.argv[launch.argv.index("--parallel") + 1] == "3"
+
+    def test_a_single_slot_engine_is_not_oversubscribed(self) -> None:
+        provider, _ = self._adopt_chat(1)
+        assert provider.max_concurrent_chats() == 1
+
+    def test_the_ceiling_falls_back_to_one_before_a_chat_group_exists(self) -> None:
+        from lilbee.providers.fleet.provider import FleetProvider
+
+        # Nothing adopted: serialize rather than assume an engine with room.
+        assert FleetProvider().max_concurrent_chats() == 1
+        assert FleetProvider().served_chat_slots() is None
+
+
 class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
