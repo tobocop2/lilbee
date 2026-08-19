@@ -149,6 +149,47 @@ class TestCapAwareChatStream:
         assert isinstance(events[-1], MessageStop)
 
     @pytest.mark.asyncio
+    async def test_capped_stream_reports_both_calls_usage(self):
+        """Streaming must count the capped generation, like the non-streaming path.
+
+        Pairs with ``test_re_issued_response_sums_both_calls_usage``: the same
+        40 + 7 tokens over the streaming arm. Without this the client is billed
+        for a reasoning chain it is never told about.
+        """
+
+        async def _first():
+            yield MessageStart(id="m", model=_MODEL)
+            yield ContentBlockStart(index=0, block=TextBlock(text=""))
+            # Providers that report usage as they go put it here; one that only
+            # reports at the end has none to add, because the cap closes the
+            # stream first.
+            yield MessageDelta(usage=CanonicalUsage(input_tokens=3, output_tokens=40))
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="<think>" + "x" * 100))
+
+        def _continuation(*_a, **_k):
+            async def _gen():
+                yield MessageStart(id="m2", model=_MODEL)
+                yield ContentBlockStart(index=0, block=TextBlock(text=""))
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="answer"))
+                yield ContentBlockStop(index=0)
+                yield MessageDelta(
+                    stop_reason=StopReason.END_TURN,
+                    usage=CanonicalUsage(input_tokens=1, output_tokens=7),
+                )
+                yield MessageStop()
+
+            return _gen()
+
+        with patch(
+            "lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat_stream",
+            side_effect=_continuation,
+        ):
+            events = await _collect(_first(), _request(), cap_chars=10)
+        usage = [e.usage for e in events if isinstance(e, MessageDelta) and e.usage][-1]
+        assert usage.output_tokens == 47
+        assert usage.input_tokens == 4
+
+    @pytest.mark.asyncio
     async def test_reasoning_under_the_cap_is_not_interrupted(self):
         req = _request()
         with patch("lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat_stream") as dispatch:
