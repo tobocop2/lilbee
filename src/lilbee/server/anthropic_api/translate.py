@@ -10,6 +10,7 @@ from typing import Any, Literal
 from lilbee.core.config.enums import ReasoningMode
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.anthropic_api.models import (
+    _THINKING_DISABLED,
     AnthropicEventType,
     AnthropicMessage,
     AnthropicThinking,
@@ -74,17 +75,16 @@ def resolve_reasoning_mode(
 ) -> ReasoningMode:
     """Pick the reasoning mode for one call from the request and the setting.
 
-    The ``thinking`` parameter only says whether the model may reason; the
-    setting says how lilbee presents the reasoning. ``disabled`` therefore maps
-    to ``off``, and ``enabled`` keeps the configured presentation -- except
-    against an ``off`` setting, where the request asked for thinking and
-    ``separate`` is the Anthropic-native way to report it.
+    Thinking is opt-in per request, as on the Anthropic API: a body with no
+    ``thinking`` gets none, whatever the setting presents it as. The setting
+    says how to present thinking a request asked for, and ``off`` refuses it
+    outright, so a request can only tighten.
     """
-    if thinking is None:
-        return default
-    if thinking.type == "disabled":
+    if default is ReasoningMode.OFF:
         return ReasoningMode.OFF
-    return ReasoningMode.SEPARATE if default is ReasoningMode.OFF else default
+    if thinking is None or thinking.type == _THINKING_DISABLED:
+        return ReasoningMode.OFF
+    return default
 
 
 def messages_to_canonical_request(

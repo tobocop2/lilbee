@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-_THINKING_TYPES = frozenset({"enabled", "disabled"})
+ThinkingType = Literal["enabled", "disabled"]
+_THINKING_DISABLED = "disabled"
+_THINKING_TYPES: frozenset[str] = frozenset(get_args(ThinkingType))
 
 MIN_THINKING_BUDGET_TOKENS = 1024
 """Anthropic's documented minimum for ``thinking.budget_tokens``."""
@@ -134,18 +136,28 @@ class AnthropicToolChoice(_AnthropicModel):
 class AnthropicThinking(_AnthropicModel):
     """The ``thinking`` parameter: whether the model may reason on this call.
 
-    ``budget_tokens`` tightens the reasoning cap for this call, at roughly four
-    characters per token. It may only tighten: a budget above the configured
-    cap leaves the configured cap in place.
-
-    The ``1024`` floor is Anthropic's own documented minimum, and it is what
-    keeps the tightening rule true. The cap reads ``0`` as unlimited, so a
-    budget that resolved to zero characters would turn a per-request limit into
-    no limit at all.
+    ``budget_tokens`` tightens the reasoning cap for this call; it never
+    loosens it. ``1024`` is Anthropic's documented minimum.
     """
 
-    type: Literal["enabled", "disabled"]
-    budget_tokens: int | None = Field(default=None, ge=MIN_THINKING_BUDGET_TOKENS)
+    type: ThinkingType
+    budget_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def _budget_meets_the_floor(self) -> AnthropicThinking:
+        """Hold ``enabled`` to Anthropic's minimum, and ignore a disabled budget.
+
+        Validating the floor per field would reject
+        ``{"type": "disabled", "budget_tokens": 0}`` -- a request asking for no
+        thinking at all, which is the last body that should 400.
+        """
+        if self.type == _THINKING_DISABLED:
+            object.__setattr__(self, "budget_tokens", None)
+        elif self.budget_tokens is not None and self.budget_tokens < MIN_THINKING_BUDGET_TOKENS:
+            raise ValueError(
+                f"thinking.budget_tokens must be at least {MIN_THINKING_BUDGET_TOKENS}"
+            )
+        return self
 
 
 class MessagesRequest(_AnthropicModel):

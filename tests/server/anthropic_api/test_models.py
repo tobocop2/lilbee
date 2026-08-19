@@ -132,6 +132,18 @@ class TestThinkingBudgetFloor:
         with pytest.raises(ValidationError):
             MessagesRequest.model_validate(self._body(budget_tokens=-1))
 
+    def test_a_disabled_request_is_never_rejected_for_its_budget(self):
+        """The strictest possible body must not 400; a disabled budget is ignored."""
+        body = {
+            "model": "m",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled", "budget_tokens": 0},
+        }
+        request = MessagesRequest.model_validate(body)
+        assert request.thinking is not None
+        assert request.thinking.budget_tokens is None
+
     def test_absent_budget_is_allowed(self):
         request = MessagesRequest.model_validate(self._body())
         assert request.thinking is not None

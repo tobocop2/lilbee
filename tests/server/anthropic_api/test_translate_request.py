@@ -301,8 +301,10 @@ class TestThinkingParameterOnRequest:
             is ReasoningMode.OFF
         )
 
-    def test_absent_thinking_keeps_the_configured_default(self):
-        assert resolve_reasoning_mode(None, default=ReasoningMode.INLINE) is ReasoningMode.INLINE
+    def test_absent_thinking_gets_no_thinking(self):
+        """Anthropic's contract: thinking is opt-in, so a body without it gets none."""
+        assert resolve_reasoning_mode(None, default=ReasoningMode.INLINE) is ReasoningMode.OFF
+        assert resolve_reasoning_mode(None, default=ReasoningMode.SEPARATE) is ReasoningMode.OFF
 
     def test_thinking_enabled_keeps_the_configured_presentation(self):
         mode = resolve_reasoning_mode(
@@ -310,10 +312,15 @@ class TestThinkingParameterOnRequest:
         )
         assert mode is ReasoningMode.INLINE
 
-    def test_thinking_enabled_overrides_an_off_default(self):
-        """A request that asks for thinking must get it, whatever the setting says."""
+    def test_an_off_setting_refuses_thinking_a_request_asked_for(self):
+        """The setting binds: a request may tighten reasoning, never loosen it."""
         mode = resolve_reasoning_mode(AnthropicThinking(type="enabled"), default=ReasoningMode.OFF)
-        assert mode is ReasoningMode.SEPARATE
+        assert mode is ReasoningMode.OFF
+
+    def test_an_absent_thinking_parameter_asks_the_template_not_to_think(self):
+        """Opt-in has to reach the engine, or the chain is generated and discarded."""
+        mode = resolve_reasoning_mode(None, default=ReasoningMode.SEPARATE)
+        assert messages_to_canonical_request(_request(), mode=mode).think is False
 
     def test_budget_tokens_parses_and_is_not_an_error(self):
         request = _request(thinking={"type": "enabled", "budget_tokens": 4096})

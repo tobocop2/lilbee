@@ -227,7 +227,11 @@ class TestStreaming:
     async def test_stream_event_sequence(self, services_with_chat_model, _auth_token):
         services_with_chat_model.provider.chat.return_value = FakeProviderStream(["he", "llo"])
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")
         events = _sse_events(resp.content)
@@ -258,7 +262,11 @@ class TestStreaming:
             "lilbee.server.anthropic_api.routes.dispatch_chat_stream", _raising_stream
         )
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         assert resp.status_code == 200
         events = _sse_events(resp.content)
         error_events = [p for t, p in events if t == "error"]
@@ -332,7 +340,11 @@ class TestErrorPaths:
             "lilbee.server.anthropic_api.routes.dispatch_chat_stream", _rate_limited
         )
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         assert resp.status_code == 200
         events = _sse_events(resp.content)
         error_events = [p for t, p in events if t == "error"]
@@ -369,16 +381,29 @@ class TestThinkingControlOnRoute:
 
         monkeypatch.setattr(cfg, "messages_reasoning", mode)
 
-    async def test_default_reports_thinking_in_its_own_block(
+    async def test_a_request_that_asks_for_thinking_gets_its_own_block(
         self, services_with_chat_model, _auth_token
     ):
         self._thinking_provider(services_with_chat_model)
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "enabled"}), headers=_h()
+            )
         assert resp.json()["content"] == [
             {"type": "thinking", "thinking": "weighing"},
             {"type": "text", "text": "Answer."},
         ]
+
+    async def test_a_body_with_no_thinking_parameter_gets_none(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Anthropic's contract: thinking is opt-in, whatever the setting presents."""
+        self._thinking_provider(services_with_chat_model)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
+        opts = services_with_chat_model.provider.chat.call_args.kwargs["options"]
+        assert opts["think"] is False
 
     async def test_thinking_disabled_drops_the_block(self, services_with_chat_model, _auth_token):
         self._thinking_provider(services_with_chat_model)
@@ -422,9 +447,10 @@ class TestThinkingControlOnRoute:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
 
-    async def test_request_enabled_overrides_the_off_setting(
+    async def test_an_off_setting_refuses_thinking_a_request_asked_for(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
+        """A request may tighten reasoning, never loosen it past the setting."""
         from lilbee.core.config.enums import ReasoningMode
 
         self._set_mode(monkeypatch, ReasoningMode.OFF)
@@ -433,7 +459,9 @@ class TestThinkingControlOnRoute:
             resp = await client.post(
                 "/v1/messages", json=_body(thinking={"type": "enabled"}), headers=_h()
             )
-        assert resp.json()["content"][0] == {"type": "thinking", "thinking": "weighing"}
+        assert resp.json()["content"] == [{"type": "text", "text": "Answer."}]
+        opts = services_with_chat_model.provider.chat.call_args.kwargs["options"]
+        assert opts["think"] is False
 
     async def test_request_disabled_overrides_the_separate_setting(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -505,7 +533,11 @@ class TestReasoningCapOnRoute:
             FakeProviderStream(["forced answer"]),
         ]
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         events = _sse_events(resp.content)
         thinking = "".join(
             p["delta"]["thinking"]
@@ -536,7 +568,9 @@ class TestReasoningCapOnRoute:
             ChatResult(text="forced answer", tool_calls=(), finish_reason=FinishReason.STOP),
         ]
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+            resp = await client.post(
+                "/v1/messages", json=_body(thinking={"type": "enabled"}), headers=_h()
+            )
         blocks = resp.json()["content"]
         assert {b["type"] for b in blocks} == {"thinking", "text"}
         assert next(b["text"] for b in blocks if b["type"] == "text") == "forced answer"
@@ -597,10 +631,15 @@ class TestReasoningCapOnRoute:
     async def test_absent_budget_leaves_the_configured_cap(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
-        """4096 chars of thinking is under the 64000 cap, so nothing fires."""
-        self._cap(monkeypatch, 64_000)
+        """With no budget the configured cap still fires, rather than going unlimited.
+
+        Asserting the cap does *not* fire would pass just as well if the absent
+        budget had resolved to 0, which the cap reads as unlimited.
+        """
+        self._cap(monkeypatch, 2_000)
         services_with_chat_model.provider.chat.side_effect = [
-            FakeProviderStream(["<think>", "x" * 5000, "</think>", "answer"]),
+            FakeProviderStream(["<think>", "x" * 5000, "</think>"]),
+            FakeProviderStream(["forced answer"]),
         ]
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
@@ -609,13 +648,19 @@ class TestReasoningCapOnRoute:
                 headers=_h(),
             )
         events = _sse_events(resp.content)
+        thinking = "".join(
+            p["delta"]["thinking"]
+            for t, p in events
+            if t == "content_block_delta" and p["delta"]["type"] == "thinking_delta"
+        )
         text = "".join(
             p["delta"]["text"]
             for t, p in events
             if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
         )
-        assert text == "answer"
-        assert services_with_chat_model.provider.chat.call_count == 1
+        assert "reasoning capped at 2000 chars" in thinking
+        assert text == "forced answer"
+        assert services_with_chat_model.provider.chat.call_count == 2
 
     async def test_budget_tokens_cannot_loosen_the_configured_cap(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -655,7 +700,11 @@ class TestReasoningCapOnRoute:
             FakeProviderStream(["forced answer"]),
         ]
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         events = _sse_events(resp.content)
         text = "".join(
             p["delta"]["text"]
@@ -672,7 +721,11 @@ class TestReasoningCapOnRoute:
             FakeProviderStream(["<think>", "x" * 400, "</think>", "answer"]),
         ]
         async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+            resp = await client.post(
+                "/v1/messages",
+                json=_body(stream=True, thinking={"type": "enabled"}),
+                headers=_h(),
+            )
         events = _sse_events(resp.content)
         text = "".join(
             p["delta"]["text"]

@@ -18,6 +18,7 @@ from lilbee.core.config.enums import ReasoningMode
 from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.models import (
+    _THINKING_DISABLED,
     AnthropicEventType,
     MessagesRequest,
     MessagesResponse,
@@ -75,8 +76,7 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     event stream; the request body picks the arm, matching Anthropic's own
     contract.
     """
-    # The request's thinking parameter wins over the messages_reasoning setting,
-    # so an agent turns thinking off per call.
+    # Thinking is opt-in per request; the setting only presents it.
     mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     cap_chars = budget_capped_chars(effective_reasoning_cap(), _budget_tokens(data))
     try:
@@ -117,12 +117,8 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
 
 
 def _budget_tokens(data: MessagesRequest) -> int | None:
-    """The thinking budget this request asks for, if it enabled thinking.
-
-    ``disabled`` carries no budget to honor, and a budget on a disabled request
-    would otherwise read as a cap the caller never asked for.
-    """
-    if data.thinking is None or data.thinking.type == "disabled":
+    """The thinking budget this request asks for; ``disabled`` carries none."""
+    if data.thinking is None or data.thinking.type == _THINKING_DISABLED:
         return None
     return data.thinking.budget_tokens
 
