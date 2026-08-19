@@ -143,11 +143,6 @@ _FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_
 # batching slots, leaving room for the weights and any co-located role.
 _VISION_VRAM_FRACTION = 0.5
 
-# Cap chat's footprint at this fraction of usable VRAM when sizing its batching
-# slots, reserving room for the co-located embed/rerank servers and the decode
-# compute buffers (which the flat overhead term only partly covers).
-_CHAT_VRAM_FRACTION = 0.8
-
 # Cap an LLM reranker's footprint at this fraction of usable VRAM when sizing its
 # slots; its per-slot ctx is tiny, so a normal GPU fits the full fan-out and a
 # small one steps down toward 1.
@@ -286,8 +281,16 @@ def _resolve_chat_slots(
     device: FleetDevice | None = None,
 ) -> int:
     """Largest chat slot count (<= ``_CHAT_SLOTS``) whose footprint fits the budget
-    after reserving the search roles; steps to 1 when none fit."""
-    budget = _slot_budget(_CHAT_VRAM_FRACTION, unified_budget, device) - chat_reservation
+    after reserving the search roles; steps to 1 when none fit.
+
+    The budget is the whole serve budget less the search roles' measured
+    footprint. ``cfg.gpu_memory_fraction`` is already the margin held back from
+    the card, and the room for co-located embed/rerank is ``chat_reservation``,
+    which is what those servers were sized at rather than a flat share. A second
+    fraction on top charged that room twice and left a fifth of the card unused
+    on a box with no search roles at all.
+    """
+    budget = _slot_budget(unified_budget, device) - chat_reservation
     return _fit_slots(
         _CHAT_SLOTS,
         WorkerRole.CHAT,
@@ -321,7 +324,7 @@ def _resolve_vision_slots(
         ctx,
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
-        budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget, device),
+        budget=_slot_budget(unified_budget, device, vram_fraction=_VISION_VRAM_FRACTION),
     )
 
 
@@ -341,18 +344,25 @@ def _resolve_llm_rerank_slots(
         ctx,
         mmproj_path=None,
         unified=unified_budget is not None,
-        budget=_slot_budget(_LLM_RERANK_VRAM_FRACTION, unified_budget, device),
+        budget=_slot_budget(unified_budget, device, vram_fraction=_LLM_RERANK_VRAM_FRACTION),
         rerank_mode=RerankMode.LLM,
     )
 
 
 def _slot_budget(
-    vram_fraction: float, unified_budget: int | None, device: FleetDevice | None = None
+    unified_budget: int | None,
+    device: FleetDevice | None = None,
+    *,
+    vram_fraction: float = 1.0,
 ) -> int:
-    """Memory budget for slot sizing: *vram_fraction* of the usable memory on *device*
-    (the fleet's smallest when placement has not chosen one yet), capped by
-    ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
-    steps down to fit free memory instead of overcommitting."""
+    """Memory budget for slot sizing: the usable memory on *device* (the fleet's
+    smallest when placement has not chosen one yet), capped by ``unified_budget``
+    (free system RAM) when there is no discrete GPU so the count steps down to fit
+    free memory instead of overcommitting.
+
+    *vram_fraction* takes less than the whole for a role that shares its card by
+    design. Chat takes all of it and subtracts what the search roles were sized
+    at, which is the same room stated as a measurement rather than a share."""
     budget = int(plan_sizing_budget(device) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
@@ -393,6 +403,34 @@ def _fit_slots(
         if est.footprint(unified=unified) <= budget:
             return slots
     return 1
+
+
+def fit_chat_ctx(
+    model_path: Path,
+    meta: dict[str, str] | None,
+    *,
+    available_bytes: int,
+    ctx_ceiling: int,
+) -> int:
+    """The chat window gguf-parser says *available_bytes* backs, at the launch flags.
+
+    Sizes one slot, as :func:`_slots_for` then grows the slot count against what
+    the window leaves. Raises when the estimator cannot answer, which sends
+    :func:`engine_params.resolve_chat_ctx` to its header-math fallback.
+    """
+    return fleet_ctx.fit_single_ctx(
+        model_path,
+        meta=meta,
+        slots=1,
+        available_bytes=available_bytes,
+        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+        flash_attn=_role_flash(WorkerRole.CHAT),
+        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+        kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
+        unified=plan_sizing_is_unified(),
+        ctx_ceiling=ctx_ceiling,
+        expert_offload=_role_expert_offload(model_path),
+    )
 
 
 def _role_ctx(
@@ -807,6 +845,7 @@ def _chat_split_ctx_objective(
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
             kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
+            expert_offload=_role_expert_offload(path),
         )
 
     return fit, target
@@ -959,7 +998,7 @@ def _estimate_or_fallback(
     """Size *role* for placement, degrading rather than refusing.
 
     A missing model is skipped and recorded; a sizing failure on an installed
-    model falls back to its weight bytes; weights alone exceeding the physical
+    model falls back to the analytic floor; weights alone exceeding the physical
     VRAM refuse with a plain message (ground truth, not an estimate).
     """
     from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -1055,9 +1094,8 @@ def _analytic_footprint_floor(
 def _estimate_is_implausible(*, estimated: int, floor: int) -> bool:
     """Whether *estimated* describes a load that cannot exist.
 
-    Below the analytic floor, which is the model's own weight bytes plus the
-    cache and buffers it was asked to hold, there is no arrangement of memory
-    that serves it. A floor of zero means nothing could be computed to compare
+    Below the bytes the card must hold there is no arrangement of memory that
+    serves the model. A floor of zero means nothing could be computed to compare
     against, and a guess is not grounds to discard the only measurement there is.
     """
     return floor > 0 and 0 < estimated < floor
@@ -1066,25 +1104,32 @@ def _estimate_is_implausible(*, estimated: int, floor: int) -> bool:
 def _floor_implausible_estimate(
     estimate: ModelPlacementInput, role: WorkerRole, ref: str
 ) -> ModelPlacementInput:
-    """*estimate*, or the analytic floor when the estimator returned less than one.
+    """*estimate*, or the model's weight bytes when it reports less than those.
 
-    The fallback floor otherwise fires only when the estimator cannot answer, so
-    an answer that is well formed and impossible went straight through, and
-    placement committed a card against a number the load then overran.
+    The bound is the weights alone, not the analytic footprint. That figure
+    sizes a KV cache as though every layer ran dense attention over the whole
+    window, which linear-attention, sliding-window and MLA models do not, so it
+    sits far above what they hold. Weights are architecture-independent, which
+    makes an estimate under them the one answer the planner can call impossible
+    without modelling attention.
+
+    Offload lifts the bound: the layers in system memory are weight bytes the
+    card never holds.
     """
-    floor = _fallback_floor_for(role, ref, _role_weights_bytes(role, ref))
-    if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=floor):
+    if _cpu_offload_in_play():
+        return estimate
+    weights = _role_weights_bytes(role, ref)
+    if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=weights):
         return estimate
     log.warning(
-        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB its "
-        "weights and cache alone need. Charging the floor instead; the estimate "
-        "cannot be describing this load.",
+        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB of "
+        "weights the card has to hold. Charging the weights instead.",
         role.value,
         ref,
         estimate.est_vram_bytes / 1024**3,
-        floor / 1024**3,
+        weights / 1024**3,
     )
-    return replace(estimate, est_vram_bytes=floor)
+    return replace(estimate, est_vram_bytes=weights)
 
 
 def _sizing_failure_fallback(
@@ -1489,6 +1534,7 @@ def _launch_for(
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
                 kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
+                expert_offload=_role_expert_offload(model_path),
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
@@ -2136,6 +2182,20 @@ def plan_sizing_budget(device: FleetDevice | None = None) -> int:
     if probe is not None:
         return probe.sizing_budget
     return _device_sizing_budget(_live_sizing_devices())
+
+
+def plan_sizing_is_unified() -> bool:
+    """Whether ctx sizing charges the shared-memory footprint rather than VRAM.
+
+    True when no device has memory of its own -- an integrated GPU, an Apple
+    Silicon Mac, or no GPU at all -- because there a model's would-be VRAM and
+    its host bytes are the same memory, and charging only the VRAM half
+    under-reports the load by everything it maps. The same test decides the pool
+    placement charges against (:func:`_unified_memory_budget`).
+    """
+    probe = _plan_probe_store.get()
+    devices = list(probe.devices) if probe is not None else _live_sizing_devices()
+    return all(dev.unified for dev in devices)
 
 
 def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:

@@ -7,7 +7,7 @@ Covers:
   * every transfer really went over xet, not the HTTP fallback
   * asking twice for one model downloads it once
   * a cancelled download can be started again and finishes
-  * cancelling the running download leaves the queue behind it intact
+  * four downloads run concurrently, and cancelling one stops only its bytes
 
 Moves roughly 1.1GB, and `make test-integration` has no slow filter, so it is
 off unless asked for:
@@ -215,9 +215,12 @@ async def _await_active(pilot: Pilot[None], controller: TaskBarController, task_
     raise AssertionError("download never started")
 
 
-async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str]) -> None:
-    """Two install presses on one model must not queue it twice, and must not
-    transfer it twice: one task could still have opened two connections."""
+async def test_asking_twice_downloads_once(models_dir: Path) -> None:
+    """Two install presses on one model must not queue it twice.
+
+    The transfer runs in a child process, so the in-process xet spy cannot
+    count it; one task means one child means one transfer.
+    """
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
@@ -229,7 +232,6 @@ async def test_asking_twice_downloads_once(models_dir: Path, xet_calls: list[str
 
         assert await _await_terminal(pilot, controller, first) is TaskStatus.DONE
         assert _gguf_names(models_dir)
-        assert len(xet_calls) == 1, f"one model, {len(xet_calls)} transfers: {xet_calls}"
 
 
 async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> None:
@@ -242,15 +244,12 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
         first = controller.start_download(CHAT)
         await _await_active(pilot, controller, first)
         # Through the controller, which is what every cancel key binding calls.
-        # queue.cancel marks the row but leaves the transfer running, so calling
-        # it here would assert the stop-the-bytes guarantee against a path that
-        # does not make it.
         controller.cancel_task(first)
         assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
 
         # The row saying cancelled is not the claim; the bytes stopping is.
-        # xet drives the progress callback from its own thread, so raising there
-        # is swallowed and the transfer finishes behind a cancelled row.
+        # The worker terminates the download's child process, and the transfer
+        # dies with it.
         settled = _bytes_in_flight(models_dir)
         await asyncio.sleep(5)
         assert _bytes_in_flight(models_dir) <= settled, "cancelled download kept transferring"
@@ -261,44 +260,44 @@ async def test_a_cancelled_download_can_be_started_again(models_dir: Path) -> No
         assert any("Qwen3-0.6B" in n for n in _gguf_names(models_dir))
 
 
-async def test_a_queue_survives_cancelling_the_download_that_is_running(
-    models_dir: Path, xet_calls: list[str]
+async def test_cancelling_one_of_four_concurrent_downloads_leaves_the_rest_running(
+    models_dir: Path,
 ) -> None:
-    """Three models queue behind one. Cancelling the running one must stop only
-    its bytes, promote the next, and leave the model downloadable again.
+    """Four models run at once; cancelling one stops only its bytes.
 
-    The abort is session-wide, so the risk this pins is the queue behind it
-    dying with the cancelled transfer.
+    Each download owns a child process, so the cancelled one's terminate must
+    not touch its siblings, and the freed slot must take a new request.
     """
+    entries = (CHAT, EMBED, RERANK, VISION)
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
-        first, second, third = (controller.start_download(m) for m in (CHAT, EMBED, RERANK))
+        first, second, third, fourth = (controller.start_download(m) for m in entries)
 
-        await _await_active(pilot, controller, first)
-        assert len(controller.queue.active_tasks) == 1, "downloads must not run concurrently"
-        assert len(controller.queue.queued_tasks) == 2
+        for task_id in (first, second, third, fourth):
+            await _await_active(pilot, controller, task_id)
+        assert len(controller.queue.active_tasks) == 4, "downloads must run concurrently"
 
         controller.cancel_task(first)
         assert await _await_terminal(pilot, controller, first) is TaskStatus.CANCELLED
 
-        # Scoped to the cancelled repo: the promoted download is writing too.
-        # Must not grow. A cancel that discards its partial drops to zero, which
-        # is also a stop.
+        # Scoped to the cancelled repo: the three live downloads are writing
+        # too. Must not grow. A cancel that discards its partial drops to
+        # zero, which is also a stop.
         settled = _bytes_in_flight(models_dir, CHAT.hf_repo)
         await asyncio.sleep(5)
         assert _bytes_in_flight(models_dir, CHAT.hf_repo) <= settled, (
             "cancelled model kept transferring"
         )
 
-        # The session-wide abort must not have killed the queue behind it.
+        # Terminating the cancelled child must not have taken its siblings.
         assert await _await_terminal(pilot, controller, second) is TaskStatus.DONE
         assert await _await_terminal(pilot, controller, third) is TaskStatus.DONE
+        assert await _await_terminal(pilot, controller, fourth) is TaskStatus.DONE
 
         again = controller.start_download(CHAT)
-        assert again not in (first, second, third)
+        assert again not in (first, second, third, fourth)
         assert await _await_terminal(pilot, controller, again) is TaskStatus.DONE
 
-        for entry in (CHAT, EMBED, RERANK):
+        for entry in entries:
             assert _repo_gguf_count(models_dir, entry.hf_repo), f"{entry.hf_repo} produced no GGUF"
-        assert xet_calls, "transfers did not go over xet"

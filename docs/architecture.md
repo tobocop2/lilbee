@@ -594,7 +594,12 @@ flowchart LR
   for a chat that fits one card). Its context is then sized (`ctx.fit_split_ctx`, a
   binary search over the gguf-parser estimate) so **each card's own share fits that
   card's own headroom**, never the combined pool, so the per-GPU compute buffer can't
-  overflow device 0 even when the cards are unequal. On a
+  overflow device 0 even when the cards are unequal. A chat on one card searches the
+  same grid against one device (`ctx.fit_single_ctx`, entered through
+  `engine_params.resolve_chat_ctx`), so both paths price the cache the model's
+  architecture holds. Header math (`model_cache.compute_dynamic_ctx`) is the fallback
+  for when gguf-parser cannot answer; it charges every layer as dense attention over
+  the whole window, which under-grants linear-attention, sliding-window and MLA models. On a
   single CPU/Metal box this
   is a fleet-of-one against one shared pool, where the **search-critical roles
   (embed/rerank) are reserved before the elastic chat model**: chat's slot count and

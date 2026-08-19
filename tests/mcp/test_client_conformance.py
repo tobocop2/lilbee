@@ -195,7 +195,7 @@ async def test_a_cancelled_model_pull_aborts_the_download(monkeypatch) -> None:
 
     state = {"ticks": 0, "aborted": False}
 
-    def fake_pull(_ref, _src, *, on_update, allow_unsupported=False):
+    def fake_pull(_ref, _src, *, on_update, allow_unsupported=False, cancel=None):
         for _ in range(200):
             time.sleep(0.01)
             state["ticks"] += 1

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.roles import WorkerRole
 
 
 def _health(monkeypatch, body: dict) -> None:
@@ -118,8 +119,8 @@ def test_hermes_is_quiet_when_the_window_is_unknown(capsys):
 
 @pytest.mark.no_warm_default
 def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch, tmp_path):
-    # Exercises the real sizing path: only the model file and its GGUF header are
-    # faked, so resolve_chat_ctx does the arithmetic the fleet's planner does.
+    # Exercises the header-math fallback: the file is not a parsable GGUF, so the
+    # estimator cannot answer and resolve_chat_ctx does the arithmetic itself.
     from lilbee.cli.launchers import server as launch_mod
 
     gguf = tmp_path / "chat.gguf"
@@ -201,3 +202,28 @@ def test_planned_chat_ctx_is_none_when_the_model_file_is_missing(monkeypatch):
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _missing)
 
     assert launch_mod.planned_chat_ctx() is None
+
+
+@pytest.mark.no_warm_default
+def test_both_grant_surfaces_report_the_window_the_estimator_fits(monkeypatch, tmp_path):
+    # The launcher advertises a window the fleet has to serve, so the two must
+    # come from one answer. Both read resolve_chat_ctx; this pins that they agree
+    # on the estimator's number rather than one of them keeping header math.
+    from lilbee.cli.launchers import server as launch_mod
+    from lilbee.providers.fleet import planning as planning_mod
+
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"0" * 1024)
+    meta = {"architecture": "qwen3", "block_count": "36", "context_length": "262144"}
+    fitted = 249856
+
+    monkeypatch.setattr(cfg, "chat_model", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(planning_mod, "fit_chat_ctx", lambda *_a, **_k: fitted)
+
+    assert launch_mod.planned_chat_ctx() == fitted
+    assert planning_mod._role_ctx(WorkerRole.CHAT, gguf, meta) == fitted

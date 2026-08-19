@@ -234,7 +234,7 @@ def test_slots_for_llm_rerank_steps_down_when_vram_tight(monkeypatch) -> None:
 def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
     # Chat is no longer a fixed 4: a giant on a ~24GB Metal budget steps down.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    # budget = 24e9 * 0.75 * _CHAT_VRAM_FRACTION(0.8) = 14.4e9; 17e9 base never fits.
+    # budget = 24e9 * 0.75 = 18e9; a 17e9 base leaves no room for a second slot.
     monkeypatch.setattr(
         planning_mod,
         "estimate_instance_footprint",
@@ -257,7 +257,7 @@ def test_resolve_chat_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None
 
 
 def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None:
-    # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (19.2e9) -> 1.
+    # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (18e9) -> 1.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
         planning_mod,
@@ -286,6 +286,40 @@ def test_resolve_chat_slots_steps_down_to_fit_unified_budget(monkeypatch) -> Non
     )
 
 
+def test_resolve_chat_slots_claims_the_whole_serve_budget(monkeypatch) -> None:
+    # The card that fits a second slot must be granted one. gpu_memory_fraction is
+    # already the serve margin; charging a second fraction on top held back a fifth
+    # of the card for co-located roles that the reservation below accounts for
+    # exactly, and that here do not exist.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
+    )
+    # 45e9 card -> 33.75e9 serve budget. Two slots cost 31e9 and fit; the old
+    # 0.8 cut the budget to 27e9 and refused them.
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, device=_card(45 * 10**9)) == 2
+
+
+def test_resolve_chat_slots_still_yields_to_the_search_reservation(monkeypatch) -> None:
+    # The room for embed/rerank comes from their measured footprint, not from a
+    # flat fraction, so a reservation that leaves no space for the second slot
+    # still takes it away.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
+    )
+    assert (
+        planning_mod._resolve_chat_slots(
+            Path("/m/c.gguf"), 65536, chat_reservation=5 * 10**9, device=_card(45 * 10**9)
+        )
+        == 1
+    )
+
+
 def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
     # The search reservation is subtracted from the chat budget, so a chat that
     # fits 4 slots with no reservation steps down once embed/rerank are held back.
@@ -295,13 +329,13 @@ def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
         "estimate_instance_footprint",
         _slotted_estimator(base=30 * 10**9, per_slot=2 * 10**9),
     )
-    # Budget = 64e9 * 0.75 * 0.8 = 38.4e9. No reservation: 4 slots (38e9) fits.
+    # Budget = 64e9 * 0.75 = 48e9. No reservation: 4 slots (38e9) fits.
     card = _card(64 * 10**9)
     assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, device=card) == 4
-    # Reserve 9e9 for search -> budget 29.4e9; even 2 slots (34e9) overruns -> 1.
+    # Reserve 15e9 for search -> budget 33e9; even 2 slots (34e9) overruns -> 1.
     assert (
         planning_mod._resolve_chat_slots(
-            Path("/m/c.gguf"), 65536, chat_reservation=9 * 10**9, device=card
+            Path("/m/c.gguf"), 65536, chat_reservation=15 * 10**9, device=card
         )
         == 1
     )
@@ -2102,6 +2136,88 @@ class TestPlanProbe:
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _no_engine)
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 32 * _GB)
         assert planning_mod.plan_sizing_budget() == int(32 * _GB * cfg.gpu_memory_fraction)
+
+
+class TestPlanSizingIsUnified:
+    """Which memory model a single-device ctx fit charges its estimate against."""
+
+    def _live(self, monkeypatch, devices) -> None:
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: devices)
+
+    def test_a_dedicated_card_is_charged_its_vram(self, monkeypatch) -> None:
+        self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
+        assert not planning_mod.plan_sizing_is_unified()
+
+    def test_a_shared_memory_device_is_charged_its_whole_footprint(self, monkeypatch) -> None:
+        self._live(monkeypatch, [FleetDevice("Metal", 0, "M", 24 * _GB, 24 * _GB, unified=True)])
+        assert planning_mod.plan_sizing_is_unified()
+
+    def test_one_dedicated_card_among_shared_ones_decides(self, monkeypatch) -> None:
+        # Mixed hosts plan as dedicated, the same call placement makes, so the two
+        # cannot disagree about which pool a role is charged to.
+        self._live(
+            monkeypatch,
+            [
+                FleetDevice("Vulkan", 0, "igpu", 8 * _GB, 8 * _GB, unified=True),
+                FleetDevice("Vulkan", 1, "card", 16 * _GB, 16 * _GB),
+            ],
+        )
+        assert not planning_mod.plan_sizing_is_unified()
+
+    def test_a_box_with_no_gpu_is_shared_memory(self, monkeypatch) -> None:
+        # The fleet runs on the CPU; its "VRAM" is the system's RAM.
+        self._live(monkeypatch, [])
+        assert planning_mod.plan_sizing_is_unified()
+
+    def test_the_plan_snapshot_wins_over_a_live_probe(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod,
+            "_resolve_devices_and_refusal",
+            lambda _b: ([FleetDevice("Metal", 0, "M", 24 * _GB, 24 * _GB, unified=True)], False),
+        )
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 32 * _GB)
+        planning_mod.capture_plan_probe()
+        try:
+            self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
+            assert planning_mod.plan_sizing_is_unified()
+        finally:
+            planning_mod.clear_plan_probe()
+
+
+class TestFitChatCtx:
+    """The chat role's arguments to the single-device fit."""
+
+    def test_it_sizes_one_slot_at_the_launch_flags(self, monkeypatch, tmp_path) -> None:
+        # Slots stay at one because _slots_for grows the count afterwards, against
+        # what this window leaves; passing more here would charge the cache twice.
+        from lilbee.core.config.enums import KvCacheType
+
+        seen: dict = {}
+
+        def _fit(path, **kwargs):
+            seen.update(model_path=path, **kwargs)
+            return 32768
+
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", _fit)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        model = tmp_path / "m.gguf"
+        meta = {"arch": "x"}
+
+        assert (
+            planning_mod.fit_chat_ctx(model, meta, available_bytes=40 * _GB, ctx_ceiling=262144)
+            == 32768
+        )
+        assert seen["model_path"] == model
+        assert seen["meta"] == meta
+        assert seen["slots"] == 1
+        assert seen["available_bytes"] == 40 * _GB
+        assert seen["ctx_ceiling"] == 262144
+        assert seen["unified"] is False
+        assert seen["kv_cache_type"] is KvCacheType.Q4_0
 
 
 class TestPlacementChargesAgainstFreeMemory:
