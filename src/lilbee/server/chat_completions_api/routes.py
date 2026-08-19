@@ -233,7 +233,7 @@ async def _run_non_stream(
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
-        # The dispatch blocks for the whole generation; run it off the event loop
+        # cap_aware_chat blocks for the whole generation; run it off the event loop
         # so a slow chat does not stall other admitted requests. The preflight
         # already resolved the model, so hand it in to avoid re-running it.
         resp = await asyncio.to_thread(
@@ -263,7 +263,7 @@ async def _gated_completions_stream(
     include_usage: bool = False,
     mode: ReasoningMode = ReasoningMode.SEPARATE,
 ) -> AsyncGenerator[bytes, None]:
-    """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
+    """Drive ``cap_aware_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
 
     Pre-flight errors (unknown model, tools-against-non-tool-model) are
     surfaced as a single SSE ``data:`` frame carrying the error

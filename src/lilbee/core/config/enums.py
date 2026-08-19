@@ -10,12 +10,10 @@ class ReasoningMode(StrEnum):
     ``reasoning_content`` on ``/v1/chat/completions``, a ``thinking`` block on
     ``/v1/messages``. ``inline`` presents thinking as ordinary answer text with
     the ``<think>`` markers stripped, for clients that never render the
-    reasoning channel. ``off`` asks the model not to think; thinking templates
-    honor the request and other templates ignore it, so a surface that promises
-    no thinking also drops any thinking the model produces anyway.
-
-    ``completions_reasoning`` and ``messages_reasoning`` set the default per
-    surface.
+    reasoning channel. ``off`` asks the model not to think, which only reaches
+    the template on a locally served model; ``/v1/messages`` also drops
+    thinking a model produces anyway, ``/v1/chat/completions`` still reports it
+    in ``reasoning_content``.
     """
 
     SEPARATE = "separate"
