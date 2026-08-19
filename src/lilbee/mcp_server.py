@@ -370,7 +370,9 @@ async def add(
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
-    Paths must be absolute. URLs are fetched as single pages; use ``crawl`` for sites."""
+    Paths are absolute and resolve on the machine running lilbee, which is not
+    the caller's machine when the server is remote. URLs are fetched as single
+    pages; use ``crawl`` for sites."""
     from lilbee.app.ingest import register_sources
     from lilbee.data.ingest import sync as run_sync
 
@@ -383,7 +385,14 @@ async def add(
         else:
             p = Path(p_str)
             if not p.exists():
-                errors.append(p_str)
+                # Name the machine and the root. A remote caller sends paths
+                # from its own filesystem, and a bare path in `errors` reads as
+                # a transient hiccup: agents took it as success and moved on.
+                errors.append(
+                    f"{p_str}: no such file or directory on the lilbee server. "
+                    f"Paths resolve on the server, whose documents root is "
+                    f"{cfg.documents_dir}."
+                )
             else:
                 valid.append(p)
 
@@ -428,6 +437,11 @@ async def add(
         "errors": errors,
         "sync": sync_result,
     }
+    indexed = len(reg_result.registered) + len(reg_result.tracked) + crawled_count
+    if errors and not indexed:
+        # Nothing was added. Returning the success shape with a warning let a
+        # caller report the add as done over an untouched index.
+        return _error("add indexed nothing. " + " ".join(errors))
     if errors or sync_result.get("failed"):
         result["warning"] = "some files could not be processed"
     return result
