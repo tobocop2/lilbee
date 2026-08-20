@@ -312,3 +312,14 @@ class TestReconcilesIndexAgainstPatterns:
 
         monkeypatch.setattr(pipeline, "get_services", _explode)
         assert pipeline._forget_ignored([self._src("keep.md")], IgnoreRules()) == []
+
+
+def test_usage_guide_lists_every_built_in_ignore_directory():
+    """defaults.py owns the list; the guide repeats it for readers. Keep them in step."""
+    from lilbee.core.config import DEFAULT_IGNORE_DIRS
+
+    guide = (Path(__file__).parent.parent / "docs" / "usage.md").read_text(encoding="utf-8")
+    section = guide[guide.index("### What lilbee already excludes") :]
+    section = section[: section.index("###", 10)]
+    missing = sorted(name for name in DEFAULT_IGNORE_DIRS if f"`{name}`" not in section)
+    assert not missing, f"docs/usage.md omits built-in ignore directories: {missing}"

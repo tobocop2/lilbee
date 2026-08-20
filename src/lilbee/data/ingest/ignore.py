@@ -27,8 +27,8 @@ IGNORE_TEMPLATE = """\
 # This file covers everything you index. Put a .lilbeeignore inside a
 # tree to scope patterns to it; the deeper file wins, so ! adds back.
 #
-# node_modules/, __pycache__, venv, build, dist, target, vendor and
-# dot-directories are already skipped. Add what those miss:
+# Build and dependency directories, and every dot-directory, are already
+# excluded. Add what those miss:
 #
 # *.min.js
 # testdata/
