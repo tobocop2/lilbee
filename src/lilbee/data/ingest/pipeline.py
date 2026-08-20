@@ -43,7 +43,12 @@ from lilbee.data.ingest.adaptive import (
     resolve_mode,
 )
 from lilbee.data.ingest.code import ingest_code_sync
-from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
+from lilbee.data.ingest.discovery import (
+    classify_file,
+    discover_files,
+    file_hash,
+    resolve_source_root,
+)
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
@@ -54,6 +59,7 @@ from lilbee.data.ingest.fanout import (
     plan_fanout,
     run_workers,
 )
+from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -888,6 +894,38 @@ def _reconcile_missing(
     return sorted(name for name in disk_files if name not in accounted)
 
 
+def _ignored_sources(absent: list[str], rules: IgnoreRules) -> list[str]:
+    """Absent sources whose file a ``.lilbeeignore`` excludes rather than lost.
+
+    The two cases need opposite handling and discovery cannot tell them apart --
+    both simply stop being yielded -- so the question is asked of the patterns
+    directly. Excluded sources are dropped from the index; vanished ones stay,
+    which is what keeps a move detectable across a sync.
+    """
+    ignored = []
+    for name in absent:
+        resolved = resolve_source_root(name)
+        if resolved is not None and rules.excludes_path(resolved[1], base=resolved[0]):
+            ignored.append(name)
+    return ignored
+
+
+def _forget_ignored(names: list[str]) -> list[str]:
+    """Remove newly-excluded sources from the index. Returns what was removed.
+
+    No skip marker is written: the ignore file is itself the durable statement,
+    so a marker could only outlive it and hold a source out after its pattern
+    was deleted. Deleting the pattern brings the source back on the next sync.
+    """
+    if not names:
+        return []
+    from lilbee.app.ingest import forget_removed_from_wiki_index
+
+    removed = list(get_services().store.remove_documents(names).removed)
+    forget_removed_from_wiki_index(removed)
+    return removed
+
+
 def _require_embedding_model() -> None:
     """Refuse ingest without an embedding model.
 
@@ -1072,7 +1110,8 @@ async def sync(
             cancel=cancel,
         )
 
-    disk_files = discover_files(shard)
+    rules = IgnoreRules.for_corpus()
+    disk_files = discover_files(shard, rules)
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
@@ -1082,11 +1121,18 @@ async def sync(
     reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
-    # Sources whose backing file is not on disk this pass. They are NOT removed:
-    # a vanished file stays indexed and searchable, a dead path-link the user
-    # discovers only when they try to open it. The set exists only to pair a
-    # reappeared identical file to its old key below.
+    # Sources whose backing file is not on disk this pass. A vanished file is NOT
+    # removed: it stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it, and the set pairs a reappeared
+    # identical file to its old key below. A file an ignore pattern now excludes
+    # is the opposite case -- the user said to drop it -- so it is removed here
+    # and leaves the absent set, where it could otherwise capture a real move.
     absent = _absent_sources(sources, disk_files)
+    ignored = _forget_ignored(_ignored_sources(absent, rules))
+    if ignored:
+        absent = [name for name in absent if name not in set(ignored)]
+        existing_sources = {k: v for k, v in existing_sources.items() if k not in set(ignored)}
+        log.info("Sync removed %d source(s) newly excluded by %s", len(ignored), IGNORE_FILENAME)
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1173,7 +1219,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=[],
+        removed=ignored,
         unchanged=state.unchanged,
         relocated=relocated,
         failed=list(failed),

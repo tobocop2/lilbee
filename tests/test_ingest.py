@@ -3851,7 +3851,7 @@ class TestRemoveDropsFromWikiIndex:
         monkeypatch.setattr(
             "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
         )
-        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+        ingest_mod.forget_removed_from_wiki_index(["gone.txt"])
         assert called == []
 
     def test_an_index_failure_does_not_fail_the_removal(self, isolated_env, monkeypatch):
@@ -3864,7 +3864,7 @@ class TestRemoveDropsFromWikiIndex:
             "lilbee.wiki.stubs.drop_sources_from_index",
             mock.MagicMock(side_effect=RuntimeError("index unwritable")),
         )
-        ingest_mod._forget_removed_from_wiki_index(["gone.txt"])
+        ingest_mod.forget_removed_from_wiki_index(["gone.txt"])
 
     def test_removing_nothing_touches_no_index(self, isolated_env, monkeypatch):
         from lilbee.app import ingest as ingest_mod
@@ -3875,7 +3875,7 @@ class TestRemoveDropsFromWikiIndex:
         monkeypatch.setattr(
             "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
         )
-        ingest_mod._forget_removed_from_wiki_index([])
+        ingest_mod.forget_removed_from_wiki_index([])
         assert called == []
 
 
