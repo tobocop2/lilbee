@@ -13,12 +13,15 @@ const VARIANTS = new Set(["", "cu121", "cu124", "cu125", "rocm", "compat", "comp
  *
  * @param {string} platform - process.platform value ("darwin" | "linux" | "win32")
  * @param {string} arch - process.arch value ("arm64" | "x64")
- * @param {string} variant - "" (default CPU), "cu121" | "cu124" | "cu125" | "rocm" | "compat"
+ * @param {string} variant - "" (auto), "default" (plain build) | "cu121" | "cu124" | "cu125" | "rocm" | "compat"
  */
 export function assetNameFor(platform, arch, variant = "") {
+  // "default" forces the plain build on hosts where detection would pick a
+  // GPU variant (the other channels offer the same choice).
+  if (variant === "default") variant = "";
   if (!VARIANTS.has(variant)) {
     throw new Error(
-      `Unknown LILBEE_VARIANT "${variant}". Valid: cu121, cu124, cu125, rocm, compat, compat-cu124, compat-rocm, or unset.`
+      `Unknown LILBEE_VARIANT "${variant}". Valid: default, cu121, cu124, cu125, rocm, compat, compat-cu124, compat-rocm, or unset.`
     );
   }
   const compat = variant === "compat" || variant.startsWith("compat-");
@@ -47,7 +50,6 @@ export function assetNameFor(platform, arch, variant = "") {
   }
   throw new Error(
     `No standalone lilbee build for ${platform}/${arch}. ` +
-      "Install lilbee yourself (pip/uv/brew) and it will be picked up from PATH, " +
-      "or point LILBEE_BIN at a binary."
+      "Install lilbee yourself (pip/uv/brew) and point LILBEE_BIN at the binary."
   );
 }

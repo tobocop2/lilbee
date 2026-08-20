@@ -101,7 +101,7 @@ Remote:
 | `LILBEE_TOKEN` | Session token for the remote server (from its `server.json`). |
 | `LILBEE_BIN` | Explicit path to a lilbee binary. |
 | `LILBEE_DATA_DIR` | Library location for `mcp`; same as `--data-dir`. |
-| `LILBEE_VARIANT` | Override the detected download variant: `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
+| `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
 | `LILBEE_RELEASE` | Override the pinned lilbee release tag. |
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 

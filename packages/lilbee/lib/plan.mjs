@@ -91,8 +91,8 @@ Environment:
   LILBEE_TOKEN     bearer session token for LILBEE_URL
   LILBEE_BIN       explicit path to a lilbee binary
   LILBEE_DATA_DIR  library location for \`mcp\` (same as --data-dir)
-  LILBEE_VARIANT   download variant override: cu121 | cu124 | cu125 | rocm |
-                   compat | compat-cu124 | compat-rocm (unset = auto-detect
-                   the host GPU and CPU baseline)
+  LILBEE_VARIANT   download variant override: default | cu121 | cu124 | cu125 |
+                   rocm | compat | compat-cu124 | compat-rocm (unset =
+                   auto-detect; default = the plain build on any host)
   LILBEE_RELEASE   override the pinned lilbee release tag
 `;

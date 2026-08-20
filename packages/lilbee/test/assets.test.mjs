@@ -9,6 +9,12 @@ test("maps every published platform build", () => {
   assert.equal(assetNameFor("win32", "x64"), "lilbee-windows-x86_64.exe");
 });
 
+test("'default' selects the plain build even where detection would pick a GPU one", () => {
+  assert.equal(assetNameFor("linux", "x64", "default"), "lilbee-linux-x86_64");
+  assert.equal(assetNameFor("win32", "x64", "default"), "lilbee-windows-x86_64.exe");
+  assert.equal(assetNameFor("darwin", "arm64", "default"), "lilbee-macos-arm64");
+});
+
 test("maps GPU variants on linux and windows", () => {
   assert.equal(assetNameFor("linux", "x64", "cu125"), "lilbee-linux-x86_64-cu125");
   assert.equal(assetNameFor("linux", "x64", "cu121"), "lilbee-linux-x86_64-cu121");
