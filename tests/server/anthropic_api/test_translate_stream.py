@@ -254,3 +254,55 @@ class TestReasoningModeOnStream:
             mode=ReasoningMode.OFF,
         )
         assert _types(pairs) == ["message_start", "message_delta", "message_stop"]
+
+
+def _text_stream(chunks):
+    return [
+        ContentBlockStart(index=0, block=TextBlock(text="")),
+        *(ContentBlockDelta(index=0, delta=TextDelta(text=chunk)) for chunk in chunks),
+        ContentBlockStop(index=0),
+        MessageDelta(stop_reason=StopReason.END_TURN),
+        MessageStop(),
+    ]
+
+
+class TestPseudoThinkingStripOnStream:
+    """OFF drops a reply-initial pseudo-thinking block, even split across deltas."""
+
+    @pytest.mark.asyncio
+    async def test_off_drops_an_unclosed_tag_split_across_deltas(self):
+        pairs = await _drain(
+            _text_stream(["<anthropic_", "thinking> plan the", " whole reply"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _types(pairs) == ["message_start", "message_delta", "message_stop"]
+
+    @pytest.mark.asyncio
+    async def test_off_drops_a_closed_pseudo_block_and_streams_the_answer(self):
+        pairs = await _drain(
+            _text_stream(["<anti_codeblock>plan</anti_", "codeblock>ans", "wer"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [
+            {"type": "text_delta", "text": "ans"},
+            {"type": "text_delta", "text": "wer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_leaves_mid_reply_markup_untouched(self):
+        pairs = await _drain(
+            _text_stream(["answer <anti_codeblock>x", "</anti_codeblock>"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _block_kinds(pairs) == ["text"]
+        joined = "".join(delta["text"] for delta in _deltas(pairs))
+        assert joined == "answer <anti_codeblock>x</anti_codeblock>"
+
+    @pytest.mark.asyncio
+    async def test_separate_streams_pseudo_tags_verbatim(self):
+        pairs = await _drain(
+            _text_stream(["<anthropic_thinking> plan"]), mode=ReasoningMode.SEPARATE
+        )
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [{"type": "text_delta", "text": "<anthropic_thinking> plan"}]

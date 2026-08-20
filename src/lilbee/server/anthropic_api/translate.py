@@ -8,7 +8,13 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.core.config.enums import ReasoningMode
-from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
+from lilbee.retrieval.reasoning import (
+    PseudoThinkingNormalizer,
+    StreamToken,
+    TagParser,
+    normalize_pseudo_thinking,
+    split_reasoning,
+)
 from lilbee.server.anthropic_api.models import (
     _THINKING_DISABLED,
     AnthropicEventType,
@@ -242,10 +248,13 @@ def canonical_to_messages_response(
     clean answer. INLINE folds it into the answer text with the markers
     stripped, for clients that never render thinking blocks. OFF drops it: the
     caller asked for no thinking, and a template that ignores the request still
-    thinks, so the block would contradict the answer the caller asked for.
+    thinks, so the block would contradict the answer the caller asked for. OFF
+    also drops a reply-initial pseudo-thinking block a model emits as plain text.
     """
-    text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
-    reasoning, answer = split_reasoning("".join(text_parts))
+    text = "".join(b.text for b in resp.content if isinstance(b, TextBlock))
+    if mode is ReasoningMode.OFF:
+        text = normalize_pseudo_thinking(text)
+    reasoning, answer = split_reasoning(text)
     if mode is ReasoningMode.INLINE and reasoning:
         answer = f"{reasoning}\n\n{answer}" if answer else reasoning
     if mode is not ReasoningMode.SEPARATE:
@@ -281,11 +290,16 @@ class _AnthropicStreamMapper:
 
     INLINE routes reasoning into the text block instead, and OFF drops it: a
     parser built with ``show=False`` reports reasoning tokens with empty
-    content, which never opens a block or emits a delta.
+    content, which never opens a block or emits a delta. OFF also rewrites a
+    reply-initial pseudo-thinking tag to the ``<think>`` tags before parsing,
+    so a planning block a model emits as plain text is dropped too.
     """
 
     def __init__(self, *, mode: ReasoningMode = ReasoningMode.SEPARATE) -> None:
         self._reasoning = TagParser(show=mode is not ReasoningMode.OFF)
+        self._pseudo: PseudoThinkingNormalizer | None = (
+            PseudoThinkingNormalizer() if mode is ReasoningMode.OFF else None
+        )
         self._inline = mode is ReasoningMode.INLINE
         self._next_index = 0
         self._open: _BlockKind | None = None
@@ -395,7 +409,10 @@ class _AnthropicStreamMapper:
         self, event: ContentBlockDelta
     ) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
         if isinstance(event.delta, TextDelta):
-            return self._text_events(self._reasoning.feed(event.delta.text))
+            text = event.delta.text
+            if self._pseudo is not None:
+                text = self._pseudo.feed(text)
+            return self._text_events(self._reasoning.feed(text))
         if self._open is not _BlockKind.TOOL:
             # A tool delta for a block that never started is a provider quirk,
             # not a stream error; dropping beats crashing the stream.
@@ -415,8 +432,11 @@ class _AnthropicStreamMapper:
         ]
 
     def block_stop(self) -> list[tuple[AnthropicEventType, dict[str, Any]]]:
+        tokens = self._reasoning.feed(self._pseudo.flush()) if self._pseudo is not None else []
         remaining = self._reasoning.flush()
-        events = self._text_events([remaining] if remaining else [])
+        if remaining is not None:
+            tokens.append(remaining)
+        events = self._text_events(tokens)
         events.extend(self._close_open())
         return events
 
