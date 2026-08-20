@@ -199,6 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/delete <name>` | | Remove a document from the index |
+| `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
 | `/remove <name>` | | Remove an installed model |
 | `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
@@ -765,9 +766,9 @@ lilbee sync --prune-ignored
 ```
 
 That removes the matching documents from the index and reports them as
-`Removed`. Source files are never touched. Over HTTP, pass
-`{"prune_ignored": true}` to `/api/sync`; over MCP, pass
-`prune_ignored=true` to `lilbee_sync`.
+`Removed`. Source files are never touched. The same option is on every
+surface: `/prune-ignored` in the TUI, `{"prune_ignored": true}` to
+`/api/sync`, and `prune_ignored=true` on `lilbee_sync`.
 
 Nothing is written to hold a pruned file out. Delete the pattern and the
 next sync indexes it again, so a prune you regret costs a re-index, not
