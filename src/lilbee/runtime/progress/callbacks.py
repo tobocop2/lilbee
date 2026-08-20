@@ -6,6 +6,7 @@ from lilbee.runtime.progress.types import (
     BatchProgressEvent,
     CrawlDoneEvent,
     CrawlPageEvent,
+    CrawlPageFailedEvent,
     CrawlStartEvent,
     EmbedEvent,
     EventType,
@@ -29,6 +30,7 @@ ProgressEvent = (
     | SyncDoneEvent
     | CrawlStartEvent
     | CrawlPageEvent
+    | CrawlPageFailedEvent
     | CrawlDoneEvent
     | SetupStartEvent
     | SetupProgressEvent

@@ -484,6 +484,8 @@ def crawl_status(task_id: str) -> dict[str, Any]:
         "status": task.status.value,
         "pages_crawled": task.pages_crawled,
         "pages_total": task.pages_total,
+        "pages_failed": task.pages_failed,
+        "failure_reasons": task.failure_reasons,
         "error": task.error,
         "started_at": task.started_at,
         "finished_at": task.finished_at,

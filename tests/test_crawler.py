@@ -1803,6 +1803,21 @@ class TestCrawlAndSave:
         assert "crawl_done" in event_types
 
     @patch("lilbee.crawler.runner.crawl_single")
+    async def test_single_page_failure_emits_page_failed(self, mock_crawl_single, isolated_env):
+        """A failed single-page fetch emits crawl_page_failed naming the error."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com", success=False, error="403 Forbidden"
+        )
+        events = []
+
+        def on_progress(event_type, data):
+            events.append((str(event_type), data))
+
+        await crawl_and_save("https://example.com", depth=0, on_progress=on_progress)
+        failed = [d for t, d in events if t == "crawl_page_failed"]
+        assert [(e.url, e.reason) for e in failed] == [("https://example.com", "403 Forbidden")]
+
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_updates_metadata(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"

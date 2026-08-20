@@ -53,6 +53,7 @@ MODEL_UNUSABLE_NO_FALLBACK = (
 )
 MODEL_ADOPTED_LOG = "{label} model: using installed {effective!r}."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
+CMD_CRAWL_PAGES_FAILED = "{count} page(s) failed; last: {reason}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."
 SETUP_CHROMIUM_NAME = "Install Chromium browser"

@@ -26,6 +26,7 @@ from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _drain_page_stream,
+    _emit_page_failure,
     _fetched_to_result,
     _handle_crawl_teardown_error,
     _pages_cap,
@@ -400,6 +401,7 @@ async def _run_crawl(
             log.exception("Flush failed for %s", result.url)
         if on_progress:
             on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+        _emit_page_failure(on_progress, result)
         return 1
     results = await crawl_recursive(
         url,
