@@ -346,7 +346,9 @@ class TestAddEndpoint:
         src.write_text("Slow sync content for heartbeat test.")
         cfg.sse_heartbeat_interval = 0.2
 
-        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def slow_sync(
+            force_rebuild=False, quiet=False, *, on_progress=None, cancel=None, **_kw
+        ):
             from lilbee.data.ingest import SyncResult
 
             await asyncio.sleep(0.6)

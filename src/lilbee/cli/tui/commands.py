@@ -57,6 +57,11 @@ class LilbeeCommandProvider(Provider):
                 "Remove a file from the index (Tab completes names)",
                 self._action_delete_document,
             ),
+            (
+                "Prune ignored documents",
+                "Drop indexed documents a .lilbeeignore now excludes",
+                self._action_prune_ignored,
+            ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
             (
                 "Wikify",
@@ -153,6 +158,10 @@ class LilbeeCommandProvider(Provider):
         clear_skip_markers(cfg.data_root)
         self.screen.app.notify(msg.retry_skipped_message(cleared))
         self._app.action_run_sync()
+
+    def _action_prune_ignored(self) -> None:
+        """Sync with pruning on, the TUI equivalent of ``lilbee sync --prune-ignored``."""
+        self._run_slash_command(get_command("/prune-ignored"))
 
     def _action_version(self) -> None:
         from lilbee.app.version import get_version

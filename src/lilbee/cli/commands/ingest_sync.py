@@ -44,6 +44,11 @@ _retry_skipped_option = typer.Option(
     "--retry-skipped",
     help="Retry files that were skipped on a previous sync (clears the failed-file markers).",
 )
+_prune_ignored_option = typer.Option(
+    False,
+    "--prune-ignored",
+    help="Also drop indexed documents a .lilbeeignore now excludes. Source files are kept.",
+)
 _ocr_timeout_option = typer.Option(
     None,
     "--ocr-timeout",
@@ -304,6 +309,7 @@ def _run_sync_with_signal_cancel(
     *,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
+    prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
 ) -> object:
     """Run ``sync`` on a dedicated loop with a SIGINT->cancel hook (no traceback on Ctrl+C).
@@ -346,6 +352,7 @@ def _run_sync_with_signal_cancel(
                 on_progress=callback,
                 cancel=cancel_event,
                 retry_skipped=retry_skipped,
+                prune_ignored=prune_ignored,
             )
         )
     finally:
@@ -361,6 +368,7 @@ def sync_cmd(
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     retry_skipped: bool = _retry_skipped_option,
+    prune_ignored: bool = _prune_ignored_option,
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
 ) -> None:
@@ -373,7 +381,9 @@ def sync_cmd(
         cfg.ingest_processes = processes
 
     try:
-        result = _run_sync_with_signal_cancel(retry_skipped=retry_skipped)
+        result = _run_sync_with_signal_cancel(
+            retry_skipped=retry_skipped, prune_ignored=prune_ignored
+        )
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})

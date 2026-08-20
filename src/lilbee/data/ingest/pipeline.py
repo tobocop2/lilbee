@@ -43,7 +43,12 @@ from lilbee.data.ingest.adaptive import (
     resolve_mode,
 )
 from lilbee.data.ingest.code import ingest_code_sync
-from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
+from lilbee.data.ingest.discovery import (
+    classify_file,
+    discover_files,
+    file_hash,
+    resolve_source_root,
+)
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
@@ -54,6 +59,7 @@ from lilbee.data.ingest.fanout import (
     plan_fanout,
     run_workers,
 )
+from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -888,6 +894,44 @@ def _reconcile_missing(
     return sorted(name for name in disk_files if name not in accounted)
 
 
+def _ignored_sources(sources: list[SourceRecord], rules: IgnoreRules) -> list[str]:
+    """Indexed sources a ``.lilbeeignore`` now excludes.
+
+    Asked of the patterns rather than of discovery, which cannot tell an excluded
+    file from a lost one -- both simply stop being yielded, and the two need
+    opposite handling. Reading every source rather than only the undiscovered
+    ones keeps the answer independent of which slice of the corpus this pass
+    walked. Imported sources have no file to match a pattern against.
+    """
+    ignored = []
+    for source in sources:
+        if source["source_type"] == SourceType.IMPORTED:
+            continue
+        resolved = resolve_source_root(source["filename"])
+        if resolved is not None and rules.excludes_path(resolved[1], base=resolved[0]):
+            ignored.append(source["filename"])
+    return ignored
+
+
+def _forget_ignored(sources: list[SourceRecord], rules: IgnoreRules) -> list[str]:
+    """Drop sources the patterns now exclude from the index. Returns what went.
+
+    A corpus-wide pass: it reads every source, so one worker of a fan-out must
+    not run it. No skip marker is written either, because the ignore file is
+    itself the durable statement -- a marker could only outlive it and hold a
+    source out after its pattern was deleted. Deleting the pattern brings the
+    source back on the next sync.
+    """
+    names = _ignored_sources(sources, rules)
+    if not names:
+        return []
+    from lilbee.app.ingest import forget_removed_from_wiki_index
+
+    removed = list(get_services().store.remove_documents(names).removed)
+    forget_removed_from_wiki_index(removed)
+    return removed
+
+
 def _require_embedding_model() -> None:
     """Refuse ingest without an embedding model.
 
@@ -995,6 +1039,7 @@ async def _sync_across_workers(
     specs: list[ShardSpec],
     store: Store,
     *,
+    prune_ignored: bool = False,
     options: ShardOptions,
     quiet: bool,
     on_progress: DetailedProgressCallback,
@@ -1011,6 +1056,11 @@ async def _sync_across_workers(
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
     await to_ingest_thread(_merge_worker_shards, store, specs, touched)
+    # No worker sees the whole corpus, so each one leaves this pass to the parent.
+    if prune_ignored:
+        result.removed = await to_ingest_thread(
+            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
+        )
     await _run_post_ingest_passes(
         store, indexed_anything=bool(touched), touched=touched, cancel=cancel
     )
@@ -1019,7 +1069,7 @@ async def _sync_across_workers(
         SyncDoneEvent(
             added=len(result.added),
             updated=len(result.updated),
-            removed=0,
+            removed=len(result.removed),
             failed=len(result.failed),
             skipped=len(result.skipped),
             relocated=len(result.relocated),
@@ -1035,6 +1085,7 @@ async def sync(
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
     retry_skipped: bool = False,
+    prune_ignored: bool = False,
     shard: ShardId | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
@@ -1045,6 +1096,9 @@ async def sync(
     a cancel already set on entry returns an empty result instead.
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
     markers are cleared so this sync attempts every file.
+    When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
+    dropped from the index. Off by default: the patterns govern what sync takes
+    in, and removing what a past sync already indexed is the caller's decision.
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it sees only
     its slice of the corpus and leaves the corpus-wide passes to the parent.
     """
@@ -1062,6 +1116,7 @@ async def sync(
         return await _sync_across_workers(
             specs,
             _store,
+            prune_ignored=prune_ignored,
             options=ShardOptions(
                 parent_pid=os.getpid(),
                 force_rebuild=force_rebuild,
@@ -1072,7 +1127,8 @@ async def sync(
             cancel=cancel,
         )
 
-    disk_files = discover_files(shard)
+    rules = IgnoreRules.for_corpus()
+    disk_files = discover_files(shard, rules)
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
@@ -1082,11 +1138,17 @@ async def sync(
     reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
-    # Sources whose backing file is not on disk this pass. They are NOT removed:
-    # a vanished file stays indexed and searchable, a dead path-link the user
-    # discovers only when they try to open it. The set exists only to pair a
-    # reappeared identical file to its old key below.
-    absent = _absent_sources(sources, disk_files)
+    # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
+    # table, so it leaves this pass to the parent rather than racing its siblings.
+    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
+
+    # Sources whose backing file is not on disk this pass. A vanished file is NOT
+    # removed: it stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it, and the set pairs a reappeared
+    # identical file to its old key below. What was just removed leaves the set,
+    # where it could otherwise capture a real move.
+    gone = set(ignored)
+    absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1173,7 +1235,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=[],
+        removed=ignored,
         unchanged=state.unchanged,
         relocated=relocated,
         failed=list(failed),

@@ -220,6 +220,19 @@ class TestSync:
         runner.invoke(app, ["sync"])
         assert mock_sync.call_args.kwargs.get("retry_skipped") is False
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_prune_ignored_flag(self, mock_sync):
+        """`lilbee sync --prune-ignored` forwards prune_ignored=True to the engine."""
+        result = runner.invoke(app, ["sync", "--prune-ignored"])
+        assert result.exit_code == 0
+        assert mock_sync.call_args.kwargs.get("prune_ignored") is True
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_leaves_ignored_sources_alone_by_default(self, mock_sync):
+        """Editing a .lilbeeignore must not drop indexed documents on the next sync."""
+        runner.invoke(app, ["sync"])
+        assert mock_sync.call_args.kwargs.get("prune_ignored") is False
+
 
 class TestRebuild:
     def test_rebuild_empty(self):

@@ -52,7 +52,16 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     ),
     CatalogGroup(
         "KNOWLEDGE",
-        ("/add", "/crawl", "/wiki", "/delete", "/rebuild", "/export", "/import"),
+        (
+            "/add",
+            "/crawl",
+            "/wiki",
+            "/delete",
+            "/prune-ignored",
+            "/rebuild",
+            "/export",
+            "/import",
+        ),
     ),
     CatalogGroup(
         "MEMORY",

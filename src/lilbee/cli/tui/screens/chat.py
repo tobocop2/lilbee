@@ -1072,6 +1072,11 @@ class ChatScreen(Screen[None]):
         # a push_screen on top would stack a second, orphaned CatalogScreen.
         self.app.switch_view(msg.CATALOG_VIEW)
 
+    def _cmd_prune_ignored(self, args: str) -> None:
+        """Sync with pruning on, dropping indexed documents the patterns now exclude."""
+        del args
+        self._run_sync(prune_ignored=True)
+
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""
         self._cmd_delete_worker(args.strip())
@@ -2205,7 +2210,7 @@ class ChatScreen(Screen[None]):
         label = "Markdown" if use_md else "Plain text"
         self.notify(msg.CHAT_RENDERING.format(label=label))
 
-    def _run_sync(self, *, force_rebuild: bool = False) -> None:
+    def _run_sync(self, *, force_rebuild: bool = False, prune_ignored: bool = False) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar."""
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
@@ -2219,7 +2224,7 @@ class ChatScreen(Screen[None]):
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_sync(reporter, force_rebuild=force_rebuild)
+                self._do_sync(reporter, force_rebuild=force_rebuild, prune_ignored=prune_ignored)
             finally:
                 self._sync_active = False
                 # Re-detect after every sync attempt: success drives the
@@ -2230,7 +2235,13 @@ class ChatScreen(Screen[None]):
         label = msg.TASK_NAME_REBUILD if force_rebuild else msg.TASK_NAME_SYNC
         self._task_bar.start_task(label, TaskType.SYNC, _target, indeterminate=True)
 
-    def _do_sync(self, reporter: ProgressReporter, *, force_rebuild: bool = False) -> None:
+    def _do_sync(
+        self,
+        reporter: ProgressReporter,
+        *,
+        force_rebuild: bool = False,
+        prune_ignored: bool = False,
+    ) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
 
@@ -2238,10 +2249,17 @@ class ChatScreen(Screen[None]):
         on_progress = build_sync_progress_callback(reporter)
         try:
             result = asyncio_loop.run(
-                sync(quiet=True, on_progress=on_progress, force_rebuild=force_rebuild)
+                sync(
+                    quiet=True,
+                    on_progress=on_progress,
+                    force_rebuild=force_rebuild,
+                    prune_ignored=prune_ignored,
+                )
             )
         except asyncio.CancelledError as exc:
             raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
+        if prune_ignored:
+            call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:

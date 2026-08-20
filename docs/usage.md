@@ -23,6 +23,7 @@
   - [Wiki](#wiki)
 - [Agent integration (MCP)](#agent-integration)
 - [Per-project libraries](#per-project-libraries)
+- [Keeping files out of the index](#keeping-files-out-of-the-index)
 - [Cloud models](#cloud-models)
 - [Reference for advanced users](#reference-for-advanced-users)
   - [CLI commands](#cli-commands)
@@ -105,6 +106,9 @@ job runs in the Task Center, so you can keep chatting while indexing happens.
 If a file with the same name is already indexed, `add` skips it. To re-index in
 place, remove the document first with `/delete name`, or pass `--force` from
 the CLI.
+
+Adding a code repository pulls in more than you want? See
+[Keeping files out of the index](#keeping-files-out-of-the-index).
 
 ### Search vs Chat mode
 
@@ -195,6 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/delete <name>` | | Remove a document from the index |
+| `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
 | `/remove <name>` | | Remove an installed model |
 | `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
@@ -678,6 +683,101 @@ looking for one; if none is found, it falls back to the global database at the
 platform default location (see [Data locations](#data-locations)). `/status`
 in the TUI (or `lilbee status` from the shell) shows which database is active.
 
+## Keeping files out of the index
+
+### What lilbee already excludes
+
+Before you write a pattern, check what sync already excludes on its own:
+
+- Formats it cannot read. lilbee indexes the file types it can extract,
+  plus source code, and nothing else.
+- Every dot-file and dot-directory, including `.git/`.
+- A built-in directory list: `node_modules`, `__pycache__`, `venv`,
+  `build`, `dist`, `target`, `vendor`, `_build`, `coverage`, `htmlcov`,
+  and any name ending in `.egg-info`.
+
+`LILBEE_IGNORE_DIRS` adds more directory names, comma-separated. It only
+adds names. There is no way to take a built-in name off the list.
+
+```bash
+LILBEE_IGNORE_DIRS=generated,fixtures lilbee sync
+```
+
+### .lilbeeignore
+
+For what that list misses, write a `.lilbeeignore`. The syntax is
+`.gitignore`'s: `*` and `**` globs, a trailing `/` to match directories
+only, and a leading `!` to add something back.
+
+Use it when the problem is a supported file type rather than a directory
+name: vendored JavaScript, test fixtures, generated Markdown, a
+checked-in copy of `site-packages`.
+
+lilbee never reads a repo's `.gitignore`. Repos commit binaries and
+vendor trees, and a repo that excludes `docs/` from git holds the content
+you most want indexed.
+
+### Where to put it
+
+**One file covers everything you index.** It sits in your data directory,
+so in a `lilbee init` project it is `.lilbee/.lilbeeignore`, and
+otherwise it is the global data directory. `lilbee init` writes a
+commented copy for you.
+
+**A `.lilbeeignore` inside a tree covers that directory and everything
+below it.** Put one at the top of a repo to scope patterns to that repo,
+or deeper to narrow them further.
+
+The deeper file wins, so it can add back what the wider one excludes:
+
+```
+# .lilbee/.lilbeeignore -- everything you index
+*.min.js
+*.parquet
+
+# ~/code/myrepo/.lilbeeignore -- this repo only
+testdata/
+!jquery.min.js
+```
+
+sync never indexes the ignore files themselves.
+
+### sync does not walk an excluded directory
+
+The `!` above works because `*.min.js` matches files. An excluded
+*directory* behaves differently: sync never walks into it, so no pattern
+below it can add a file back. `!testdata/keep.md` under `testdata/` does
+nothing. This is git's rule.
+
+To keep one file out of a tree you otherwise index, exclude the files
+rather than the directory.
+
+### Changing patterns later
+
+The patterns govern what sync takes in. A pattern you add today stops
+those files being indexed from now on; it does not touch what an earlier
+sync already indexed. This matches `.gitignore`, which does not untrack
+a file you have already committed.
+
+To drop what a new pattern excludes, ask for it:
+
+```bash
+lilbee sync --prune-ignored
+```
+
+That removes the matching documents from the index and reports them as
+`Removed`. Source files are never touched. The same option is on every
+surface: `/prune-ignored` in the TUI, `{"prune_ignored": true}` to
+`/api/sync`, and `prune_ignored=true` on `lilbee_sync`.
+
+Nothing is written to hold a pruned file out. Delete the pattern and the
+next sync indexes it again, so a prune you regret costs a re-index, not
+the document.
+
+lilbee always indexes a file you name yourself. `lilbee add
+~/notes/report.pdf` beats a pattern that would exclude it, because
+naming a file is the stronger instruction.
+
 ## Cloud models
 
 lilbee runs entirely on your machine by default. There are two ways to use
@@ -743,6 +843,7 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
+| `lilbee sync --prune-ignored` | Re-index, and drop documents a `.lilbeeignore` now excludes |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
@@ -904,8 +1005,9 @@ lilbee resolves the data directory in this order (highest priority first):
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
 Run `lilbee init` to create a `.lilbee/` directory in your project. It
-contains `documents/` (your indexed files), `data/` (the search index), and a
-`.gitignore` that excludes derived data.
+contains `documents/` (your indexed files), `data/` (the search index), a
+`.gitignore` that excludes derived data, and a commented `.lilbeeignore` to
+fill in.
 
 ## Config file
 
@@ -1012,6 +1114,7 @@ effect on already-indexed material.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `LILBEE_IGNORE_DIRS` | (none) | Extra directory names to skip during discovery, comma-separated. Adds to the built-in list; it cannot remove a built-in name. For patterns rather than bare names, see [Keeping files out of the index](#keeping-files-out-of-the-index) |
 | `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
