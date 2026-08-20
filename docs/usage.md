@@ -753,10 +753,25 @@ rather than the directory.
 
 ### Changing patterns later
 
-If you add a pattern, the next sync removes what it now excludes and
-reports the count as `Removed`. If you delete a pattern, the next sync
-indexes those files again. The ignore file is the only record of an
-exclusion, so deleting the pattern is enough to undo it.
+The patterns govern what sync takes in. A pattern you add today stops
+those files being indexed from now on; it does not touch what an earlier
+sync already indexed. This matches `.gitignore`, which does not untrack
+a file you have already committed.
+
+To drop what a new pattern excludes, ask for it:
+
+```bash
+lilbee sync --prune-ignored
+```
+
+That removes the matching documents from the index and reports them as
+`Removed`. Source files are never touched. Over HTTP, pass
+`{"prune_ignored": true}` to `/api/sync`; over MCP, pass
+`prune_ignored=true` to `lilbee_sync`.
+
+Nothing is written to hold a pruned file out. Delete the pattern and the
+next sync indexes it again, so a prune you regret costs a re-index, not
+the document.
 
 lilbee always indexes a file you name yourself. `lilbee add
 ~/notes/report.pdf` beats a pattern that would exclude it, because
@@ -827,6 +842,7 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
+| `lilbee sync --prune-ignored` | Re-index, and drop documents a `.lilbeeignore` now excludes |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |

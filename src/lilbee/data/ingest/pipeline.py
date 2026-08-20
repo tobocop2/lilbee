@@ -1039,6 +1039,7 @@ async def _sync_across_workers(
     specs: list[ShardSpec],
     store: Store,
     *,
+    prune_ignored: bool = False,
     options: ShardOptions,
     quiet: bool,
     on_progress: DetailedProgressCallback,
@@ -1056,9 +1057,10 @@ async def _sync_across_workers(
     touched = set(result.added) | set(result.updated) | set(result.relocated)
     await to_ingest_thread(_merge_worker_shards, store, specs, touched)
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
-    result.removed = await to_ingest_thread(
-        _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
-    )
+    if prune_ignored:
+        result.removed = await to_ingest_thread(
+            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
+        )
     await _run_post_ingest_passes(
         store, indexed_anything=bool(touched), touched=touched, cancel=cancel
     )
@@ -1083,6 +1085,7 @@ async def sync(
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
     retry_skipped: bool = False,
+    prune_ignored: bool = False,
     shard: ShardId | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
@@ -1093,6 +1096,9 @@ async def sync(
     a cancel already set on entry returns an empty result instead.
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
     markers are cleared so this sync attempts every file.
+    When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
+    dropped from the index. Off by default: the patterns govern what sync takes
+    in, and removing what a past sync already indexed is the caller's decision.
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it sees only
     its slice of the corpus and leaves the corpus-wide passes to the parent.
     """
@@ -1110,6 +1116,7 @@ async def sync(
         return await _sync_across_workers(
             specs,
             _store,
+            prune_ignored=prune_ignored,
             options=ShardOptions(
                 parent_pid=os.getpid(),
                 force_rebuild=force_rebuild,
@@ -1131,9 +1138,9 @@ async def sync(
     reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
-    # Corpus-wide: a worker sees one slice but the whole sources table, so it
-    # leaves this pass to the parent rather than racing its siblings.
-    ignored = [] if shard is not None else _forget_ignored(sources, rules)
+    # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
+    # table, so it leaves this pass to the parent rather than racing its siblings.
+    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
 
     # Sources whose backing file is not on disk this pass. A vanished file is NOT
     # removed: it stays indexed and searchable, a dead path-link the user

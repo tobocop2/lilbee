@@ -1081,9 +1081,10 @@ class TestSyncDropsNewlyIgnored:
         result = await sync()
         assert sorted(result.added) == ["drop.txt", "keep.txt"]
 
-    async def test_pattern_added_after_ingest_removes_the_source(
+    async def test_a_pattern_added_after_ingest_leaves_the_source_indexed(
         self, mock_extract_file, isolated_env
     ):
+        """The patterns govern what sync takes in; they never drop what it already has."""
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
 
@@ -1091,6 +1092,19 @@ class TestSyncDropsNewlyIgnored:
         (isolated_env / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
 
         result = await sync()
+        assert result.removed == []
+        store = svc_mod.get_services().store
+        assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}
+        store.remove_documents.assert_not_called()
+
+    async def test_prune_ignored_drops_the_source_on_request(self, mock_extract_file, isolated_env):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        await self._ingest_two(isolated_env)
+        (isolated_env / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+
+        result = await sync(prune_ignored=True)
         assert result.removed == ["drop.txt"]
         assert {s["filename"] for s in svc_mod.get_services().store.get_sources()} == {"keep.txt"}
 
@@ -1109,7 +1123,7 @@ class TestSyncDropsNewlyIgnored:
         # not own. Every shard must leave the index untouched here.
         store = svc_mod.get_services().store
         for index in range(2):
-            result = await sync(shard=ShardId(index=index, count=2))
+            result = await sync(prune_ignored=True, shard=ShardId(index=index, count=2))
             assert result.removed == []
         store.remove_documents.assert_not_called()
         assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}

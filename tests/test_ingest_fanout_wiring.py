@@ -140,7 +140,7 @@ class TestSyncDispatch:
     async def test_a_qualifying_sync_runs_on_the_workers(self, corpus, monkeypatch, services):
         taken = {}
 
-        async def fake_fanout(specs, store, *, options, quiet, on_progress, cancel):
+        async def fake_fanout(specs, store, *, options, quiet, on_progress, cancel, **_kw):
             taken["specs"] = specs
             return SyncResult(added=["a.txt"])
 
@@ -199,7 +199,9 @@ class TestSyncAcrossWorkers:
             for index, error in enumerate(errors)
         ]
 
-    async def _run(self, specs, monkeypatch, verdicts, *, cancel=None, merged, store=None):
+    async def _run(
+        self, specs, monkeypatch, verdicts, *, cancel=None, merged, store=None, prune_ignored=False
+    ):
         async def fake_run_workers(*args, **kwargs):
             return verdicts
 
@@ -216,6 +218,7 @@ class TestSyncAcrossWorkers:
         result = await pipeline_mod._sync_across_workers(
             specs,
             store=store if store is not None else _EmptyStore(),
+            prune_ignored=prune_ignored,
             options=fanout.ShardOptions(parent_pid=1),
             quiet=True,
             on_progress=lambda kind, data: events.append(kind),
@@ -235,7 +238,7 @@ class TestSyncAcrossWorkers:
     async def test_the_parent_drops_what_an_ignore_pattern_now_excludes(
         self, specs, monkeypatch, tmp_path
     ):
-        """No worker sees the whole sources table, so only the parent can run this pass."""
+        """No worker sees the whole sources table, so only the parent runs this opt-in pass."""
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
 
         cfg.data_root = tmp_path
@@ -250,7 +253,12 @@ class TestSyncAcrossWorkers:
         monkeypatch.setattr(pipeline_mod, "get_services", lambda: type("S", (), {"store": store})())
 
         result, _ = await self._run(
-            specs, monkeypatch, self._verdicts(None, None), merged=[], store=store
+            specs,
+            monkeypatch,
+            self._verdicts(None, None),
+            merged=[],
+            store=store,
+            prune_ignored=True,
         )
         assert result.removed == ["app.min.js"]
 
