@@ -70,6 +70,8 @@ SYNC_SKIPPED_VISION_FAILED = (
 )
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
+CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
+CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 
 
 def sync_skipped_message(files: str) -> str:
@@ -89,6 +91,11 @@ def sync_skipped_message(files: str) -> str:
 def retry_skipped_message(count: int) -> str:
     """Toast for the 'Retry skipped documents' command."""
     return CMD_RETRY_SKIPPED_NONE if count == 0 else CMD_RETRY_SKIPPED_SOME.format(count=count)
+
+
+def prune_ignored_message(count: int) -> str:
+    """Toast for the '/prune-ignored' command."""
+    return CMD_PRUNE_IGNORED_NONE if count == 0 else CMD_PRUNE_IGNORED_SOME.format(count=count)
 
 
 CMD_DELETE_NO_DOCS = "No documents indexed"

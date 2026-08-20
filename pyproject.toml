@@ -70,6 +70,9 @@ dependencies = [
     # The read side is stdlib tomllib; this is its write half.
     "tomli-w>=1.0",
     "cachetools>=7.1.4",
+    # gitignore-syntax matching for .lilbeeignore. Already present transitively;
+    # the floor is where the non-deprecated "gitignore" pattern factory lands.
+    "pathspec>=1.1.1",
 ]
 
 [project.optional-dependencies]
