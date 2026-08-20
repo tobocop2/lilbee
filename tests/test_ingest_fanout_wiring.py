@@ -12,6 +12,8 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.ingest.discovery import corpus_has_at_least, discover_files
+from lilbee.data.store import SourceType
+from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.providers.fleet.gpu_env import shard_visible_devices
 from lilbee.runtime.progress import EventType
@@ -50,6 +52,36 @@ def corpus(tmp_path):
         (documents / f"f{index}.txt").write_text(f"body {index}")
     cfg.documents_dir = documents
     return documents
+
+
+class _EmptyStore:
+    """A store holding nothing, for the fan-out paths that only read sources."""
+
+    def get_sources(self):
+        return []
+
+
+class _SourcesStore:
+    """A store over a fixed set of document sources, with a working remove."""
+
+    def __init__(self, filenames):
+        self._sources = {
+            name: {
+                "filename": name,
+                "file_hash": "",
+                "ingested_at": "",
+                "chunk_count": 1,
+                "source_type": SourceType.DOCUMENT,
+            }
+            for name in filenames
+        }
+
+    def get_sources(self):
+        return list(self._sources.values())
+
+    def remove_documents(self, names, **_kw):
+        removed = [name for name in names if self._sources.pop(name, None) is not None]
+        return RemoveResult(removed=removed, not_found=[n for n in names if n not in removed])
 
 
 class TestDiscoveryShardFilter:
@@ -108,7 +140,7 @@ class TestSyncDispatch:
     async def test_a_qualifying_sync_runs_on_the_workers(self, corpus, monkeypatch, services):
         taken = {}
 
-        async def fake_fanout(specs, store, *, options, quiet, on_progress, cancel):
+        async def fake_fanout(specs, store, *, options, quiet, on_progress, cancel, **_kw):
             taken["specs"] = specs
             return SyncResult(added=["a.txt"])
 
@@ -167,7 +199,9 @@ class TestSyncAcrossWorkers:
             for index, error in enumerate(errors)
         ]
 
-    async def _run(self, specs, monkeypatch, verdicts, *, cancel=None, merged):
+    async def _run(
+        self, specs, monkeypatch, verdicts, *, cancel=None, merged, store=None, prune_ignored=False
+    ):
         async def fake_run_workers(*args, **kwargs):
             return verdicts
 
@@ -183,7 +217,8 @@ class TestSyncAcrossWorkers:
         events = []
         result = await pipeline_mod._sync_across_workers(
             specs,
-            store=object(),
+            store=store if store is not None else _EmptyStore(),
+            prune_ignored=prune_ignored,
             options=fanout.ShardOptions(parent_pid=1),
             quiet=True,
             on_progress=lambda kind, data: events.append(kind),
@@ -199,6 +234,33 @@ class TestSyncAcrossWorkers:
         assert sorted(result.added) == ["f0.txt", "f1.txt"]
         assert merged == [{"f0.txt", "f1.txt"}]
         assert EventType.DONE in events
+
+    async def test_the_parent_drops_what_an_ignore_pattern_now_excludes(
+        self, specs, monkeypatch, tmp_path
+    ):
+        """No worker sees the whole sources table, so only the parent runs this opt-in pass."""
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        cfg.data_root = tmp_path
+        cfg.documents_dir = tmp_path / "documents"
+        cfg.documents_dir.mkdir(exist_ok=True)
+        (tmp_path / IGNORE_FILENAME).write_text("*.min.js\n", encoding="utf-8")
+
+        store = _SourcesStore(["app.min.js", "keep.md"])
+        monkeypatch.setattr(
+            "lilbee.app.ingest.forget_removed_from_wiki_index", lambda removed: None
+        )
+        monkeypatch.setattr(pipeline_mod, "get_services", lambda: type("S", (), {"store": store})())
+
+        result, _ = await self._run(
+            specs,
+            monkeypatch,
+            self._verdicts(None, None),
+            merged=[],
+            store=store,
+            prune_ignored=True,
+        )
+        assert result.removed == ["app.min.js"]
 
     async def test_a_failed_worker_stops_the_merge_and_says_so(self, specs, monkeypatch):
         """A partial merge is an index silently short of rows, which is the bug being fixed."""

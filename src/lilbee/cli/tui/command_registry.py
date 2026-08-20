@@ -56,6 +56,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         help_text="Remove a document from the index",
     ),
     SlashCommand(
+        "/prune-ignored",
+        "_cmd_prune_ignored",
+        aliases=(),
+        args_hint="",
+        help_text="Drop indexed documents a .lilbeeignore now excludes",
+    ),
+    SlashCommand(
         "/set",
         "_cmd_set",
         aliases=(),

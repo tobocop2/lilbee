@@ -105,7 +105,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | Tool | Use |
 |---|---|
 | `lilbee_add(paths, force, enable_ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
-| `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
+| `lilbee_sync(force_rebuild, retry_skipped, prune_ignored)` | Re-index the documents directory after edits. Minutes on large libraries. `prune_ignored` also drops indexed documents a `.lilbeeignore` now excludes. |
 | `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Default `depth=0` fetches one page; pass a depth (or `null` for the whole site) to follow links. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |

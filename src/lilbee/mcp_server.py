@@ -342,11 +342,15 @@ def _cancel_token() -> Iterator[threading.Event]:
 
 
 @_tool
-async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
+async def sync(
+    force_rebuild: bool = False, retry_skipped: bool = False, prune_ignored: bool = False
+) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
 
     ``force_rebuild`` drops every table and re-ingests. ``retry_skipped``
     clears failed-file skip markers without dropping the store.
+    ``prune_ignored`` drops sources a ``.lilbeeignore`` now excludes; without it,
+    the patterns only govern what sync takes in.
     """
     from lilbee.data.ingest import sync as run_sync
 
@@ -356,6 +360,7 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
                 quiet=True,
                 force_rebuild=force_rebuild,
                 retry_skipped=retry_skipped,
+                prune_ignored=prune_ignored,
                 cancel=cancel,
             )
         ).model_dump()
