@@ -4,22 +4,19 @@ Pattern syntax and precedence are gitignore's, matched by ``pathspec`` rather
 than re-implemented: negation, ``**``, dir-only trailing slashes and anchoring
 are subtle enough that a hand-rolled matcher is a standing bug source.
 
-Two layers apply. The corpus layer is a single file at ``cfg.data_root``, so it
-is project-local inside a ``lilbee init`` tree and global otherwise -- the same
-resolution ``--data-dir`` / ``LILBEE_DATA`` / ``.lilbee/`` already gives every
-other piece of lilbee state. Tree layers are ``.lilbeeignore`` files at any
+Two layers apply. The corpus layer is a single file at the resolved data root,
+so it is project-local inside a ``lilbee init`` tree and global otherwise -- the
+same resolution ``--data-dir`` / ``LILBEE_DATA`` / ``.lilbee/`` already gives
+every other piece of lilbee state. Tree layers are ``.lilbeeignore`` files at any
 depth inside a walked root, each scoped to its own directory and below. Deeper
 layers win, so a repo can re-include what the corpus layer drops.
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from pathspec import PathSpec
-
-log = logging.getLogger(__name__)
 
 IGNORE_FILENAME = ".lilbeeignore"
 
@@ -27,23 +24,32 @@ _SYNTAX = "gitignore"
 
 IGNORE_TEMPLATE = """\
 # Files sync keeps out of the index. Same syntax as .gitignore.
-# This file covers every source. Put a .lilbeeignore inside a tree to
-# scope patterns to it; the deeper file wins, so ! can add things back.
+# This file covers everything you index. Put a .lilbeeignore inside a
+# tree to scope patterns to it; the deeper file wins, so ! adds back.
+#
+# node_modules/, __pycache__, venv, build, dist, target, vendor and
+# dot-directories are already skipped. Add what those miss:
 #
 # *.min.js
-# vendor/
 # testdata/
+# fixtures/
 """
 
 
 def _load_spec(path: Path) -> PathSpec | None:
-    """Compile the ignore file at *path*, or None when it is absent or unreadable."""
+    """Compile the ignore file at *path*, or None if it holds no live pattern.
+
+    A comment or a blank line still compiles to a pattern object, one whose
+    ``include`` is None because it can never match. The file ``lilbee init``
+    scaffolds is entirely comments, so keeping those would charge every walked
+    file a lookup against a spec with nothing in it.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     spec = PathSpec.from_lines(_SYNTAX, text.splitlines())
-    return spec if spec.patterns else None
+    return spec if any(pattern.include is not None for pattern in spec.patterns) else None
 
 
 class IgnoreRules:
@@ -62,7 +68,7 @@ class IgnoreRules:
 
     @classmethod
     def for_corpus(cls) -> IgnoreRules:
-        """Build rules carrying the corpus-wide layer from ``cfg.data_root``."""
+        """Build rules carrying the corpus-wide layer from the resolved data root."""
         from lilbee.core.config import active_config
 
         return cls(_load_spec(active_config().data_root / IGNORE_FILENAME))
@@ -76,13 +82,13 @@ class IgnoreRules:
         """The ignore files covering *directory*, deepest first.
 
         Cached per directory and built from the parent's chain, so a tree with no
-        ignore files costs one dict hit per directory and nothing per file.
+        ignore files costs one dict hit per directory and nothing per file. The
+        walk up terminates on *base*, which every caller guarantees is an
+        ancestor by building the path from it.
         """
         cached = self._chains.get(directory)
         if cached is not None:
             return cached
-        if directory != base and base not in directory.parents:
-            return ()
         parent = () if directory == base else self._chain_for(directory.parent, base)
         spec = self._spec_for(directory)
         chain = (((directory, spec),) if spec is not None else ()) + parent
@@ -121,11 +127,11 @@ class IgnoreRules:
         which is what lets the index be reconciled without a second walk. A file
         under an excluded directory stays excluded even if a pattern names it
         back, matching git: the walk never descends far enough to reconsider.
+
+        *path* must sit under *base*; both come from the same resolution step,
+        which builds one from the other.
         """
-        try:
-            parts = path.relative_to(base).parts
-        except ValueError:
-            return False
+        parts = path.relative_to(base).parts
         current = base
         last = len(parts) - 1
         for index, part in enumerate(parts):

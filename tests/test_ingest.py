@@ -1070,6 +1070,56 @@ class TestSync:
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
+class TestSyncDropsNewlyIgnored:
+    """A .lilbeeignore pattern added after ingest removes what it now excludes."""
+
+    async def _ingest_two(self, isolated_env):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "keep.txt").write_text("a document worth keeping", encoding="utf-8")
+        (isolated_env / "drop.txt").write_text("a document about to be excluded", encoding="utf-8")
+        result = await sync()
+        assert sorted(result.added) == ["drop.txt", "keep.txt"]
+
+    async def test_pattern_added_after_ingest_removes_the_source(
+        self, mock_extract_file, isolated_env
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        await self._ingest_two(isolated_env)
+        (isolated_env / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+
+        result = await sync()
+        assert result.removed == ["drop.txt"]
+        assert {s["filename"] for s in svc_mod.get_services().store.get_sources()} == {"keep.txt"}
+
+    async def test_a_shard_worker_leaves_removal_to_the_parent(
+        self, mock_extract_file, isolated_env
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+        from lilbee.data.types import ShardId
+
+        await self._ingest_two(isolated_env)
+        (isolated_env / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+
+        # A worker sees one slice of the corpus but the whole sources table, so
+        # running this pass per worker would race k ways over sources it does
+        # not own. Every shard must leave the index untouched here.
+        store = svc_mod.get_services().store
+        for index in range(2):
+            result = await sync(shard=ShardId(index=index, count=2))
+            assert result.removed == []
+        store.remove_documents.assert_not_called()
+        assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}
+
+
+@mock.patch(
+    "lilbee.data.extract.xberg.aextract_document",
+    new_callable=mock.AsyncMock,
+    return_value=_make_xberg_result(),
+)
 class TestSyncCancellation:
     """Tests for cancel support and atomic per-file delete in sync."""
 

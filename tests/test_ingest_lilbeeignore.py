@@ -118,6 +118,17 @@ class TestIgnoreRules:
         _write(base / IGNORE_FILENAME, "# a comment\n\n*.log\n")
         assert IgnoreRules().excludes_path(_write(base / "run.log"), base=base)
 
+    def test_a_comment_only_file_compiles_to_no_layer(self, isolated_env):
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules, _load_spec
+
+        # The file lilbee init scaffolds is all comments. pathspec still builds a
+        # pattern per line, so keeping the spec would charge every walked file a
+        # lookup against something that can never match.
+        base = isolated_env / "repo"
+        _write(base / IGNORE_FILENAME, "# just a comment\n\n   \n")
+        assert _load_spec(base / IGNORE_FILENAME) is None
+        assert not IgnoreRules().excludes_path(_write(base / "note.md"), base=base)
+
     def test_missing_files_exclude_nothing(self, isolated_env):
         from lilbee.data.ingest.ignore import IgnoreRules
 
@@ -182,7 +193,7 @@ class TestDiscoveryHonoursIgnoreFiles:
 
         assert set(discover_files()) == {"note.md"}
 
-    def test_vanished_root_key_resolves_to_no_walked_base(self, isolated_env):
+    def test_a_single_file_root_has_no_walked_base(self, isolated_env):
         from lilbee.data.ingest.discovery import resolve_source_root
 
         cfg.linked_roots = {"note.md": str(isolated_env / "note.md")}
@@ -215,7 +226,7 @@ class TestDiscoveryHonoursIgnoreFiles:
 class TestReconcilesIndexAgainstPatterns:
     """A pattern added after ingest must drop what it now excludes, and only that."""
 
-    def _src(self, filename: str):
+    def _src(self, filename: str, source_type=None):
         from lilbee.data.store import SourceType
 
         return {
@@ -223,18 +234,29 @@ class TestReconcilesIndexAgainstPatterns:
             "file_hash": "",
             "ingested_at": "",
             "chunk_count": 1,
-            "source_type": SourceType.DOCUMENT,
+            "source_type": source_type or SourceType.DOCUMENT,
         }
 
-    def test_newly_ignored_source_is_selected_and_vanished_one_is_not(self, isolated_env):
+    def test_newly_ignored_source_is_selected_and_others_are_not(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
         from lilbee.data.ingest.pipeline import _ignored_sources
 
         _write(cfg.documents_dir / IGNORE_FILENAME, "*.min.js\n")
         _write(cfg.documents_dir / "app.min.js")
 
-        rules = IgnoreRules.for_corpus()
-        assert _ignored_sources(["app.min.js", "deleted.md"], rules) == ["app.min.js"]
+        sources = [self._src("app.min.js"), self._src("keep.md"), self._src("deleted.md")]
+        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == ["app.min.js"]
+
+    def test_imported_source_is_never_selected(self, isolated_env):
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
+        from lilbee.data.ingest.pipeline import _ignored_sources
+        from lilbee.data.store import SourceType
+
+        # An import has no file on disk, so a pattern has nothing to match it
+        # against; resolving its key would point at a path it does not own.
+        _write(cfg.documents_dir / IGNORE_FILENAME, "*.pdf\n")
+        sources = [self._src("shared.pdf", SourceType.IMPORTED)]
+        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == []
 
     def test_source_under_a_pruned_directory_is_selected(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
@@ -243,8 +265,8 @@ class TestReconcilesIndexAgainstPatterns:
         _write(cfg.documents_dir / IGNORE_FILENAME, "testdata/\n")
         _write(cfg.documents_dir / "testdata" / "deep" / "fixture.md")
 
-        rules = IgnoreRules.for_corpus()
-        assert _ignored_sources(["testdata/deep/fixture.md"], rules) == ["testdata/deep/fixture.md"]
+        sources = [self._src("testdata/deep/fixture.md")]
+        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == ["testdata/deep/fixture.md"]
 
     def test_single_file_root_is_never_selected(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
@@ -254,11 +276,15 @@ class TestReconcilesIndexAgainstPatterns:
         target = _write(isolated_env / "loose" / "note.md")
         cfg.linked_roots = {"note.md": str(target)}
 
-        assert _ignored_sources(["note.md"], IgnoreRules.for_corpus()) == []
+        assert _ignored_sources([self._src("note.md")], IgnoreRules.for_corpus()) == []
 
     def test_removal_writes_no_skip_marker(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
         from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        _write(cfg.documents_dir / IGNORE_FILENAME, "*.min.js\n")
+        _write(cfg.documents_dir / "app.min.js")
 
         class _Store:
             def remove_documents(self, names):
@@ -271,12 +297,18 @@ class TestReconcilesIndexAgainstPatterns:
             "lilbee.app.ingest.forget_removed_from_wiki_index", lambda removed: None
         )
 
-        assert pipeline._forget_ignored(["app.min.js"]) == ["app.min.js"]
+        removed = pipeline._forget_ignored([self._src("app.min.js")], IgnoreRules.for_corpus())
+        assert removed == ["app.min.js"]
         # A marker would outlive the pattern and hold the file out after the
         # pattern was deleted; the ignore file is the only durable statement.
         assert load_skip_markers(cfg.data_root) == {}
 
-    def test_no_ignored_sources_touches_no_store(self, isolated_env):
+    def test_nothing_ignored_touches_no_store(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.ignore import IgnoreRules
 
-        assert pipeline._forget_ignored([]) == []
+        def _explode():
+            raise AssertionError("the store must not be read when nothing is excluded")
+
+        monkeypatch.setattr(pipeline, "get_services", _explode)
+        assert pipeline._forget_ignored([self._src("keep.md")], IgnoreRules()) == []
