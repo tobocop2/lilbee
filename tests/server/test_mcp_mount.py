@@ -6,6 +6,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock
 
+import anyio
 import pytest
 from litestar import Litestar
 from litestar.middleware.base import DefineMiddleware
@@ -245,6 +246,195 @@ async def test_tools_list_exposes_search_over_http(mcp_app: Litestar, auth_token
         )
     names = {tool["name"] for tool in result["result"]["tools"]}
     assert "search" in names
+
+
+_HTTP_ACCEPTED = 202
+_HTTP_NOT_FOUND = 404
+_HTTP_METHOD_NOT_ALLOWED = 405
+_SSE_TIMEOUT_S = 10
+_INITIALIZE_BODY = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "legacy-test", "version": "0"},
+    },
+}
+
+
+class _RawSseGet:
+    """Drives a GET against the app at the raw ASGI level.
+
+    The test client buffers whole response bodies, which never terminates on
+    an SSE stream, so the legacy-transport tests read ASGI messages directly.
+    """
+
+    def __init__(self, app: Litestar, token: str) -> None:
+        self._app = app
+        self._token = token
+        send, recv = anyio.create_memory_object_stream[dict](100)
+        self._send_stream = send
+        self._recv_stream = recv
+        self._buffer = ""
+        self.start_message: dict | None = None
+
+    async def run(self) -> None:
+        """Run the request until cancelled, forwarding ASGI messages to the test."""
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": MCP_PATH,
+            "raw_path": MCP_PATH.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "server": ("127.0.0.1", 8000),
+            "client": ("127.0.0.1", 51234),
+            "headers": [
+                (b"host", b"127.0.0.1:8000"),
+                (b"accept", b"text/event-stream"),
+                (b"authorization", f"Bearer {self._token}".encode()),
+            ],
+        }
+
+        async def receive() -> dict:
+            await anyio.sleep_forever()
+            raise AssertionError("unreachable")
+
+        async def send(message: dict) -> None:
+            await self._send_stream.send(message)
+
+        await self._app(scope, receive, send)
+
+    async def next_event(self) -> tuple[str, str]:
+        """Return the next (event, data) SSE frame, reading body chunks as needed."""
+        with anyio.fail_after(_SSE_TIMEOUT_S):
+            while True:
+                frame, _, rest = self._buffer.partition("\n\n")
+                if rest or (self._buffer.endswith("\n\n") and frame):
+                    self._buffer = rest
+                    event = data = ""
+                    for line in frame.splitlines():
+                        if line.startswith("event:"):
+                            event = line[len("event:") :].strip()
+                        elif line.startswith("data:"):
+                            data = line[len("data:") :].strip()
+                    if data:
+                        return event, data
+                    continue
+                message = await self._recv_stream.receive()
+                if message["type"] == "http.response.start":
+                    self.start_message = message
+                elif message["type"] == "http.response.body":
+                    # The SDK emits CRLF line endings; normalize for parsing.
+                    self._buffer += message["body"].decode().replace("\r\n", "\n")
+
+
+async def test_sessionless_get_opens_the_legacy_sse_stream(
+    mcp_app: Litestar, auth_token: str
+) -> None:
+    """A streamable-http first contact that fails makes the client fall back to
+    the legacy HTTP+SSE transport: a sessionless GET expecting an SSE stream
+    whose first event names the message endpoint."""
+    async with _client(mcp_app):  # enters the session-manager lifespan
+        sse = _RawSseGet(mcp_app, auth_token)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(sse.run)
+            event, endpoint = await sse.next_event()
+            tg.cancel_scope.cancel()
+    assert sse.start_message is not None
+    assert sse.start_message["status"] == _HTTP_OK
+    headers = dict(sse.start_message["headers"])
+    assert headers[b"content-type"].startswith(b"text/event-stream")
+    assert event == "endpoint"
+    assert endpoint.startswith(f"{MCP_PATH}/messages/?session_id=")
+
+
+async def test_legacy_sse_fallback_completes_initialize(mcp_app: Litestar, auth_token: str) -> None:
+    """The legacy transport round-trips: initialize POSTed to the advertised
+    endpoint is accepted and answered over the open SSE stream."""
+    async with _client(mcp_app) as client:
+        sse = _RawSseGet(mcp_app, auth_token)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(sse.run)
+            _, endpoint = await sse.next_event()
+            resp = await client.post(
+                endpoint,
+                json=_INITIALIZE_BODY,
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+            assert resp.status_code == _HTTP_ACCEPTED
+            event, data = await sse.next_event()
+            tg.cancel_scope.cancel()
+    assert event == "message"
+    assert json.loads(data)["result"]["serverInfo"]["name"] == "lilbee"
+
+
+async def test_sessionless_get_without_sse_accept_is_405(
+    mcp_app: Litestar, auth_token: str
+) -> None:
+    """A sessionless GET that does not ask for SSE has no stream to serve; the
+    spec's answer is 405, not the SDK's 400 that reads as a broken server."""
+    async with _client(mcp_app) as client:
+        resp = await client.get(MCP_PATH, headers={"Authorization": f"Bearer {auth_token}"})
+    assert resp.status_code == _HTTP_METHOD_NOT_ALLOWED
+
+
+async def test_get_with_a_session_id_is_the_streamable_stream_not_the_legacy_one(
+    mcp_app: Litestar, auth_token: str
+) -> None:
+    """A GET carrying a session ID is the streamable transport's standalone
+    stream: it reaches the streamable app (which rejects the unknown session),
+    never the legacy SSE handshake or the 405 guard."""
+    async with _client(mcp_app) as client:
+        resp = await client.get(
+            MCP_PATH,
+            headers={
+                "Authorization": f"Bearer {auth_token}",
+                "Accept": "text/event-stream",
+                "mcp-session-id": "0" * 32,
+            },
+        )
+    assert resp.status_code == _HTTP_NOT_FOUND
+
+
+async def test_non_http_scopes_route_to_the_streamable_app() -> None:
+    """The dispatcher inspects only http scopes; anything else goes straight to
+    the streamable app, which closes an unmatched websocket."""
+    handler, _ = build_mcp_mount()
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope = {"type": "websocket", "path": "/", "headers": [], "query_string": b""}
+    await handler.fn(scope, receive, send)
+    assert sent[-1]["type"] == "websocket.close"
+
+
+async def test_bare_mount_root_path_is_normalized_to_slash() -> None:
+    """Some ASGI servers hand the mount root through as an empty path; the
+    dispatcher treats it exactly like "/" (here: the 405 guard answers)."""
+    handler, _ = build_mcp_mount()
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope = {"type": "http", "method": "GET", "path": "", "headers": [], "query_string": b""}
+    await handler.fn(scope, receive, send)
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == _HTTP_METHOD_NOT_ALLOWED
 
 
 async def test_search_tool_uses_the_shared_services_singleton(
