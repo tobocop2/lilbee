@@ -840,6 +840,42 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert cfg.data_root == default_data_dir()
 
+    def test_lilbee_documents_dir_env_wins_over_derived_default(self, tmp_path, monkeypatch):
+        """LILBEE_DOCUMENTS_DIR wins over the root-derived <root>/documents.
+
+        Regression: ``_apply_data_root`` unconditionally derived documents_dir
+        from the data root, so every CLI entry point (including ``serve``)
+        discarded the env override that a bare ``import lilbee`` honors.
+        """
+        from lilbee.cli import apply_overrides
+
+        env_dir = tmp_path / "env-data"
+        env_dir.mkdir()
+        docs_dir = tmp_path / "my-docs"
+        docs_dir.mkdir()
+        monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+        monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", str(docs_dir))
+        apply_overrides()
+        assert cfg.data_root == env_dir
+        assert cfg.documents_dir == docs_dir
+
+    def test_lilbee_documents_dir_env_wins_over_config_toml(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
+        """LILBEE_DOCUMENTS_DIR also wins over a persisted documents_dir."""
+        from lilbee.cli import apply_overrides
+
+        docs_dir = tmp_path / "my-docs"
+        docs_dir.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "config.toml").write_text(
+            f'documents_dir = "{tmp_path / "persisted"}"\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", str(docs_dir))
+        apply_overrides(data_dir=root)
+        assert cfg.documents_dir == docs_dir
+
     def test_generation_option_overrides(self):
         from lilbee.cli import apply_overrides
 
