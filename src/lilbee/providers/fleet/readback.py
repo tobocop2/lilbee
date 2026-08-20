@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -171,7 +172,8 @@ def report_divergence(
     if estimated_bytes <= 0 or actual_bytes <= 0:
         return False
     ratio = actual_bytes / estimated_bytes
-    if abs(ratio - 1.0) <= tolerance:
+    limit = min(tolerance, _absorbable_overrun()) if ratio > 1.0 else tolerance
+    if abs(ratio - 1.0) <= limit:
         return False
     log.warning(
         "The %s model %s allocated %.1f GiB of GPU memory but was planned for %.1f GiB "
@@ -311,6 +313,27 @@ def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[
 # whole-slot and whole-cache mistakes this exists to surface.
 _TOLERANCE = 0.25
 
+# Share of the card's remaining margin an overrun may eat before it is worth
+# saying, leaving the operator a gap between the warning and the overflow.
+_MARGIN_WARN_FRACTION = 0.75
+
+
+def _absorbable_overrun() -> float:
+    """How far past its estimate a load may land while the card still holds it.
+
+    Placement packs a card up to ``cfg.usable_vram_fraction`` and a single-card
+    chat sizes its cache against ``cfg.gpu_memory_fraction``; the binding one is
+    whichever leaves less room, since either can be raised past the other. A load
+    filling that share overflows once it exceeds its estimate by the remainder,
+    so the warning has to come before that, which makes the threshold a function
+    of the margin rather than a constant. At the stock 0.9 usable fraction the
+    room is 11%, well inside the flat 25% this replaces.
+    """
+    from lilbee.core.config import cfg
+
+    committed = max(cfg.gpu_memory_fraction, usable_vram_fraction())
+    return max(0.0, 1.0 / committed - 1.0) * _MARGIN_WARN_FRACTION
+
 
 def _report_per_device(
     role: WorkerRole,
@@ -334,7 +357,8 @@ def _report_per_device(
         # less is only the symptom of the same skew.
         if (over, gap) > (worst_over, worst_gap):
             worst_label, worst_gap, worst_over = label, gap, over
-    if not worst_label or (estimated.get(worst_label) and worst_gap <= _TOLERANCE):
+    limit = min(_TOLERANCE, _absorbable_overrun()) if worst_over else _TOLERANCE
+    if not worst_label or (estimated.get(worst_label) and worst_gap <= limit):
         return False
     log.warning(
         "The %s model %s did not land where it was planned: %s holds %.1f GiB but was "
