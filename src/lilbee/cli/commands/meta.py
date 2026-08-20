@@ -20,6 +20,7 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output, render_status
 from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
+from lilbee.data.ingest.ignore import IGNORE_FILENAME, IGNORE_TEMPLATE
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 
@@ -102,6 +103,7 @@ def init() -> None:
     docs.mkdir(parents=True)
     data.mkdir(parents=True)
     (root / ".gitignore").write_text("data/\n", encoding="utf-8")
+    (root / IGNORE_FILENAME).write_text(IGNORE_TEMPLATE, encoding="utf-8")
 
     if cfg.json_mode:
         json_output({"command": "init", "path": str(root), "created": True})

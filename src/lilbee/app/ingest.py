@@ -323,11 +323,11 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
             reasons[name] = _REMOVED_SKIP_REASON
     write_skip_markers(config.data_root, markers)
     write_skip_reasons(config.data_root, reasons)
-    _forget_removed_from_wiki_index(list(result.removed))
+    forget_removed_from_wiki_index(list(result.removed))
     return result
 
 
-def _forget_removed_from_wiki_index(removed: list[str]) -> None:
+def forget_removed_from_wiki_index(removed: list[str]) -> None:
     """Drop removed documents from the wiki's browse index.
 
     Their skip markers keep them out of later syncs, so no refresh would ever

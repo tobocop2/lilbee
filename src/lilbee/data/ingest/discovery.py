@@ -13,6 +13,7 @@ from pathlib import Path
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.extract.code_chunker import is_code_file
+from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
 
 log = logging.getLogger(__name__)
@@ -135,6 +136,25 @@ def resolve_source_path(filename: str) -> Path:
     return config.documents_dir / filename
 
 
+def resolve_source_root(filename: str) -> tuple[Path, Path] | None:
+    """The walked root and the resolved path for *filename*, or None if none walks it.
+
+    Pairs a source key with the base its patterns are written relative to, so the
+    index can be reconciled against ``.lilbeeignore`` without a second walk. A
+    single-file root is the file the user named, never a tree, so nothing walks
+    it and no pattern applies.
+    """
+    config = active_config()
+    first, _, rest = filename.partition("/")
+    root = config.linked_roots.get(first)
+    if root is None:
+        return config.documents_dir, config.documents_dir / filename
+    if not rest:
+        return None
+    base = Path(root)
+    return base, base / rest
+
+
 def resolve_source_path_checked(filename: str) -> Path | None:
     """Resolve *filename*, returning None if it escapes its owning root.
 
@@ -160,19 +180,33 @@ def _walk_root(
     label: str | None,
     ignore_dirs: frozenset[str],
     progress: _ScanProgress,
+    rules: IgnoreRules,
 ) -> Iterator[tuple[str, Path]]:
     """Yield supported files under *base*, keyed relative to it (prefixed by *label*).
 
     Symlinks are not followed (``followlinks=False``): each root is walked as the
     real tree it names, so there is no traversal loop and no path can escape the
     root it was registered under.
+
+    A directory ``.lilbeeignore`` excludes is pruned rather than filtered per
+    file, so an excluded tree costs nothing to skip and no pattern beneath it can
+    re-include a file -- git's rule, holding here because the walk never descends.
     """
     for root, dirs, filenames in os.walk(base, topdown=True, followlinks=False):
-        dirs[:] = [d for d in dirs if not is_ignored_dir(d, ignore_dirs)]
+        here = Path(root)
+        dirs[:] = [
+            d
+            for d in dirs
+            if not is_ignored_dir(d, ignore_dirs)
+            and not rules.excludes_entry(here / d, base=base, is_dir=True)
+        ]
         for fname in filenames:
             if fname.startswith("."):
                 continue
-            path = Path(root) / fname
+            path = here / fname
+            if rules.excludes_entry(path, base=base, is_dir=False):
+                progress.tick(matched=False)
+                continue
             content_type = classify_file(path)
             # tick per file visited, not per match: a skip-heavy tree still walks
             # slowly and must still show a heartbeat.
@@ -183,21 +217,29 @@ def _walk_root(
             yield f"{label}/{rel}" if label else rel, path
 
 
-def _walk_corpus() -> Iterator[tuple[str, Path]]:
-    """Yield every supported file in the owned tree and in each registered root."""
+def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[tuple[str, Path]]:
+    """Yield every supported file in the owned tree and in each registered root.
+
+    A single-file root is the file the user named at ``add`` time, so no ignore
+    pattern is consulted for it: naming a file is a stronger statement than a
+    pattern that would have swept it up.
+    """
     config = active_config()
     progress = _ScanProgress()
+    rules = rules if rules is not None else IgnoreRules.for_corpus()
     if config.documents_dir.exists():
-        yield from _walk_root(config.documents_dir, None, config.ignore_dirs, progress)
+        yield from _walk_root(config.documents_dir, None, config.ignore_dirs, progress, rules)
     for label, root in config.linked_roots.items():
         root_path = Path(root)
         if root_path.is_dir():
-            yield from _walk_root(root_path, label, config.ignore_dirs, progress)
+            yield from _walk_root(root_path, label, config.ignore_dirs, progress, rules)
         elif root_path.is_file() and classify_file(root_path) is not None:
             yield label, root_path
 
 
-def discover_files(shard: ShardId | None = None) -> dict[str, Path]:
+def discover_files(
+    shard: ShardId | None = None, rules: IgnoreRules | None = None
+) -> dict[str, Path]:
     """Scan the owned documents dir and every registered root, return {key: path}.
 
     Files lilbee owns under ``documents_dir`` (crawl and upload output) are keyed
@@ -209,8 +251,11 @@ def discover_files(shard: ShardId | None = None) -> dict[str, Path]:
 
     A *shard* keeps only the keys that slice owns, so one worker of a multi-GPU
     ingest holds the paths of its own slice and not the whole corpus.
+
+    A caller that also reconciles the index passes the *rules* it will reconcile
+    with, so the walk and that pass read one set of compiled patterns.
     """
-    return {key: path for key, path in _walk_corpus() if shard is None or shard.owns(key)}
+    return {key: path for key, path in _walk_corpus(rules) if shard is None or shard.owns(key)}
 
 
 def corpus_has_at_least(count: int) -> bool:

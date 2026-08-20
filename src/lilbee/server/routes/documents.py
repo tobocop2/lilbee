@@ -41,13 +41,19 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
     Pass ``{"retry_skipped": true}`` for the lighter path: retry the files that
     failed a previous sync without dropping the store.
+    Pass ``{"prune_ignored": true}`` to also drop sources a ``.lilbeeignore``
+    now excludes; without it, sync leaves already-indexed sources alone.
     """
     enable_ocr = data.enable_ocr if data else None
     force_rebuild = data.force_rebuild if data else False
     retry_skipped = data.retry_skipped if data else False
+    prune_ignored = data.prune_ignored if data else False
     return Stream(
         handlers.sync_stream(
-            enable_ocr=enable_ocr, force_rebuild=force_rebuild, retry_skipped=retry_skipped
+            enable_ocr=enable_ocr,
+            force_rebuild=force_rebuild,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
         ),
         media_type=SSE_MEDIA_TYPE,
     )

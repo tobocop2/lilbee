@@ -35,6 +35,7 @@ async def _run_sync_with_sentinel(
     enable_ocr: bool | None,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
+    prune_ignored: bool = False,
 ) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.app.ingest import temporary_ocr_config
@@ -48,13 +49,18 @@ async def _run_sync_with_sentinel(
                 cancel=sse.cancel,
                 force_rebuild=force_rebuild,
                 retry_skipped=retry_skipped,
+                prune_ignored=prune_ignored,
             )
     finally:
         sse.queue.put_nowait(None)
 
 
 async def sync_stream(
-    *, enable_ocr: bool | None = None, force_rebuild: bool = False, retry_skipped: bool = False
+    *,
+    enable_ocr: bool | None = None,
+    force_rebuild: bool = False,
+    retry_skipped: bool = False,
+    prune_ignored: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event.
 
@@ -62,11 +68,12 @@ async def sync_stream(
     re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
     When ``retry_skipped`` is true, it clears the failed-file markers so files
     that were skipped on a previous sync get another attempt, without dropping
-    the store.
+    the store. When ``prune_ignored`` is true, it also drops sources a
+    ``.lilbeeignore`` now excludes.
     """
     sse = SseStream()
     task = asyncio.create_task(
-        _run_sync_with_sentinel(sse, enable_ocr, force_rebuild, retry_skipped)
+        _run_sync_with_sentinel(sse, enable_ocr, force_rebuild, retry_skipped, prune_ignored)
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event

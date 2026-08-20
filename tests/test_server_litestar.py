@@ -757,7 +757,7 @@ class TestSyncRoute:
         assert resp.status_code == 201
         assert b"event: done" in resp.content
         mock_stream.assert_called_once_with(
-            enable_ocr=None, force_rebuild=False, retry_skipped=False
+            enable_ocr=None, force_rebuild=False, retry_skipped=False, prune_ignored=False
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
@@ -765,7 +765,7 @@ class TestSyncRoute:
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         client.post("/api/sync", json={"enable_ocr": True})
         mock_stream.assert_called_once_with(
-            enable_ocr=True, force_rebuild=False, retry_skipped=False
+            enable_ocr=True, force_rebuild=False, retry_skipped=False, prune_ignored=False
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
@@ -775,7 +775,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"force_rebuild": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None, force_rebuild=True, retry_skipped=False
+            enable_ocr=None, force_rebuild=True, retry_skipped=False, prune_ignored=False
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
@@ -785,7 +785,17 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"retry_skipped": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None, force_rebuild=False, retry_skipped=True
+            enable_ocr=None, force_rebuild=False, retry_skipped=True, prune_ignored=False
+        )
+
+    @mock.patch("lilbee.server.handlers.sync_stream")
+    def test_prune_ignored_plumbs_through(self, mock_stream, client):
+        """REST callers can drop newly-excluded sources via {"prune_ignored": true}."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/sync", json={"prune_ignored": True})
+        assert resp.status_code == 201
+        mock_stream.assert_called_once_with(
+            enable_ocr=None, force_rebuild=False, retry_skipped=False, prune_ignored=True
         )
 
 

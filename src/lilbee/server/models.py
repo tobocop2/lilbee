@@ -86,11 +86,14 @@ class SyncRequest(BaseModel):
     failed a previous sync (Tesseract timeout, decode failure, no usable text) so this
     sync attempts them again, without dropping the existing store. The default is an
     incremental sync.
+    ``prune_ignored`` drops sources a ``.lilbeeignore`` now excludes. Off by default:
+    the patterns govern what sync takes in, not what a past sync already indexed.
     """
 
     enable_ocr: bool | None = None
     force_rebuild: bool = False
     retry_skipped: bool = False
+    prune_ignored: bool = False
 
 
 class AddRequest(BaseModel):
