@@ -4553,6 +4553,33 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         assert load_skip_markers(tmp_path) == {}
 
 
+async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):
+    """Palette 'Prune ignored documents' runs /prune-ignored rather than prefilling it."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        with patch.object(chat, "run_command") as run_command:
+            provider._action_prune_ignored()
+            run_command.assert_called_once_with("/prune-ignored")
+
+
+async def test_prune_ignored_command_syncs_with_pruning_on(mock_svc):
+    """/prune-ignored is the TUI spelling of `lilbee sync --prune-ignored`."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        with patch.object(chat, "_run_sync") as run_sync:
+            chat._cmd_prune_ignored("")
+            run_sync.assert_called_once_with(prune_ignored=True)
+
+
 async def test_command_provider_delete_document_prefills_prompt(mock_svc):
     """Palette 'Delete document' lands in Chat with /delete ready to complete."""
     from lilbee.cli.tui.app import LilbeeApp

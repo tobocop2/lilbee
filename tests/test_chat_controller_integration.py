@@ -438,7 +438,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     from lilbee.data.ingest import SyncResult
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=2),
@@ -475,7 +475,7 @@ def test_do_sync_done_event_reports_completion() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
@@ -508,6 +508,47 @@ def test_do_sync_done_event_reports_completion() -> None:
     assert str(last.args[1]) == msg.SYNC_STATUS_DONE.format(count=4)
 
 
+def test_do_sync_reports_what_pruning_dropped() -> None:
+    """/prune-ignored must say how many documents it removed, or that none matched."""
+    import threading
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    notes: list[str] = []
+
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+        assert prune_ignored is True
+        return SyncResult(removed=["vendor/lib.min.js"])
+
+    def _worker() -> None:
+        with (
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _s, _fn, text, **kw: notes.append(text),
+            ),
+        ):
+            screen._do_sync(reporter, prune_ignored=True)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert notes == [msg.prune_ignored_message(1)]
+    assert "1" in notes[0]
+
+
+def test_prune_ignored_message_distinguishes_nothing_matched() -> None:
+    """A prune that matched nothing must not read as a successful removal."""
+    from lilbee.cli.tui import messages as msg
+
+    assert msg.prune_ignored_message(0) == msg.CMD_PRUNE_IGNORED_NONE
+    assert "2" in msg.prune_ignored_message(2)
+
+
 def test_do_sync_raises_on_sync_failed() -> None:
     """bb-vb28 parallel: auto-sync worker raises when SyncResult.failed is non-empty."""
     import threading
@@ -518,7 +559,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         return SyncResult(failed=["broken.pdf"])
 
     captured: list[Exception] = []
@@ -547,7 +588,7 @@ def test_do_sync_translates_cancellation() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         import asyncio as _asyncio
 
         raise _asyncio.CancelledError
@@ -906,7 +947,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     reg_result = RegisterResult(registered=[src.name], skipped=[])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
@@ -956,7 +997,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name], skipped=[])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
         # name); the BATCH_PROGRESS event itself is emitted by the OCR
@@ -1026,7 +1067,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     reg_result = RegisterResult(registered=[src.name], skipped=[])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
             EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
@@ -1285,7 +1326,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False):
+    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
