@@ -193,14 +193,20 @@ class TestDiscoveryHonoursIgnoreFiles:
 
         assert set(discover_files()) == {"note.md"}
 
-    def test_a_single_file_root_has_no_walked_base(self, isolated_env):
+    def test_source_keys_resolve_to_the_root_their_patterns_are_written_against(self, isolated_env):
+        """The three key shapes: owned tree, file under a registered root, single-file root."""
         from lilbee.data.ingest.discovery import resolve_source_root
 
-        cfg.linked_roots = {"note.md": str(isolated_env / "note.md")}
+        repo = isolated_env / "repo"
+        cfg.linked_roots = {"repo": str(repo), "note.md": str(isolated_env / "note.md")}
+
+        assert resolve_source_root("loose.md") == (
+            cfg.documents_dir,
+            cfg.documents_dir / "loose.md",
+        )
+        assert resolve_source_root("repo/src/app.js") == (repo, repo / "src" / "app.js")
+        # A single-file root is the file the user named, so no tree is walked for it.
         assert resolve_source_root("note.md") is None
-        base, path = resolve_source_root("loose.md")
-        assert base == cfg.documents_dir
-        assert path == cfg.documents_dir / "loose.md"
 
     def test_pruned_directory_is_never_walked(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import discover_files
