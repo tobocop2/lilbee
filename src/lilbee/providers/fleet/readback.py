@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -313,24 +314,25 @@ def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[
 _TOLERANCE = 0.25
 
 # Share of the card's remaining margin an overrun may eat before it is worth
-# saying. At the default gpu_memory_fraction this works out to exactly
-# _TOLERANCE, so the long-standing 25% is unchanged where it was chosen.
+# saying, leaving the operator a gap between the warning and the overflow.
 _MARGIN_WARN_FRACTION = 0.75
 
 
 def _absorbable_overrun() -> float:
     """How far past its estimate a load may land while the card still holds it.
 
-    Planning charges at most ``cfg.gpu_memory_fraction`` of a card, so a load
-    that fills its budget overflows once it exceeds the estimate by the rest.
-    The warning has to come before that, which makes the threshold a function of
-    the margin rather than a constant: raising the fraction to serve a model that
-    barely fits also shrinks the room an under-estimate can hide in, and a fixed
-    25% would then first speak after the load had already overflowed.
+    Placement packs a card up to ``cfg.usable_vram_fraction`` and a single-card
+    chat sizes its cache against ``cfg.gpu_memory_fraction``; the binding one is
+    whichever leaves less room, since either can be raised past the other. A load
+    filling that share overflows once it exceeds its estimate by the remainder,
+    so the warning has to come before that, which makes the threshold a function
+    of the margin rather than a constant. At the stock 0.9 usable fraction the
+    room is 11%, well inside the flat 25% this replaces.
     """
     from lilbee.core.config import cfg
 
-    return max(0.0, 1.0 / cfg.gpu_memory_fraction - 1.0) * _MARGIN_WARN_FRACTION
+    committed = max(cfg.gpu_memory_fraction, usable_vram_fraction())
+    return max(0.0, 1.0 / committed - 1.0) * _MARGIN_WARN_FRACTION
 
 
 def _report_per_device(
