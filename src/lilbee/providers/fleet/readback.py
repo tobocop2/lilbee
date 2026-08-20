@@ -171,7 +171,8 @@ def report_divergence(
     if estimated_bytes <= 0 or actual_bytes <= 0:
         return False
     ratio = actual_bytes / estimated_bytes
-    if abs(ratio - 1.0) <= tolerance:
+    limit = min(tolerance, _absorbable_overrun()) if ratio > 1.0 else tolerance
+    if abs(ratio - 1.0) <= limit:
         return False
     log.warning(
         "The %s model %s allocated %.1f GiB of GPU memory but was planned for %.1f GiB "
@@ -311,6 +312,26 @@ def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[
 # whole-slot and whole-cache mistakes this exists to surface.
 _TOLERANCE = 0.25
 
+# Share of the card's remaining margin an overrun may eat before it is worth
+# saying. At the default gpu_memory_fraction this works out to exactly
+# _TOLERANCE, so the long-standing 25% is unchanged where it was chosen.
+_MARGIN_WARN_FRACTION = 0.75
+
+
+def _absorbable_overrun() -> float:
+    """How far past its estimate a load may land while the card still holds it.
+
+    Planning charges at most ``cfg.gpu_memory_fraction`` of a card, so a load
+    that fills its budget overflows once it exceeds the estimate by the rest.
+    The warning has to come before that, which makes the threshold a function of
+    the margin rather than a constant: raising the fraction to serve a model that
+    barely fits also shrinks the room an under-estimate can hide in, and a fixed
+    25% would then first speak after the load had already overflowed.
+    """
+    from lilbee.core.config import cfg
+
+    return max(0.0, 1.0 / cfg.gpu_memory_fraction - 1.0) * _MARGIN_WARN_FRACTION
+
 
 def _report_per_device(
     role: WorkerRole,
@@ -334,7 +355,8 @@ def _report_per_device(
         # less is only the symptom of the same skew.
         if (over, gap) > (worst_over, worst_gap):
             worst_label, worst_gap, worst_over = label, gap, over
-    if not worst_label or (estimated.get(worst_label) and worst_gap <= _TOLERANCE):
+    limit = min(_TOLERANCE, _absorbable_overrun()) if worst_over else _TOLERANCE
+    if not worst_label or (estimated.get(worst_label) and worst_gap <= limit):
         return False
     log.warning(
         "The %s model %s did not land where it was planned: %s holds %.1f GiB but was "

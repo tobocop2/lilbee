@@ -92,6 +92,61 @@ class TestReportDivergence:
         assert warned is True
         assert "-75%" in caplog.text
 
+    def test_the_overrun_threshold_is_unchanged_at_the_default_margin(self, monkeypatch) -> None:
+        # cfg default 0.75 leaves 33% of absorbable overrun, and the warning has
+        # always fired at 25%. Deriving it must not move that.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import readback
+
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+        assert readback._absorbable_overrun() == pytest.approx(0.25)
+
+    def test_a_raised_memory_fraction_warns_earlier(self, monkeypatch, caplog) -> None:
+        # At 0.9 the card only absorbs an 11% overrun, so a fixed 25% threshold
+        # would first speak after the load had already overflowed.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import readback
+
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            warned = report_divergence(
+                WorkerRole.CHAT,
+                "org/m.gguf",
+                4 * 1024**3,
+                int(4.6 * 1024**3),  # +15%: quiet under the old constant
+                tolerance=readback._TOLERANCE,
+            )
+        assert warned is True
+        assert "+15%" in caplog.text
+
+    def test_a_shortfall_keeps_the_wider_tolerance(self, monkeypatch, caplog) -> None:
+        # Only the overrun side tracks the margin. An over-estimate costs capacity,
+        # not the load, so tightening it on a full card would be noise.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import readback
+
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.95)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            warned = report_divergence(
+                WorkerRole.CHAT,
+                "org/m.gguf",
+                4 * 1024**3,
+                int(3.2 * 1024**3),  # -20%, inside the baseline tolerance
+                tolerance=readback._TOLERANCE,
+            )
+        assert warned is False
+
+    @pytest.mark.parametrize("fraction", [0.5, 0.75, 0.8, 0.9, 0.95, 1.0])
+    def test_the_warning_always_precedes_the_overflow(self, monkeypatch, fraction) -> None:
+        # The whole point: the operator hears about the gap while the card can
+        # still hold the load, never after.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import readback
+
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", fraction)
+        absorbable = 1.0 / fraction - 1.0
+        assert readback._absorbable_overrun() <= absorbable
+
     def test_stays_quiet_inside_the_tolerance(self, caplog) -> None:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             warned = report_divergence(
