@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { cacheDir, cachedBinaryPath, dataRoot, resolveBinary, sharedRootBinary } from "../lib/resolve.mjs";
+import { cacheDir, cachedBinaryPath, resolveBinary } from "../lib/resolve.mjs";
 
-const noDeps = { existsSync: () => false, whichAllSync: () => [], download: async () => {} };
+const noDeps = { existsSync: () => false, download: async () => {} };
 
 test("cacheDir honors LILBEE_MCP_CACHE and platform conventions", () => {
   assert.equal(cacheDir({ LILBEE_MCP_CACHE: "/tmp/c" }), "/tmp/c");
@@ -27,15 +27,7 @@ test("LILBEE_BIN wins, and a missing LILBEE_BIN is an error not a fallthrough", 
   );
 });
 
-test("PATH beats cache beats download", async () => {
-  const onPath = await resolveBinary({
-    env: {},
-    release: "r",
-    assetName: "a",
-    deps: { ...noDeps, whichAllSync: () => ["/usr/local/bin/lilbee"] },
-  });
-  assert.deepEqual(onPath, { path: "/usr/local/bin/lilbee", source: "path" });
-
+test("cache beats download", async () => {
   const env = { LILBEE_MCP_CACHE: "/cache" };
   const cachedPath = cachedBinaryPath(env, "v1", "lilbee-macos-arm64");
   const cached = await resolveBinary({
@@ -57,28 +49,22 @@ test("PATH beats cache beats download", async () => {
   assert.deepEqual(calls, [cachedPath]);
 });
 
-test("shared-root binary beats cache, loses to PATH", async () => {
+test("lilbee installs from other package managers are ignored: the pinned download wins", async () => {
+  // existsSync says yes to everything EXCEPT the launcher's own cache path,
+  // simulating a machine covered in brew/flatpak/pip lilbees. The launcher
+  // must still fetch its own pinned binary.
   const env = { LILBEE_MCP_CACHE: "/cache" };
-  const shared = sharedRootBinary(env);
-  const viaShared = await resolveBinary({
+  const cachedPath = cachedBinaryPath(env, "v1", "a");
+  const calls = [];
+  const r = await resolveBinary({
     env,
     release: "v1",
     assetName: "a",
-    deps: { ...noDeps, existsSync: (p) => p === shared },
+    deps: {
+      existsSync: (p) => p !== cachedPath,
+      download: async (o) => calls.push(o.dest),
+    },
   });
-  assert.deepEqual(viaShared, { path: shared, source: "shared-root" });
-
-  const onPath = await resolveBinary({
-    env,
-    release: "v1",
-    assetName: "a",
-    deps: { ...noDeps, whichAllSync: () => ["/usr/local/bin/lilbee"], existsSync: (p) => p === shared },
-  });
-  assert.equal(onPath.source, "path");
-});
-
-test("dataRoot honors LILBEE_DATA and platform defaults", () => {
-  assert.equal(dataRoot({ LILBEE_DATA: "/d" }), "/d");
-  assert.ok(dataRoot({}, "darwin").endsWith(path.join("Application Support", "lilbee")));
-  assert.ok(dataRoot({ XDG_DATA_HOME: "/xdg" }, "linux").startsWith("/xdg"));
+  assert.equal(r.source, "download");
+  assert.deepEqual(calls, [cachedPath]);
 });

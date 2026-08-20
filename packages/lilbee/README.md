@@ -105,7 +105,7 @@ Remote:
 | `LILBEE_RELEASE` | Override the pinned lilbee release tag. |
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
-Binary resolution order: `LILBEE_BIN` → `lilbee` on PATH → the shared-root binary other lilbee installers manage → cached download → download the pinned release asset. The pinned release lives in `package.json` under `lilbee.release`, so each npm version maps to one lilbee release.
+The launcher always runs its own pinned, sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The pinned release lives in `package.json` under `lilbee.release`, so each npm version maps to one lilbee release.
 
 ## Requirements
 

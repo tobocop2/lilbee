@@ -31,27 +31,16 @@ function pinnedRelease() {
   return { release: pkg.lilbee.release, repo: pkg.lilbee.repo };
 }
 
-function whichAllSync(name) {
-  try {
-    const tool = process.platform === "win32" ? "where.exe" : "which";
-    const args = process.platform === "win32" ? [name] : ["-a", name];
-    const out = execFileSync(tool, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return out.split(/\r?\n/).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-// Belt and braces against self-spawn: if a launcher ever execs another
-// launcher (a resolution bug, or an exotic PATH), the child sees the
-// sentinel and stops with a clear message instead of recursing forever.
+// Belt and braces against self-spawn: if LILBEE_BIN ever points at another
+// launcher, the child sees the sentinel and stops with a clear message
+// instead of recursing forever.
 const LAUNCHER_SENTINEL = "LILBEE_LAUNCHER_ACTIVE";
 
 export function assertNotRecursing(env = process.env) {
   if (env[LAUNCHER_SENTINEL] === "1") {
     log(
-      "lilbee: the launcher resolved another copy of itself instead of a real lilbee binary. " +
-        "Point LILBEE_BIN at your lilbee install, or remove the npm shim from the front of PATH."
+      "lilbee: the launcher started another copy of itself instead of a real lilbee binary. " +
+        "Point LILBEE_BIN at a real lilbee install, or unset it to use the bundled download."
     );
     process.exit(1);
   }
@@ -170,9 +159,6 @@ async function resolveLocalBinary(env) {
     assetName,
     deps: {
       existsSync: fs.existsSync,
-      whichAllSync,
-      realpathSync: fs.realpathSync,
-      selfPath: fileURLToPath(import.meta.url),
       download: async (o) => {
         assertGlibcFloor();
         return download({ ...o, log });

@@ -90,7 +90,6 @@ Environment:
   LILBEE_URL       remote lilbee server; \`mcp\` bridges to <url> instead of a local binary
   LILBEE_TOKEN     bearer session token for LILBEE_URL
   LILBEE_BIN       explicit path to a lilbee binary
-  LILBEE_DATA      lilbee data root (also where a shared-root binary is found)
   LILBEE_DATA_DIR  library location for \`mcp\` (same as --data-dir)
   LILBEE_VARIANT   download variant override: cu121 | cu124 | cu125 | rocm |
                    compat | compat-cu124 | compat-rocm (unset = auto-detect
