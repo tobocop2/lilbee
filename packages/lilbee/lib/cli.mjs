@@ -80,9 +80,37 @@ export function assertGlibcFloor(env = process.env) {
   }
 }
 
-function spawnAndForward({ cmd, args }) {
+/**
+ * Kill *child* and every descendant. npx runs the real work (mcp-remote) as a
+ * grandchild, so signalling only the direct child leaves the bridge alive.
+ * POSIX: the child was spawned detached, so it leads its own process group and
+ * a negative-pid kill reaches the whole tree, grandchildren included, even
+ * after the leader has exited. Windows has no process groups; taskkill /T
+ * walks the tree instead (forced — Windows has no cross-process SIGTERM).
+ * Only valid for children spawned by spawnAndForward in tieToStdin mode.
+ */
+function killTree(child, signal) {
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore" });
+    } catch {} // the tree is already gone
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch {} // the group is already gone
+}
+
+export function spawnAndForward({ cmd, args }, { tieToStdin = false } = {}) {
   const child = spawn(cmd, args, {
-    stdio: "inherit",
+    // The mcp routes pipe stdin through the launcher so it can observe EOF
+    // (below). Passthrough keeps full inherit: piping would break TTY raw
+    // mode for interactive commands, and a detached child would fall out of
+    // the terminal's foreground group (no Ctrl-C, SIGTTIN on reads).
+    stdio: tieToStdin ? ["pipe", "inherit", "inherit"] : "inherit",
+    // Own process group, so killTree can signal npx and its mcp-remote
+    // grandchild at once.
+    detached: tieToStdin && process.platform !== "win32",
     // argv0 keeps the binary's own help reading `lilbee`, not the cache
     // filename; the sentinel stops accidental launcher-in-launcher chains.
     argv0: "lilbee",
@@ -98,8 +126,30 @@ function spawnAndForward({ cmd, args }) {
     log(`lilbee: failed to start ${cmd}: ${err.message}`);
     process.exit(1);
   });
-  for (const sig of ["SIGINT", "SIGTERM"]) {
-    process.on(sig, () => child.kill(sig));
+  if (tieToStdin) {
+    // An MCP stdio server's contract: when the client's pipe closes, shut
+    // down. mcp-remote does not honor stdin EOF (and npx forwards nothing),
+    // so orphaned bridge trees outlive their MCP host and latch onto later
+    // sessions. The launcher enforces the contract: on EOF, parent exit, or
+    // a termination signal, SIGTERM the whole group, then SIGKILL after a
+    // grace period long enough for the local server's own teardown.
+    let ending = false;
+    const shutdown = () => {
+      if (ending) return;
+      ending = true;
+      killTree(child, "SIGTERM");
+      setTimeout(() => killTree(child, "SIGKILL"), 5000).unref();
+    };
+    child.stdin.on("error", () => {}); // child died first; its exit settles things
+    process.stdin.pipe(child.stdin);
+    for (const ev of ["end", "close", "error"]) process.stdin.on(ev, shutdown);
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, shutdown);
+    // Last-resort sweep: however the launcher exits, the tree goes with it.
+    process.on("exit", () => killTree(child, "SIGKILL"));
+  } else {
+    for (const sig of ["SIGINT", "SIGTERM"]) {
+      process.on(sig, () => child.kill(sig));
+    }
   }
 }
 
@@ -156,13 +206,13 @@ export async function run(argv) {
       );
     }
     log(`lilbee: bridging MCP to ${env.LILBEE_URL}`);
-    spawnAndForward(remoteExec(env));
+    spawnAndForward(remoteExec(env), { tieToStdin: true });
     return;
   }
 
   const resolved = await resolveLocalBinary(env);
   if (route.kind === "mcp") {
-    spawnAndForward(mcpExec(env, resolved.path, route.args));
+    spawnAndForward(mcpExec(env, resolved.path, route.args), { tieToStdin: true });
   } else {
     spawnAndForward(passthroughExec(resolved.path, route.argv));
   }
