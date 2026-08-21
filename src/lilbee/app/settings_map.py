@@ -514,6 +514,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         ),
         choices=tuple(m.value for m in ReasoningMode),
     ),
+    "messages_reasoning": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "How /v1/messages presents thinking: separate thinking block, "
+            "inline thinking as plain answer text, or off (ask the model not "
+            "to think)"
+        ),
+        choices=tuple(m.value for m in ReasoningMode),
+    ),
     "lilbee_name": SettingDef(
         str,
         nullable=False,

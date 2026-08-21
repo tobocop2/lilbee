@@ -658,6 +658,36 @@ class TestHttpDaemonGate:
 
 class TestAdd:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_missing_path_says_where_paths_resolve(self, _mock_sync, tmp_path):
+        """A remote caller sends paths from its own disk; say whose disk we read.
+
+        The bare path this used to return read as a transient hiccup, and an
+        agent driving a remote server reported the add as done over an
+        untouched index.
+        """
+        result = await add([str(tmp_path / "not-here.pdf")])
+
+        assert result.get("error"), "an add that indexed nothing must not look like success"
+        # Read the message, not repr(dict): on Windows the repr doubles every
+        # backslash and a path never matches.
+        message = result["error"]
+        assert "not-here.pdf" in message
+        assert "lilbee server" in message
+        assert str(cfg.documents_dir) in message, "name the root so the caller can retry"
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_one_good_path_still_succeeds_beside_a_bad_one(self, _mock_sync, tmp_path):
+        """Partial success stays success: only a total miss is an error."""
+        good = tmp_path / "real.txt"
+        good.write_text("hello")
+
+        result = await add([str(good), str(tmp_path / "missing.txt")])
+
+        assert not result.get("error")
+        assert "real.txt" in result["copied"]
+        assert result["warning"] == "some files could not be processed"
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, mock_sync, tmp_path):
         src = tmp_path / "test.txt"
         src.write_text("hello world")
@@ -674,16 +704,24 @@ class TestAdd:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_path(self, mock_sync, tmp_path):
+        """An add that indexed nothing is an error, not a success with a note."""
         result = await add(["/no/such/path.txt"])
 
-        assert "/no/such/path.txt" in result["errors"]
-        assert result["copied"] == []
+        assert result.get("error")
+        assert "/no/such/path.txt" in str(result)
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_nonexistent_has_warning(self, mock_sync):
-        """Nonexistent paths produce a warning field (BEE-dlj)."""
+    async def test_add_nonexistent_reports_the_server_and_its_root(self, mock_sync):
+        """The caller has to know whose filesystem was read to fix the path.
+
+        This used to be a `warning` inside a success envelope (BEE-dlj), which
+        a remote caller read as "mostly fine" over an index nothing reached.
+        """
         result = await add(["/no/such/path.txt"])
-        assert "warning" in result
+        assert result.get("error")
+        message = result["error"]
+        assert "lilbee server" in message
+        assert str(cfg.documents_dir) in message
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
@@ -825,8 +863,9 @@ class TestAddWithUrls:
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
         mock_crawl.return_value = []
         result = await add(paths=["https://example.com", "/nonexistent"])
-        assert result["crawled"] == 0
-        assert "/nonexistent" in result["errors"]
+        # Nothing crawled and the path missing: the whole add indexed nothing.
+        assert result.get("error")
+        assert "/nonexistent" in str(result)
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
@@ -847,8 +886,8 @@ class TestAddWithUrls:
             return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
         ):
             result = await add(paths=["http://evil.test/steal"])
-        assert result["crawled"] == 0
-        assert any("evil.test" in e for e in result["errors"])
+        assert result.get("error")
+        assert "evil.test" in str(result)
 
 
 class TestCrawl:

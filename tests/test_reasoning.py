@@ -8,11 +8,14 @@ from lilbee.core.config import cfg
 from lilbee.providers.model_defaults import ModelDefaults
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
+    PSEUDO_THINKING_TAGS,
     REASONING_EXHAUSTED_NOTICE,
     CapNotice,
+    PseudoThinkingNormalizer,
     StreamToken,
     effective_reasoning_cap,
     filter_reasoning,
+    normalize_pseudo_thinking,
     stream_chat_with_cap,
     strip_reasoning,
 )
@@ -604,3 +607,53 @@ class TestStripReasoning:
 
     def test_only_unclosed_think_tag(self):
         assert strip_reasoning("<think>all reasoning no answer") == ""
+
+
+class TestPseudoThinkingNormalizer:
+    def test_unclosed_opener_becomes_an_open_think_tag(self):
+        assert (
+            normalize_pseudo_thinking("<anthropic_thinking> plan the reply")
+            == "<think> plan the reply"
+        )
+
+    @pytest.mark.parametrize("name", PSEUDO_THINKING_TAGS)
+    def test_every_known_tag_pair_becomes_a_think_block(self, name):
+        assert (
+            normalize_pseudo_thinking(f"<{name}>plan</{name}>answer") == "<think>plan</think>answer"
+        )
+
+    def test_leading_whitespace_before_the_tag_is_dropped(self):
+        assert normalize_pseudo_thinking("\n\n<anthropic_thinking>plan") == "<think>plan"
+
+    def test_plain_reply_passes_through(self):
+        assert normalize_pseudo_thinking("just an answer") == "just an answer"
+
+    def test_mid_reply_tag_is_untouched(self):
+        text = "answer with <anti_codeblock>markup</anti_codeblock> inside"
+        assert normalize_pseudo_thinking(text) == text
+
+    def test_real_think_tag_is_untouched(self):
+        text = "<think>plan</think>answer"
+        assert normalize_pseudo_thinking(text) == text
+
+    def test_opener_split_across_feeds(self):
+        normalizer = PseudoThinkingNormalizer()
+        assert normalizer.feed("<anthropic_") == ""
+        assert normalizer.feed("thinking>plan") == "<think>plan"
+        assert normalizer.flush() == ""
+
+    def test_close_tag_split_across_feeds(self):
+        normalizer = PseudoThinkingNormalizer()
+        assert normalizer.feed("<anti_codeblock>plan</anti_") == "<think>"
+        assert normalizer.feed("codeblock>answer") == "plan</think>answer"
+
+    def test_text_after_the_decision_passes_straight_through(self):
+        normalizer = PseudoThinkingNormalizer()
+        assert normalizer.feed("answer ") == "answer "
+        assert normalizer.feed("<anti_codeblock>later") == "<anti_codeblock>later"
+
+    def test_flush_emits_an_undecided_partial_buffer(self):
+        normalizer = PseudoThinkingNormalizer()
+        assert normalizer.feed("<anthr") == ""
+        assert normalizer.flush() == "<anthr"
+        assert normalizer.feed("more") == "more"
