@@ -149,7 +149,7 @@ def _gguf_names(models_dir: Path) -> set[str]:
 def _repo_gguf_count(models_dir: Path, hf_repo: str) -> int:
     """GGUFs landed for *hf_repo*, identified by repo rather than filename.
 
-    The requested quant is not the one that necessarily arrives: pick_best_gguf
+    The requested quant is not the one that necessarily arrives: resolution
     resolves to the best available, so asserting on the filename asserts a
     choice the catalog is free to make.
     """

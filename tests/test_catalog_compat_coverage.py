@@ -28,7 +28,7 @@ def test_probe_returns_empty_when_blob_lacks_gguf_magic(
     """A response that doesn't start with the GGUF magic bytes returns empty."""
     blob = b"NOTGGUF" + b"\x00" * 32
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
-    assert header_probe.probe_architecture("https://example.test/x.gguf") == ""
+    assert header_probe.probe_header("https://example.test/x.gguf").architecture == ""
 
 
 def test_download_target_translates_unsupported_arch_to_runtime_error() -> None:
@@ -61,3 +61,38 @@ def test_download_target_translates_unsupported_arch_to_runtime_error() -> None:
         pytest.raises(RuntimeError, match="kimi_k2"),
     ):
         _download_target(_Reporter(), model)
+
+
+class TestFileHeader:
+    """The per-candidate header read the pull path gates on."""
+
+    @staticmethod
+    def _header(monkeypatch: pytest.MonkeyPatch, header: header_probe.GgufHeader) -> None:
+        monkeypatch.setattr(compat, "probe_header", lambda _url: header)
+
+    def test_reads_model_weights(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._header(monkeypatch, header_probe.GgufHeader("llama", "model"))
+        header = compat.file_header("acme/foo-GGUF", "foo-Q4_K_M.gguf")
+        assert (header.architecture, header.is_model) == ("llama", True)
+
+    def test_reads_projector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """clip is a supported architecture, so only general.type rules the projector out."""
+        self._header(monkeypatch, header_probe.GgufHeader("clip", "mmproj"))
+        assert compat.file_header("acme/foo-GGUF", "foo-mmproj-Q8_0.gguf").is_model is False
+
+    def test_unreadable_header_reads_as_an_eligible_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Offline, the probe yields nothing; that must not block the pull."""
+        self._header(monkeypatch, header_probe.GgufHeader())
+        header = compat.file_header("acme/foo-GGUF", "foo-Q4_K_M.gguf")
+        assert (header.architecture, header.is_model) == ("", True)
+
+    def test_unresolvable_repo_id_yields_an_empty_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise(*args: object, **kwargs: object) -> str:
+            raise ValueError("bad repo")
+
+        monkeypatch.setattr(compat, "hf_hub_url", _raise)
+        assert compat.file_header("not a repo", "foo.gguf") == header_probe.GgufHeader()

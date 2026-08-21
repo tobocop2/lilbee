@@ -22,7 +22,7 @@ from lilbee.catalog.models import (
     estimate_min_ram_gb,
     estimate_size_gb,
 )
-from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
+from lilbee.catalog.refs import GGUF_GLOB, rank_gguf_candidates
 
 log = logging.getLogger(__name__)
 
@@ -144,15 +144,15 @@ def repo_has_mmproj(hf_repo: str) -> bool:
 
 
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
-    """Concrete GGUF filename for a repo's sibling list, or ``GGUF_GLOB``.
+    """Best-guess GGUF filename for a repo's sibling list, or ``GGUF_GLOB``.
 
-    Uses the same quant picker as the pull path so the filename a catalog
-    row carries always names the file a pull of that row produces.
+    Ranks by quant label alone: a listing covers up to a full page of repos and
+    cannot afford a header probe per row. A pull re-checks the choice against the
+    file's header, so a row may name a file the pull then rejects in favour of a
+    better one.
     """
-    gguf_files = [s.rfilename for s in siblings if s.rfilename.endswith(".gguf")]
-    if not gguf_files:
-        return GGUF_GLOB
-    return pick_best_gguf(gguf_files)
+    ranked = rank_gguf_candidates(s.rfilename for s in siblings)
+    return next(iter(ranked), GGUF_GLOB)
 
 
 class HfClient:

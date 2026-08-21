@@ -1,4 +1,4 @@
-"""Unit tests for catalog.header_probe.probe_architecture."""
+"""Unit tests for catalog.header_probe: the GGUF header fields a pull reads."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ import httpx
 import pytest
 
 from lilbee.catalog import header_probe
-from lilbee.catalog.header_probe import GGUF_HEADER_PROBE_BYTES, probe_architecture
+from lilbee.catalog.header_probe import GGUF_HEADER_PROBE_BYTES, probe_header
 from tests._gguf_fixture import make_minimal_gguf
 
 
 def test_probe_reads_architecture(monkeypatch: pytest.MonkeyPatch) -> None:
     blob = make_minimal_gguf("llama")
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
-    assert probe_architecture("https://example.test/model.gguf") == "llama"
+    assert probe_header("https://example.test/model.gguf").architecture == "llama"
 
 
 def _gguf_arch_then_truncated_tokenizer(arch: str) -> bytes:
@@ -53,7 +53,7 @@ def _hdr(entries: list[bytes], kv_count: int | None = None) -> bytes:
 
 
 class TestParseArchWalker:
-    """The KV walker behind probe_architecture, exercised at the byte level."""
+    """The KV walker behind probe_header, exercised at the byte level."""
 
     def test_skips_scalar_string_and_array_values_before_arch(self) -> None:
         blob = _hdr(
@@ -68,7 +68,7 @@ class TestParseArchWalker:
                 _kv(b"general.architecture", 8, _gstr(b"qwen3")),
             ]
         )
-        assert header_probe._parse_arch(blob) == "qwen3"
+        assert header_probe._parse_header(blob).architecture == "qwen3"
 
     def test_skips_string_array_before_arch(self) -> None:
         arr = struct.pack("<I", 8) + struct.pack("<Q", 2) + _gstr(b"a") + _gstr(b"bb")
@@ -78,24 +78,24 @@ class TestParseArchWalker:
                 _kv(b"general.architecture", 8, _gstr(b"llama")),
             ]
         )
-        assert header_probe._parse_arch(blob) == "llama"
+        assert header_probe._parse_header(blob).architecture == "llama"
 
     def test_truncated_mid_kv_returns_empty(self) -> None:
         blob = _hdr([_kv(b"general.name", 8, _gstr(b"m"))], kv_count=5)  # claims 5, only 1 present
-        assert header_probe._parse_arch(blob) == ""
+        assert header_probe._parse_header(blob).architecture == ""
 
     def test_unknown_value_type_returns_empty(self) -> None:
         blob = _hdr([_kv(b"weird", 99, b"")], kv_count=1)  # arch never reached
-        assert header_probe._parse_arch(blob) == ""
+        assert header_probe._parse_header(blob).architecture == ""
 
     def test_unknown_array_element_type_returns_empty(self) -> None:
         bad_arr = struct.pack("<I", 99) + struct.pack("<Q", 1)
         blob = _hdr([_kv(b"weird", 9, bad_arr)], kv_count=1)
-        assert header_probe._parse_arch(blob) == ""
+        assert header_probe._parse_header(blob).architecture == ""
 
     def test_non_string_arch_returns_empty(self) -> None:
         blob = _hdr([_kv(b"general.architecture", 4, struct.pack("<I", 1))])
-        assert header_probe._parse_arch(blob) == ""
+        assert header_probe._parse_header(blob).architecture == ""
 
 
 def test_probe_reads_arch_before_truncated_tokenizer_array(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,17 +105,17 @@ def test_probe_reads_arch_before_truncated_tokenizer_array(monkeypatch: pytest.M
     the arch-compat guard never fired (bb-ziks.43 end-to-end)."""
     blob = _gguf_arch_then_truncated_tokenizer("qwen3")
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
-    assert probe_architecture("https://example.test/model.gguf") == "qwen3"
+    assert probe_header("https://example.test/model.gguf").architecture == "qwen3"
 
 
 def test_probe_handles_truncated_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=b"GGUF\x03"))
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
 
 
 def test_probe_handles_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(404, content=b""))
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
 
 
 def test_probe_handles_request_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,7 +123,7 @@ def test_probe_handles_request_error(monkeypatch: pytest.MonkeyPatch) -> None:
         raise httpx.ConnectError("offline")
 
     monkeypatch.setattr(httpx, "get", _raise)
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
 
 
 def test_probe_sends_range_header(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,7 +138,7 @@ def test_probe_sends_range_header(monkeypatch: pytest.MonkeyPatch) -> None:
         return httpx.Response(200, content=blob)
 
     monkeypatch.setattr(header_probe.httpx, "get", _capture)
-    probe_architecture("https://example.test/model.gguf")
+    probe_header("https://example.test/model.gguf")
     assert captured["headers"]["Range"] == f"bytes=0-{GGUF_HEADER_PROBE_BYTES - 1}"
     # HF /resolve/ URLs 302 to the CDN; the probe must follow the redirect or it
     # reads the redirect notice instead of the GGUF header (bb-ziks.43).
@@ -148,7 +148,7 @@ def test_probe_sends_range_header(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_probe_returns_empty_on_missing_arch_key(monkeypatch: pytest.MonkeyPatch) -> None:
     blob = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", 0)
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
 
 
 def test_probe_returns_empty_on_non_string_arch_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +163,7 @@ def test_probe_returns_empty_on_non_string_arch_value(monkeypatch: pytest.Monkey
     buf += struct.pack("<I", 4)
     buf += struct.pack("<I", 99)
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=bytes(buf)))
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
 
 
 def test_probe_skips_unrelated_kv_entries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,7 +183,7 @@ def test_probe_skips_unrelated_kv_entries(monkeypatch: pytest.MonkeyPatch) -> No
     val = b"qwen3"
     buf += struct.pack("<Q", len(val)) + val
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=bytes(buf)))
-    assert probe_architecture("https://example.test/model.gguf") == "qwen3"
+    assert probe_header("https://example.test/model.gguf").architecture == "qwen3"
 
 
 def test_probe_handles_array_value_in_skip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,7 +206,7 @@ def test_probe_handles_array_value_in_skip(monkeypatch: pytest.MonkeyPatch) -> N
     val = b"gemma3"
     buf += struct.pack("<Q", len(val)) + val
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=bytes(buf)))
-    assert probe_architecture("https://example.test/model.gguf") == "gemma3"
+    assert probe_header("https://example.test/model.gguf").architecture == "gemma3"
 
 
 def test_probe_returns_empty_on_unknown_value_type_in_skip(
@@ -227,4 +227,51 @@ def test_probe_returns_empty_on_unknown_value_type_in_skip(
     val = b"llama"
     buf += struct.pack("<Q", len(val)) + val
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=bytes(buf)))
-    assert probe_architecture("https://example.test/model.gguf") == ""
+    assert probe_header("https://example.test/model.gguf").architecture == ""
+
+
+class TestFileTypeGate:
+    """``general.type`` is what separates model weights from a projector."""
+
+    def test_reads_file_type_alongside_architecture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        blob = make_minimal_gguf("clip", file_type="mmproj")
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
+        header = probe_header("https://example.test/mmproj.gguf")
+        assert (header.architecture, header.file_type) == ("clip", "mmproj")
+
+    def test_projector_is_not_a_model(self) -> None:
+        assert header_probe.GgufHeader(architecture="clip", file_type="mmproj").is_model is False
+
+    def test_adapter_is_not_a_model(self) -> None:
+        assert header_probe.GgufHeader(architecture="llama", file_type="adapter").is_model is False
+
+    def test_declared_model_is_a_model(self) -> None:
+        assert header_probe.GgufHeader(architecture="qwen35", file_type="model").is_model is True
+
+    def test_header_without_the_key_stays_a_model(self) -> None:
+        """GGUFs written before general.architecture gained a sibling type key omit it."""
+        assert header_probe.GgufHeader(architecture="llama").is_model is True
+
+    def test_unreadable_header_stays_a_model(self) -> None:
+        """An empty header is not a verdict, so the candidate stays eligible."""
+        assert header_probe.GgufHeader().is_model is True
+
+    def test_stops_once_both_keys_are_read(self) -> None:
+        """The walk ends at the second wanted key. A later re-declaration is never read."""
+        entries = [
+            _kv(b"general.architecture", 8, _gstr(b"qwen35")),
+            _kv(b"general.type", 8, _gstr(b"model")),
+            _kv(b"general.type", 8, _gstr(b"mmproj")),
+        ]
+        header = header_probe._parse_header(_hdr(entries))
+        assert (header.architecture, header.file_type) == ("qwen35", "model")
+
+    def test_keeps_fields_read_before_a_truncated_array(self) -> None:
+        """A tokenizer array running past the probe window does not lose the fields."""
+        entries = [
+            _kv(b"general.architecture", 8, _gstr(b"qwen35")),
+            _kv(b"tokenizer.ggml.tokens", 9, struct.pack("<I", 8) + struct.pack("<Q", 151936)),
+            _kv(b"general.type", 8, _gstr(b"model")),
+        ]
+        header = header_probe._parse_header(_hdr(entries))
+        assert (header.architecture, header.file_type) == ("qwen35", "")

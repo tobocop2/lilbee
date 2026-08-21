@@ -6,6 +6,7 @@ import pytest
 
 from lilbee.catalog import compat
 from lilbee.catalog.compat import resolve_arch_for_pull
+from lilbee.catalog.header_probe import GgufHeader
 from lilbee.catalog.hf_client import HfClient
 
 
@@ -28,13 +29,13 @@ def test_resolve_miss_returns_empty_when_no_probe_target(
 
 def test_resolve_miss_invokes_probe(client: HfClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(compat, "_resolve_blob_url", lambda ref: f"https://example.test/{ref}.gguf")
-    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "qwen3")
+    monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader(architecture="qwen3"))
     assert resolve_arch_for_pull("acme/foo-GGUF", client) == "qwen3"
 
 
 def test_resolve_writes_back_to_cache(client: HfClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(compat, "_resolve_blob_url", lambda _ref: "https://example.test/x.gguf")
-    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "gemma3")
+    monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader(architecture="gemma3"))
     resolve_arch_for_pull("acme/bar-GGUF", client)
     assert client.get_cached_arch("acme/bar-GGUF") == "gemma3"
 
@@ -46,11 +47,11 @@ def test_resolve_does_not_cache_empty_arch_on_probe_failure(
     guard would be permanently disabled for this ref. A later successful probe
     must still be able to resolve and cache the real arch."""
     monkeypatch.setattr(compat, "_resolve_blob_url", lambda _ref: "https://example.test/x.gguf")
-    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "")
+    monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader(architecture=""))
     assert resolve_arch_for_pull("acme/flaky-GGUF", client) == ""
     assert client.get_cached_arch("acme/flaky-GGUF") is None
 
-    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "llama")
+    monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader(architecture="llama"))
     assert resolve_arch_for_pull("acme/flaky-GGUF", client) == "llama"
     assert client.get_cached_arch("acme/flaky-GGUF") == "llama"
 

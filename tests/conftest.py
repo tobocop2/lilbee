@@ -226,6 +226,22 @@ def _sealed_engine_resolution(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sealed_gguf_header_probe(monkeypatch):
+    """Seal the GGUF header probe so no unit test reaches HuggingFace.
+
+    Resolving a pull reads each candidate's header over the network. An empty
+    header is the documented offline verdict: the file stays eligible and
+    selection falls back to the quant ranking. Tests that exercise the gate
+    patch ``compat.probe_header`` or ``download.file_header`` themselves, which
+    wins over this default; ``header_probe``'s own tests stub ``httpx`` below it.
+    """
+    from lilbee.catalog import compat
+    from lilbee.catalog.header_probe import GgufHeader
+
+    monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader())
+
+
+@pytest.fixture(autouse=True)
 def _reset_services_after_test():
     """Drop any Services container ``set_services()`` left around.
 
