@@ -3,7 +3,6 @@
 import fnmatch
 import logging
 import os
-import re
 import shutil
 import sys
 import threading
@@ -16,6 +15,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from lilbee.catalog.compat import classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
@@ -25,8 +25,15 @@ from lilbee.catalog.hf_client import (
     repo_has_mmproj,
 )
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.refs import DEFAULT_MMPROJ_PATTERN, pick_best_gguf
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.refs import (
+    DEFAULT_MMPROJ_PATTERN,
+    FLOAT_QUANTS,
+    WILDCARD,
+    quant_label,
+    rank_gguf_candidates,
+    split_shard_filenames,
+)
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
@@ -372,25 +379,6 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         ) from None
 
 
-_SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
-
-
-def split_shard_filenames(filename: str) -> list[str]:
-    """Return every shard of a split GGUF in order, or ``[filename]`` if it isn't split.
-
-    A split GGUF names its parts ``<base>-00001-of-0000N.gguf`` through
-    ``<base>-0000N-of-0000N.gguf``. llama.cpp loads the whole set from the first
-    shard but needs every part on disk, so the catalog must fetch all of them and
-    only consider the model installed once the full set is present.
-    """
-    match = _SPLIT_SHARD_RE.match(filename)
-    if match is None:
-        return [filename]
-    base = match.group("base")
-    total = int(match.group("total"))
-    return [f"{base}-{index:05d}-of-{total:05d}.gguf" for index in range(1, total + 1)]
-
-
 def download_model(
     entry: CatalogModel,
     *,
@@ -564,54 +552,22 @@ def _fetch_mmproj(
     return path
 
 
-def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
-    """Resolve an mmproj filename pattern to a concrete filename via the HF API."""
-    if "*" not in pattern:
-        return pattern
+def _repo_sibling_files(hf_repo: str) -> list[str]:
+    """Every filename the HuggingFace API lists for *hf_repo*.
 
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        RuntimeError: the listing could not be fetched.
+    """
     try:
         resp = httpx.get(
             f"{HF_API_URL}/{hf_repo}",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-    except Exception as exc:
-        log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
-        return None
-
-    mmproj_files: list[str] = [
-        s.get("rfilename", "") for s in siblings if fnmatch.fnmatch(s.get("rfilename", ""), pattern)
-    ]
-    if not mmproj_files:
-        return None
-
-    # Prefer an F16 mmproj when one is offered; otherwise take the first match.
-    for preference in ("f16", "F16"):
-        for f in mmproj_files:
-            if preference in f:
-                return f
-    return mmproj_files[0]
-
-
-def resolve_filename(entry: CatalogModel) -> str:
-    """Resolve a GGUF filename pattern to the best concrete filename.
-    For exact filenames, return as-is. For wildcards, query the HF API
-    and pick the best quantization (prefer Q4_K_M for balance of size/quality).
-    """
-    if "*" not in entry.gguf_filename:
-        return entry.gguf_filename
-
-    try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{entry.hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
         if resp.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
-                f"{entry.hf_repo} requires HuggingFace authentication. "
+                f"{hf_repo} requires HuggingFace authentication. "
                 "Set HF_TOKEN env var or visit the repo page to request access."
             )
         resp.raise_for_status()
@@ -619,15 +575,59 @@ def resolve_filename(entry: CatalogModel) -> str:
     except PermissionError:
         raise
     except Exception as exc:
-        raise RuntimeError(f"Cannot query files for {entry.hf_repo}: {exc}") from exc
+        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
+    return [s.get("rfilename", "") for s in siblings]
 
-    gguf_files = [
-        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")
-    ]
-    if not gguf_files:
-        raise RuntimeError(f"No GGUF files found in {entry.hf_repo}")
 
-    return pick_best_gguf(gguf_files)
+def _mmproj_rank(filename: str) -> tuple[bool, str]:
+    """Sort key preferring an unquantized projector, ties broken by name."""
+    return (quant_label(filename) not in FLOAT_QUANTS, filename)
+
+
+def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
+    """Resolve an mmproj filename pattern to a concrete filename via the HF API."""
+    if WILDCARD not in pattern:
+        return pattern
+    try:
+        names = _repo_sibling_files(hf_repo)
+    except (PermissionError, RuntimeError) as exc:
+        log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
+        return None
+    matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
+    return min(matches, key=_mmproj_rank) if matches else None
+
+
+def resolve_filename(entry: CatalogModel) -> str:
+    """The repo file a pull of *entry* fetches, gated on each candidate's GGUF header.
+
+    Quant labels only order the candidates. A file whose header calls it a
+    projector or an adapter is never the model, so a repo that labels its
+    projector ``Q8_0`` cannot install it as one.
+
+    A supported architecture wins outright. Where a repo mixes architectures, a
+    speculative-decoding drafter loses to the weights it drafts for. Where none
+    is supported, the best-ranked weights still come back: refusing here would
+    report a generic error and disable ``--allow-unsupported``, so that verdict
+    belongs to the architecture guard.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        RuntimeError: the repo listing failed, or it holds no model weights.
+    """
+    named = entry.gguf_filename
+    if WILDCARD not in named and file_header(entry.hf_repo, named).is_model:
+        return named
+    unsupported: str | None = None
+    for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
+        header = file_header(entry.hf_repo, candidate)
+        if not header.is_model:
+            continue
+        if classify(header.architecture) is not ModelCompat.UNSUPPORTED:
+            return candidate
+        unsupported = unsupported or candidate
+    if unsupported is not None:
+        return unsupported
+    raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
 
 
 _SIZE_UNKNOWN = 0

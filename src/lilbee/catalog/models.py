@@ -1,10 +1,10 @@
-"""Catalog dataclasses and pydantic types: leaf module, no sibling imports."""
+"""Catalog dataclasses and pydantic types. Imports only the catalog's leaf modules."""
 
-import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from lilbee.catalog.refs import quant_label
 from lilbee.catalog.types import ModelCompat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
@@ -45,15 +45,9 @@ _BYTES_PER_PARAM: dict[str, float] = {
     "F32": 4.0,
 }
 
-# Q4_K_M is what ``pick_best_gguf`` prefers, so an unrecognized quant label
+# Q4_K_M heads the pull path's quant preference, so an unrecognized label
 # estimates as if it were the quant a pull would most likely land on.
 _DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
-
-# Quant label as written in a GGUF filename. Matches the K/legacy quants
-# (``Q4_K_M``), the IQ family (``IQ4_XS``) and the unquantized float types,
-# which ``formatting.extract_quant`` does not: it exists to label a row for
-# display and only recognizes ``Q``-prefixed names.
-_QUANT_IN_FILENAME = re.compile(r"\b(I?Q\d[A-Z0-9_]*|BF16|F16|F32)\b", re.IGNORECASE)
 
 
 def _ggml_floor(quant: str) -> float | None:
@@ -72,8 +66,7 @@ def _ggml_floor(quant: str) -> float | None:
 
 def _quant_bytes_per_param(gguf_filename: str) -> float:
     """Bytes per weight for the quant *gguf_filename* names, never below its floor."""
-    match = _QUANT_IN_FILENAME.search(gguf_filename)
-    quant = match.group(1).upper() if match else ""
+    quant = quant_label(gguf_filename)
     measured = _BYTES_PER_PARAM.get(quant, _DEFAULT_BYTES_PER_PARAM)
     floor = _ggml_floor(quant)
     return max(measured, floor) if floor is not None else measured
@@ -156,7 +149,7 @@ class CatalogModel:
     @property
     def display_name(self) -> str:
         """Human-readable label derived from the HuggingFace repo id."""
-        # Local import keeps models.py a leaf (no sibling imports at module top).
+        # circular: models -> formatting via clean_display_name
         from lilbee.catalog.formatting import clean_display_name
 
         return clean_display_name(self.hf_repo)
