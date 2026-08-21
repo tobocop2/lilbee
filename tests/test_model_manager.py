@@ -527,6 +527,9 @@ class TestModelManagerPull:
                 "lilbee.catalog.resolve_pull_target", return_value=fake_entry
             ) as mock_resolve,
             mock.patch("lilbee.catalog.download_model", side_effect=fake_download) as mock_dl,
+            # The pull names the file before transferring so it can be checked
+            # against the engine; without this the resolve reaches HuggingFace.
+            mock.patch("lilbee.catalog.download.resolve_filename", return_value="test-model.gguf"),
         ):
             result = mgr.pull("test-model", ModelSource.NATIVE)
 
@@ -559,7 +562,13 @@ class TestModelManagerPull:
             return path
 
         mgr = ModelManager(models_dir)
-        with mock.patch("lilbee.catalog.download_model", side_effect=fake_download):
+        with (
+            mock.patch("lilbee.catalog.download_model", side_effect=fake_download),
+            mock.patch(
+                "lilbee.catalog.download.resolve_filename",
+                return_value="gemma-2-2b-it-Q4_K_M.gguf",
+            ),
+        ):
             mgr.pull("bartowski/gemma-2-2b-it-GGUF", ModelSource.NATIVE)
 
         assert len(captured) == 1

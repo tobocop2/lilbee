@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
@@ -181,7 +182,8 @@ class ModelManager:
         here once present, so a non-native *source* is refused.
 
         Native pulls of architectures the bundled llama.cpp doesn't support
-        are refused with ``UnsupportedArchError`` unless *allow_unsupported*
+        are refused with ``UnsupportedArchError``, and files whose tensors it
+        cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         A *cancel* signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
@@ -196,7 +198,9 @@ class ModelManager:
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
-            return self._pull_native(model, on_bytes=on_bytes, cancel=cancel)
+            return self._pull_native(
+                model, on_bytes=on_bytes, cancel=cancel, allow_unsupported=allow_unsupported
+            )
         finally:
             self._invalidate_installed_cache()
 
@@ -225,6 +229,7 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         cancel: CancelSignal | None = None,
+        allow_unsupported: bool = False,
     ) -> Path:
         """Download a featured or ad-hoc HuggingFace model to the native GGUF directory."""
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
@@ -237,11 +242,54 @@ class ModelManager:
                 f"Model '{model}' not recognized. "
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
+        if not allow_unsupported:
+            self._refuse_unloadable(entry)
         path = download_model(
             entry, on_progress=on_bytes, on_complete=register_downloaded_model, cancel=cancel
         )
         log.info("Downloaded %s to %s", model, path)
         return path
+
+    @staticmethod
+    def _refuse_unloadable(entry: CatalogModel) -> None:
+        """Raise before any transfer when the engine cannot decode *entry*'s file.
+
+        Resolution runs here purely to name the file to check: a bare repo ref
+        carries a glob, and the engine's verdict is about a concrete file. The
+        download resolves again rather than being handed the answer, so the entry
+        reaching it has the same shape whether or not this check ran.
+
+        Both verdicts need the concrete file. ``enforce_arch_compat`` reads the
+        ref the user typed, which for a bare repo names no file and so decides
+        nothing; the architecture is re-checked here against the file resolution
+        actually chose. The cheap header read runs first so an unsupported
+        architecture costs one range request rather than a parser subprocess.
+
+        A repo that will not resolve is not this check's verdict to deliver. The
+        download resolves the same ref moments later and reports the gated repo or
+        the missing file properly, so a resolution failure here is left to it.
+        """
+        # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
+        from lilbee.catalog.compat import (
+            ModelCompat,
+            UnsupportedArchError,
+            classify,
+            file_header,
+        )
+        from lilbee.catalog.download import resolve_filename
+        from lilbee.catalog.hf_client import hf_token
+        from lilbee.providers.fleet.loadability import assert_engine_can_load
+
+        try:
+            filename = resolve_filename(entry)
+        except (PermissionError, RuntimeError) as exc:
+            log.debug("Cannot name a file to check for %s: %s", entry.hf_repo, exc)
+            return
+        ref = f"{entry.hf_repo}/{filename}"
+        architecture = file_header(entry.hf_repo, filename).architecture
+        if classify(architecture) is ModelCompat.UNSUPPORTED:
+            raise UnsupportedArchError(ref, architecture)
+        assert_engine_can_load(entry.hf_repo, filename, hf_token())
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove an installed native model. Returns True if removed.
