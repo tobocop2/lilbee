@@ -21,12 +21,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.download import split_shard_filenames
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
     NATIVE_GGUF_REF_MIN_SLASHES,
     format_native_gguf_ref,
     is_bare_hf_repo,
+    split_shard_filenames,
 )
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg

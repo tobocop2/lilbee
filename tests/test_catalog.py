@@ -2,6 +2,8 @@
 
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -45,9 +47,15 @@ from lilbee.catalog import (
 from lilbee.catalog import (
     query as _query,
 )
+from lilbee.catalog.header_probe import GgufHeader
 from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import HfPage
-from lilbee.catalog.refs import GGUF_GLOB, is_bare_hf_repo, pick_best_gguf
+from lilbee.catalog.refs import (
+    GGUF_GLOB,
+    is_bare_hf_repo,
+    quant_label,
+    rank_gguf_candidates,
+)
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
 
@@ -969,10 +977,10 @@ class TestResolvePullTarget:
 
 class TestSplitShardFilenames:
     def test_single_file_returns_itself(self) -> None:
-        assert catalog.download.split_shard_filenames("model-Q4_K_M.gguf") == ["model-Q4_K_M.gguf"]
+        assert catalog.refs.split_shard_filenames("model-Q4_K_M.gguf") == ["model-Q4_K_M.gguf"]
 
     def test_split_returns_every_part_in_order(self) -> None:
-        parts = catalog.download.split_shard_filenames("Q4_K_M/M-Q4_K_M-00001-of-00003.gguf")
+        parts = catalog.refs.split_shard_filenames("Q4_K_M/M-Q4_K_M-00001-of-00003.gguf")
         assert parts == [
             "Q4_K_M/M-Q4_K_M-00001-of-00003.gguf",
             "Q4_K_M/M-Q4_K_M-00002-of-00003.gguf",
@@ -1217,65 +1225,165 @@ class TestDownloadModel:
             download_model(entry)
 
 
+def _bonsai_header(name: str) -> GgufHeader:
+    """Headers for the mixed-architecture repo shape: weights, projector, drafter."""
+    if "mmproj" in name:
+        return GgufHeader(architecture="clip", file_type="mmproj")
+    if "dspark" in name:
+        return GgufHeader(architecture="dspark", file_type="model")
+    if "inkling" in name:
+        return GgufHeader(architecture="inkling", file_type="model")
+    return GgufHeader(architecture="qwen35", file_type="model")
+
+
 class TestResolveFilename:
+    """The pull path resolves a repo to the file whose header says it is the model."""
+
+    @staticmethod
+    def _siblings(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+        data = {"siblings": [{"rfilename": name} for name in names]}
+        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+    @staticmethod
+    def _headers(
+        monkeypatch: pytest.MonkeyPatch,
+        lookup: Callable[[str], GgufHeader] | None = None,
+    ) -> None:
+        """Stub the per-file header probe; *lookup* maps a filename to its header."""
+
+        def _header(_repo: str, name: str) -> GgufHeader:
+            if lookup is None:
+                return GgufHeader(architecture="llama", file_type="model")
+            return lookup(name)
+
+        monkeypatch.setattr(catalog.download, "file_header", _header)
+
     def test_exact_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
         entry = PICKS_EMBEDDING[0]
-        result = catalog.resolve_filename(entry)
-        assert result == entry.gguf_filename
+        assert catalog.resolve_filename(entry) == entry.gguf_filename
 
     def test_wildcard_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        entry = PICKS_CHAT[0]
-        data = {
-            "siblings": [
-                {"rfilename": "Qwen3-0.6B-Q4_K_M.gguf"},
-                {"rfilename": "Qwen3-0.6B-Q8_0.gguf"},
-            ]
-        }
-        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog.resolve_filename(entry)
-        assert result == "Qwen3-0.6B-Q4_K_M.gguf"
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Qwen3-0.6B-Q4_K_M.gguf"
+
+    def test_projector_labelled_q8_does_not_win(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A repo whose only preferred-quant file is its projector resolves to the weights."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(
+            monkeypatch,
+            "Bonsai-27B-mmproj-Q8_0.gguf",
+            "Bonsai-27B-Q2_0.gguf",
+            "Bonsai-27B-F16.gguf",
+        )
+        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Bonsai-27B-Q2_0.gguf"
+
+    def test_named_file_rejected_by_header_reresolves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A catalog row naming the projector re-resolves instead of pulling it."""
+        entry = replace(PICKS_CHAT[0], gguf_filename="Bonsai-27B-mmproj-Q8_0.gguf")
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf")
+        assert catalog.resolve_filename(entry) == "Bonsai-27B-Q2_0.gguf"
+
+    def test_unsupported_architecture_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A speculative-decoding drafter on an unsupported arch never wins."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "Bonsai-27B-dspark-Q4_1.gguf", "Bonsai-27B-Q2_g64.gguf")
+        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Bonsai-27B-Q2_g64.gguf"
+
+    def test_projector_only_repo_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A repo holding nothing but a projector has no weights to install."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf")
+        with pytest.raises(RuntimeError, match="No GGUF model weights found"):
+            catalog.resolve_filename(PICKS_CHAT[0])
+
+    def test_unsupported_arch_still_resolves_for_the_arch_guard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusing here would report a generic error and break --allow-unsupported."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "mmproj-BF16.gguf")
+        assert catalog.resolve_filename(PICKS_CHAT[0]) == "inkling-Q4_K_M.gguf"
 
     def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        entry = PICKS_CHAT[0]
-        data = {"siblings": [{"rfilename": "something-else.bin"}]}
-        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        with pytest.raises(RuntimeError, match="No GGUF files found"):
-            catalog.resolve_filename(entry)
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "something-else.bin")
+        with pytest.raises(RuntimeError, match="No GGUF model weights found"):
+            catalog.resolve_filename(PICKS_CHAT[0])
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        entry = PICKS_CHAT[0]
-
         def raise_connect(*a: object, **kw: object) -> httpx.Response:
             raise httpx.ConnectError("x")
 
         monkeypatch.setattr(httpx, "get", raise_connect)
         with pytest.raises(RuntimeError, match="Cannot query files"):
-            catalog.resolve_filename(entry)
+            catalog.resolve_filename(PICKS_CHAT[0])
 
     def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        entry = PICKS_CHAT[0]
-        mock_resp = httpx.Response(500)
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(500))
         with pytest.raises(RuntimeError):
-            catalog.resolve_filename(entry)
+            catalog.resolve_filename(PICKS_CHAT[0])
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
-        entry = PICKS_CHAT[0]
-        mock_resp = httpx.Response(401)
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(401))
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            catalog.resolve_filename(entry)
+            catalog.resolve_filename(PICKS_CHAT[0])
 
-    def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
+
+class TestQuantLabel:
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("model-Q4_K_M.gguf", "Q4_K_M"),
+            ("Q4_K_M/model-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"),
+            ("model-IQ4_XS.gguf", "IQ4_XS"),
+            ("mmproj-model-f16.gguf", "F16"),
+            ("model-bf16.gguf", "BF16"),
+            ("Ternary-Bonsai-27B-Q2_g64.gguf", "Q2_G64"),
+            ("Qwen3-30B-A3B.gguf", ""),
+        ],
+    )
+    def test_reads_the_labelled_segment(self, filename: str, expected: str) -> None:
+        assert quant_label(filename) == expected
+
+    def test_label_must_be_a_whole_segment(self) -> None:
+        """``F16`` inside ``BF16`` and ``Q8_0`` inside a longer word are not labels."""
+        assert quant_label("model-BF16.gguf") == "BF16"
+        assert quant_label("modelQ8_0x.gguf") == ""
+
+
+class TestRankGgufCandidates:
+    def test_prefers_q4_k_m(self) -> None:
         files = ["model-Q8_0.gguf", "model-Q4_K_M.gguf", "model-Q5_K_M.gguf"]
-        assert pick_best_gguf(files) == "model-Q4_K_M.gguf"
+        assert rank_gguf_candidates(files) == [
+            "model-Q4_K_M.gguf",
+            "model-Q5_K_M.gguf",
+            "model-Q8_0.gguf",
+        ]
 
-    def test_pick_best_gguf_fallback_first(self) -> None:
-        files = ["model-weird.gguf"]
-        assert pick_best_gguf(files) == "model-weird.gguf"
+    def test_unrecognized_quant_outranks_unquantized(self) -> None:
+        """An exotic pack beats the F16 reference copy, which is many times its size."""
+        files = ["Ternary-Bonsai-8B-F16.gguf", "Ternary-Bonsai-8B-Q2_0.gguf"]
+        assert rank_gguf_candidates(files) == [
+            "Ternary-Bonsai-8B-Q2_0.gguf",
+            "Ternary-Bonsai-8B-F16.gguf",
+        ]
+
+    def test_collapses_split_shards_to_the_first_part(self) -> None:
+        files = [
+            "Q4_K_M/M-Q4_K_M-00001-of-00002.gguf",
+            "Q4_K_M/M-Q4_K_M-00002-of-00002.gguf",
+        ]
+        assert rank_gguf_candidates(files) == ["Q4_K_M/M-Q4_K_M-00001-of-00002.gguf"]
+
+    def test_drops_non_gguf_files(self) -> None:
+        assert rank_gguf_candidates(["README.md", "config.json"]) == []
 
 
 class TestIsBareHfRepo:
