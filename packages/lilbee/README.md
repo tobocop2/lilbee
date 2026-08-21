@@ -44,6 +44,8 @@ One-shot without installing:
 npx -y lilbee chat
 ```
 
+The [usage guide](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md) covers everything from here: TUI screens, slash commands, the CLI, the HTTP server, MCP, environment variables, and `config.toml`.
+
 ## How the package works
 
 The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of the **latest lilbee release** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. Every later run execs the cached binary directly, with no network.
@@ -105,6 +107,8 @@ Remote:
 | `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
 | `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. |
 | `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
+
+These are the launcher's own variables. Everything else in your environment passes through to the lilbee binary unchanged, so every lilbee environment variable (`LILBEE_DATA_DIR`, `LILBEE_MODELS_DIR`, …) works exactly as it does with any other install.
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
 The launcher always runs its own sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The fallback release lives in `package.json` under `lilbee.release`; it is used only when the latest-release lookup fails.
