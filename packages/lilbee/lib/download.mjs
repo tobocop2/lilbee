@@ -32,8 +32,6 @@ async function configureProxyFromEnv() {
 }
 const proxyReady = configureProxyFromEnv();
 
-
-
 const USER_AGENT = "lilbee-npm-launcher";
 const DOWNLOAD_ATTEMPTS = 2;
 
@@ -72,79 +70,95 @@ const MB = 1048576;
 const BAR_FULL = "━";
 const BAR_HALF = "╸";
 const BAR_REST = "─";
+const BAR_WIDTH = 30;
+const ANSI_ROSE = "\x1b[38;5;211m";
+const ANSI_DIM = "\x1b[2m";
+const ANSI_RESET = "\x1b[0m";
+const CLEAR_LINE = "\r\x1b[2K";
+const DRAW_INTERVAL_MS = 100;
+const LOG_STEP_PCT = 10;
 
-/**
- * One rich/Textual-style progress line, e.g.
- *   `lilbee │━━━━━╸────│ 55% 523/1246MB 87.0MB/s eta 0:08`
- * Pure: rendering only, no terminal I/O. `color` wraps the bar's filled part
- * in ANSI rose and dims the rest; rate and eta are omitted when unknown.
- */
-export function progressLine({ done, total, bytesPerSec, barWidth = 30, color = false }) {
-  const mb = (n) => `${Math.floor(n / MB)}`;
-  if (!total) return `lilbee downloading… ${mb(done)}MB`;
+const mbCount = (bytes) => Math.floor(bytes / MB);
+const formatMB = (bytes) => `${mbCount(bytes)}MB`;
 
-  const frac = Math.min(done / total, 1);
-  const cells = frac * barWidth;
+/** "m:ss" for a duration in seconds. */
+function formatEta(seconds) {
+  const s = Math.round(seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** The bar glyphs for a 0..1 fraction at `width` cells; `color` tints the filled part. */
+function barGlyphs(frac, width, color) {
+  const cells = frac * width;
   const full = Math.floor(cells);
-  const half = full < barWidth && cells - full >= 0.5 ? BAR_HALF : "";
-  const rest = BAR_REST.repeat(barWidth - full - half.length);
+  const half = full < width && cells - full >= 0.5 ? BAR_HALF : "";
   const filled = BAR_FULL.repeat(full) + half;
-  const bar = color ? `\x1b[38;5;211m${filled}\x1b[0m\x1b[2m${rest}\x1b[0m` : `${filled}${rest}`;
-
-  const pct = `${Math.floor(frac * 100)}%`.padStart(5);
-  let line = `lilbee │${bar}│${pct} ${mb(done)}/${mb(total)}MB`;
-  if (bytesPerSec > 0 && done < total) {
-    const eta = Math.round((total - done) / bytesPerSec);
-    line += ` ${(bytesPerSec / MB).toFixed(1)}MB/s eta ${Math.floor(eta / 60)}:${String(eta % 60).padStart(2, "0")}`;
-  }
-  return line;
+  const rest = BAR_REST.repeat(width - full - half.length);
+  return color ? `${ANSI_ROSE}${filled}${ANSI_RESET}${ANSI_DIM}${rest}${ANSI_RESET}` : filled + rest;
 }
 
 /**
- * Progress as a stream stage. On a TTY, redraw one bar line in place
- * (~10 fps); everywhere else (CI, pipes, MCP hosts) keep the line-per-10%
- * log output. A progress-bar dependency would end this package's
- * zero-runtime-dependency publish for one bar in one place, and the
- * non-TTY fallback has to exist regardless — so the bar is local.
+ * One rich-style progress line: `lilbee │━━━━━╸────│  55% 523/1246MB 87.0MB/s eta 0:08`.
+ * Pure; rate and eta are omitted when unknown.
  */
-function progressReporter(total, log, stream = process.stderr) {
+export function progressLine({ done, total, bytesPerSec, barWidth = BAR_WIDTH, color = false }) {
+  if (!total) return `lilbee: downloading… ${formatMB(done)}`;
+  const frac = Math.min(done / total, 1);
+  const pct = `${Math.floor(frac * 100)}%`.padStart(5);
+  const line = `lilbee │${barGlyphs(frac, barWidth, color)}│${pct} ${mbCount(done)}/${formatMB(total)}`;
+  if (!(bytesPerSec > 0) || done >= total) return line;
+  return `${line} ${(bytesPerSec / MB).toFixed(1)}MB/s eta ${formatEta((total - done) / bytesPerSec)}`;
+}
+
+/** Stream stage that redraws one bar line in place and ends it with a newline. */
+function ttyProgress(total, stream) {
+  const started = Date.now();
   let done = 0;
-  if (stream.isTTY) {
-    const started = Date.now();
-    let lastDraw = 0;
-    const draw = () => {
-      const elapsed = (Date.now() - started) / 1000;
-      const line = progressLine({ done, total, bytesPerSec: elapsed > 0 ? done / elapsed : 0, color: true });
-      stream.write(`\r\x1b[2K${line}`);
-    };
-    return new Transform({
-      transform(chunk, _enc, cb) {
-        done += chunk.length;
-        if (Date.now() - lastDraw >= 100) {
-          lastDraw = Date.now();
-          draw();
-        }
-        cb(null, chunk);
-      },
-      flush(cb) {
+  let lastDraw = 0;
+  const draw = () => {
+    const elapsed = (Date.now() - started) / 1000;
+    stream.write(CLEAR_LINE + progressLine({ done, total, bytesPerSec: elapsed ? done / elapsed : 0, color: true }));
+  };
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      done += chunk.length;
+      if (Date.now() - lastDraw >= DRAW_INTERVAL_MS) {
+        lastDraw = Date.now();
         draw();
-        stream.write("\n");
-        cb();
-      },
-    });
-  }
-  let lastPct = -10;
+      }
+      cb(null, chunk);
+    },
+    flush(cb) {
+      draw();
+      stream.write("\n");
+      cb();
+    },
+  });
+}
+
+/** Stream stage that logs one line per LOG_STEP_PCT of progress. */
+function lineProgress(total, log) {
+  let done = 0;
+  let lastPct = -LOG_STEP_PCT;
   return new Transform({
     transform(chunk, _enc, cb) {
       done += chunk.length;
       const pct = total ? Math.floor((done / total) * 100) : 0;
-      if (pct >= lastPct + 10) {
+      if (pct >= lastPct + LOG_STEP_PCT) {
         lastPct = pct;
-        log(`lilbee: downloading… ${pct}% (${Math.floor(done / MB)}MB)`);
+        log(`lilbee: downloading… ${pct}% (${formatMB(done)})`);
       }
       cb(null, chunk);
     },
   });
+}
+
+/**
+ * Progress for the download pipeline: an in-place bar on a TTY, log lines elsewhere.
+ * Local, not a library: keeps the zero-runtime-dependency publish.
+ */
+export function progressReporter(total, log, stream = process.stderr) {
+  return stream.isTTY ? ttyProgress(total, stream) : lineProgress(total, log);
 }
 
 /**
@@ -155,7 +169,7 @@ export async function download({ env, release, assetName, dest, log = console.er
   const repo = env.LILBEE_REPO || "tobocop2/lilbee";
   const { url, size, digest } = await releaseAsset(repo, release, assetName);
   log(
-    `lilbee: downloading ${assetName} (${Math.ceil(size / 1048576)}MB) ` +
+    `lilbee: downloading ${assetName} (${formatMB(size)}) ` +
       `from ${repo}@${release}. One-time per release; cached after that.`
   );
 

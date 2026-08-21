@@ -74,3 +74,36 @@ test("progressLine colors the bar only when asked", () => {
   assert.match(colored, /\x1b\[/);
   assert.doesNotMatch(plain, /\x1b\[/);
 });
+
+// --- progress as a stream stage ---
+
+import { progressReporter } from "../lib/download.mjs";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+
+async function pump(reporter, chunks) {
+  const sink = [];
+  await pipeline(Readable.from(chunks), reporter, async function* (src) {
+    for await (const c of src) sink.push(c);
+  });
+  return sink;
+}
+
+test("on a TTY the reporter redraws one line in place and ends it with a newline", async () => {
+  const writes = [];
+  const stream = { isTTY: true, write: (s) => writes.push(s) };
+  await pump(progressReporter(4 * MB, () => {}, stream), [Buffer.alloc(2 * MB), Buffer.alloc(2 * MB)]);
+  assert.ok(writes.length >= 2);
+  assert.ok(writes.slice(0, -1).every((w) => w.startsWith("\r")));
+  assert.match(writes.at(-2), /100% 4\/4MB/);
+  assert.equal(writes.at(-1), "\n");
+});
+
+test("off a TTY the reporter logs a line per 10%", async () => {
+  const lines = [];
+  const stream = { isTTY: false, write: () => assert.fail("must not draw") };
+  await pump(progressReporter(10 * MB, (m) => lines.push(m), stream), Array.from({ length: 10 }, () => Buffer.alloc(MB)));
+  assert.equal(lines.length, 10);
+  assert.match(lines[0], /10% \(1MB\)/);
+  assert.match(lines.at(-1), /100% \(10MB\)/);
+});
