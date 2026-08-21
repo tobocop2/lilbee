@@ -13,6 +13,7 @@ import {
 
 test("routeArgv: prepare, mcp, and passthrough", () => {
   assert.deepEqual(routeArgv(["prepare"]), { kind: "prepare" });
+  assert.deepEqual(routeArgv(["unprepare"]), { kind: "unprepare" });
   assert.equal(routeArgv(["mcp"]).kind, "mcp");
   assert.equal(routeArgv(["mcp", "--data-dir", "/x"]).args.dataDir, "/x");
   assert.deepEqual(routeArgv(["chat"]), { kind: "exec", argv: ["chat"] });

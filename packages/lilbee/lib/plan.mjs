@@ -14,6 +14,7 @@
 export function routeArgv(argv) {
   const [head, ...rest] = argv;
   if (head === "prepare") return { kind: "prepare" };
+  if (head === "unprepare") return { kind: "unprepare" };
   if (head === "mcp") return { kind: "mcp", args: parseMcpArgs(rest) };
   return { kind: "exec", argv };
 }
@@ -83,7 +84,8 @@ export const HELP = `lilbee (npm launcher) — run lilbee anywhere
 Usage:
   lilbee <any lilbee command>     bootstrap the binary if needed, then run it
   lilbee mcp [--data-dir <dir>]   start the MCP server (stdio)
-  lilbee prepare                  download the lilbee binary and exit
+  lilbee prepare                  download (or upgrade to) the latest lilbee binary and exit
+  lilbee unprepare                delete every downloaded binary (run before npm uninstall)
   lilbee-mcp [...]                same as \`lilbee mcp [...]\`
 
 Environment:
@@ -94,5 +96,6 @@ Environment:
   LILBEE_VARIANT   download variant override: default | cu121 | cu124 | cu125 |
                    rocm | compat | compat-cu124 | compat-rocm (unset =
                    auto-detect; default = the plain build on any host)
-  LILBEE_RELEASE   override the pinned lilbee release tag
+  LILBEE_RELEASE   run an exact lilbee release tag instead of the latest
+  LILBEE_DEBUG     =1 prints binary resolution detail on every run
 `;

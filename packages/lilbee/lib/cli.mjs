@@ -15,9 +15,9 @@ import { fileURLToPath } from "node:url";
 
 import { assetNameFor } from "./assets.mjs";
 import { detectVariant } from "./detect.mjs";
-import { download } from "./download.mjs";
+import { download, latestReleaseTag } from "./download.mjs";
 import { exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
-import { resolveBinary } from "./resolve.mjs";
+import { cacheDir, resolveBinary } from "./resolve.mjs";
 
 const log = (msg) => console.error(msg);
 
@@ -142,9 +142,13 @@ export function spawnAndForward({ cmd, args }, { tieToStdin = false } = {}) {
   }
 }
 
-async function resolveLocalBinary(env) {
+async function resolveLocalBinary(env, { refresh = false } = {}) {
+  const debug = env.LILBEE_DEBUG === "1";
+  // Routine runs are silent: detection and resolution chatter buffers here
+  // and prints only when a download actually happens (or LILBEE_DEBUG=1).
+  const pending = [];
+  const say = debug ? log : (msg) => pending.push(msg);
   const { release, repo } = pinnedRelease();
-  const effectiveRelease = env.LILBEE_RELEASE || release;
   // Explicit LILBEE_VARIANT wins; otherwise detect the host's GPU and CPU
   // baseline so the bootstrap grabs the right build automatically, the way
   // brew or flatpak would.
@@ -155,22 +159,30 @@ async function resolveLocalBinary(env) {
           process.platform,
           process.arch,
           { execFileSync, existsSync: fs.existsSync, readFileSync: fs.readFileSync, readdirSync: fs.readdirSync },
-          console.error
+          say
         );
   const assetName = assetNameFor(process.platform, process.arch, variant);
   const resolved = await resolveBinary({
     env: { LILBEE_REPO: repo, ...env },
-    release: effectiveRelease,
+    release,
     assetName,
+    refresh,
     deps: {
       existsSync: fs.existsSync,
+      readdirSync: fs.readdirSync,
+      rmSync: fs.rmSync,
+      latestTag: () => latestReleaseTag(repo),
+      log: say,
       download: async (o) => {
+        for (const msg of pending.splice(0)) log(msg);
         assertGlibcFloor();
         return download({ ...o, log });
       },
     },
   });
-  log(`lilbee: using binary from ${resolved.source} (${resolved.path})`);
+  if (debug || resolved.source === "download") {
+    log(`lilbee: using binary from ${resolved.source} (${resolved.path})`);
+  }
   return resolved;
 }
 
@@ -183,8 +195,20 @@ export async function run(argv) {
   }
   const route = routeArgv(argv);
 
+  if (route.kind === "unprepare") {
+    // The inverse of prepare: delete every downloaded binary. npm >= 7 runs
+    // no uninstall scripts, so this is the uninstall story:
+    //   lilbee unprepare && npm uninstall -g lilbee
+    const dir = cacheDir(env);
+    fs.rmSync(dir, { recursive: true, force: true });
+    log(`lilbee: removed the downloaded binaries (${dir}).`);
+    return;
+  }
+
   if (route.kind === "prepare") {
-    const resolved = await resolveLocalBinary(env);
+    // prepare is the explicit "get me the newest release": it re-resolves
+    // latest even when a binary is already cached.
+    const resolved = await resolveLocalBinary(env, { refresh: true });
     log(`lilbee: ready (${resolved.path}).`);
     return;
   }

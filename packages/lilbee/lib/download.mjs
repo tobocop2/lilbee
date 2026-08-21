@@ -46,6 +46,13 @@ async function fetchJson(url) {
   return res.json();
 }
 
+/** The tag of the newest published release, e.g. "v0.6.90b425". */
+export async function latestReleaseTag(repo) {
+  const info = await fetchJson(`https://api.github.com/repos/${repo}/releases/latest`);
+  if (!info.tag_name) throw new Error(`releases/latest for ${repo} has no tag_name`);
+  return info.tag_name;
+}
+
 /** Look up the asset's browser_download_url and sha256 digest for a release tag. */
 export async function releaseAsset(repo, release, assetName) {
   const info = await fetchJson(`https://api.github.com/repos/${repo}/releases/tags/${release}`);
@@ -148,8 +155,8 @@ export async function download({ env, release, assetName, dest, log = console.er
   const repo = env.LILBEE_REPO || "tobocop2/lilbee";
   const { url, size, digest } = await releaseAsset(repo, release, assetName);
   log(
-    `lilbee: first run — downloading ${assetName} (${Math.ceil(size / 1048576)}MB) ` +
-      `from ${repo}@${release}. Cached for next time; run "lilbee prepare" to do this ahead of time.`
+    `lilbee: downloading ${assetName} (${Math.ceil(size / 1048576)}MB) ` +
+      `from ${repo}@${release}. One-time per release; cached after that.`
   );
 
   if (!digest) {

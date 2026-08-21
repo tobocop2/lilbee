@@ -46,9 +46,10 @@ npx -y lilbee chat
 
 ## How the package works
 
-The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone lilbee binary — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. Every later run execs the cached binary directly.
+The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of the **latest lilbee release** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. Every later run execs the cached binary directly, with no network.
 
-The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time. Each npm version pins one lilbee release, so `npm update -g lilbee` moves the binary forward with the package.
+The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time; run it again any time to upgrade to the newest release (the old binary is removed). If the latest-release lookup is unreachable, the launcher falls back to the release pinned in `package.json` — the one this launcher version was tested against.
+
 
 ## MCP
 
@@ -102,10 +103,22 @@ Remote:
 | `LILBEE_BIN` | Explicit path to a lilbee binary. |
 | `LILBEE_DATA_DIR` | Library location for `mcp`; same as `--data-dir`. |
 | `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
-| `LILBEE_RELEASE` | Override the pinned lilbee release tag. |
+| `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. |
+| `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
-The launcher always runs its own pinned, sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The pinned release lives in `package.json` under `lilbee.release`, so each npm version maps to one lilbee release.
+The launcher always runs its own sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The fallback release lives in `package.json` under `lilbee.release`; it is used only when the latest-release lookup fails.
+
+## Uninstall
+
+`npm uninstall -g lilbee` removes only the launcher — the npm package is a small shim, and the lilbee binary it downloaded stays in the cache (up to ~1.2GB). npm runs no uninstall scripts, so no package can clean its own cache on uninstall. Delete the binaries first, then the package:
+
+```bash
+lilbee unprepare        # deletes every downloaded binary
+npm uninstall -g lilbee
+```
+
+Already uninstalled the package? `npx -y lilbee unprepare` still works. The cache lives at `~/Library/Caches/lilbee-npm` (macOS), `~/.cache/lilbee-npm` (Linux), or `%LOCALAPPDATA%\lilbee-npm` (Windows) if you prefer to delete it by hand. Models and your library are separate: they belong to lilbee itself, not this launcher, and `lilbee unprepare` does not touch them.
 
 ## Requirements
 
