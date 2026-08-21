@@ -52,15 +52,15 @@ The package is a small launcher with zero runtime dependencies. On first use it 
 
 The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time; run it again any time to upgrade to the newest release (the old binary is removed). If the latest-release lookup is unreachable, the launcher falls back to the release pinned in `package.json` — the one this launcher version was tested against.
 
-
 ## MCP
 
-Two equivalent entry points start the MCP server (stdio) for agent hosts:
+Start the MCP server (stdio) for agent hosts:
 
 ```bash
 npx -y lilbee mcp
-npx -y lilbee-mcp        # same thing, one token for host configs
 ```
+
+After a global install, the `lilbee-mcp` command is the same entry point.
 
 - **Local mode** (default): runs `lilbee mcp` on the resolved binary.
 - **Remote mode** (`LILBEE_URL` set): skips the binary entirely and bridges stdio to a lilbee server's streamable-http `/mcp` endpoint, sending your session token as a bearer header. Use this when lilbee runs on another machine, such as a GPU box.
@@ -107,9 +107,9 @@ Remote:
 | `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
 | `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. |
 | `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
+| `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
 These are the launcher's own variables. Everything else in your environment passes through to the lilbee binary unchanged, so every lilbee environment variable (`LILBEE_DATA_DIR`, `LILBEE_MODELS_DIR`, …) works exactly as it does with any other install.
-| `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
 The launcher always runs its own sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The fallback release lives in `package.json` under `lilbee.release`; it is used only when the latest-release lookup fails.
 
