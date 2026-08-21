@@ -1013,9 +1013,10 @@ class ChatScreen(Screen[None]):
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
-        from lilbee.runtime.progress import CrawlPageEvent, SetupProgressEvent
+        from lilbee.runtime.progress import CrawlPageEvent, CrawlPageFailedEvent, SetupProgressEvent
 
         reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
+        failures: list[str] = []
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
             if event_type == EventType.SETUP_START:
@@ -1053,6 +1054,10 @@ class ChatScreen(Screen[None]):
                         msg.CMD_CRAWL_PAGE_INDETERMINATE.format(current=data.current, url=data.url),
                         indeterminate=True,
                     )
+            elif event_type == EventType.CRAWL_PAGE_FAILED and isinstance(
+                data, CrawlPageFailedEvent
+            ):
+                failures.append(data.reason)
 
         paths = asyncio_loop.run(
             crawl_and_save(
@@ -1066,6 +1071,13 @@ class ChatScreen(Screen[None]):
             )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
+        if failures:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_CRAWL_PAGES_FAILED.format(count=len(failures), reason=failures[-1]),
+                severity="warning",
+            )
 
     def _cmd_catalog(self, _args: str) -> None:
         # switch_view already installs and navigates to the managed Catalog view;

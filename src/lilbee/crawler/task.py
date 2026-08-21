@@ -12,6 +12,7 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawl_and_save
 from lilbee.runtime.progress import (
     CrawlPageEvent,
+    CrawlPageFailedEvent,
     DetailedProgressCallback,
     EventType,
     ProgressEvent,
@@ -21,6 +22,10 @@ log = logging.getLogger(__name__)
 
 # Maximum completed tasks to retain in memory before evicting oldest.
 _MAX_COMPLETED_TASKS = 100
+
+# Maximum per-page failure reasons stored on a task; pages_failed keeps the
+# true count so a large all-failing crawl doesn't grow task memory unboundedly.
+_MAX_FAILURE_REASONS = 20
 
 
 class TaskStatus(StrEnum):
@@ -50,6 +55,8 @@ class CrawlTask:
     status: TaskStatus = TaskStatus.PENDING
     pages_crawled: int = 0
     pages_total: int | None = None
+    pages_failed: int = 0
+    failure_reasons: list[str] = field(default_factory=list)
     error: str | None = None
     started_at: str = ""
     finished_at: str = ""
@@ -91,6 +98,12 @@ def make_progress_updater(task: CrawlTask) -> DetailedProgressCallback:
                 raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
             task.pages_crawled = data.current
             task.pages_total = data.total
+        elif event_type == EventType.CRAWL_PAGE_FAILED:
+            if not isinstance(data, CrawlPageFailedEvent):
+                raise TypeError(f"Expected CrawlPageFailedEvent, got {type(data).__name__}")
+            task.pages_failed += 1
+            if len(task.failure_reasons) < _MAX_FAILURE_REASONS:
+                task.failure_reasons.append(f"{data.url}: {data.reason}")
 
     return _on_progress
 

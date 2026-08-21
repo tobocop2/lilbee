@@ -81,7 +81,12 @@ dependencies = [
 # to a name PyPI answers 404 for made the documented install command backtrack
 # to a months-old release that predated it. Installing without this leaves a
 # working lilbee that says what to install the moment it needs an engine.
-engine = ["lilbee-engine"]
+# The floor is below every published engine wheel (they carry lilbee's own
+# version), so it never excludes a real release; its jobs are to keep the
+# in-repo 0.0.0 stub from satisfying an index install and, because the
+# specifier names a pre-release, to let plain `pip` resolve the beta-versioned
+# wheels without `--pre`.
+engine = ["lilbee-engine>=0.6.90b1"]
 # 1.92 moved litellm to a maturin build, and PyPI carries no macOS wheel for any
 # release since, so a mac install compiles the Rust crate out of the sdist or
 # fails outright without a toolchain. 1.93.1 added win_amd64 but no macOS, and
@@ -123,6 +128,15 @@ packages = ["src/lilbee"]
 # the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
+
+# `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
+# above no matter the specifier (uv drops version bounds on sourced packages),
+# so it silently installed the binariless stub where the deployment wanted the
+# real engine wheel. This turns sources off for the `uv pip` interface only:
+# that command now resolves lilbee-engine from the index, while `uv sync` /
+# `uv lock` (the project interface) keep using the stub.
+[tool.uv.pip]
+no-sources = true
 
 [dependency-groups]
 dev = [

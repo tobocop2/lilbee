@@ -8,7 +8,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.ingest.skip_marker import clear_skip_markers
 
 
 class ResetResult(BaseModel):
@@ -33,8 +35,8 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
             # iterdir yields direct children only, so the entry is within
             # base_dir by construction. Registered source roots live outside this
             # dir (only their config entry is here), so reset never reaches a
-            # user's corpus: it deletes owned files, and un-registering roots is
-            # done by clearing config.toml under data_dir.
+            # user's corpus: it deletes owned files, and perform_reset
+            # un-registers the roots from config.toml separately.
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -50,10 +52,19 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
 
 
 def perform_reset() -> ResetResult:
-    """Delete all documents and data. Returns summary of what was deleted."""
+    """Delete all documents and data and un-register every linked source."""
     skipped: list[str] = []
     deleted_docs = _clear_dir(cfg.documents_dir, skipped)
     deleted_data = _clear_dir(cfg.data_dir, skipped)
+
+    # config.toml and the skip sidecars live at data_root, next to (not inside)
+    # the two cleared dirs. Without un-registering the roots here, in the file
+    # AND in this process, the next sync walks every linked root and re-indexes
+    # it, so content reappears after a "factory reset". Other settings survive:
+    # reset deletes data, not configuration.
+    settings.delete_value(cfg.data_root, "linked_roots")
+    cfg.linked_roots = {}
+    clear_skip_markers(cfg.data_root)
 
     return ResetResult(
         deleted_docs=deleted_docs,

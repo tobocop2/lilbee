@@ -1300,9 +1300,13 @@ class FleetProvider:
                 clients = self._clients.get(role)
         if not clients:
             # A refused launch's recorded reason wins over the generic line.
+            # BAD_REQUEST so the HTTP surfaces return this deterministic,
+            # actionable refusal in a 4xx body instead of a generic 500.
             reason = self._skipped_unusable_ctx.get(role)
             if reason is not None:
-                raise ProviderError(reason, provider=_PROVIDER_NAME)
+                raise ProviderError(
+                    reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
+                )
             raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
         return list(clients)
 

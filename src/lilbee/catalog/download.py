@@ -345,7 +345,7 @@ def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> P
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
-    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+    from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, RepositoryNotFoundError
 
     _disable_xet_where_it_stalls()
     try:
@@ -359,6 +359,8 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         ) from None
     except RepositoryNotFoundError:
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+    except EntryNotFoundError:
+        raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
         raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
@@ -662,14 +664,29 @@ def _hf_file_size(hf_repo: str, filename: str) -> int | None:
     return get_hf_file_metadata(hf_hub_url(hf_repo, filename), token=hf_token()).size
 
 
+def _missing_file_message(hf_repo: str, filename: str) -> str:
+    """User-facing error for a file the Hub reports as nonexistent."""
+    return (
+        f"File {filename!r} does not exist in {hf_repo} on HuggingFace. "
+        "Check the filename on the repo page."
+    )
+
+
 def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
     """Return the byte size huggingface_hub reports for *filename*, or _SIZE_UNKNOWN.
 
     Resolves via hf_hub's own file metadata (correct revision, redirects, and
     LFS/Xet handled uniformly) instead of scraping the repo tree. Returns 0 when
-    offline or unresolvable, in which case the caller keeps the cached file.
+    offline or unresolvable, in which case the caller keeps the cached file. A
+    file the Hub reports as nonexistent raises instead: that answer is
+    definitive, and treating it as unknown let a pull of a mistyped filename
+    accept a stale local file and report success without downloading anything.
     """
+    from huggingface_hub.errors import RemoteEntryNotFoundError
+
     try:
         return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
+    except RemoteEntryNotFoundError:
+        raise RuntimeError(_missing_file_message(hf_repo, filename)) from None
     except Exception:
         return _SIZE_UNKNOWN

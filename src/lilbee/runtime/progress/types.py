@@ -16,6 +16,7 @@ class EventType(StrEnum):
     EXTRACT = "extract"
     CRAWL_START = "crawl_start"
     CRAWL_PAGE = "crawl_page"
+    CRAWL_PAGE_FAILED = "crawl_page_failed"
     CRAWL_DONE = "crawl_done"
     SETUP_START = "setup_start"
     SETUP_PROGRESS = "setup_progress"
@@ -126,6 +127,13 @@ class CrawlPageEvent(BaseModel):
     url: str
     current: int
     total: int
+
+
+class CrawlPageFailedEvent(BaseModel):
+    """Emitted when a crawled page yields nothing to save, with the reason why."""
+
+    url: str
+    reason: str
 
 
 class CrawlDoneEvent(BaseModel):

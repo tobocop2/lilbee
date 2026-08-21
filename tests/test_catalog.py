@@ -1016,6 +1016,49 @@ class TestDownloadModel:
         result = download_model(entry)
         assert result == existing
 
+    def test_stale_file_rejected_when_hub_reports_file_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A nonexistent repo file fails the pull; a stale local copy must not pass as it."""
+        from huggingface_hub.errors import RemoteEntryNotFoundError
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = PICKS_EMBEDDING[0]
+        (tmp_path / entry.gguf_filename).write_bytes(b"stale")
+
+        def _missing(*_a: Any, **_kw: Any) -> int | None:
+            raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
+
+        monkeypatch.setattr(catalog.download, "_hf_file_size", _missing)
+
+        def _no_transfer(**kwargs: Any) -> str:
+            raise AssertionError("transfer must not start for a nonexistent file")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_transfer)
+        with pytest.raises(RuntimeError, match="does not exist in"):
+            download_model(entry)
+
+    def test_missing_file_fails_before_transfer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The size preflight surfaces the Hub's 404 before any bytes move."""
+        from huggingface_hub.errors import RemoteEntryNotFoundError
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = PICKS_EMBEDDING[0]
+
+        def _missing(*_a: Any, **_kw: Any) -> int | None:
+            raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
+
+        monkeypatch.setattr(catalog.download, "_hf_file_size", _missing)
+
+        def _no_transfer(**kwargs: Any) -> str:
+            raise AssertionError("transfer must not start for a nonexistent file")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_transfer)
+        with pytest.raises(RuntimeError, match="does not exist in"):
+            download_model(entry)
+
     def test_existing_file_calls_progress_callback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
