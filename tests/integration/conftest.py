@@ -16,9 +16,10 @@ from lilbee.core.system import canonical_models_dir
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
-# Exact filename, not a wildcard: resolve_filename only calls the HF API to
-# expand a pattern, and one call per entry rate-limits the matrix cells that run
-# last. An overridden repo has no known filename, so it keeps the pattern.
+# Exact filename, not a wildcard: a named file costs one header probe, while a
+# pattern also lists the repo, and the extra call per entry rate-limits the
+# matrix cells that run last. An overridden repo has no known filename, so it
+# keeps the pattern.
 _CI_CHAT_FILE = _DEFAULT_CHAT_FILE if _CI_CHAT_REPO == _DEFAULT_CHAT_REPO else "*Q8_0.gguf"
 _EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
