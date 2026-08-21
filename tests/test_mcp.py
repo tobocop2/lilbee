@@ -668,7 +668,9 @@ class TestAdd:
         result = await add([str(tmp_path / "not-here.pdf")])
 
         assert result.get("error"), "an add that indexed nothing must not look like success"
-        message = str(result)
+        # Read the message, not repr(dict): on Windows the repr doubles every
+        # backslash and a path never matches.
+        message = result["error"]
         assert "not-here.pdf" in message
         assert "lilbee server" in message
         assert str(cfg.documents_dir) in message, "name the root so the caller can retry"
@@ -717,8 +719,9 @@ class TestAdd:
         """
         result = await add(["/no/such/path.txt"])
         assert result.get("error")
-        assert "lilbee server" in str(result)
-        assert str(cfg.documents_dir) in str(result)
+        message = result["error"]
+        assert "lilbee server" in message
+        assert str(cfg.documents_dir) in message
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
