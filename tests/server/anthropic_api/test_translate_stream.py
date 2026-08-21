@@ -306,3 +306,33 @@ class TestPseudoThinkingStripOnStream:
         )
         assert _block_kinds(pairs) == ["text"]
         assert _deltas(pairs) == [{"type": "text_delta", "text": "<anthropic_thinking> plan"}]
+
+
+@pytest.mark.asyncio
+async def test_text_held_as_a_possible_tag_still_reaches_the_client():
+    """A stream that stops mid-tag must not swallow the buffered text.
+
+    The parser holds anything that could still become an opening tag, so a
+    reply ending in "<thi" sits in its buffer with nothing left to disambiguate
+    it. Without the flush at block_stop those characters never ship, and the
+    client sees a truncated answer.
+    """
+    pairs = await _drain(
+        [
+            MessageStart(id="x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="done <thi")),
+            ContentBlockStop(index=0),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=1, output_tokens=1),
+            ),
+            MessageStop(),
+        ]
+    )
+    text = "".join(
+        p["delta"]["text"]
+        for t, p in pairs
+        if t == "content_block_delta" and p["delta"].get("type") == "text_delta"
+    )
+    assert text == "done <thi"
