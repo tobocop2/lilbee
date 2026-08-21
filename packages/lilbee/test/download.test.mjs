@@ -29,3 +29,48 @@ test("releaseAsset surfaces HTTP failures with the status", async () => {
   stubFetch({}, false, 404);
   await assert.rejects(releaseAsset("o/r", "vX", "a"), /HTTP 404/);
 });
+
+// --- progress line rendering (TTY bar) ---
+
+import { progressLine } from "../lib/download.mjs";
+
+const MB = 1048576;
+
+test("progressLine draws an empty, half, and full bar at a fixed width", () => {
+  const at = (done) => progressLine({ done, total: 100 * MB, bytesPerSec: 0, barWidth: 10, color: false });
+  assert.match(at(0), /│─{10}│ +0%/);
+  assert.match(at(50 * MB), /│━{5}─{5}│ +50%/);
+  assert.match(at(100 * MB), /│━{10}│ +100%/);
+});
+
+test("progressLine marks a partial cell with a half-step edge", () => {
+  const line = progressLine({ done: 55 * MB, total: 100 * MB, bytesPerSec: 0, barWidth: 10, color: false });
+  assert.match(line, /│━{5}╸─{4}│ +55%/);
+});
+
+test("progressLine shows sizes, rate, and eta", () => {
+  const line = progressLine({ done: 523 * MB, total: 1246 * MB, bytesPerSec: 87 * MB, barWidth: 10, color: false });
+  assert.match(line, /523\/1246MB/);
+  assert.match(line, /87\.0MB\/s/);
+  assert.match(line, /eta 0:0[89]/); // (1246-523)/87 ≈ 8.3s
+});
+
+test("progressLine clamps overshoot and hides rate/eta when unknown", () => {
+  const over = progressLine({ done: 120 * MB, total: 100 * MB, bytesPerSec: 0, barWidth: 10, color: false });
+  assert.match(over, /100%/);
+  assert.doesNotMatch(over, /eta/);
+  assert.doesNotMatch(over, /MB\/s/);
+});
+
+test("progressLine without a total reports plain progress", () => {
+  const line = progressLine({ done: 42 * MB, total: 0, bytesPerSec: 0, barWidth: 10, color: false });
+  assert.match(line, /42MB/);
+  assert.doesNotMatch(line, /%/);
+});
+
+test("progressLine colors the bar only when asked", () => {
+  const colored = progressLine({ done: 50 * MB, total: 100 * MB, bytesPerSec: 0, barWidth: 10, color: true });
+  const plain = progressLine({ done: 50 * MB, total: 100 * MB, bytesPerSec: 0, barWidth: 10, color: false });
+  assert.match(colored, /\x1b\[/);
+  assert.doesNotMatch(plain, /\x1b\[/);
+});

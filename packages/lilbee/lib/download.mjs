@@ -61,8 +61,71 @@ export async function releaseAsset(repo, release, assetName) {
   return { url: asset.browser_download_url, size: asset.size, digest };
 }
 
-function progressReporter(total, log) {
+const MB = 1048576;
+const BAR_FULL = "━";
+const BAR_HALF = "╸";
+const BAR_REST = "─";
+
+/**
+ * One rich/Textual-style progress line, e.g.
+ *   `lilbee │━━━━━╸────│ 55% 523/1246MB 87.0MB/s eta 0:08`
+ * Pure: rendering only, no terminal I/O. `color` wraps the bar's filled part
+ * in ANSI rose and dims the rest; rate and eta are omitted when unknown.
+ */
+export function progressLine({ done, total, bytesPerSec, barWidth = 30, color = false }) {
+  const mb = (n) => `${Math.floor(n / MB)}`;
+  if (!total) return `lilbee downloading… ${mb(done)}MB`;
+
+  const frac = Math.min(done / total, 1);
+  const cells = frac * barWidth;
+  const full = Math.floor(cells);
+  const half = full < barWidth && cells - full >= 0.5 ? BAR_HALF : "";
+  const rest = BAR_REST.repeat(barWidth - full - half.length);
+  const filled = BAR_FULL.repeat(full) + half;
+  const bar = color ? `\x1b[38;5;211m${filled}\x1b[0m\x1b[2m${rest}\x1b[0m` : `${filled}${rest}`;
+
+  const pct = `${Math.floor(frac * 100)}%`.padStart(5);
+  let line = `lilbee │${bar}│${pct} ${mb(done)}/${mb(total)}MB`;
+  if (bytesPerSec > 0 && done < total) {
+    const eta = Math.round((total - done) / bytesPerSec);
+    line += ` ${(bytesPerSec / MB).toFixed(1)}MB/s eta ${Math.floor(eta / 60)}:${String(eta % 60).padStart(2, "0")}`;
+  }
+  return line;
+}
+
+/**
+ * Progress as a stream stage. On a TTY, redraw one bar line in place
+ * (~10 fps); everywhere else (CI, pipes, MCP hosts) keep the line-per-10%
+ * log output. A progress-bar dependency would end this package's
+ * zero-runtime-dependency publish for one bar in one place, and the
+ * non-TTY fallback has to exist regardless — so the bar is local.
+ */
+function progressReporter(total, log, stream = process.stderr) {
   let done = 0;
+  if (stream.isTTY) {
+    const started = Date.now();
+    let lastDraw = 0;
+    const draw = () => {
+      const elapsed = (Date.now() - started) / 1000;
+      const line = progressLine({ done, total, bytesPerSec: elapsed > 0 ? done / elapsed : 0, color: true });
+      stream.write(`\r\x1b[2K${line}`);
+    };
+    return new Transform({
+      transform(chunk, _enc, cb) {
+        done += chunk.length;
+        if (Date.now() - lastDraw >= 100) {
+          lastDraw = Date.now();
+          draw();
+        }
+        cb(null, chunk);
+      },
+      flush(cb) {
+        draw();
+        stream.write("\n");
+        cb();
+      },
+    });
+  }
   let lastPct = -10;
   return new Transform({
     transform(chunk, _enc, cb) {
@@ -70,7 +133,7 @@ function progressReporter(total, log) {
       const pct = total ? Math.floor((done / total) * 100) : 0;
       if (pct >= lastPct + 10) {
         lastPct = pct;
-        log(`lilbee: downloading… ${pct}% (${Math.floor(done / 1048576)}MB)`);
+        log(`lilbee: downloading… ${pct}% (${Math.floor(done / MB)}MB)`);
       }
       cb(null, chunk);
     },
