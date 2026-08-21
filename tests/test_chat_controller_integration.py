@@ -354,6 +354,59 @@ def test_do_crawl_reports_page_progress() -> None:
     assert reporter.update.call_count >= 2
 
 
+def test_do_crawl_notifies_page_failures() -> None:
+    """_do_crawl surfaces per-page failures as a warning notify after the crawl."""
+    import threading
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.runtime.progress import CrawlPageFailedEvent, EventType
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    async def fake_crawl(
+        url,
+        *,
+        depth,
+        max_pages,
+        on_progress,
+        quiet=False,
+        include_subdomains=False,
+        render_mode=None,
+    ):
+        on_progress(
+            EventType.CRAWL_PAGE_FAILED,
+            CrawlPageFailedEvent(url="https://x/a", reason="403 Forbidden"),
+        )
+        return []
+
+    exc: list[Exception] = []
+    cft_calls: list[tuple] = []
+
+    def _worker() -> None:
+        try:
+            # The screen is unmounted (__new__ without __init__), so notifies
+            # cannot reach a live app; capture the dispatch instead.
+            with (
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: cft_calls.append((a, kw)),
+                ),
+                patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+            ):
+                screen._do_crawl("https://x", 0, 2, reporter)
+        except Exception as e:  # pragma: no cover - re-raised
+            exc.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not exc, f"worker raised: {exc[0]}"
+    expected = msg.CMD_CRAWL_PAGES_FAILED.format(count=1, reason="403 Forbidden")
+    assert any(expected in a and kw.get("severity") == "warning" for a, kw in cft_calls)
+
+
 @contextlib.contextmanager
 def _chat_screen_with_task_bar():
     """A bare ChatScreen whose read-only ``_task_bar`` property yields a MagicMock."""

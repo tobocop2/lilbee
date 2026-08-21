@@ -175,7 +175,7 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
     None if skipped (failure, empty markdown, unchanged hash with file
     on disk, or blocked by path traversal).
     """
-    if not result.success or not result.markdown.strip():
+    if result.failure_reason() is not None:
         return None
     markdown = normalize_crawled_markdown(result.markdown)
     filename = url_to_filename(result.url)

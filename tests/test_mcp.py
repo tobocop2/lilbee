@@ -1002,6 +1002,25 @@ class TestCrawlStatus:
         assert result["status"] == "running"
         assert result["pages_crawled"] == 3
 
+    @mock.patch("lilbee.mcp_server.get_task")
+    def test_reports_page_failures(self, mock_get_task, isolated_env):
+        """Status carries the per-page failure count and reasons."""
+        from lilbee.crawler.task import CrawlTask, TaskStatus
+
+        mock_get_task.return_value = CrawlTask(
+            task_id="abc123",
+            url="https://example.com",
+            depth=0,
+            max_pages=50,
+            status=TaskStatus.DONE,
+            pages_crawled=2,
+            pages_failed=2,
+            failure_reasons=["https://example.com/a: 403 Forbidden"],
+        )
+        result = crawl_status("abc123")
+        assert result["pages_failed"] == 2
+        assert result["failure_reasons"] == ["https://example.com/a: 403 Forbidden"]
+
     def test_not_found(self):
         """Unknown task_id returns an error."""
         clear_tasks()

@@ -308,6 +308,27 @@ class TestErrorPaths:
         assert resp.status_code == 400
         assert resp.json()["error"]["type"] == "invalid_request_error"
 
+    async def test_planner_refusal_surfaces_as_400_with_its_message(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The fleet's own unusable-window refusal reaches the client verbatim in
+        a 4xx body; the generic 500 hides a deterministic, actionable failure."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet.provider import FleetProvider
+        from lilbee.providers.roles import WorkerRole
+
+        fleet = FleetProvider()
+        reason = "backs only a 512-token context; use a smaller model or set num_ctx"
+        monkeypatch.setattr(fleet, "_ensure_fleet", lambda: True)
+        fleet._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+        with pytest.raises(ProviderError) as excinfo:
+            fleet._require_clients(WorkerRole.CHAT)
+        services_with_chat_model.provider.chat.side_effect = excinfo.value
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 400
+        assert "512-token context" in resp.json()["error"]["message"]
+
     async def test_unclassified_dispatch_error_is_500(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
