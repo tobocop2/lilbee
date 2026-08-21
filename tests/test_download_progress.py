@@ -589,6 +589,27 @@ class TestDownloadModelErrorPropagation:
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
 
+    def test_missing_file_raises_clean_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file the Hub reports as nonexistent names the file, not an I/O error."""
+        from huggingface_hub.errors import RemoteEntryNotFoundError
+
+        from lilbee import catalog
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", lambda *_a, **_kw: None)
+
+        def fake_missing(**kwargs: Any) -> str:
+            raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_missing)
+        entry = _test_entry()
+
+        with pytest.raises(RuntimeError, match=r"'test-model\.gguf' does not exist in"):
+            download_model(entry)
+
     def test_repo_not_found_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -741,3 +762,16 @@ class TestFetchExpectedFileSize:
 
         self._patch_meta(monkeypatch, raises=True)
         assert fetch_expected_file_size("org/repo", "m.gguf") == _SIZE_UNKNOWN
+
+    def test_raises_when_hub_reports_file_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 404 for the file is a definitive answer, not an unknown size."""
+        from huggingface_hub.errors import RemoteEntryNotFoundError
+
+        from lilbee.catalog.download import fetch_expected_file_size
+
+        def _missing(*_a: Any, **_kw: Any) -> int | None:
+            raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
+
+        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", _missing)
+        with pytest.raises(RuntimeError, match=r"'m\.gguf' does not exist in org/repo"):
+            fetch_expected_file_size("org/repo", "m.gguf")

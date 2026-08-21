@@ -192,6 +192,30 @@ class TestCrawlRecursiveOrchestration:
         page_events = [d for t, d in events if t == EventType.CRAWL_PAGE]
         assert [e.current for e in page_events] == [1, 2, 3]
 
+    async def test_emits_page_failed_with_reasons(self):
+        """A failed fetch and an empty page each emit crawl_page_failed naming why."""
+        pages = [
+            FetchedPage(url="https://example.com/bad", success=False, error="net::ERR_FAILED"),
+            FetchedPage(url="https://example.com/errless", success=False, error=None),
+            FetchedPage(url="https://example.com/empty", markdown="   \n"),
+            FetchedPage(url="https://example.com/ok", markdown="# OK"),
+        ]
+        fake = FakeFetcher(pages=pages)
+        events: list[tuple[EventType, Any]] = []
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+            await crawl_recursive(
+                "https://example.com",
+                max_depth=1,
+                max_pages=10,
+                on_progress=lambda t, d: events.append((t, d)),
+            )
+        failed = [d for t, d in events if t == EventType.CRAWL_PAGE_FAILED]
+        assert [(e.url, e.reason) for e in failed] == [
+            ("https://example.com/bad", "net::ERR_FAILED"),
+            ("https://example.com/errless", "fetch failed"),
+            ("https://example.com/empty", "page produced empty markdown"),
+        ]
+
     async def test_hard_cap_truncates_results(self):
         pages = [
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 6)
