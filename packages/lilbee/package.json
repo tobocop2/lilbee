@@ -1,0 +1,50 @@
+{
+  "name": "lilbee",
+  "version": "0.6.96",
+  "description": "The whole local AI stack in one executable: run and manage local models across every GPU you have, and search your files, notes, code, and crawled sites with answers that cite the source. Terminal app, CLI, MCP server, and REST API. Auto-detects your hardware (CUDA, ROCm, Metal) and fetches the matching standalone binary on first use.",
+  "license": "MIT",
+  "homepage": "https://lilbee.sh",
+  "bugs": "https://github.com/tobocop2/lilbee/issues",
+  "type": "module",
+  "bin": {
+    "lilbee": "bin/lilbee.mjs",
+    "lilbee-mcp": "bin/lilbee-mcp.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "lilbee": {
+    "repo": "tobocop2/lilbee",
+    "release": "v0.6.90b425",
+    "glibcFloor": "2.34"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tobocop2/lilbee.git",
+    "directory": "packages/lilbee"
+  },
+  "keywords": [
+    "lilbee",
+    "mcp",
+    "mcp-server",
+    "local-ai",
+    "local-llm",
+    "rag",
+    "llama.cpp",
+    "semantic-search",
+    "embeddings",
+    "ai-search",
+    "privacy"
+  ],
+  "optionalDependencies": {
+    "undici": "^6.19.0"
+  }
+}
