@@ -8,7 +8,15 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, cast
 
 from litestar.handlers import asgi
-from litestar.types import ASGIApp, Receive, Scope, Send
+from litestar.types import (
+    ASGIApp,
+    HTTPResponseBodyEvent,
+    HTTPResponseStartEvent,
+    HTTPScope,
+    Receive,
+    Scope,
+    Send,
+)
 from mcp.server.transport_security import TransportSecuritySettings
 
 from lilbee.app.endpoints import MCP_PATH
@@ -67,6 +75,46 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
+# Message-post path of the legacy HTTP+SSE transport, inside the mount.
+_SSE_MESSAGE_PATH = "/messages/"
+
+
+def _header(scope: HTTPScope, name: bytes) -> bytes | None:
+    """Return the first value of *name* among the request headers, if any."""
+    return next((v for k, v in scope["headers"] if k == name), None)
+
+
+def _is_legacy_sse_contact(scope: HTTPScope) -> bool:
+    """True for a sessionless GET asking for SSE at the mount root.
+
+    That request is the legacy HTTP+SSE (2024-11-05) handshake, which clients
+    fall back to when streamable-http first contact fails. A GET carrying a
+    session ID is the streamable transport's own standalone stream instead.
+    """
+    if scope["method"] != "GET" or scope["path"] not in ("", "/"):
+        return False
+    if _header(scope, b"mcp-session-id") is not None:
+        return False
+    accept = _header(scope, b"accept") or b""
+    return b"text/event-stream" in accept
+
+
+async def _method_not_allowed(send: Send) -> None:
+    """Answer 405: a sessionless GET with no SSE accept has no stream to serve."""
+    start: HTTPResponseStartEvent = {
+        "type": "http.response.start",
+        "status": 405,
+        "headers": [(b"allow", b"GET, POST, DELETE")],
+    }
+    body: HTTPResponseBodyEvent = {
+        "type": "http.response.body",
+        "body": b"",
+        "more_body": False,
+    }
+    await send(start)
+    await send(body)
+
+
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     """Return the MCP route handler and the session-manager lifespan.
 
@@ -79,17 +127,51 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
     server = build_mcp_server()
-    asgi_app = cast(
+    security = _transport_security()
+    streamable_app = cast(
         "ASGIApp",
         server.streamable_http_app(
             streamable_http_path="/",
-            transport_security=_transport_security(),
+            transport_security=security,
+        ),
+    )
+    # The SDK ships the two transports as separate apps and no combined mount,
+    # so this dispatcher serves both at one endpoint per the spec's
+    # backwards-compatibility flow: without the legacy app a falling-back
+    # client meets a 400 and reports the server as disconnected.
+    sse_app = cast(
+        "ASGIApp",
+        server.sse_app(
+            sse_path="/",
+            message_path=_SSE_MESSAGE_PATH,
+            transport_security=security,
         ),
     )
     manager = server.session_manager
 
     async def _forward(scope: Scope, receive: Receive, send: Send) -> None:
-        await asgi_app(scope, receive, send)
+        if scope["type"] != "http":
+            await streamable_app(scope, receive, send)
+            return
+        # The union does not narrow through the "type" comparison above.
+        http_scope = cast("HTTPScope", scope)
+        # Starlette route matching needs the bare mount root spelled "/".
+        if http_scope["path"] == "":
+            http_scope["path"] = "/"
+        if http_scope["path"].startswith(_SSE_MESSAGE_PATH) or _is_legacy_sse_contact(http_scope):
+            # The endpoint event advertises root_path + message path, and
+            # the mount strips MCP_PATH from the path it forwards.
+            http_scope["root_path"] = MCP_PATH
+            await sse_app(scope, receive, send)
+            return
+        if (
+            http_scope["method"] == "GET"
+            and http_scope["path"] == "/"
+            and _header(http_scope, b"mcp-session-id") is None
+        ):
+            await _method_not_allowed(send)
+            return
+        await streamable_app(scope, receive, send)
 
     handler = asgi(MCP_PATH, is_mount=True, copy_scope=True)(_forward)
 

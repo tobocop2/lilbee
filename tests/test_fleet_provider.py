@@ -3131,15 +3131,18 @@ def test_require_clients_no_reprobe_when_swap_none(monkeypatch, engine_installed
 
 def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
     """A chat request against a refused launch fails with the plan's reason (the
-    numbers and the remedy), not the generic 'no server is running' line."""
-    from lilbee.providers.base import ProviderError
+    numbers and the remedy), not the generic 'no server is running' line. The
+    kind is BAD_REQUEST so the HTTP surfaces return the reason in a 4xx body
+    instead of swallowing it into a generic 500."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     p = FleetProvider()
     reason = "The chat model org/m.gguf leaves room for only a 512-token context"
     monkeypatch.setattr(p, "_ensure_fleet", lambda: True)
     p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
-    with pytest.raises(ProviderError, match="512-token context"):
+    with pytest.raises(ProviderError, match="512-token context") as excinfo:
         p._require_clients(WorkerRole.CHAT)
+    assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
 
 
 def test_require_clients_no_reprobe_when_swap_live(monkeypatch, engine_installed: Path) -> None:

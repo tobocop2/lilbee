@@ -26,6 +26,18 @@ class CrawlResult:
     success: bool = True
     error: str | None = None
 
+    def failure_reason(self) -> str | None:
+        """Why this page has nothing to save, or None when it does.
+
+        The save layer skips exactly these pages, so the event layer reports
+        failures from the same predicate: the two cannot drift apart.
+        """
+        if not self.success:
+            return self.error or "fetch failed"
+        if not self.markdown.strip():
+            return "page produced empty markdown"
+        return None
+
 
 @dataclass
 class FetchedPage:

@@ -111,3 +111,44 @@ class TestARefreshThatCannotProbe:
         with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
             planning_mod.refresh_plan_devices()
         assert "changed since" not in caplog.text
+
+
+class TestTheRefreshKeepsThePerDeviceFreeFigures:
+    """A reload re-probes while the outgoing fleet is still resident, so the live
+    free readings are deflated by the very memory the reload is about to release.
+    Adopting them makes a model swap size the incoming chat model against the
+    outgoing model's residency (a 512-token window on cards that back a full one)."""
+
+    def test_a_resident_fleet_does_not_replace_the_snapshot(self, monkeypatch, caplog) -> None:
+        import logging
+
+        card = FleetDevice("CUDA", 0, "A", 24 * _GB, 23 * _GB)
+        _snapshot(monkeypatch, [card])
+        deflated = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
+        monkeypatch.setattr(
+            planning_mod, "_resolve_devices_and_refusal", lambda _b: (deflated, False)
+        )
+        with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
+            planning_mod.refresh_plan_devices()
+        probe = planning_mod._plan_probe_store.get()
+        assert probe is not None
+        assert [d.free_bytes for d in probe.devices] == [23 * _GB]
+        # A free-memory swing is not a hardware change and must not read as one.
+        assert "changed since" not in caplog.text
+
+    def test_a_surviving_card_keeps_its_clean_box_figure_when_a_card_leaves(
+        self, monkeypatch
+    ) -> None:
+        two = [
+            FleetDevice("CUDA", 0, "A", 24 * _GB, 23 * _GB),
+            FleetDevice("CUDA", 1, "B", 24 * _GB, 22 * _GB),
+        ]
+        _snapshot(monkeypatch, two)
+        remaining = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
+        monkeypatch.setattr(
+            planning_mod, "_resolve_devices_and_refusal", lambda _b: (remaining, False)
+        )
+        planning_mod.refresh_plan_devices()
+        probe = planning_mod._plan_probe_store.get()
+        assert probe is not None
+        assert [d.free_bytes for d in probe.devices] == [23 * _GB]

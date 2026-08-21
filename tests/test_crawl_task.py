@@ -102,6 +102,45 @@ class TestMakeProgressUpdater:
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
             updater(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
 
+    def test_accumulates_page_failures(self):
+        from lilbee.runtime.progress import CrawlPageFailedEvent
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        updater = make_progress_updater(task)
+        updater(
+            EventType.CRAWL_PAGE_FAILED,
+            CrawlPageFailedEvent(url="https://example.com/a", reason="403 Forbidden"),
+        )
+        assert task.pages_failed == 1
+        assert task.failure_reasons == ["https://example.com/a: 403 Forbidden"]
+
+    def test_failure_reasons_capped(self):
+        """The failure count keeps growing while stored reasons stay bounded."""
+        from lilbee.crawler.task import _MAX_FAILURE_REASONS
+        from lilbee.runtime.progress import CrawlPageFailedEvent
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        updater = make_progress_updater(task)
+        for i in range(_MAX_FAILURE_REASONS + 5):
+            updater(
+                EventType.CRAWL_PAGE_FAILED,
+                CrawlPageFailedEvent(url=f"https://example.com/p{i}", reason="timeout"),
+            )
+        assert task.pages_failed == _MAX_FAILURE_REASONS + 5
+        assert len(task.failure_reasons) == _MAX_FAILURE_REASONS
+
+    def test_wrong_page_failed_type_raises(self):
+        """Passing wrong data type for CRAWL_PAGE_FAILED raises TypeError."""
+        from lilbee.runtime.progress import FileStartEvent
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        updater = make_progress_updater(task)
+        with pytest.raises(TypeError, match="Expected CrawlPageFailedEvent"):
+            updater(
+                EventType.CRAWL_PAGE_FAILED,
+                FileStartEvent(file="x", total_files=1, current_file=1),
+            )
+
 
 class TestRunCrawl:
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())

@@ -53,7 +53,7 @@ from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -2097,6 +2097,16 @@ def capture_plan_probe() -> None:
     )
 
 
+def _structural(devices: Iterable[FleetDevice]) -> tuple[FleetDevice, ...]:
+    """*devices* with the volatile free reading zeroed, so equality is structural.
+
+    This probe runs while the fleet is resident, so its free figures are deflated
+    by the very models a reload is about to stop; comparing or keying on them
+    would read every reload as a hardware change.
+    """
+    return tuple(replace(d, free_bytes=0) for d in devices)
+
+
 def refresh_plan_devices() -> None:
     """Re-read which devices exist, keeping the clean-box memory figures.
 
@@ -2107,7 +2117,8 @@ def refresh_plan_devices() -> None:
     Only the structural half is restated. The memory figures are what make a
     reload plan the way the boot did, and re-taking them while the fleet is
     resident would charge it against itself, which is the whole reason the
-    snapshot exists.
+    snapshot exists. So a card that survives the refresh keeps the snapshot's
+    free figure; only a genuinely new card contributes a fresh one.
 
     A probe that cannot run leaves the snapshot alone: the last known device list
     is a better answer than none, and the loud paths for an unreachable engine
@@ -2122,7 +2133,7 @@ def refresh_plan_devices() -> None:
     except (ProviderError, OSError) as exc:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
         return
-    if tuple(devices) == probe.devices:
+    if _structural(devices) == _structural(probe.devices):
         return
     log.info(
         "The set of GPUs changed since this fleet was planned (%d device(s) now, %d before); "
@@ -2130,10 +2141,15 @@ def refresh_plan_devices() -> None:
         len(devices),
         len(probe.devices),
     )
+    snapshot_free = {replace(d, free_bytes=0): d.free_bytes for d in probe.devices}
+    merged = tuple(
+        replace(d, free_bytes=snapshot_free.get(replace(d, free_bytes=0), d.free_bytes))
+        for d in devices
+    )
     _plan_probe_store.set(
         _PlanProbe(
-            devices=tuple(devices),
-            sizing_budget=_device_sizing_budget(devices),
+            devices=merged,
+            sizing_budget=_device_sizing_budget(merged),
             free_system=probe.free_system,
             engine_devices_all_refused=refused_all,
         )
