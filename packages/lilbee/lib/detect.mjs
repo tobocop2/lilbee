@@ -11,7 +11,10 @@
  *   supported runtime); map it to the newest cuNNN asset it can run.
  *   A visible /dev/nvidia0 or /proc/driver/nvidia/version without a
  *   working nvidia-smi falls back to the oldest CUDA build.
- * - AMD: ROCm needs /dev/kfd plus a ROCm userland (rocminfo or /opt/rocm).
+ * - AMD: the rocm build bundles its own userspace, so a host only needs the
+ *   amdgpu kernel driver: /dev/kfd plus a supported gfx target read from the
+ *   kernel's KFD topology. A host ROCm userland (rocminfo or /opt/rocm) is
+ *   the fallback signal when the topology is unreadable.
  * - CPU baseline: x86-64 hosts without AVX2 get the -compat build
  *   (Linux: /proc/cpuinfo flags; macOS x86_64: sysctl hw.optional.avx2_0).
  */
@@ -29,6 +32,49 @@ export function cudaVariantFor(major, minor) {
 export function parseCudaVersion(smiOutput) {
   const m = /CUDA Version:\s*(\d+)\.(\d+)/.exec(smiOutput || "");
   return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
+}
+
+/** The gfx targets the pinned rocm build ships kernels for (its published
+ * <asset>-rocm.gfx.txt). Update alongside the release pin. */
+const ROCM_GFX = new Set([
+  "gfx908", "gfx90a", "gfx942", "gfx950",
+  "gfx1030", "gfx1100", "gfx1101", "gfx1102",
+  "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+]);
+
+const KFD_NODES = "/sys/class/kfd/kfd/topology/nodes";
+
+/** Map a KFD gfx_target_version (major*10000 + minor*100 + step) to its gfx
+ * name, e.g. 90402 -> gfx942, 90010 -> gfx90a. CPU nodes report 0 -> null. */
+export function gfxNameFor(version) {
+  if (!Number.isInteger(version) || version <= 0) return null;
+  const major = Math.floor(version / 10000);
+  const minor = Math.floor(version / 100) % 100;
+  const step = version % 100;
+  return `gfx${major}${minor}${step.toString(16)}`;
+}
+
+/** The gfx names of every GPU node the kernel's KFD topology reports.
+ * Unreadable nodes (a container may only expose its own GPU) are skipped. */
+function kfdGfxTargets(io) {
+  let nodes;
+  try {
+    nodes = io.readdirSync(KFD_NODES);
+  } catch {
+    return [];
+  }
+  const targets = [];
+  for (const node of nodes) {
+    try {
+      const props = io.readFileSync(`${KFD_NODES}/${node}/properties`, "utf8");
+      const m = /^gfx_target_version\s+(\d+)$/m.exec(props);
+      const name = m && gfxNameFor(Number(m[1]));
+      if (name) targets.push(name);
+    } catch {
+      // node not visible from this container
+    }
+  }
+  return targets;
 }
 
 /**
@@ -75,9 +121,17 @@ export function detectVariant(platform, arch, io, log = () => {}) {
   }
 
   let rocm = false;
-  if (platform === "linux" && !cuda) {
-    rocm = exists("/dev/kfd") && (exists("/opt/rocm") || tryExec("rocminfo", []) !== null);
-    if (rocm) log("lilbee: detected a ROCm GPU — using the rocm build (override with LILBEE_VARIANT).");
+  if (platform === "linux" && !cuda && exists("/dev/kfd")) {
+    const gfx = io.readdirSync ? kfdGfxTargets(io) : [];
+    if (gfx.length) {
+      const supported = gfx.find((g) => ROCM_GFX.has(g));
+      rocm = Boolean(supported);
+      if (rocm) log(`lilbee: detected an AMD GPU (${supported}) — using the rocm build (override with LILBEE_VARIANT).`);
+      else log(`lilbee: the rocm build does not support this AMD GPU (${gfx.join(", ")}) — using the default build (override with LILBEE_VARIANT).`);
+    } else {
+      rocm = exists("/opt/rocm") || tryExec("rocminfo", []) !== null;
+      if (rocm) log("lilbee: detected a ROCm userland — using the rocm build (override with LILBEE_VARIANT).");
+    }
   }
 
   let noAvx2 = false;

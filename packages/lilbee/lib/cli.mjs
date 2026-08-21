@@ -151,7 +151,12 @@ async function resolveLocalBinary(env) {
   const variant =
     env.LILBEE_VARIANT !== undefined && env.LILBEE_VARIANT !== ""
       ? env.LILBEE_VARIANT
-      : detectVariant(process.platform, process.arch, { execFileSync, existsSync: fs.existsSync, readFileSync: fs.readFileSync }, console.error);
+      : detectVariant(
+          process.platform,
+          process.arch,
+          { execFileSync, existsSync: fs.existsSync, readFileSync: fs.readFileSync, readdirSync: fs.readdirSync },
+          console.error
+        );
   const assetName = assetNameFor(process.platform, process.arch, variant);
   const resolved = await resolveBinary({
     env: { LILBEE_REPO: repo, ...env },
