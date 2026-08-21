@@ -4,13 +4,16 @@ from enum import StrEnum
 
 
 class ReasoningMode(StrEnum):
-    """How ``/v1/chat/completions`` presents a reasoning model's thinking.
+    """How a chat API surface presents a reasoning model's thinking.
 
-    ``separate`` reports thinking in ``reasoning_content`` (OpenAI-compatible).
-    ``inline`` streams thinking as ordinary ``content`` text with the
-    ``<think>`` markers stripped, for clients
-    that never render ``reasoning_content``. ``off`` asks the model not to
-    think; thinking templates honor the request and other templates ignore it.
+    ``separate`` reports thinking in the wire format's own reasoning channel:
+    ``reasoning_content`` on ``/v1/chat/completions``, a ``thinking`` block on
+    ``/v1/messages``. ``inline`` presents thinking as ordinary answer text with
+    the ``<think>`` markers stripped, for clients that never render the
+    reasoning channel. ``off`` asks the model not to think, which only reaches
+    the template on a locally served model; ``/v1/messages`` also drops
+    thinking a model produces anyway, ``/v1/chat/completions`` still reports it
+    in ``reasoning_content``.
     """
 
     SEPARATE = "separate"

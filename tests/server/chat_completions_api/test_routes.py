@@ -1456,7 +1456,7 @@ class TestRouteDispatchErrorBranches:
         def _raise(req: object, *, canonical_model: str | None = None) -> None:
             raise ModelNotFoundError("vendor/missing")
 
-        monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
+        monkeypatch.setattr("lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat", _raise)
         req = CanonicalChatRequest(
             model="vendor/missing",
             messages=(CanonicalMessage(role="user", content="hi"),),
@@ -1476,7 +1476,7 @@ class TestRouteDispatchErrorBranches:
         def _raise(req: object, *, canonical_model: str | None = None) -> None:
             raise ModelDoesNotSupportToolsError("vendor/notools")
 
-        monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
+        monkeypatch.setattr("lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat", _raise)
         req = CanonicalChatRequest(
             model="vendor/notools",
             messages=(CanonicalMessage(role="user", content="hi"),),
@@ -1914,3 +1914,117 @@ class TestReasoningModeOnRoute:
             )
         assert resp.status_code == 200
         assert resp.json()["choices"][0]["message"]["content"] == "hello"
+
+
+class TestReasoningCapOnRoute:
+    """The reasoning cap bounds thinking on /v1/chat/completions, both paths."""
+
+    @pytest.fixture(autouse=True)
+    def _no_model_defaults(self):
+        """A per-model override would beat the cap these tests set."""
+        from lilbee.core.config import cfg
+
+        previous = cfg.model_defaults
+        cfg.clear_model_defaults()
+        yield
+        cfg.apply_model_defaults(previous)
+
+    def _cap(self, monkeypatch, chars: int) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "max_reasoning_chars", chars)
+
+    def _stream_deltas(self, body: bytes):
+        chunks = _sse_to_chunks(body)
+        return [c["choices"][0]["delta"] for c in chunks if isinstance(c, dict) and c["choices"]]
+
+    async def test_streaming_cap_stops_thinking_and_forces_an_answer(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 40, "still thinking", "</think>", "ignored"]),
+            FakeProviderStream(["forced answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+        deltas = self._stream_deltas(resp.content)
+        reasoning = "".join(d.get("reasoning_content") or "" for d in deltas)
+        content = "".join(d.get("content") or "" for d in deltas)
+        assert "reasoning capped at 10 chars" in reasoning
+        assert content == "forced answer"
+        assert "ignored" not in content
+
+    async def test_non_streaming_reasoning_only_turn_is_re_issued(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            ChatResult(
+                text="<think>" + "x" * 50 + "</think>",
+                tool_calls=(),
+                finish_reason=FinishReason.STOP,
+            ),
+            ChatResult(text="forced answer", tool_calls=(), finish_reason=FinishReason.STOP),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={"model": INSTALLED_REF, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        message = resp.json()["choices"][0]["message"]
+        assert message["content"] == "forced answer"
+        assert "reasoning capped at 10 chars" in message["reasoning_content"]
+        assert services_with_chat_model.provider.chat.call_count == 2
+
+    async def test_uncapped_setting_leaves_long_reasoning_alone(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        self._cap(monkeypatch, 0)
+        services_with_chat_model.provider.chat.side_effect = [
+            FakeProviderStream(["<think>", "x" * 400, "</think>", "answer"]),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+        deltas = self._stream_deltas(resp.content)
+        content = "".join(d.get("content") or "" for d in deltas)
+        assert content == "answer"
+        assert services_with_chat_model.provider.chat.call_count == 1
+
+    async def test_long_reasoning_that_answered_is_not_re_issued(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The cap exists to get an answer; a finished turn already has one."""
+        self._cap(monkeypatch, 10)
+        services_with_chat_model.provider.chat.side_effect = [
+            ChatResult(
+                text="<think>" + "x" * 50 + "</think>real answer",
+                tool_calls=(),
+                finish_reason=FinishReason.STOP,
+            ),
+        ]
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={"model": INSTALLED_REF, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.json()["choices"][0]["message"]["content"] == "real answer"
+        assert services_with_chat_model.provider.chat.call_count == 1

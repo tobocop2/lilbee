@@ -101,3 +101,50 @@ def test_tool_result_list_content_parses_text_blocks():
     assert isinstance(block, ToolResultBlockParam)
     assert block.is_error is True
     assert isinstance(block.content[0], TextBlockParam)
+
+
+class TestThinkingBudgetFloor:
+    """``budget_tokens`` carries Anthropic's documented 1024-token minimum."""
+
+    def _body(self, **thinking) -> dict:
+        return {
+            "model": "m",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", **thinking},
+        }
+
+    def test_budget_at_the_floor_parses(self):
+        request = MessagesRequest.model_validate(self._body(budget_tokens=1024))
+        assert request.thinking is not None
+        assert request.thinking.budget_tokens == 1024
+
+    def test_zero_budget_is_rejected(self):
+        """0 would resolve to 0 chars, which the cap reads as unlimited."""
+        with pytest.raises(ValidationError):
+            MessagesRequest.model_validate(self._body(budget_tokens=0))
+
+    def test_budget_below_the_floor_is_rejected(self):
+        with pytest.raises(ValidationError):
+            MessagesRequest.model_validate(self._body(budget_tokens=1023))
+
+    def test_negative_budget_is_rejected(self):
+        with pytest.raises(ValidationError):
+            MessagesRequest.model_validate(self._body(budget_tokens=-1))
+
+    def test_a_disabled_request_is_never_rejected_for_its_budget(self):
+        """The strictest possible body must not 400; a disabled budget is ignored."""
+        body = {
+            "model": "m",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled", "budget_tokens": 0},
+        }
+        request = MessagesRequest.model_validate(body)
+        assert request.thinking is not None
+        assert request.thinking.budget_tokens is None
+
+    def test_absent_budget_is_allowed(self):
+        request = MessagesRequest.model_validate(self._body())
+        assert request.thinking is not None
+        assert request.thinking.budget_tokens is None

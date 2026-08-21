@@ -1067,6 +1067,7 @@ The ones most users set at least once.
 | `LILBEE_GENERAL_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for chat-mode (ungrounded) answers |
 | `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
 | `LILBEE_COMPLETIONS_REASONING` | `separate` | How `/v1/chat/completions` presents thinking: `separate` (own `reasoning_content` field), `inline` (thinking streams as plain `content` text, tags stripped, for clients that never render `reasoning_content`), or `off` (ask the model not to think). A request's `reasoning` field overrides it per call |
+| `LILBEE_MESSAGES_REASONING` | `separate` | How `/v1/messages` presents thinking a request asked for: `separate` (own `thinking` block), `inline` (folded into the answer text, tags stripped), or `off` (refuse thinking on this surface). Thinking is opt-in per request, as on Anthropic's API: a body with no `thinking` parameter gets none. `off` reaches the model's template only on a locally served model; against a remote chat backend it drops the thinking from the response but the model still produces it |
 | `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
 
 ### Retrieval tuning
@@ -1103,7 +1104,7 @@ something feels off.
 | `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
 | `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
-| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
+| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking per answer, across chat, search, and both chat APIs. When thinking passes the cap, lilbee asks the model to answer directly. On a non-streaming call it re-issues only a turn that produced no answer. `0` removes the cap. A request's `thinking.budget_tokens` tightens it, never raises it |
 | `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
 | `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 

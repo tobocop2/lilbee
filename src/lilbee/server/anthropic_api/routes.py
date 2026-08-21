@@ -13,8 +13,12 @@ from litestar.exceptions import NotAuthorizedException, ValidationException
 from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import ReasoningMode
+from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.models import (
+    _THINKING_DISABLED,
     AnthropicEventType,
     MessagesRequest,
     MessagesResponse,
@@ -24,6 +28,7 @@ from lilbee.server.anthropic_api.translate import (
     canonical_stream_to_anthropic_events,
     canonical_to_messages_response,
     messages_to_canonical_request,
+    resolve_reasoning_mode,
 )
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -37,9 +42,13 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
 )
 from lilbee.server.chat_dispatch.dispatch import (
-    dispatch_chat,
     dispatch_chat_stream,
     preflight_chat_request,
+)
+from lilbee.server.chat_dispatch.reasoning_cap import (
+    budget_capped_chars,
+    cap_aware_chat,
+    cap_aware_chat_stream,
 )
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.validation_format import format_validation
@@ -67,8 +76,11 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     event stream; the request body picks the arm, matching Anthropic's own
     contract.
     """
+    # Thinking is opt-in per request; the setting only presents it.
+    mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
+    cap_chars = budget_capped_chars(effective_reasoning_cap(), _budget_tokens(data))
     try:
-        req = messages_to_canonical_request(data)
+        req = messages_to_canonical_request(data, mode=mode)
     except ValueError as exc:
         # Wire-valid but untranslatable (image content, bare tool choice).
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
@@ -93,11 +105,22 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
         # The after-send hook frees the slot when a disconnect lands before the
         # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_messages_stream(req, guard, model=resolved_model),
+            _gated_messages_stream(
+                req, guard, model=resolved_model, mode=mode, cap_chars=cap_chars
+            ),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req, guard, canonical_model=resolved_model)
+    return await _run_non_stream(
+        req, guard, canonical_model=resolved_model, mode=mode, cap_chars=cap_chars
+    )
+
+
+def _budget_tokens(data: MessagesRequest) -> int | None:
+    """The thinking budget this request asks for; ``disabled`` carries none."""
+    if data.thinking is None or data.thinking.type == _THINKING_DISABLED:
+        return None
+    return data.thinking.budget_tokens
 
 
 async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response:
@@ -112,11 +135,18 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
 
 
 async def _run_non_stream(
-    req: CanonicalChatRequest, guard: ChatSlotGuard, *, canonical_model: str
+    req: CanonicalChatRequest,
+    guard: ChatSlotGuard,
+    *,
+    canonical_model: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
+    cap_chars: int = 0,
 ) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the envelope."""
     try:
-        resp = await asyncio.to_thread(dispatch_chat, req, canonical_model=canonical_model)
+        resp = await asyncio.to_thread(
+            cap_aware_chat, req, canonical_model=canonical_model, cap_chars=cap_chars
+        )
     except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
@@ -124,7 +154,9 @@ async def _run_non_stream(
         return _error_response(classified.http_status, classified.code, classified.message)
     finally:
         await guard.release()
-    body: MessagesResponse = canonical_to_messages_response(resp, response_id=_response_id())
+    body: MessagesResponse = canonical_to_messages_response(
+        resp, response_id=_response_id(), mode=mode
+    )
     return Response(body.model_dump(), media_type="application/json")
 
 
@@ -133,6 +165,8 @@ async def _gated_messages_stream(
     guard: ChatSlotGuard,
     *,
     model: str,
+    mode: ReasoningMode = ReasoningMode.SEPARATE,
+    cap_chars: int = 0,
 ) -> AsyncGenerator[bytes, None]:
     """Drive dispatch -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -143,9 +177,14 @@ async def _gated_messages_stream(
     response_id = _response_id()
     try:
         try:
-            events = dispatch_chat_stream(req, canonical_model=model)
+            events = cap_aware_chat_stream(
+                dispatch_chat_stream(req, canonical_model=model),
+                req,
+                canonical_model=model,
+                cap_chars=cap_chars,
+            )
             pairs = canonical_stream_to_anthropic_events(
-                events, model=model, response_id=response_id
+                events, model=model, response_id=response_id, mode=mode
             )
             async for frame in encode_anthropic_sse(pairs):
                 yield frame

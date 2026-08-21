@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+ThinkingType = Literal["enabled", "disabled"]
+_THINKING_DISABLED = "disabled"
+_THINKING_TYPES: frozenset[str] = frozenset(get_args(ThinkingType))
+
+MIN_THINKING_BUDGET_TOKENS = 1024
+"""Anthropic's documented minimum for ``thinking.budget_tokens``."""
 
 
 class AnthropicEventType(StrEnum):
@@ -24,9 +31,9 @@ class AnthropicEventType(StrEnum):
 class _AnthropicModel(BaseModel):
     """Base for request models: unknown fields parse and are ignored.
 
-    Anthropic clients send fields this surface does not act on (``thinking``,
-    ``metadata``, ``cache_control``, ``output_config``, ``betas``). Rejecting
-    them with a 400 hard-fails Claude Code, so they are tolerated instead.
+    Anthropic clients send fields this surface does not act on (``metadata``,
+    ``cache_control``, ``output_config``, ``betas``). Rejecting them with a 400
+    hard-fails Claude Code, so they are tolerated instead.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -126,8 +133,39 @@ class AnthropicToolChoice(_AnthropicModel):
     name: str | None = None
 
 
+class AnthropicThinking(_AnthropicModel):
+    """The ``thinking`` parameter: whether the model may reason on this call.
+
+    ``budget_tokens`` tightens the reasoning cap for this call; it never
+    loosens it. ``1024`` is Anthropic's documented minimum.
+    """
+
+    type: ThinkingType
+    budget_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def _budget_meets_the_floor(self) -> AnthropicThinking:
+        """Hold ``enabled`` to Anthropic's minimum, and ignore a disabled budget.
+
+        Validating the floor per field would reject
+        ``{"type": "disabled", "budget_tokens": 0}`` -- a request asking for no
+        thinking at all, which is the last body that should 400.
+        """
+        if self.type == _THINKING_DISABLED:
+            object.__setattr__(self, "budget_tokens", None)
+        elif self.budget_tokens is not None and self.budget_tokens < MIN_THINKING_BUDGET_TOKENS:
+            raise ValueError(
+                f"thinking.budget_tokens must be at least {MIN_THINKING_BUDGET_TOKENS}"
+            )
+        return self
+
+
 class MessagesRequest(_AnthropicModel):
-    """The ``POST /v1/messages`` request body."""
+    """The ``POST /v1/messages`` request body.
+
+    ``thinking`` picks the reasoning mode for this call, overriding the
+    ``messages_reasoning`` setting.
+    """
 
     model: str
     max_tokens: int
@@ -140,6 +178,17 @@ class MessagesRequest(_AnthropicModel):
     top_k: int | None = None
     stop_sequences: list[str] | None = None
     stream: bool = False
+    thinking: AnthropicThinking | None = None
+
+    @field_validator("thinking", mode="before")
+    @classmethod
+    def _known_thinking_shapes_only(cls, value: object) -> object:
+        # Anthropic defines enabled/disabled today. A shape this surface does
+        # not know falls back to the setting instead of failing the request,
+        # because a 400 here stops the agent mid-session.
+        if value is None or (isinstance(value, dict) and value.get("type") in _THINKING_TYPES):
+            return value
+        return None
 
 
 class AnthropicUsage(BaseModel):

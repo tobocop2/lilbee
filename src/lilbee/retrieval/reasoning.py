@@ -9,9 +9,13 @@ Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
 - ``stream_chat_with_cap``: the high-level orchestrator. Wraps a
   provider call with the filter; when the cap fires, re-issues the
   chat with a "stop thinking, answer directly" nudge. The ask/search
-  streaming path and CLI/TUI consume it directly; the canonical
-  chat-dispatch path mirrors the same filter + cap-nudge behavior over
-  its own async driver.
+  streaming path and CLI/TUI consume it directly. Two other drivers
+  mirror the same filter + cap-nudge behavior over async streams:
+  the RAG handler's, which needs the reasoning/answer split for its
+  SSE channels, and
+  :mod:`lilbee.server.chat_dispatch.reasoning_cap`, which keeps the
+  canonical event stream intact so the chat surfaces still carry tool
+  calls.
 - ``effective_reasoning_cap``: resolves the cap from the global config
   with per-model ``ModelDefaults`` overrides.
 """
@@ -53,6 +57,9 @@ REASONING_EXHAUSTED_NOTICE = (
 
 Lets a caller tell "the model thought itself to death" apart from a genuine empty
 response, which an empty string alone cannot."""
+
+PSEUDO_THINKING_TAGS = ("anthropic_thinking", "anti_codeblock", "thinking")
+"""Tag names some models emit as literal reply-initial planning blocks in plain text."""
 
 
 @dataclass
@@ -133,6 +140,76 @@ class TagParser:
         self.buf = self.buf[open_idx + len(THINK_OPEN_TAG) :]
         self.in_thinking = True
         return StreamToken(content=before, is_reasoning=False)
+
+
+@dataclass
+class PseudoThinkingNormalizer:
+    """Rewrites a reply-initial pseudo-thinking tag pair to the ``<think>`` tags.
+
+    Some models under context pressure open a reply with a literal planning tag
+    from ``PSEUDO_THINKING_TAGS`` as ordinary text, outside any reasoning
+    channel. Rewriting the tag pair to ``<think>``/``</think>`` lets
+    ``TagParser`` treat the block as reasoning. Only a reply-initial tag is
+    rewritten; once the reply starts with anything else, text passes through
+    verbatim, so mid-reply XML/HTML is never altered.
+    """
+
+    buf: str = ""
+    decided: bool = False
+    close_tag: str | None = None
+
+    def feed(self, text: str) -> str:
+        """Feed a chunk and return the text decided so far."""
+        if self.decided and self.close_tag is None:
+            return text
+        self.buf += text
+        out = "" if self.decided else self._resolve_initial()
+        if self.close_tag is not None:
+            out += self._scan_close(self.close_tag)
+        return out
+
+    def flush(self) -> str:
+        """Emit the held buffer at end of reply; later feeds pass through."""
+        rest, self.buf = self.buf, ""
+        self.decided = True
+        self.close_tag = None
+        return rest
+
+    def _resolve_initial(self) -> str:
+        """Decide whether the reply opens with a pseudo tag; ``""`` while undecidable."""
+        stripped = self.buf.lstrip()
+        for name in PSEUDO_THINKING_TAGS:
+            open_tag = f"<{name}>"
+            if stripped.startswith(open_tag):
+                self.decided = True
+                self.close_tag = f"</{name}>"
+                self.buf = stripped[len(open_tag) :]
+                return THINK_OPEN_TAG
+        if any(f"<{name}>".startswith(stripped) for name in PSEUDO_THINKING_TAGS):
+            return ""
+        self.decided = True
+        rest, self.buf = self.buf, ""
+        return rest
+
+    def _scan_close(self, close_tag: str) -> str:
+        """Pass block content through, rewriting *close_tag* when it arrives."""
+        close_idx = self.buf.find(close_tag)
+        if close_idx == -1:
+            if _could_be_partial(close_tag, self.buf):
+                return ""
+            content, self.buf = self.buf, ""
+            return content
+        content = self.buf[:close_idx]
+        rest = self.buf[close_idx + len(close_tag) :]
+        self.buf = ""
+        self.close_tag = None
+        return f"{content}{THINK_CLOSE_TAG}{rest}"
+
+
+def normalize_pseudo_thinking(text: str) -> str:
+    """Rewrite a reply-initial pseudo-thinking block in a complete string."""
+    normalizer = PseudoThinkingNormalizer()
+    return normalizer.feed(text) + normalizer.flush()
 
 
 def filter_reasoning(

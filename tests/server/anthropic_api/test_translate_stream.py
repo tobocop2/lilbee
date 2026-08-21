@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.server.anthropic_api.translate import canonical_stream_to_anthropic_events
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalUsage,
@@ -23,7 +24,7 @@ from lilbee.server.chat_dispatch.canonical import (
 )
 
 
-async def _drain(events):
+async def _drain(events, mode=ReasoningMode.SEPARATE):
     async def _aiter():
         for event in events:
             yield event
@@ -31,7 +32,7 @@ async def _drain(events):
     return [
         pair
         async for pair in canonical_stream_to_anthropic_events(
-            _aiter(), model="m", response_id="msg_1"
+            _aiter(), model="m", response_id="msg_1", mode=mode
         )
     ]
 
@@ -187,3 +188,151 @@ def test_mapper_skips_empty_tokens():
 
     mapper = _AnthropicStreamMapper()
     assert mapper._text_events([StreamToken(content="", is_reasoning=False)]) == []
+
+
+def _thinking_stream():
+    return [
+        ContentBlockStart(index=0, block=TextBlock(text="")),
+        ContentBlockDelta(index=0, delta=TextDelta(text="<think>pl")),
+        ContentBlockDelta(index=0, delta=TextDelta(text="an</think>")),
+        ContentBlockDelta(index=0, delta=TextDelta(text="answer")),
+        ContentBlockStop(index=0),
+        MessageDelta(stop_reason=StopReason.END_TURN),
+        MessageStop(),
+    ]
+
+
+def _deltas(pairs):
+    return [payload["delta"] for kind, payload in pairs if kind == "content_block_delta"]
+
+
+def _block_kinds(pairs):
+    return [
+        payload["content_block"]["type"] for kind, payload in pairs if kind == "content_block_start"
+    ]
+
+
+class TestReasoningModeOnStream:
+    """Each mode re-blocks the streamed ``<think>`` text its own way."""
+
+    @pytest.mark.asyncio
+    async def test_separate_streams_a_thinking_block(self):
+        pairs = await _drain(_thinking_stream(), mode=ReasoningMode.SEPARATE)
+        assert _block_kinds(pairs) == ["thinking", "text"]
+        assert _deltas(pairs) == [
+            {"type": "thinking_delta", "thinking": "pl"},
+            {"type": "thinking_delta", "thinking": "an"},
+            {"type": "text_delta", "text": "answer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_inline_streams_the_thinking_as_text(self):
+        pairs = await _drain(_thinking_stream(), mode=ReasoningMode.INLINE)
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [
+            {"type": "text_delta", "text": "pl"},
+            {"type": "text_delta", "text": "an"},
+            {"type": "text_delta", "text": "answer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_emits_no_thinking_delta(self):
+        pairs = await _drain(_thinking_stream(), mode=ReasoningMode.OFF)
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [{"type": "text_delta", "text": "answer"}]
+
+    @pytest.mark.asyncio
+    async def test_off_with_only_thinking_opens_no_block(self):
+        pairs = await _drain(
+            [
+                ContentBlockStart(index=0, block=TextBlock(text="")),
+                ContentBlockDelta(index=0, delta=TextDelta(text="<think>plan</think>")),
+                ContentBlockStop(index=0),
+                MessageDelta(stop_reason=StopReason.END_TURN),
+                MessageStop(),
+            ],
+            mode=ReasoningMode.OFF,
+        )
+        assert _types(pairs) == ["message_start", "message_delta", "message_stop"]
+
+
+def _text_stream(chunks):
+    return [
+        ContentBlockStart(index=0, block=TextBlock(text="")),
+        *(ContentBlockDelta(index=0, delta=TextDelta(text=chunk)) for chunk in chunks),
+        ContentBlockStop(index=0),
+        MessageDelta(stop_reason=StopReason.END_TURN),
+        MessageStop(),
+    ]
+
+
+class TestPseudoThinkingStripOnStream:
+    """OFF drops a reply-initial pseudo-thinking block, even split across deltas."""
+
+    @pytest.mark.asyncio
+    async def test_off_drops_an_unclosed_tag_split_across_deltas(self):
+        pairs = await _drain(
+            _text_stream(["<anthropic_", "thinking> plan the", " whole reply"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _types(pairs) == ["message_start", "message_delta", "message_stop"]
+
+    @pytest.mark.asyncio
+    async def test_off_drops_a_closed_pseudo_block_and_streams_the_answer(self):
+        pairs = await _drain(
+            _text_stream(["<anti_codeblock>plan</anti_", "codeblock>ans", "wer"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [
+            {"type": "text_delta", "text": "ans"},
+            {"type": "text_delta", "text": "wer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_leaves_mid_reply_markup_untouched(self):
+        pairs = await _drain(
+            _text_stream(["answer <anti_codeblock>x", "</anti_codeblock>"]),
+            mode=ReasoningMode.OFF,
+        )
+        assert _block_kinds(pairs) == ["text"]
+        joined = "".join(delta["text"] for delta in _deltas(pairs))
+        assert joined == "answer <anti_codeblock>x</anti_codeblock>"
+
+    @pytest.mark.asyncio
+    async def test_separate_streams_pseudo_tags_verbatim(self):
+        pairs = await _drain(
+            _text_stream(["<anthropic_thinking> plan"]), mode=ReasoningMode.SEPARATE
+        )
+        assert _block_kinds(pairs) == ["text"]
+        assert _deltas(pairs) == [{"type": "text_delta", "text": "<anthropic_thinking> plan"}]
+
+
+@pytest.mark.asyncio
+async def test_text_held_as_a_possible_tag_still_reaches_the_client():
+    """A stream that stops mid-tag must not swallow the buffered text.
+
+    The parser holds anything that could still become an opening tag, so a
+    reply ending in "<thi" sits in its buffer with nothing left to disambiguate
+    it. Without the flush at block_stop those characters never ship, and the
+    client sees a truncated answer.
+    """
+    pairs = await _drain(
+        [
+            MessageStart(id="x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="done <thi")),
+            ContentBlockStop(index=0),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=1, output_tokens=1),
+            ),
+            MessageStop(),
+        ]
+    )
+    text = "".join(
+        p["delta"]["text"]
+        for t, p in pairs
+        if t == "content_block_delta" and p["delta"].get("type") == "text_delta"
+    )
+    assert text == "done <thi"
