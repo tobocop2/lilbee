@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+from lilbee.core.config.enums import ReasoningMode
 from lilbee.server.anthropic_api.translate import canonical_to_messages_response
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalResponse,
@@ -62,3 +65,75 @@ def test_tool_use_response_maps_blocks_and_stop_reason():
 def test_empty_content_still_emits_text_block():
     body = canonical_to_messages_response(_response([]), response_id="msg_1")
     assert body.content == [{"type": "text", "text": ""}]
+
+
+class TestReasoningModeOnResponse:
+    """How each mode presents a thinking model's ``<think>`` text."""
+
+    _THINKING: ClassVar = [TextBlock(text="<think>plan</think>answer")]
+
+    def test_separate_keeps_the_thinking_block(self):
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.SEPARATE
+        )
+        assert body.content == [
+            {"type": "thinking", "thinking": "plan"},
+            {"type": "text", "text": "answer"},
+        ]
+
+    def test_inline_folds_the_thinking_into_the_text_block(self):
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.INLINE
+        )
+        assert body.content == [{"type": "text", "text": "plan\n\nanswer"}]
+
+    def test_off_drops_the_thinking_entirely(self):
+        """A template that ignores the request still thinks; the answer stays clean."""
+        body = canonical_to_messages_response(
+            _response(self._THINKING), response_id="msg_1", mode=ReasoningMode.OFF
+        )
+        assert body.content == [{"type": "text", "text": "answer"}]
+
+    def test_off_with_only_thinking_still_emits_a_text_block(self):
+        body = canonical_to_messages_response(
+            _response([TextBlock(text="<think>plan</think>")]),
+            response_id="msg_1",
+            mode=ReasoningMode.OFF,
+        )
+        assert body.content == [{"type": "text", "text": ""}]
+
+
+class TestPseudoThinkingStripOnResponse:
+    """OFF also drops a reply-initial pseudo-thinking block emitted as plain text."""
+
+    def test_off_drops_an_unclosed_reply_initial_pseudo_tag(self):
+        body = canonical_to_messages_response(
+            _response([TextBlock(text="<anthropic_thinking> plan, never answered")]),
+            response_id="msg_1",
+            mode=ReasoningMode.OFF,
+        )
+        assert body.content == [{"type": "text", "text": ""}]
+
+    def test_off_drops_a_closed_pseudo_tag_block(self):
+        body = canonical_to_messages_response(
+            _response(
+                [TextBlock(text="<anti_codeblock>plan narration</anti_codeblock>\n\nanswer")]
+            ),
+            response_id="msg_1",
+            mode=ReasoningMode.OFF,
+        )
+        assert body.content == [{"type": "text", "text": "answer"}]
+
+    def test_off_leaves_mid_reply_markup_untouched(self):
+        text = "use <anti_codeblock>markup</anti_codeblock> here"
+        body = canonical_to_messages_response(
+            _response([TextBlock(text=text)]), response_id="msg_1", mode=ReasoningMode.OFF
+        )
+        assert body.content == [{"type": "text", "text": text}]
+
+    def test_separate_leaves_pseudo_tags_untouched(self):
+        text = "<anti_codeblock>plan</anti_codeblock>answer"
+        body = canonical_to_messages_response(
+            _response([TextBlock(text=text)]), response_id="msg_1", mode=ReasoningMode.SEPARATE
+        )
+        assert body.content == [{"type": "text", "text": text}]
