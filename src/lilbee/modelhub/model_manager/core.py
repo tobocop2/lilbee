@@ -3,8 +3,11 @@
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+from lilbee.catalog.compat import UnsupportedQuantError
+from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
@@ -181,7 +184,8 @@ class ModelManager:
         here once present, so a non-native *source* is refused.
 
         Native pulls of architectures the bundled llama.cpp doesn't support
-        are refused with ``UnsupportedArchError`` unless *allow_unsupported*
+        are refused with ``UnsupportedArchError``, and files whose tensors it
+        cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         A *cancel* signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
@@ -196,7 +200,9 @@ class ModelManager:
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
-            return self._pull_native(model, on_bytes=on_bytes, cancel=cancel)
+            return self._pull_native(
+                model, on_bytes=on_bytes, cancel=cancel, allow_unsupported=allow_unsupported
+            )
         finally:
             self._invalidate_installed_cache()
 
@@ -225,6 +231,7 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         cancel: CancelSignal | None = None,
+        allow_unsupported: bool = False,
     ) -> Path:
         """Download a featured or ad-hoc HuggingFace model to the native GGUF directory."""
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
@@ -237,11 +244,45 @@ class ModelManager:
                 f"Model '{model}' not recognized. "
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
+        entry = self._resolved_entry(entry, verify=not allow_unsupported)
         path = download_model(
             entry, on_progress=on_bytes, on_complete=register_downloaded_model, cancel=cancel
         )
         log.info("Downloaded %s to %s", model, path)
         return path
+
+    @staticmethod
+    def _resolved_entry(entry: CatalogModel, *, verify: bool) -> CatalogModel:
+        """*entry* carrying the file the pull will fetch.
+
+        Resolution happens here because the engine's verdict is part of choosing
+        the file, not a check on the file already chosen. A repo can publish the
+        same weights in several packings, only some of which this build reads,
+        and the resolver walks its ranking until one of them answers. Passing the
+        resolved name down means the download does not work it out again.
+
+        A repo that will not resolve is not this check's verdict to deliver. The
+        download reports the gated repo or the missing file properly, so a
+        resolution failure here is left to it.
+        """
+        # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
+        from lilbee.catalog.download import resolve_filename
+        from lilbee.catalog.hf_client import hf_token
+        from lilbee.providers.fleet.loadability import assert_engine_can_load
+
+        token = hf_token()
+
+        def _can_load(hf_repo: str, filename: str) -> None:
+            assert_engine_can_load(hf_repo, filename, token)
+
+        try:
+            filename = resolve_filename(entry, can_load=_can_load if verify else None)
+        except (PermissionError, RuntimeError) as exc:
+            if isinstance(exc, UnsupportedQuantError):
+                raise
+            log.debug("Cannot name a file to fetch for %s: %s", entry.hf_repo, exc)
+            return entry
+        return replace(entry, gguf_filename=filename)
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove an installed native model. Returns True if removed.
