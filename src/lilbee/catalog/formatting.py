@@ -4,7 +4,11 @@ import re
 from dataclasses import dataclass
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.refs import (
+    GGUF_SUFFIX,
+    NATIVE_GGUF_REF_MIN_SLASHES,
+    hf_repo_from_ref,
+)
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
@@ -21,10 +25,6 @@ _DISPLAY_NAME_NOISE = re.compile(
 _DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
 # A bare parameter-count word (``300m``, ``0.6b``); rendered uppercase.
 _PARAM_COUNT_WORD = re.compile(r"\d+(?:\.\d+)?[bm]", re.IGNORECASE)
-
-# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
-# two ``/`` separators; one-slash refs are bare repo IDs.
-_NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 def _prettify_word(word: str) -> str:
@@ -70,7 +70,7 @@ def download_task_name(ref: str) -> str:
         return ""
     # A ``.gguf`` ref needs ``<owner>/<repo>/<file>`` (two slashes) to be a valid
     # native ref; a one-slash ``<file>.gguf`` is malformed and has no repo label.
-    if ref.endswith(".gguf") and ref.count("/") < _NATIVE_GGUF_REF_MIN_SLASHES:
+    if ref.endswith(GGUF_SUFFIX) and ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
         return ""
     # Every remaining ref has a ``<owner>/<repo>`` portion: a native ref keeps its
     # first two segments, a provider-prefixed/bare ref is returned unchanged.
@@ -86,7 +86,7 @@ def display_label_for_ref(ref: str) -> str:
     """
     if not ref:
         return ""
-    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+    if ref.endswith(GGUF_SUFFIX) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
         # hf_repo_from_ref keeps the first two segments, so a subdir-quant ref
         # (``unsloth/MiniMax-M2-GGUF/Q4_K_M/...gguf``) still yields the real repo.
         return clean_display_name(hf_repo_from_ref(ref))
