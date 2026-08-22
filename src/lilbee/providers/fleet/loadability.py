@@ -23,10 +23,20 @@ _FLAG_SKIP_ESTIMATE = "--skip-estimate"
 
 _PARSER_LABEL = "gguf-parser"
 
-# gguf-parser reports a tensor it cannot decode against the tensor itself, and
-# prefixes every I/O failure (404, DNS, TLS) differently. Only a tensor failure
-# says anything about the engine; the rest is the network.
-_TENSOR_FAILURE = "read tensor info"
+# A non-zero exit means the parser could not read the file as a model, which is
+# the engine's verdict, unless it never got to read it. Listing what a failure to
+# reach the file looks like is narrower and ages better than listing every way a
+# file can be rejected: a new rejection reason should count as a verdict, and a
+# new transport error should not.
+_ACCESS_FAILURE_MARKERS = (
+    "open http file:",
+    "no such host",
+    "status code 4",
+    "status code 5",
+    "connection refused",
+    "context deadline exceeded",
+    "no such file or directory",
+)
 _QUANT_TYPE_RE = re.compile(r"GGMLType\(\d+\)")
 
 # Header range-reads only, but a large tokenizer pushes the tensor table past
@@ -36,9 +46,11 @@ _PROBE_KILL_WAIT_S = 5.0
 
 
 def _named_quant(detail: str) -> str:
-    """The quantization gguf-parser named in *detail*, or the whole message."""
+    """The quantization gguf-parser named in *detail*, or the reason it gave."""
     match = _QUANT_TYPE_RE.search(detail)
-    return match.group(0) if match else detail
+    if match:
+        return match.group(0)
+    return detail.split(": ", 1)[-1] if ": " in detail else detail
 
 
 def assert_engine_can_load(hf_repo: str, filename: str, token: str | None = None) -> None:
@@ -84,7 +96,7 @@ def assert_engine_can_load(hf_repo: str, filename: str, token: str | None = None
     if returncode == 0:
         return
     detail = output.strip()
-    if _TENSOR_FAILURE not in detail:
-        log.debug("Loadability probe could not read %s/%s: %s", hf_repo, filename, detail)
+    if any(marker in detail for marker in _ACCESS_FAILURE_MARKERS):
+        log.debug("Loadability probe could not reach %s/%s: %s", hf_repo, filename, detail)
         return
     raise UnsupportedQuantError(f"{hf_repo}/{filename}", _named_quant(detail))

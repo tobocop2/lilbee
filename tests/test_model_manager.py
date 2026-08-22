@@ -7,6 +7,7 @@ from unittest import mock
 import httpx
 import pytest
 
+from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.modelhub.model_manager import (
     ModelManager,
@@ -507,8 +508,16 @@ class TestModelManagerPull:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        fake_entry = mock.Mock()
-        fake_entry.name = "test-model"
+        fake_entry = CatalogModel(
+            hf_repo="acme/test-model-GGUF",
+            gguf_filename="*.gguf",
+            size_gb=0.0,
+            min_ram_gb=0.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=ModelTask.CHAT,
+        )
 
         def fake_download(
             entry: object,
@@ -517,7 +526,7 @@ class TestModelManagerPull:
             on_complete: object = None,
             cancel: object = None,
         ) -> Path:
-            path = models_dir / f"{entry.name}.gguf"
+            path = models_dir / entry.gguf_filename
             path.write_text("fake model")
             return path
 
@@ -536,7 +545,9 @@ class TestModelManagerPull:
         mock_resolve.assert_called_once_with("test-model")
         mock_dl.assert_called_once()
         call = mock_dl.call_args
-        assert call.args == (fake_entry,)
+        # the pull resolves the file before handing the entry down
+        assert call.args[0].hf_repo == fake_entry.hf_repo
+        assert call.args[0].gguf_filename == "test-model.gguf"
         assert call.kwargs["on_progress"] is None
         assert callable(call.kwargs["on_complete"])
         assert result is not None
@@ -574,7 +585,7 @@ class TestModelManagerPull:
         assert len(captured) == 1
         entry = captured[0]
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
-        assert entry.gguf_filename == "*.gguf"
+        assert entry.gguf_filename == "gemma-2-2b-it-Q4_K_M.gguf"
         assert entry.featured is False
 
     def test_native_pull_unknown_short_name_raises(self, tmp_path: Path) -> None:

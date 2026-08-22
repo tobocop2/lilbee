@@ -27,6 +27,18 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
 
 
+@pytest.fixture(autouse=True)
+def _stub_repo_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the pull path off the network.
+
+    Resolving a pull lists the repo to rank its candidates. These tests use
+    fixture repo names, so the listing is stubbed: the resolver finds nothing to
+    choose, and the pull carries on and lets the stubbed download decide the
+    outcome, which is what each case is actually asserting.
+    """
+    monkeypatch.setattr("lilbee.catalog.download._repo_sibling_files", lambda _repo: [])
+
+
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
     # Encode the desired display name into the hf_repo so
     # clean_display_name(hf_repo) round-trips it. Used by tests that

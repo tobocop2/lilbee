@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.catalog.compat import UnsupportedQuantError
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import loadability
 from lilbee.providers.fleet.loadability import _named_quant, assert_engine_can_load
 
@@ -73,6 +74,19 @@ class TestVerdicts:
         _returns(monkeypatch, output, 1)
         assert assert_engine_can_load(_REPO, _FILE) is None
 
+    def test_a_refusal_that_names_no_type_is_still_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The engine refusing on tensor size says as much as it refusing on type."""
+        _returns(
+            monkeypatch,
+            "failed to parse GGUF file: tensor data needs 484218688 bytes but only "
+            "457345184 follow the header: a tensor type's block layout does not match",
+            1,
+        )
+        with pytest.raises(UnsupportedQuantError):
+            assert_engine_can_load(_REPO, _FILE)
+
     def test_a_parser_that_will_not_run_is_not_a_verdict(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -119,7 +133,30 @@ class TestNamedQuant:
     def test_reads_the_type_out_of_the_message(self) -> None:
         assert _named_quant(_TENSOR_FAILURE) == "GGMLType(42)"
 
-    def test_keeps_the_whole_message_when_no_type_is_named(self) -> None:
-        assert _named_quant("read tensor info 3: something new") == (
-            "read tensor info 3: something new"
+    def test_falls_back_to_the_reason_when_no_type_is_named(self) -> None:
+        """The fit failure names no type, so the message carries the reason."""
+        assert (
+            _named_quant(
+                "failed to parse GGUF file: tensor data needs 9 bytes but only 8 follow the header"
+            )
+            == "tensor data needs 9 bytes but only 8 follow the header"
         )
+
+    def test_keeps_the_whole_message_when_it_has_no_prefix(self) -> None:
+        assert _named_quant("something new") == "something new"
+
+
+class TestNoParserAvailable:
+    """An install without the engine extra has no parser to ask."""
+
+    def test_a_missing_parser_is_not_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _unavailable() -> Path:
+            raise ProviderError("gguf-parser binary not found.")
+
+        monkeypatch.setattr(loadability, "resolve_gguf_parser", _unavailable)
+        monkeypatch.setattr(
+            loadability,
+            "run_bounded",
+            lambda *_a, **_kw: pytest.fail("ran a parser it could not resolve"),
+        )
+        assert assert_engine_can_load(_REPO, _FILE) is None
