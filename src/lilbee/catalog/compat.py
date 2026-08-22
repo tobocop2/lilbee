@@ -93,3 +93,21 @@ class UnsupportedArchError(Exception):
         super().__init__(
             f"Model {ref!r} uses architecture {architecture!r}, not supported by this lilbee build."
         )
+
+
+class UnsupportedQuantError(RuntimeError):
+    """Raised when a GGUF's tensors carry a type the bundled engine cannot decode.
+
+    A RuntimeError so every pull surface renders it the way it already renders a
+    failed pull. Unlike an unsupported architecture there is no preflight route
+    and no list of accepted types to offer, so there is nothing structured for a
+    client to read beyond the message.
+    """
+
+    def __init__(self, ref: str, quant: str) -> None:
+        self.ref = ref
+        self.quant = quant
+        super().__init__(
+            f"Model {ref!r} is quantized as {quant}, which this lilbee build cannot load. "
+            "Pass --allow-unsupported to download it anyway."
+        )
