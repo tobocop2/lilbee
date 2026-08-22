@@ -4,6 +4,14 @@ The fields are read by walking the metadata KV table directly (see
 ``_parse_header``) rather than via gguf-py's ``GGUFReader``, which needs the whole
 KV table -- including a model's multi-megabyte tokenizer arrays -- present, and
 so chokes on a Range-GET-truncated header.
+
+The bundled gguf-parser reports the same two fields and is the authority on
+whether the engine can load a file, but it always reads through to the tensor
+table, which sits past those tokenizer arrays. Measured on the same files it
+costs 6.7s against this probe's 0.7s for a small model. Selection asks about
+every candidate and needs only ``general.type``, the second key in the table, so
+it reads a 64 KB window here; the load verdict is left to gguf-parser, once, in
+``providers.fleet.loadability``.
 """
 
 from __future__ import annotations
