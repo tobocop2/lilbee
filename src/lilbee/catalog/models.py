@@ -1,5 +1,6 @@
 """Catalog dataclasses and pydantic types. Imports only the catalog's leaf modules."""
 
+import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -45,9 +46,17 @@ _BYTES_PER_PARAM: dict[str, float] = {
     "F32": 4.0,
 }
 
-# Q4_K_M heads the pull path's quant preference, so an unrecognized label
-# estimates as if it were the quant a pull would most likely land on.
+# Q4_K_M heads the pull path's quant preference, so a label naming no bit width
+# at all estimates as if it were the quant a pull would most likely land on.
 _DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
+
+# A quant the table does not name still says how many bits it packs. One fp16
+# scale per group costs an eighth on top, whatever the width, because a group is
+# sized to the width: 1-bit in groups of 128, 2-bit in 64, 4-bit in 32 all carry
+# two bytes per group. Reading the width beats falling back to Q4_K_M, which
+# reports a 2-bit file at more than twice its size.
+_SCALE_OVERHEAD = 1.125
+_BITS_PER_BYTE = 8
 
 
 def _ggml_floor(quant: str) -> float | None:
@@ -64,10 +73,23 @@ def _ggml_floor(quant: str) -> float | None:
     return None
 
 
+def _packed_bits(quant: str) -> int | None:
+    """The bit width *quant* packs each weight into, or None if it names none."""
+    match = re.match(r"I?Q(\d)", quant)
+    return int(match.group(1)) if match else None
+
+
 def _quant_bytes_per_param(gguf_filename: str) -> float:
     """Bytes per weight for the quant *gguf_filename* names, never below its floor."""
     quant = quant_label(gguf_filename)
-    measured = _BYTES_PER_PARAM.get(quant, _DEFAULT_BYTES_PER_PARAM)
+    measured = _BYTES_PER_PARAM.get(quant)
+    if measured is None:
+        bits = _packed_bits(quant)
+        measured = (
+            bits / _BITS_PER_BYTE * _SCALE_OVERHEAD
+            if bits is not None
+            else _DEFAULT_BYTES_PER_PARAM
+        )
     floor = _ggml_floor(quant)
     return max(measured, floor) if floor is not None else measured
 
