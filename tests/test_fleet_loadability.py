@@ -47,6 +47,19 @@ def _returns(monkeypatch: pytest.MonkeyPatch, output: str, returncode: int) -> l
     return calls
 
 
+def _returns_each(monkeypatch: pytest.MonkeyPatch, *results: tuple[str, int]) -> list[list[str]]:
+    """Stub run_bounded to answer differently on each successive call."""
+    calls: list[list[str]] = []
+    answers = list(results)
+
+    def _run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
+        calls.append(argv)
+        return answers[min(len(calls) - 1, len(answers) - 1)]
+
+    monkeypatch.setattr(loadability, "run_bounded", _run)
+    return calls
+
+
 class TestVerdicts:
     def test_refuses_a_tensor_type_the_engine_cannot_decode(
         self, monkeypatch: pytest.MonkeyPatch
@@ -144,6 +157,43 @@ class TestNamedQuant:
 
     def test_keeps_the_whole_message_when_it_has_no_prefix(self) -> None:
         assert _named_quant("something new") == "something new"
+
+
+class TestTransientFailures:
+    """A verdict is a property of the file, so it has to repeat."""
+
+    def test_a_failure_that_does_not_repeat_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A header read cut short reports as a parse failure and then succeeds."""
+        truncated = (
+            "failed to parse GGUF file: read metadata kv 27: read tokenizer.ggml.merges "
+            "value: seek array[string] 138277: unexpected EOF"
+        )
+        calls = _returns_each(monkeypatch, (truncated, 1), ("{}", 0))
+        assert assert_engine_can_load(_REPO, _FILE) is None
+        assert len(calls) == 2
+
+    def test_a_failure_that_repeats_is_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = _returns(monkeypatch, _TENSOR_FAILURE, 1)
+        with pytest.raises(UnsupportedQuantError):
+            assert_engine_can_load(_REPO, _FILE)
+        assert len(calls) == 2
+
+    def test_a_parser_that_stops_running_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The retry itself may fail to spawn; that is still not a refusal."""
+        calls: list[list[str]] = []
+
+        def _run(argv: list[str], **_kwargs: object) -> tuple[str, int]:
+            calls.append(argv)
+            if len(calls) == 1:
+                return _TENSOR_FAILURE, 1
+            raise OSError("no such binary")
+
+        monkeypatch.setattr(loadability, "run_bounded", _run)
+        assert assert_engine_can_load(_REPO, _FILE) is None
 
 
 class TestNoParserAvailable:

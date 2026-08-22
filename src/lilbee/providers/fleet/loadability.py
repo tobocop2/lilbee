@@ -45,6 +45,21 @@ _PROBE_TIMEOUT_S = 120
 _PROBE_KILL_WAIT_S = 5.0
 
 
+def _run_parser(argv: list[str]) -> tuple[str, int] | None:
+    """(merged output, exit code) from one parser run, or None if it would not run."""
+    try:
+        return run_bounded(
+            argv,
+            timeout_s=_PROBE_TIMEOUT_S,
+            kill_wait_s=_PROBE_KILL_WAIT_S,
+            merge_stderr=True,
+            label=_PARSER_LABEL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("Loadability probe did not run: %s", exc)
+        return None
+
+
 def _named_quant(detail: str) -> str:
     """The quantization gguf-parser named in *detail*, or the reason it gave."""
     match = _QUANT_TYPE_RE.search(detail)
@@ -82,21 +97,21 @@ def assert_engine_can_load(hf_repo: str, filename: str, token: str | None = None
     ]
     if token:
         argv += [_FLAG_AUTH, token]
-    try:
-        output, returncode = run_bounded(
-            argv,
-            timeout_s=_PROBE_TIMEOUT_S,
-            kill_wait_s=_PROBE_KILL_WAIT_S,
-            merge_stderr=True,
-            label=_PARSER_LABEL,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.debug("Loadability probe did not run for %s/%s: %s", hf_repo, filename, exc)
+    first = _run_parser(argv)
+    if first is None:
         return
+    output, returncode = first
     if returncode == 0:
         return
     detail = output.strip()
     if any(marker in detail for marker in _ACCESS_FAILURE_MARKERS):
         log.debug("Loadability probe could not reach %s/%s: %s", hf_repo, filename, detail)
         return
-    raise UnsupportedQuantError(f"{hf_repo}/{filename}", _named_quant(detail))
+    # A header runs to megabytes and a read cut short partway through reports as
+    # a parse failure, indistinguishable by its wording from a real refusal. A
+    # verdict is a property of the file and repeats; a truncated read does not.
+    second = _run_parser(argv)
+    if second is None or second[1] == 0:
+        log.debug("Loadability probe failed once for %s/%s: %s", hf_repo, filename, detail)
+        return
+    raise UnsupportedQuantError(f"{hf_repo}/{filename}", _named_quant(second[0].strip()))
