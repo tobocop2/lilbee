@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from lilbee.catalog.compat import classify, file_header
+from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
@@ -37,6 +37,8 @@ from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
+# Raises UnsupportedQuantError when the engine cannot decode the named file.
+LoadCheck = Callable[[str, str], None]
 
 log = logging.getLogger(__name__)
 
@@ -597,36 +599,52 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     return min(matches, key=_mmproj_rank) if matches else None
 
 
-def resolve_filename(entry: CatalogModel) -> str:
+def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) -> str:
     """The repo file a pull of *entry* fetches, gated on each candidate's GGUF header.
 
     Quant labels only order the candidates. A file whose header calls it a
     projector or an adapter is never the model, so a repo that labels its
     projector ``Q8_0`` cannot install it as one.
 
-    A supported architecture wins outright. Where a repo mixes architectures, a
-    speculative-decoding drafter loses to the weights it drafts for. Where none
-    is supported, the best-ranked weights still come back: refusing here would
-    report a generic error and disable ``--allow-unsupported``, so that verdict
-    belongs to the architecture guard.
+    *can_load* is the engine's verdict on one file, supplied by the layer that
+    owns the engine. It runs last because it is the expensive question, and it
+    decides between candidates rather than judging the one already chosen: a
+    repo publishing the same weights in several packings holds files the engine
+    reads and files it cannot, and only one of them is worth downloading.
+
+    Where no architecture is supported the best-ranked weights still come back.
+    Refusing here would report a generic error and disable ``--allow-unsupported``,
+    so that verdict belongs to the architecture guard.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
+        UnsupportedQuantError: every candidate carries weights the engine cannot
+            decode; the first such refusal is re-raised, naming its file.
         RuntimeError: the repo listing failed, or it holds no model weights.
     """
     named = entry.gguf_filename
     if WILDCARD not in named and file_header(entry.hf_repo, named).is_model:
         return named
     unsupported: str | None = None
+    refused: UnsupportedQuantError | None = None
     for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
-        if classify(header.architecture) is not ModelCompat.UNSUPPORTED:
-            return candidate
-        unsupported = unsupported or candidate
+        if classify(header.architecture) is ModelCompat.UNSUPPORTED:
+            unsupported = unsupported or candidate
+            continue
+        if can_load is not None:
+            try:
+                can_load(entry.hf_repo, candidate)
+            except UnsupportedQuantError as exc:
+                refused = refused or exc
+                continue
+        return candidate
     if unsupported is not None:
         return unsupported
+    if refused is not None:
+        raise refused
     raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
 
 
