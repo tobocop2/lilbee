@@ -105,6 +105,9 @@ _SPLIT_CHAT_SLOTS = 1
 # its floor after the forced split is refused by plan_launches
 # (_unusable_chat_ctx_reason).
 _MIN_USABLE_CHAT_CTX = 8192
+# Offload-search upper bound meaning "no reduced offload is worth probing": the
+# search runs 0..upper, so a negative bound skips it.
+_NO_OFFLOAD_PROBE = -1
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
 # passage per request, --parallel 1 gave 133 docs/sec at 81% SM while
@@ -411,26 +414,93 @@ def fit_chat_ctx(
     *,
     available_bytes: int,
     ctx_ceiling: int,
-) -> int:
-    """The chat window gguf-parser says *available_bytes* backs, at the launch flags.
+) -> engine_params.ChatFit:
+    """The offload and chat window gguf-parser says *available_bytes* backs.
 
-    Sizes one slot, as :func:`_slots_for` then grows the slot count against what
-    the window leaves. Raises when the estimator cannot answer, which sends
-    :func:`engine_params.resolve_chat_ctx` to its header-math fallback.
+    Sizes one slot at the configured offload, as :func:`_slots_for` then grows
+    the slot count against what the window leaves. A window that cannot hold a
+    grounded prompt buys KV room by leaving layers in system memory, and the
+    largest offload whose window reaches ``min_usable_chat_ctx`` wins; the
+    alternative for those models is no service at all
+    (:func:`_unusable_chat_ctx_reason`). Raises when the estimator cannot
+    answer, which sends :func:`engine_params.resolve_chat_fit` to its
+    header-math fallback.
     """
-    return fleet_ctx.fit_single_ctx(
-        model_path,
-        meta=meta,
-        slots=1,
-        available_bytes=available_bytes,
-        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-        flash_attn=_role_flash(WorkerRole.CHAT),
-        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-        kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
-        unified=plan_sizing_is_unified(),
-        ctx_ceiling=ctx_ceiling,
-        expert_offload=_role_expert_offload(model_path),
+
+    def fit_at(gpu_layers: int) -> int:
+        return fleet_ctx.fit_single_ctx(
+            model_path,
+            meta=meta,
+            slots=1,
+            available_bytes=available_bytes,
+            gpu_layers=gpu_layers,
+            flash_attn=_role_flash(WorkerRole.CHAT),
+            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
+            unified=plan_sizing_is_unified(),
+            ctx_ceiling=ctx_ceiling,
+            expert_offload=_role_expert_offload(model_path),
+        )
+
+    configured = _role_gpu_layers(WorkerRole.CHAT)
+    fit = engine_params.ChatFit(configured, fit_at(configured))
+    needed = engine_params.min_usable_chat_ctx()
+    if fit.ctx >= needed or not _chat_offload_is_tradable(
+        model_path, available_bytes=available_bytes, ctx_ceiling=ctx_ceiling, needed=needed
+    ):
+        return fit
+    traded = _traded_chat_fit(
+        fit_at, upper=_chat_offload_probe_ceiling(meta, configured), needed=needed
     )
+    return traded or fit
+
+
+def _chat_offload_is_tradable(
+    model_path: Path, *, available_bytes: int, ctx_ceiling: int, needed: int
+) -> bool:
+    """Whether a too-small chat window may buy KV room by moving layers off the card.
+
+    Only while the weights alone fit *available_bytes*. Past that the layers the
+    trade leaves behind are served from system memory, and a model that answers
+    from host RAM is the unusable load :func:`_unusable_chat_ctx_reason` refuses
+    on purpose. A window the user capped below *needed* is their choice, and the
+    refusal already honours it, so nothing is bought by trading for it either.
+    """
+    return ctx_ceiling >= needed and _weights_bytes(model_path) <= available_bytes
+
+
+def _chat_offload_probe_ceiling(meta: dict[str, str] | None, configured: int) -> int:
+    """Highest layer count the offload search probes, below *configured*.
+
+    ``_NO_OFFLOAD_PROBE`` when the architecture does not report a layer count,
+    which leaves no grid to search.
+    """
+    try:
+        layers = int((meta or {})["block_count"])
+    except (KeyError, ValueError):
+        return _NO_OFFLOAD_PROBE
+    if configured == engine_params.N_GPU_LAYERS_AUTO:
+        return layers
+    return min(configured - 1, layers)
+
+
+def _traded_chat_fit(
+    fit_at: Callable[[int], int], *, upper: int, needed: int
+) -> engine_params.ChatFit | None:
+    """Largest offload at or below *upper* whose window reaches *needed*, or ``None``.
+
+    Binary search: the estimate charges less VRAM the fewer layers the card
+    holds, so the fitted window is monotone in the offload.
+    """
+    lo, hi, best = 0, upper, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        ctx = fit_at(mid)
+        if ctx >= needed:
+            best, lo = engine_params.ChatFit(mid, ctx), mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 def _role_ctx(
@@ -1516,6 +1586,10 @@ def _launch_for(
             list(plan.devices),
         )
     split_slots = _SPLIT_CHAT_SLOTS
+    # A single-card chat is the one launch whose offload its own window fit can
+    # lower; the split and pinned paths never run that fit.
+    fit_offload = is_chat and not multi_card_chat and cfg.num_ctx is None
+    n_gpu_layers = _role_gpu_layers(plan.role)
     if split_chat:
         reserved = reserved_by_device or {}
         # Headroom left after the embed/rerank servers on each shared card, not the
@@ -1538,6 +1612,15 @@ def _launch_for(
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
+    elif fit_offload:
+        # One call answers both halves. The window was sized against the memory
+        # this offload leaves free, so a second call for the offload could pair a
+        # window with an offload that never fitted it.
+        chat_fit = engine_params.resolve_chat_fit(
+            model_path, meta, available_bytes=plan_sizing_budget(placed_device)
+        )
+        n_gpu_layers = chat_fit.gpu_layers
+        ctx = apply_ctx_downshift(plan.role, chat_fit.ctx)
     else:
         # Downshifted here and not only in the estimate: the role resolvers are
         # pure functions of model and config, so without this the retry after a
@@ -1573,7 +1656,7 @@ def _launch_for(
         spec=spec,
         model_path=model_path,
         devices=plan.devices,
-        n_gpu_layers=_role_gpu_layers(plan.role),
+        n_gpu_layers=n_gpu_layers,
         slots=slots,
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,

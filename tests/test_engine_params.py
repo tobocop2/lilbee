@@ -102,9 +102,9 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> ep.ChatFit:
             seen.update(available_bytes=available_bytes, ctx_ceiling=ctx_ceiling)
-            return 249856
+            return ep.ChatFit(gpu_layers=-1, ctx=249856)
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
@@ -121,9 +121,9 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> ep.ChatFit:
             seen["ctx_ceiling"] = ctx_ceiling
-            return ctx_ceiling
+            return ep.ChatFit(gpu_layers=-1, ctx=ctx_ceiling)
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
@@ -142,6 +142,20 @@ class TestResolveChatCtx:
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
         assert ep.resolve_chat_ctx(model, {"arch": "x"}) == 6000
+
+    def test_header_math_keeps_the_configured_offload(self, tmp_path, monkeypatch) -> None:
+        # Header math sizes the window against full offload, so the launch has to
+        # run there; a traded offload only ever comes from the estimator's fit.
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 100)
+        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
+        monkeypatch.setattr(ep, "get_available_memory", lambda _frac: 10**10)
+        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, *_b: 1000)
+        monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 6000)
+        monkeypatch.setattr(cfg, "num_ctx_max", None)
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
+        assert ep.resolve_chat_fit(model, {"arch": "x"}) == ep.ChatFit(gpu_layers=-1, ctx=6000)
 
     def test_honors_num_ctx_max_ceiling(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
