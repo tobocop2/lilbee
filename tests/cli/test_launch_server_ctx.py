@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.engine_params import ChatFit
 from lilbee.providers.roles import WorkerRole
 
 
@@ -223,7 +224,9 @@ def test_both_grant_surfaces_report_the_window_the_estimator_fits(monkeypatch, t
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
-    monkeypatch.setattr(planning_mod, "fit_chat_ctx", lambda *_a, **_k: fitted)
+    monkeypatch.setattr(
+        planning_mod, "fit_chat_ctx", lambda *_a, **_k: ChatFit(gpu_layers=-1, ctx=fitted)
+    )
 
     assert launch_mod.planned_chat_ctx() == fitted
     assert planning_mod._role_ctx(WorkerRole.CHAT, gguf, meta) == fitted
