@@ -3,8 +3,9 @@
 :func:`fit_single_ctx` sizes one device against the budget the planner scaled;
 :func:`fit_split_ctx` sizes a tensor split against the busiest card's headroom
 rather than the summed pool. Both bisect the same quantized grid.
-``engine_params.resolve_chat_ctx`` is the entry point for the single-device fit
-and holds the header-math fallback. See docs/architecture.md (VRAM estimation).
+``engine_params.resolve_chat_fit`` is the entry point for the single-device fit
+and holds the header-math fallback; ``planning.fit_chat_ctx`` searches the offload
+around this window search. See docs/architecture.md (VRAM estimation).
 """
 
 from __future__ import annotations
