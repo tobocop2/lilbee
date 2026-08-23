@@ -597,7 +597,13 @@ flowchart LR
   overflow device 0 even when the cards are unequal. A chat on one card searches the
   same grid against one device (`ctx.fit_single_ctx`, entered through
   `engine_params.resolve_chat_ctx`), so both paths price the cache the model's
-  architecture holds. Header math (`model_cache.compute_dynamic_ctx`) is the fallback
+  architecture holds. On one card the search covers the **offload as well as the window**
+(`planning.fit_chat_ctx`): when full offload leaves KV room for less than a grounded
+prompt, layers move to system memory until the window is usable and the launch runs at
+that reduced `--n-gpu-layers`, so a small model on a small card is served instead of
+refused. The trade needs the weights alone to fit the budget; past that the model would
+answer out of host RAM, which is the unusable load `plan_launches` refuses on purpose.
+Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   for when gguf-parser cannot answer; it charges every layer as dense attention over
   the whole window, which under-grants linear-attention, sliding-window and MLA models. On a
   single CPU/Metal box this
