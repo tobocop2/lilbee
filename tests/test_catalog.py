@@ -2800,3 +2800,43 @@ class TestUnrecognizedQuantEstimate:
 
         assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
         assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
+
+
+class TestMeasuredQuantFloors:
+    """The measured bytes-per-weight table against the ggml block sizes."""
+
+    @staticmethod
+    def _ggml_floor(quant: str) -> float | None:
+        """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
+        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+        base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
+        for name in (quant, base, "_".join(quant.split("_")[:2])):
+            try:
+                block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
+            except KeyError:
+                continue
+            return type_size / block
+        return None
+
+    def test_measured_quants_are_above_their_ggml_floor(self) -> None:
+        """No measured figure may sit below its base type, which is impossible.
+
+        llama.cpp promotes some tensors and leaves norms in F32, so a real file
+        always costs more per weight than its nominal type: a table entry under
+        the floor is a typo, not a small model. Checked here rather than clamped
+        at runtime so the table is fixed instead of silently corrected.
+        """
+        from lilbee.catalog.models import _BYTES_PER_PARAM
+
+        below = {
+            quant: (measured, floor)
+            for quant, measured in _BYTES_PER_PARAM.items()
+            if (floor := self._ggml_floor(quant)) is not None and measured < floor
+        }
+        assert not below, f"measured figures below their ggml floor: {below}"
+
+    def test_floor_helper_finds_a_known_type(self) -> None:
+        """The lookup resolves a real quant, so the check above cannot pass vacuously."""
+        assert self._ggml_floor("Q4_K_M") == pytest.approx(0.5625)
+        assert self._ggml_floor("NOT_A_QUANT") is None

@@ -24,15 +24,15 @@ _BYTES_PER_GB = 1024**3
 # nominal type. These are measured file sizes; Qwen3-8B-GGUF publishes 0.614
 # (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K) and 1.063 (Q8_0).
 #
-# GGML_QUANT_SIZES is still used, as the physical floor: no file can be smaller
-# than its base type, so _quant_bytes_per_param clamps to it and a typo below the
-# floor cannot survive.
+# No entry may sit below its base type's bytes per weight, which is physically
+# impossible; ``test_measured_quants_are_above_their_ggml_floor`` checks each one
+# against ``gguf.constants.GGML_QUANT_SIZES`` so a typo cannot survive review.
 _BYTES_PER_PARAM: dict[str, float] = {
     "Q2_K": 0.33,
     "Q3_K_S": 0.45,
     "Q3_K_M": 0.488,
     "Q3_K_L": 0.53,
-    "IQ4_XS": 0.53,
+    "IQ4_XS": 0.532,
     "Q4_0": 0.569,
     "Q4_K_S": 0.575,
     "Q4_K_M": 0.614,
@@ -59,20 +59,6 @@ _SCALE_OVERHEAD = 1.125
 _BITS_PER_BYTE = 8
 
 
-def _ggml_floor(quant: str) -> float | None:
-    """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
-    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
-
-    base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
-    for name in (quant, base, "_".join(quant.split("_")[:2])):
-        try:
-            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
-        except KeyError:
-            continue
-        return type_size / block
-    return None
-
-
 def _packed_bits(quant: str) -> int | None:
     """The bit width *quant* packs each weight into, or None if it names none."""
     match = re.match(r"I?Q(\d)", quant)
@@ -80,18 +66,15 @@ def _packed_bits(quant: str) -> int | None:
 
 
 def _quant_bytes_per_param(gguf_filename: str) -> float:
-    """Bytes per weight for the quant *gguf_filename* names, never below its floor."""
+    """Bytes per weight for the quant *gguf_filename* names."""
     quant = quant_label(gguf_filename)
     measured = _BYTES_PER_PARAM.get(quant)
-    if measured is None:
-        bits = _packed_bits(quant)
-        measured = (
-            bits / _BITS_PER_BYTE * _SCALE_OVERHEAD
-            if bits is not None
-            else _DEFAULT_BYTES_PER_PARAM
-        )
-    floor = _ggml_floor(quant)
-    return max(measured, floor) if floor is not None else measured
+    if measured is not None:
+        return measured
+    bits = _packed_bits(quant)
+    if bits is None:
+        return _DEFAULT_BYTES_PER_PARAM
+    return bits / _BITS_PER_BYTE * _SCALE_OVERHEAD
 
 
 def estimate_min_ram_gb(size_gb: float) -> float:

@@ -1254,7 +1254,31 @@ class TestChatCapacityComesFromTheAdoptedLaunch:
         assert FleetProvider().served_chat_slots() is None
 
 
+def _has_gguf_parser() -> bool:
+    """Whether a gguf-parser binary resolves here.
+
+    The unit lane does not install the engine helpers; the integration lane
+    does. Tests that hand real GGUF bytes to the parser are gated on this, and
+    the mapping from parsed KV to lilbee's fields is covered separately against
+    a stubbed parser so the unit lane still exercises it.
+    """
+    from lilbee.providers.fleet.binary import resolve_gguf_parser
+
+    try:
+        resolve_gguf_parser()
+    except Exception:
+        return False
+    return True
+
+
+_needs_gguf_parser = pytest.mark.skipif(
+    not _has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
+)
+
+
 class TestReadMmprojProjectorType:
+    @pytest.mark.real_engine_resolution
+    @_needs_gguf_parser
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
@@ -1283,6 +1307,8 @@ class TestReadMmprojProjectorType:
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
+    @pytest.mark.real_engine_resolution
+    @_needs_gguf_parser
     def test_non_string_projector_type_returns_none(self, tmp_path: Path) -> None:
         """If clip.projector_type is present but not a string (someone wrote it
         as an int or bool), the reader returns None instead of decoding bytes."""
@@ -1305,6 +1331,8 @@ class TestReadMmprojProjectorType:
         gguf_file.write_bytes(bytes(buf))
         assert read_mmproj_projector_type(gguf_file) is None
 
+    @pytest.mark.real_engine_resolution
+    @_needs_gguf_parser
     def test_reads_projector_type_past_bool_kv(self, tmp_path: Path) -> None:
         """Parser must skip bool KV pairs (1 byte each) to reach projector_type.
         LightOn OCR2's mmproj has ``clip.has_vision_encoder`` (bool) preceding
@@ -2613,24 +2641,55 @@ class TestTrainCtxFromMeta:
         assert train_ctx_from_meta(zero, fallback=4096, model_path=path) == 4096  # vision
 
 
+def _stub_gguf_parser(monkeypatch: pytest.MonkeyPatch, kv: dict[str, tuple[object, int]]) -> None:
+    """Make gguf-parser answer with *kv*, a mapping of key to (value, GGUF value type).
+
+    The engine's parser owns reading the bytes and is exercised against real
+    files in the lane that installs it. What is checked here is the mapping from
+    the parsed table onto lilbee's field names, so the table is supplied
+    directly rather than round-tripped through a file.
+    """
+    import json as _json
+
+    payload = {
+        "header": {
+            "metadataKV": [
+                {"key": key, "valueType": vtype, "value": value}
+                for key, (value, vtype) in kv.items()
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: (_json.dumps(payload), 0)
+    )
+
+
+_GGUF_STRING = 8
+_GGUF_UINT32 = 4
+
+
 class TestReadGgufMetadata:
-    def test_reads_all_fields(self, tmp_path: Path) -> None:
+    def test_reads_all_fields(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """read_gguf_metadata returns the parsed header fields."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        path = write_test_gguf(
-            tmp_path / "model.gguf",
-            arch="llama",
-            fields={
-                "llama.context_length": 4096,
-                "llama.embedding_length": 4096,
-                "tokenizer.chat_template": "template",
-                "general.file_type": 7,
-                "general.name": "Test Model",
+        _stub_gguf_parser(
+            monkeypatch,
+            {
+                "general.architecture": ("llama", _GGUF_STRING),
+                "llama.context_length": (4096, _GGUF_UINT32),
+                "llama.embedding_length": (4096, _GGUF_UINT32),
+                "tokenizer.chat_template": ("template", _GGUF_STRING),
+                "general.file_type": (7, _GGUF_UINT32),
+                "general.name": ("Test Model", _GGUF_STRING),
             },
         )
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
 
-        assert read_gguf_metadata(path) == {
+        assert read_gguf_metadata(tmp_path / "model.gguf") == {
             "architecture": "llama",
             "context_length": "4096",
             "embedding_length": "4096",
@@ -2639,40 +2698,74 @@ class TestReadGgufMetadata:
             "name": "Test Model",
         }
 
-    def test_exposes_declared_pooling_type(self, tmp_path: Path) -> None:
+    def test_exposes_declared_pooling_type(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An embedder's <arch>.pooling_type is surfaced for the embed-pooling choice."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        path = write_test_gguf(
-            tmp_path / "model.gguf",
-            arch="qwen3",
-            fields={"qwen3.pooling_type": 3},
+        _stub_gguf_parser(
+            monkeypatch,
+            {
+                "general.architecture": ("qwen3", _GGUF_STRING),
+                "qwen3.pooling_type": (3, _GGUF_UINT32),
+            },
         )
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
 
-        assert read_gguf_metadata(path) == {"architecture": "qwen3", "pooling_type": "3"}
+        assert read_gguf_metadata(tmp_path / "model.gguf") == {
+            "architecture": "qwen3",
+            "pooling_type": "3",
+        }
 
-    def test_returns_none_for_empty_metadata(self, tmp_path: Path) -> None:
+    def test_returns_none_for_empty_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """read_gguf_metadata returns None when the header carries no fields."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        reader = mock.MagicMock()
-        reader.fields = {}
-        with mock.patch("lilbee.providers.gguf_meta.GGUFReader", return_value=reader):
-            assert read_gguf_metadata(tmp_path / "model.gguf") is None
+        _stub_gguf_parser(monkeypatch, {})
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+        assert read_gguf_metadata(tmp_path / "model.gguf") is None
 
-    def test_caches_by_path_and_mtime(self, tmp_path: Path) -> None:
+    def test_returns_none_when_no_parser_is_installed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the engine extra there is no reader, and no engine to load with either."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        def _no_parser() -> Path:
+            raise RuntimeError("no engine installed")
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_gguf_parser", _no_parser
+        )
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+        assert read_gguf_metadata(tmp_path / "model.gguf") is None
+
+    def test_caches_by_path_and_mtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A second read of the same file reuses the cache and never re-parses.
 
         Planning reads each model's metadata several times per build; the cache
-        turns those repeats (each a full GGUFReader parse) into one.
+        turns those repeats (each a parser subprocess) into one.
         """
         from lilbee.providers import gguf_meta
 
-        path = write_test_gguf(
-            tmp_path / "model.gguf", arch="llama", fields={"llama.context_length": 4096}
+        _stub_gguf_parser(
+            monkeypatch,
+            {
+                "general.architecture": ("llama", _GGUF_STRING),
+                "llama.context_length": (4096, _GGUF_UINT32),
+            },
         )
+        path = tmp_path / "model.gguf"
+        path.write_bytes(b"GGUF")
         gguf_meta._METADATA_CACHE.clear()
-        with mock.patch.object(gguf_meta, "GGUFReader", wraps=gguf_meta.GGUFReader) as spy:
+        with mock.patch.object(
+            gguf_meta, "_kv_via_parser", wraps=gguf_meta._kv_via_parser
+        ) as spy:
             first = gguf_meta.read_gguf_metadata(path)
             second = gguf_meta.read_gguf_metadata(path)
         assert first == second == {"architecture": "llama", "context_length": "4096"}
@@ -2759,6 +2852,8 @@ class TestFindMmprojForModel:
 
 
 class TestReadMmprojProjectorTypePartial:
+    @pytest.mark.real_engine_resolution
+    @_needs_gguf_parser
     def test_returns_projector_type(self, tmp_path: Path) -> None:
         """read_mmproj_projector_type reads clip.projector_type from GGUF."""
         import struct
@@ -2783,6 +2878,8 @@ class TestReadMmprojProjectorTypePartial:
         result = read_mmproj_projector_type(f)
         assert result == "ldp"
 
+    @pytest.mark.real_engine_resolution
+    @_needs_gguf_parser
     def test_skips_non_matching_keys(self, tmp_path: Path) -> None:
         """read_mmproj_projector_type skips unrelated keys."""
         import struct
@@ -3768,16 +3865,44 @@ class TestRoutingLifecycleForwarding:
         assert RoutingProvider().role_ready(WorkerRole.CHAT) is False
 
 
-def test_gguf_scalar_str_array_field_returns_none() -> None:
-    from types import SimpleNamespace
+def test_parser_kv_skips_array_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An array field is not renderable as a single value, so it is left out.
 
-    from gguf import GGUFValueType
+    gguf-parser reports an array as its type and length rather than its
+    contents, which is what keeps a 151k-token vocabulary off the read; nothing
+    here consumes one.
+    """
+    import json as _json
 
-    from lilbee.catalog.header_probe import gguf_scalar_str
+    from lilbee.providers import gguf_meta
 
-    # An ARRAY-typed scalar field is not renderable as a single value.
-    field = SimpleNamespace(types=[GGUFValueType.ARRAY], data=[0], parts=[b"x"])
-    assert gguf_scalar_str(field) is None
+    payload = {
+        "header": {
+            "metadataKV": [
+                {"key": "general.architecture", "valueType": 8, "value": "qwen3"},
+                {"key": "tokenizer.ggml.tokens", "valueType": 9, "value": {"len": 151669}},
+                {"key": "qwen3.block_count", "valueType": 4, "value": 36},
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        gguf_meta, "_kv_via_parser", gguf_meta._kv_via_parser
+    )  # keep the real function
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.proc.run_bounded",
+        lambda *a, **k: (_json.dumps(payload), 0),
+    )
+    kv = gguf_meta._kv_via_parser(tmp_path / "model.gguf")
+    assert kv is not None
+    assert "tokenizer.ggml.tokens" not in kv
+    assert kv["general.architecture"].text == "qwen3"
+    assert kv["general.architecture"].is_string is True
+    # A non-string scalar is still read, but not as a string.
+    assert kv["qwen3.block_count"].text == "36"
+    assert kv["qwen3.block_count"].is_string is False
 
 
 class TestRoutingRoleReadyRemote:

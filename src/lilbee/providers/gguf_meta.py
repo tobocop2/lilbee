@@ -11,14 +11,12 @@ import hashlib
 import json
 import logging
 import os
-import struct
+import subprocess
 import threading
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
-from gguf import GGUFReader, GGUFValueType
-
-from lilbee.catalog.header_probe import GGUF_ARCH_KEY, gguf_scalar_str
+from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.providers.base import ProviderError
 
 log = logging.getLogger(__name__)
@@ -90,9 +88,12 @@ def train_ctx_from_meta(
 _METADATA_CACHE: dict[tuple[str, int, int], dict[str, str] | None] = {}
 _METADATA_CACHE_LOCK = threading.Lock()
 
-# Bump when the extracted field set changes, so old entries are ignored rather
-# than served stale.
-_DISK_CACHE_VERSION = 1
+# Bump when the extracted field set changes, or when the reader does, so old
+# entries are ignored rather than served stale. Version 2 reads through
+# gguf-parser: entries written by version 1 recorded "no metadata" for files
+# whose tensor type gguf-py did not know, and the key is (path, mtime, size),
+# so an unchanged file would keep serving that answer after the upgrade.
+_DISK_CACHE_VERSION = 2
 _DISK_CACHE_DIRNAME = "gguf-meta"
 # Distinguishes "no entry on disk" from a cached "this file has no metadata".
 _DISK_MISS = object()
@@ -184,35 +185,107 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     return dict(result) if result is not None else None
 
 
-def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
+# Array values report as ``{type, len, startOffset}`` rather than their contents,
+# so a 151k-token vocabulary costs nothing to skip. Only scalars are read here.
+_PARSER_ARRAY_VALUE_TYPE = 9
+# GGUF string value type, in both readers' numbering.
+_GGUF_STRING_VALUE_TYPE = 8
+_PARSER_TIMEOUT_SECONDS = 60.0
+_PARSER_KILL_WAIT_SECONDS = 5.0
+_PARSER_LABEL = "gguf-parser"
+
+
+class _Scalar(NamedTuple):
+    """One scalar metadata value, and whether the file typed it as a string.
+
+    A caller that wants text out of a field the file wrote as an integer is
+    reading a malformed file, so the type travels with the value rather than
+    being inferred from how the digits look.
+    """
+
+    text: str
+    is_string: bool
+
+
+def _kv_via_parser(model_path: Path) -> dict[str, _Scalar] | None:
+    """Every scalar metadata key in *model_path*, read by the engine's own parser.
+
+    Returns ``None`` when there is no parser to ask.
+
+    gguf-parser is built from the pin that builds llama-server, so the tensor
+    types it accepts are the ones the engine can decode. gguf-py carries its own
+    table and trails llama.cpp: a Q2_0 file (tensor type 42) that the engine
+    loads makes ``GGUFReader`` raise while it builds tensor descriptors nothing
+    here reads, and every field in the file becomes unreadable with it.
+    """
+    from lilbee.providers.fleet.binary import resolve_gguf_parser
+    from lilbee.providers.fleet.proc import run_bounded
+
     try:
-        reader = GGUFReader(str(model_path))
-        fields = reader.fields
-    except (ValueError, KeyError, IndexError, struct.error, OSError, UnicodeDecodeError) as exc:
-        # A truncated or corrupt GGUF header surfaces as a parser error. Report
-        # "no readable metadata" (None, an outcome callers already handle) rather
-        # than letting a raw parse error abort the whole fleet build.
-        log.warning("Could not parse GGUF metadata from %s: %s", model_path, exc)
+        parser = resolve_gguf_parser()
+    except Exception as exc:
+        log.debug("No gguf-parser to read %s with: %s", model_path, exc)
         return None
+    try:
+        # merge_stderr stays off: the caller parses stdout as JSON.
+        out, code = run_bounded(
+            [str(parser), "--path", str(model_path), "--raw"],
+            timeout_s=_PARSER_TIMEOUT_SECONDS,
+            kill_wait_s=_PARSER_KILL_WAIT_SECONDS,
+            label=_PARSER_LABEL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("gguf-parser did not run against %s: %s", model_path, exc)
+        return None
+    if code != 0:
+        # The engine's own reader rejected the file. Report "no readable
+        # metadata" rather than asking gguf-py for a second opinion the engine
+        # would not honour anyway.
+        log.warning("Could not parse GGUF metadata from %s: gguf-parser exit %d", model_path, code)
+        return {}
+    try:
+        entries = json.loads(out)["header"]["metadataKV"]
+    except (ValueError, KeyError, TypeError) as exc:
+        log.warning("gguf-parser returned unreadable output for %s: %s", model_path, exc)
+        return {}
+    return {
+        e["key"]: _Scalar(str(e["value"]), e.get("valueType") == _GGUF_STRING_VALUE_TYPE)
+        for e in entries
+        if e.get("valueType") != _PARSER_ARRAY_VALUE_TYPE and e.get("value") is not None
+    }
+
+
+def _scalars(model_path: Path) -> dict[str, _Scalar]:
+    """Scalar metadata for *model_path*, or empty when there is no parser to ask.
+
+    An install without the engine extra has no gguf-parser, and also no
+    llama-server to load a model with, so the fields here have nothing left to
+    size. Callers already treat absent metadata as a fallback case.
+    """
+    return _kv_via_parser(model_path) or {}
+
+
+def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
+    kv = _scalars(model_path)
     result: dict[str, str] = {}
 
-    arch = gguf_scalar_str(fields.get(GGUF_ARCH_KEY))
-    if arch is not None:
-        result["architecture"] = arch
-    arch = arch or _DEFAULT_ARCH
+    arch_field = kv.get(GGUF_ARCH_KEY)
+    if arch_field is not None:
+        result["architecture"] = arch_field.text
+    arch = arch_field.text if arch_field is not None else _DEFAULT_ARCH
 
     for suffix, out_key in _ARCH_FIELD_SUFFIXES.items():
-        value = gguf_scalar_str(fields.get(f"{arch}.{suffix}"))
+        value = kv.get(f"{arch}.{suffix}")
         if value is not None:
-            result[out_key] = value
+            result[out_key] = value.text
     for raw_key, out_key in (
         (_CHAT_TEMPLATE_KEY, "chat_template"),
         (_FILE_TYPE_KEY, "file_type"),
         (_NAME_KEY, "name"),
     ):
-        value = gguf_scalar_str(fields.get(raw_key))
+        value = kv.get(raw_key)
         if value is not None:
-            result[out_key] = value
+            result[out_key] = value.text
     return result or None
 
 
@@ -260,12 +333,5 @@ def find_mmproj_for_model(model_path: Path) -> Path:
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
-    try:
-        reader = GGUFReader(str(mmproj_path))
-        field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
-    except Exception:
-        log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
-        return None
-    if field is None or not field.types or field.types[-1] != GGUFValueType.STRING:
-        return None
-    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+    value = _scalars(mmproj_path).get(_CLIP_PROJECTOR_TYPE_KEY)
+    return value.text if value is not None and value.is_string else None
