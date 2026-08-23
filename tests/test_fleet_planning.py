@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, RerankerType
+from lilbee.providers.engine_params import ChatFit
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
@@ -981,6 +982,47 @@ class TestBuildFleetWiring:
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout
+
+    @staticmethod
+    def _chat_launch(tmp_path, monkeypatch, *, num_ctx: int | None) -> tuple[InstanceLaunch, list]:
+        """A single-card chat launch whose window fit traded offload down to 24."""
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        calls: list = []
+
+        def _fit(*_a, **kwargs):
+            calls.append(kwargs.get("available_bytes"))
+            return ChatFit(gpu_layers=24, ctx=12288)
+
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_fit", _fit)
+        monkeypatch.setattr(cfg, "num_ctx", num_ctx)
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        device = FleetDevice("CUDA", 0, "gpu", 2 * _GB, 2 * _GB)
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        return launch, calls
+
+    def test_launch_for_chat_offloads_the_layers_its_window_fit_chose(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The fit's answer is a (layers, window) pair: launching the window at full
+        # offload would allocate the KV the fit only found room for by leaving
+        # layers in system memory, and the load would run out of VRAM. One call
+        # yields both, so the pair cannot come from two different budgets.
+        launch, calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "24"
+        assert launch.ctx == 12288
+        assert calls == [int(2 * _GB * cfg.gpu_memory_fraction)]
+
+    def test_launch_for_chat_keeps_full_offload_under_a_num_ctx_pin(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A pin skips the fit entirely, so there is no traded offload to honour.
+        launch, calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=4096)
+        assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "-1"
+        assert calls == []
 
     def test_launch_for_split_chat_sizes_ctx_against_per_device_headroom(
         self, tmp_path, monkeypatch
@@ -2207,10 +2249,9 @@ class TestFitChatCtx:
         model = tmp_path / "m.gguf"
         meta = {"arch": "x"}
 
-        assert (
-            planning_mod.fit_chat_ctx(model, meta, available_bytes=40 * _GB, ctx_ceiling=262144)
-            == 32768
-        )
+        assert planning_mod.fit_chat_ctx(
+            model, meta, available_bytes=40 * _GB, ctx_ceiling=262144
+        ) == ChatFit(gpu_layers=-1, ctx=32768)
         assert seen["model_path"] == model
         assert seen["meta"] == meta
         assert seen["slots"] == 1
@@ -2218,6 +2259,100 @@ class TestFitChatCtx:
         assert seen["ctx_ceiling"] == 262144
         assert seen["unified"] is False
         assert seen["kv_cache_type"] is KvCacheType.Q4_0
+
+
+class TestChatOffloadTradedForWindow:
+    """A window too small to answer with buys KV room by leaving layers off the card."""
+
+    @staticmethod
+    def _staircase(usable_at_or_below: int, *, small: int = 512, large: int = 12288):
+        """A fit that only reaches *large* once the offload drops to *usable_at_or_below*."""
+        probed: list[int] = []
+
+        def _fit(_path, *, gpu_layers: int, **_kwargs) -> int:
+            probed.append(gpu_layers)
+            return large if 0 <= gpu_layers <= usable_at_or_below else small
+
+        return _fit, probed
+
+    @pytest.fixture(autouse=True)
+    def _flags(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        self.model = tmp_path / "chat.gguf"
+        self.model.write_bytes(b"x" * 1024)
+        self.meta = {"block_count": "28"}
+
+    def test_it_keeps_the_largest_offload_that_serves_a_grounded_prompt(self, monkeypatch) -> None:
+        # Full offload leaves KV room for 512 tokens, which cannot hold a prompt.
+        # Dropping four layers to system memory buys a usable window, so the launch
+        # runs there rather than being refused.
+        fit, probed = self._staircase(24)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
+        ) == ChatFit(gpu_layers=24, ctx=12288)
+        assert max(probed) <= 28  # never probes past the model's own layer count
+
+    def test_it_does_not_trade_when_the_weights_alone_overflow_the_budget(
+        self, monkeypatch
+    ) -> None:
+        # The bb-mud43 case: a model whose weights already exceed the budget only
+        # gets a usable window by running out of system memory, which is the load
+        # plan_launches refuses on purpose. Offload stays put and the refusal stands.
+        fit, probed = self._staircase(24)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=512, ctx_ceiling=16384
+        ) == ChatFit(gpu_layers=-1, ctx=512)
+        assert probed == [-1]
+
+    def test_it_does_not_trade_for_a_window_the_user_capped_below_the_minimum(
+        self, monkeypatch
+    ) -> None:
+        # A sub-minimum num_ctx_max / chat_n_ctx_target is an explicit choice, and
+        # _unusable_chat_ctx_reason honours it; nothing is bought by trading.
+        fit, probed = self._staircase(24)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=1024
+        ) == ChatFit(gpu_layers=-1, ctx=512)
+        assert probed == [-1]
+
+    def test_it_does_not_trade_without_a_layer_count(self, monkeypatch) -> None:
+        # No block_count means no grid to search, so the configured offload stands.
+        fit, probed = self._staircase(24)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, {}, available_bytes=2 * _GB, ctx_ceiling=16384
+        ) == ChatFit(gpu_layers=-1, ctx=512)
+        assert probed == [-1]
+
+    def test_it_stays_under_a_user_set_offload(self, monkeypatch) -> None:
+        # cfg.n_gpu_layers is the ceiling the user asked for; the trade only ever
+        # moves layers off the card, never onto it.
+        monkeypatch.setattr(cfg, "n_gpu_layers", 20)
+        fit, probed = self._staircase(10)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
+        ) == ChatFit(gpu_layers=10, ctx=12288)
+        assert max(probed) == 20
+
+    def test_it_keeps_the_configured_offload_when_no_reduction_serves(self, monkeypatch) -> None:
+        # A model that cannot reach the minimum at any offload is still refused,
+        # and is refused with the window full offload would have served.
+        fit, _probed = self._staircase(-1)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
+        ) == ChatFit(gpu_layers=-1, ctx=512)
 
 
 class TestPlacementChargesAgainstFreeMemory:
@@ -2461,11 +2596,11 @@ class TestSizingBudgetComesFromTheDevice:
         monkeypatch.setattr(cfg, "num_ctx", None)
         seen: list[int] = []
 
-        def _record_ctx(_path, _meta, *, available_bytes=None):
+        def _record_fit(_path, _meta, *, available_bytes=None):
             seen.append(available_bytes)
-            return 4096
+            return ChatFit(gpu_layers=-1, ctx=4096)
 
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", _record_ctx)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_fit", _record_fit)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(1,))
         planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: small, 1: large})
         assert seen == [int(48 * _GB * cfg.gpu_memory_fraction)]
