@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from tests._gguf_fixture import has_gguf_parser
 from tests._sys_modules import inject_modules
 
 if TYPE_CHECKING:
@@ -1254,25 +1255,8 @@ class TestChatCapacityComesFromTheAdoptedLaunch:
         assert FleetProvider().served_chat_slots() is None
 
 
-def _has_gguf_parser() -> bool:
-    """Whether a gguf-parser binary resolves here.
-
-    The unit lane does not install the engine helpers; the integration lane
-    does. Tests that hand real GGUF bytes to the parser are gated on this, and
-    the mapping from parsed KV to lilbee's fields is covered separately against
-    a stubbed parser so the unit lane still exercises it.
-    """
-    from lilbee.providers.fleet.binary import resolve_gguf_parser
-
-    try:
-        resolve_gguf_parser()
-    except Exception:
-        return False
-    return True
-
-
 _needs_gguf_parser = pytest.mark.skipif(
-    not _has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
+    not has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
 )
 
 
@@ -2737,11 +2721,70 @@ class TestReadGgufMetadata:
         def _no_parser() -> Path:
             raise RuntimeError("no engine installed")
 
+        monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_gguf_parser", _no_parser)
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+        assert read_gguf_metadata(tmp_path / "model.gguf") is None
+
+    def test_returns_none_when_the_parser_cannot_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A parser that will not spawn is the same case as not having one."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("cannot spawn")
+
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_gguf_parser", _no_parser
+            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.proc.run_bounded", _boom)
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+        assert read_gguf_metadata(tmp_path / "model.gguf") is None
+
+    def test_returns_none_when_the_parser_rejects_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-zero exit is the engine's own reader refusing the file.
+
+        Reported as no readable metadata rather than retried elsewhere: nothing
+        else here would honour an answer the engine would not.
+        """
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: ("", 1))
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+        assert read_gguf_metadata(tmp_path / "model.gguf") is None
+
+    def test_returns_none_when_the_parser_output_is_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Output that is not the expected JSON shape yields no metadata."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: ("not json", 0)
         )
         (tmp_path / "model.gguf").write_bytes(b"GGUF")
         assert read_gguf_metadata(tmp_path / "model.gguf") is None
+
+    def test_reads_a_path_that_cannot_be_stat_ed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path with no stat is read uncached rather than raising.
+
+        The cache key is (path, mtime, size); a file that vanished between the
+        listing and the read has none, and the read must still answer.
+        """
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        _stub_gguf_parser(monkeypatch, {"general.architecture": ("llama", _GGUF_STRING)})
+        assert read_gguf_metadata(tmp_path / "gone.gguf") == {"architecture": "llama"}
 
     def test_caches_by_path_and_mtime(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2763,9 +2806,7 @@ class TestReadGgufMetadata:
         path = tmp_path / "model.gguf"
         path.write_bytes(b"GGUF")
         gguf_meta._METADATA_CACHE.clear()
-        with mock.patch.object(
-            gguf_meta, "_kv_via_parser", wraps=gguf_meta._kv_via_parser
-        ) as spy:
+        with mock.patch.object(gguf_meta, "_kv_via_parser", wraps=gguf_meta._kv_via_parser) as spy:
             first = gguf_meta.read_gguf_metadata(path)
             second = gguf_meta.read_gguf_metadata(path)
         assert first == second == {"architecture": "llama", "context_length": "4096"}

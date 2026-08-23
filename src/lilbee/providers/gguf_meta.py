@@ -149,15 +149,12 @@ def _disk_cache_store(key: tuple[str, int, int], result: dict[str, str] | None) 
 
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read header metadata from a GGUF file with the ``gguf`` parser.
+    """Read header metadata from a GGUF file with the engine's own parser.
 
-    Cached by ``(path, mtime, size)`` in memory and on disk. ``GGUFReader`` parses
-    the whole header -- every tensor descriptor and the large tokenizer arrays --
-    to hand back a dozen scalar fields, which measured at ~60s for a 2.6GB model
-    on a spinning-rust-era CPU. Planning reads the same model several times per
-    fleet build, so the in-memory cache collapses those to one parse; the on-disk
-    cache carries it across processes, which is what stops a relaunch paying that
-    minute again while an already-warm engine sits idle waiting to be adopted.
+    Cached by ``(path, mtime, size)`` in memory and on disk. The read itself is
+    cheap now that it goes through gguf-parser, which reports an array as a type
+    and a length rather than its contents; what the cache saves is the process
+    spawn, and planning reads the same model several times per fleet build.
     Keying on mtime and size means an edited or replaced file re-reads. Returns a
     copy so callers can't mutate the shared entry.
     """
