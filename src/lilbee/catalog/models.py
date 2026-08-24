@@ -1,5 +1,6 @@
 """Catalog dataclasses and pydantic types. Imports only the catalog's leaf modules."""
 
+import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -23,15 +24,15 @@ _BYTES_PER_GB = 1024**3
 # nominal type. These are measured file sizes; Qwen3-8B-GGUF publishes 0.614
 # (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K) and 1.063 (Q8_0).
 #
-# GGML_QUANT_SIZES is still used, as the physical floor: no file can be smaller
-# than its base type, so _quant_bytes_per_param clamps to it and a typo below the
-# floor cannot survive.
+# No entry may sit below its base type's bytes per weight, which is physically
+# impossible; ``test_measured_quants_are_above_their_ggml_floor`` checks each one
+# against ``gguf.constants.GGML_QUANT_SIZES`` so a typo cannot survive review.
 _BYTES_PER_PARAM: dict[str, float] = {
     "Q2_K": 0.33,
     "Q3_K_S": 0.45,
     "Q3_K_M": 0.488,
     "Q3_K_L": 0.53,
-    "IQ4_XS": 0.53,
+    "IQ4_XS": 0.532,
     "Q4_0": 0.569,
     "Q4_K_S": 0.575,
     "Q4_K_M": 0.614,
@@ -45,31 +46,35 @@ _BYTES_PER_PARAM: dict[str, float] = {
     "F32": 4.0,
 }
 
-# Q4_K_M heads the pull path's quant preference, so an unrecognized label
-# estimates as if it were the quant a pull would most likely land on.
+# Q4_K_M heads the pull path's quant preference, so a label naming no bit width
+# at all estimates as if it were the quant a pull would most likely land on.
 _DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
 
+# A quant the table does not name still says how many bits it packs. One fp16
+# scale per group costs an eighth on top, whatever the width, because a group is
+# sized to the width: 1-bit in groups of 128, 2-bit in 64, 4-bit in 32 all carry
+# two bytes per group. Reading the width beats falling back to Q4_K_M, which
+# reports a 2-bit file at more than twice its size.
+_SCALE_OVERHEAD = 1.125
+_BITS_PER_BYTE = 8
 
-def _ggml_floor(quant: str) -> float | None:
-    """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
-    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 
-    base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
-    for name in (quant, base, "_".join(quant.split("_")[:2])):
-        try:
-            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
-        except KeyError:
-            continue
-        return type_size / block
-    return None
+def _packed_bits(quant: str) -> int | None:
+    """The bit width *quant* packs each weight into, or None if it names none."""
+    match = re.match(r"I?Q(\d)", quant)
+    return int(match.group(1)) if match else None
 
 
 def _quant_bytes_per_param(gguf_filename: str) -> float:
-    """Bytes per weight for the quant *gguf_filename* names, never below its floor."""
+    """Bytes per weight for the quant *gguf_filename* names."""
     quant = quant_label(gguf_filename)
-    measured = _BYTES_PER_PARAM.get(quant, _DEFAULT_BYTES_PER_PARAM)
-    floor = _ggml_floor(quant)
-    return max(measured, floor) if floor is not None else measured
+    measured = _BYTES_PER_PARAM.get(quant)
+    if measured is not None:
+        return measured
+    bits = _packed_bits(quant)
+    if bits is None:
+        return _DEFAULT_BYTES_PER_PARAM
+    return bits / _BITS_PER_BYTE * _SCALE_OVERHEAD
 
 
 def estimate_min_ram_gb(size_gb: float) -> float:

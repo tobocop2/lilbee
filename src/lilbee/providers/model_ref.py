@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES
+from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
 from lilbee.providers.base import filter_options, normalize_generation_options
 from lilbee.providers.local_servers import (
     LOCAL_SERVER_KEYS,
@@ -44,7 +44,7 @@ def is_native_gguf_ref(raw: str) -> bool:
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
     """
-    return raw.endswith(".gguf") and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    return raw.endswith(GGUF_SUFFIX) and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
 
 
 def routes_to_native_gguf(raw: str) -> bool:
