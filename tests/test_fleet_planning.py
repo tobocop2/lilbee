@@ -2322,6 +2322,24 @@ class TestChatOffloadTradedForWindow:
         ) == ChatFit(gpu_layers=-1, ctx=512)
         assert probed == [-1]
 
+    def test_it_does_not_trade_for_a_speculator_head(self, monkeypatch) -> None:
+        # A speculator scores every position it proposes, so its compute buffer
+        # grows with the window while the estimate prices it by the physical
+        # batch. The trade maximises that window, so the estimate it searches
+        # gets further from the truth the more it trades. Measured: the trade
+        # granted gemma-4-26B-A4B-eagle3 59648 tokens on a 1 GiB card against a
+        # real 1413 MiB.
+        fit, probed = self._staircase(24)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+
+        assert planning_mod.fit_chat_ctx(
+            self.model,
+            {**self.meta, "architecture": "eagle3"},
+            available_bytes=2 * _GB,
+            ctx_ceiling=16384,
+        ) == ChatFit(gpu_layers=-1, ctx=512)
+        assert probed == [-1]
+
     def test_it_does_not_trade_without_a_layer_count(self, monkeypatch) -> None:
         # No block_count means no grid to search, so the configured offload stands.
         fit, probed = self._staircase(24)
