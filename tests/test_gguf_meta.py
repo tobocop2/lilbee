@@ -8,9 +8,20 @@ from pathlib import Path
 import pytest
 
 from lilbee.providers.gguf_meta import read_gguf_metadata
-from tests._gguf_fixture import make_minimal_gguf
+from tests._gguf_fixture import has_gguf_parser, make_minimal_gguf
+
+# These hand real GGUF bytes to the engine's parser. The unit lane installs no
+# engine helpers, where every one of them would pass for the wrong reason: with
+# no parser the read yields no metadata, which is the answer a corrupt header is
+# meant to produce. The mapping and the failure branches are covered against a
+# stubbed parser in test_providers.py.
+_needs_gguf_parser = pytest.mark.skipif(
+    not has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
+)
 
 
+@pytest.mark.real_engine_resolution
+@_needs_gguf_parser
 def test_returns_metadata_for_valid_gguf(tmp_path: Path) -> None:
     f = tmp_path / "ok.gguf"
     f.write_bytes(make_minimal_gguf("llama"))
@@ -41,10 +52,10 @@ def _gguf_with_duplicate_key() -> bytes:
         ("bad_magic", b"XXXX" + b"\x00" * 40),
         # magic only, no count/field table -> IndexError from the gguf reader.
         ("magic_only", b"GGUF"),
-        # duplicate metadata key -> KeyError from GGUFReader._push_field.
-        ("duplicate_key", _gguf_with_duplicate_key()),
     ],
 )
+@pytest.mark.real_engine_resolution
+@_needs_gguf_parser
 def test_returns_none_for_corrupt_header(tmp_path: Path, label: str, data: bytes) -> None:
     """A corrupt-but-parseable GGUF must yield None across the parser's failure
     modes (ValueError, IndexError, and the duplicate-key KeyError are all
@@ -182,3 +193,17 @@ class TestMetadataDiskCache:
         gguf_meta._METADATA_CACHE.clear()
         assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
         assert len(calls) == 2  # nothing persisted, so the second read re-parses
+
+
+@pytest.mark.real_engine_resolution
+@_needs_gguf_parser
+def test_duplicate_metadata_key_is_read_rather_than_refused(tmp_path: Path) -> None:
+    """A repeated key parses, because the engine's own reader accepts one.
+
+    gguf-py raised KeyError on the second copy and the whole file read as
+    unusable. gguf-parser takes a value and carries on, so a file llama-server
+    would load no longer reads as having no metadata at all.
+    """
+    f = tmp_path / "dup.gguf"
+    f.write_bytes(_gguf_with_duplicate_key())
+    assert read_gguf_metadata(f) == {"name": "x"}
