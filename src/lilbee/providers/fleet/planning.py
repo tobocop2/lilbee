@@ -446,7 +446,11 @@ def fit_chat_ctx(
     fit = engine_params.ChatFit(configured, fit_at(configured))
     needed = engine_params.min_usable_chat_ctx()
     if fit.ctx >= needed or not _chat_offload_is_tradable(
-        model_path, available_bytes=available_bytes, ctx_ceiling=ctx_ceiling, needed=needed
+        model_path,
+        meta=meta,
+        available_bytes=available_bytes,
+        ctx_ceiling=ctx_ceiling,
+        needed=needed,
     ):
         return fit
     traded = _traded_chat_fit(
@@ -455,8 +459,22 @@ def fit_chat_ctx(
     return traded or fit
 
 
+# Architectures whose head scores every position it proposes. Their compute
+# buffer grows with the window, and the estimator prices it by the physical
+# batch instead, so the estimate falls further behind the longer the window
+# gets. The trade maximises exactly that window, which turns a fixed
+# under-estimate into an unbounded one: measured on a 1 GiB card, the trade
+# granted gemma-4-26B-A4B-eagle3 59648 tokens against a real 1413 MiB.
+_NON_TRADABLE_ARCHITECTURES = frozenset({"eagle3"})
+
+
 def _chat_offload_is_tradable(
-    model_path: Path, *, available_bytes: int, ctx_ceiling: int, needed: int
+    model_path: Path,
+    *,
+    meta: dict[str, str] | None,
+    available_bytes: int,
+    ctx_ceiling: int,
+    needed: int,
 ) -> bool:
     """Whether a too-small chat window may buy KV room by moving layers off the card.
 
@@ -465,7 +483,12 @@ def _chat_offload_is_tradable(
     from host RAM is the unusable load :func:`_unusable_chat_ctx_reason` refuses
     on purpose. A window the user capped below *needed* is their choice, and the
     refusal already honours it, so nothing is bought by trading for it either.
+
+    Never for a speculator head. The estimate the search reads is not sound over
+    the window for those, so the search optimises a number that grows wrong.
     """
+    if (meta or {}).get("architecture") in _NON_TRADABLE_ARCHITECTURES:
+        return False
     return ctx_ceiling >= needed and _weights_bytes(model_path) <= available_bytes
 
 
