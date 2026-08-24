@@ -2754,3 +2754,89 @@ class TestRepoHasMmproj:
         monkeypatch.setattr("huggingface_hub.HfApi", _Api)
         hf_client.repo_has_mmproj.cache_clear()
         assert hf_client.repo_has_mmproj("org/unreachable") is False
+
+
+class TestUnrecognizedQuantEstimate:
+    """A quant the table does not name still says how many bits it packs.
+
+    Real bytes-per-parameter, measured from the published files:
+    Ternary-Bonsai-27B-Q2_g64 0.28202, Ternary-Bonsai-1.7B-Q2_0_g64 0.28497,
+    Bonsai-27B-Q1_0 0.14141.
+    """
+
+    @pytest.mark.parametrize(
+        ("filename", "real_bytes_per_param"),
+        [
+            ("Ternary-Bonsai-27B-Q2_0.gguf", 0.28202),
+            ("Ternary-Bonsai-27B-Q2_g64.gguf", 0.28202),
+            ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 0.28497),
+            ("Ternary-Bonsai-27B-PQ2_0.gguf", 0.28202),
+            ("Bonsai-27B-Q1_0.gguf", 0.14141),
+        ],
+    )
+    def test_lands_within_five_percent_of_the_real_file(
+        self, filename: str, real_bytes_per_param: float
+    ) -> None:
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        got = _quant_bytes_per_param(filename)
+        error = abs(got - real_bytes_per_param) / real_bytes_per_param
+        assert error < 0.05, f"{filename}: {got} vs {real_bytes_per_param} is {error:.1%} out"
+
+    def test_a_two_bit_quant_is_not_estimated_as_four(self) -> None:
+        """The old fallback reported a 2-bit file at more than twice its size."""
+        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("m-Q2_g64.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
+
+    def test_a_label_naming_no_width_still_falls_back(self) -> None:
+        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("model.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
+
+    def test_a_named_quant_keeps_its_measured_figure(self) -> None:
+        """The width rule must not displace the table for quants it already holds."""
+        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
+        assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
+
+
+class TestMeasuredQuantFloors:
+    """The measured bytes-per-weight table against the ggml block sizes."""
+
+    @staticmethod
+    def _ggml_floor(quant: str) -> float | None:
+        """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
+        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+        base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
+        for name in (quant, base, "_".join(quant.split("_")[:2])):
+            try:
+                block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
+            except KeyError:
+                continue
+            return type_size / block
+        return None
+
+    def test_measured_quants_are_above_their_ggml_floor(self) -> None:
+        """No measured figure may sit below its base type, which is impossible.
+
+        llama.cpp promotes some tensors and leaves norms in F32, so a real file
+        always costs more per weight than its nominal type: a table entry under
+        the floor is a typo, not a small model. Checked here rather than clamped
+        at runtime so the table is fixed instead of silently corrected.
+        """
+        from lilbee.catalog.models import _BYTES_PER_PARAM
+
+        below = {
+            quant: (measured, floor)
+            for quant, measured in _BYTES_PER_PARAM.items()
+            if (floor := self._ggml_floor(quant)) is not None and measured < floor
+        }
+        assert not below, f"measured figures below their ggml floor: {below}"
+
+    def test_floor_helper_finds_a_known_type(self) -> None:
+        """The lookup resolves a real quant, so the check above cannot pass vacuously."""
+        assert self._ggml_floor("Q4_K_M") == pytest.approx(0.5625)
+        assert self._ggml_floor("NOT_A_QUANT") is None

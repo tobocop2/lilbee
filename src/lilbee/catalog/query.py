@@ -8,7 +8,12 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 from lilbee.app.services import get_services
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.picks import get_picks
-from lilbee.catalog.refs import GGUF_GLOB, hf_repo_from_ref
+from lilbee.catalog.refs import (
+    GGUF_GLOB,
+    GGUF_SUFFIX,
+    NATIVE_GGUF_REF_MIN_SLASHES,
+    hf_repo_from_ref,
+)
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
 log = logging.getLogger(__name__)
@@ -45,11 +50,6 @@ def size_bucket(params: int) -> CatalogSize | None:
         if billions < ceiling:
             return bucket
     return CatalogSize.HUGE
-
-
-# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
-# two ``/`` separators; one-slash refs are bare repo IDs.
-_NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 def get_catalog(
@@ -235,7 +235,7 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     # circular: modelhub.registry imports catalog.query at top
     from lilbee.modelhub.registry import parse_hf_ref
 
-    if model.endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+    if model.endswith(GGUF_SUFFIX) and model.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:

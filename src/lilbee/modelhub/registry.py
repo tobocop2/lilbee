@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
+    GGUF_SUFFIX,
     NATIVE_GGUF_REF_MIN_SLASHES,
     format_native_gguf_ref,
     is_bare_hf_repo,
@@ -76,7 +77,7 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     after is the filename, which may include repo subdirectories (unsloth stores
     quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
     """
-    if not ref.endswith(".gguf") or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
+    if not ref.endswith(GGUF_SUFFIX) or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
     parts = ref.split("/")
     hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
@@ -312,7 +313,7 @@ class ModelRegistry:
             if repo.repo_id == hf_repo
             for rev in repo.revisions
             for f in rev.files
-            if f.file_name.endswith(".gguf")
+            if f.file_name.endswith(GGUF_SUFFIX)
         }
 
     def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
