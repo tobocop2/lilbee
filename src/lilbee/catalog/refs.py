@@ -47,7 +47,7 @@ FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 # filename. Matching it as a bare substring makes ``Q8_0`` match inside
 # ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
 _QUANT_TOKEN_RE = re.compile(
-    r"(?:^|[-_./])(I?Q\d[A-Za-z0-9_]*|BF16|F16|F32)(?=$|[-_./])", re.IGNORECASE
+    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|BF16|F16|F32)(?=$|[-_./])", re.IGNORECASE
 )
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
