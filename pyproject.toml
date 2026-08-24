@@ -40,7 +40,14 @@ dependencies = [
     # shard-adoption path, which that hardware cannot reach.
     "lancedb[pylance] ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "lancedb ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "xberg>=1.0.4",
+    # TEMPORARY pin, only to validate the lilbee-built xberg wheel: lilbee ships
+    # its own wheel from https://lilbee.sh/xberg/ (built by the tobocop2/kreuzberg
+    # fork) until upstream releases the EPUB fixes: OPF depth accounting
+    # (xberg-io/xberg#1477), text/html spine items (#1486), the bundled libstdc++
+    # (#1495) and the zip-bomb floor (#1496). To remove: restore "xberg>=1.0.14",
+    # delete the lilbee-xberg [[tool.uv.index]] and its [tool.uv.sources] entry,
+    # drop the "Build the xberg index" step from pages.yml, and re-lock.
+    "xberg==1.1.0.dev1+lilbee1",
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
     "filelock<3.33",
@@ -125,8 +132,17 @@ packages = ["src/lilbee"]
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
 # building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
 # the index instead -- this source override is workspace metadata, not published deps.
+# TEMPORARY, part of the xberg pin above and removed with it. The lilbee-built
+# xberg wheel lives on the lilbee.sh index, never on PyPI. `explicit` keeps
+# every other package on PyPI.
+[[tool.uv.index]]
+name = "lilbee-xberg"
+url = "https://lilbee.sh/xberg/"
+explicit = true
+
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
+xberg = { index = "lilbee-xberg" }
 
 # `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
 # above no matter the specifier (uv drops version bounds on sourced packages),

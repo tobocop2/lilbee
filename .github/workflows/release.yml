@@ -320,6 +320,7 @@ jobs:
             --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.34.0+compat
           uv pip install --python-platform x86_64-apple-darwin \
+            --extra-index-url https://lilbee.sh/xberg/ \
             '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       - name: Verify extras installed in build venv
