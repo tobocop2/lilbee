@@ -142,6 +142,21 @@ jobs:
           rm -f wheel-indexes/.empty
           python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
 
+      - name: Build the xberg index
+        # TEMPORARY, tied to the interim xberg pin: serves lilbee.sh/xberg/,
+        # the +lilbee xberg wheels built by the tobocop2/kreuzberg fork
+        # (lilbee-wheels.yml) and hosted as release assets there, only until
+        # upstream ships the EPUB fixes (xberg-io/xberg#1486, #1495, #1496)
+        # and pyproject pins a PyPI xberg again. Remove this step together
+        # with that pin. The project page is mirrored into every backend
+        # index, so `--extra-index-url https://lilbee.sh/<backend>/` resolves
+        # both the engine and xberg.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/kreuzberg \
+            --project xberg --tag-pattern lilbee --subdir xberg --mirror-into-backends
+
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7
         with:
