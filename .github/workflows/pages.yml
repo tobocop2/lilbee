@@ -97,9 +97,12 @@ jobs:
             # builds run as reusable calls inside it, so that run holds the
             # full wheel-* set whether or not a downstream leg (e.g. QA)
             # succeeded.
+            # --status=success, not completed: completed includes cancelled
+            # runs, and a cancelled RC carries a partial wheel set that would
+            # replace every backend index with a near-empty one. ~keep
             run_id=$(gh run list \
               --workflow=release-candidate.yml \
-              --status=completed \
+              --status=success \
               --limit=1 \
               --json databaseId \
               -q '.[0].databaseId // ""')
