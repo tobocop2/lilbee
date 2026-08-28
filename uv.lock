@@ -1822,7 +1822,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.90b428"
+version = "0.6.90b429"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools" },
