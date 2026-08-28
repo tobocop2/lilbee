@@ -9,6 +9,11 @@ Every video is preceded by a ``<!-- demo: <name> | <caption> -->`` comment, so
 the same reel's GIF on gh-pages is always recoverable, caption included. The
 PyPI long description is built through here (see hatch_build.py); GitHub gets
 the videos, PyPI keeps the GIFs, and the README stays the single source.
+
+hatch-fancy-pypi-readme does the same substitution from pyproject.toml and was
+the obvious buy. It is one `re.sub` either way, and putting the pattern in TOML
+would either drop the missing-comment check below or make the test parse the
+pattern back out of pyproject. A build dependency is not worth that.
 """
 
 from __future__ import annotations

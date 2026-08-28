@@ -1,14 +1,14 @@
 .PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -16,6 +16,9 @@ typecheck:
 	# changes: multi_gpu_smoke crashed on its first check from #540 until this
 	# was added. The rest of tools/qa/ is not clean yet and is not listed.
 	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
+	# hatch_build.py builds the PyPI long description, so a break here breaks
+	# the release rather than a test.
+	uv run mypy tools/readme_media.py hatch_build.py
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
