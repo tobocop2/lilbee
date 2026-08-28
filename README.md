@@ -621,7 +621,7 @@ https://github.com/user-attachments/assets/a578dfd1-61a5-4008-b9bf-e94539003b6e
 
 https://github.com/user-attachments/assets/702975d8-5c1f-4fa7-92a6-bf594ef9d2e3
 
-Every video on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
+Every reel on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## HTTP Server
 
