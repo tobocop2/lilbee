@@ -366,13 +366,13 @@ of seconds.
 
 **Very first launch:** a one-time unpack bar, chat opens, and the first answer shows the engine loading in its bubble before it streams.
 
-<!-- demos/first-start.mp4 -->
+<!-- demo: first-start | First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams -->
 
 https://github.com/user-attachments/assets/e5ea75e2-1e91-47c2-9463-4b85d87408ea
 
 **Every launch after:** chat opens in about two seconds and the answer follows.
 
-<!-- demos/later-start.mp4 -->
+<!-- demo: later-start | Every later launch: chat opens in about two seconds and the answer follows -->
 
 https://github.com/user-attachments/assets/f07043ca-d9e6-40b0-a5ad-225013dfa3a0
 
@@ -394,13 +394,13 @@ lifecycle and how to keep the engine warm so relaunches skip the load.
 
 Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searchable library, with citations that click back to the source line. The pattern works for anything you have a lot of text about: a shelf of appliance manuals, a field's research papers, a car's service manuals, your company's internal wiki. Whatever you give it becomes searchable, and you can talk to it.
 
-<!-- demos/tui-add.mp4 -->
+<!-- demo: tui-add | /add a PDF, watch the Task Center, ask a cited question -->
 
 https://github.com/user-attachments/assets/73903a5c-9c0a-42a8-9ffd-bdf34f719c29
 
 Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here it reads the towing section out of a car manual and answers with the page it came from, so you can check it. The panel on the right is the GPU doing it, on this machine.
 
-<!-- demos/tui-chat.mp4 -->
+<!-- demo: tui-chat | ask what the manual says about towing a trailer; lilbee answers from the indexed PDF and cites the page -->
 
 https://github.com/user-attachments/assets/284c316c-85f8-46d1-9531-59476f0db9f7
 
@@ -408,13 +408,13 @@ https://github.com/user-attachments/assets/284c316c-85f8-46d1-9531-59476f0db9f7
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
 
-<!-- demos/tui-crawl.mp4 -->
+<!-- demo: tui-crawl | /crawl a Wikipedia page, then ask a cited question against it -->
 
 https://github.com/user-attachments/assets/8380c49b-cc65-43ae-83d4-ba9e3aa84af4
 
 Or crawl a whole site, not just one page. With recursive crawling on, lilbee follows the links and indexes the lot; watch the page count climb in the Task Center, then ask one question that synthesizes across the whole site.
 
-<!-- demos/tui-crawl-site.mp4 -->
+<!-- demo: tui-crawl-site | crawl a whole site at depth 1, then ask a multipart question that spans it: a cited answer drawn from across the pages, with Qwen3-8B and a reranker -->
 
 https://github.com/user-attachments/assets/0c7fbed2-9b40-4976-9856-1720c4f9ffb0
 
@@ -489,7 +489,7 @@ lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model
 
 One representative per family also runs the full pipeline end to end on real GPUs -- the models, method, and results are in [docs/tested-models.md](docs/tested-models.md).
 
-<!-- demos/tui-catalog.mp4 -->
+<!-- demo: tui-catalog | browse the model catalog, search Hugging Face Hub, pull a model live -->
 
 https://github.com/user-attachments/assets/993a63d4-9468-4a55-b9ed-e4b1ae1ed235
 
@@ -505,11 +505,11 @@ https://github.com/user-attachments/assets/993a63d4-9468-4a55-b9ed-e4b1ae1ed235
 
 Both reels run chat *and* embedding on the other manager's models, picked out of the catalog's Library tab where each row names the server it runs on.
 
-<!-- demos/tui-ollama-document.mp4 -->
+<!-- demo: tui-ollama-document | models served by Ollama, picked from the catalog, answering from an indexed manual -->
 
 https://github.com/user-attachments/assets/52635a74-b69f-42df-b427-3c8f8499323f
 
-<!-- demos/tui-lmstudio-document.mp4 -->
+<!-- demo: tui-lmstudio-document | models served by LM Studio, picked from the catalog, answering from an indexed manual -->
 
 https://github.com/user-attachments/assets/13ec8b12-f931-46ac-a500-8a7940d1a2bd
 
@@ -517,7 +517,7 @@ https://github.com/user-attachments/assets/13ec8b12-f931-46ac-a500-8a7940d1a2bd
 
 Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a subset of architectures and brand-new ones take time to reach the pinned runtime. lilbee tags incompatible models in the catalog and refuses the download (with an override confirm), so you don't wait through a multi-GB pull only to hit "unsupported architecture" at load.
 
-<!-- demos/tui-unsupported.mp4 -->
+<!-- demo: tui-unsupported | search HF Hub for deepseek-v4, see the unsupported pill in grid and list view -->
 
 https://github.com/user-attachments/assets/b42effc3-a7f6-4391-904c-3ac897712172
 
@@ -540,25 +540,25 @@ lilbee serves your coding agents two ways, both local: it runs the models they t
 
 One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
 
-<!-- demos/agents-coder-next.mp4 -->
+<!-- demo: agents-coder-next | four agents at once on Qwen3 Coder Next, reading and searching this repository through lilbee -->
 
 https://github.com/user-attachments/assets/5f3fd1a4-f946-4008-bfd8-600142785327
 
 Qwen3 Coder Next, 45GB across three RTX 4090s: four agents on one model, 138 tokens a second warm.
 
-<!-- demos/agents-gemma4.mp4 -->
+<!-- demo: agents-gemma4 | four agents on Gemma 4 26B, its reasoning streamed as visible text -->
 
 https://github.com/user-attachments/assets/510a1691-4289-4d98-b749-7522c1f28559
 
 Gemma 4 26B is a thinking model, and lilbee streams its reasoning as visible text: every pane shows the model working through the problem before it answers.
 
-<!-- demos/agents-qwen36.mp4 -->
+<!-- demo: agents-qwen36 | four agents on Qwen3.6 27B, thinking out loud on the same tasks -->
 
 https://github.com/user-attachments/assets/06dbf829-1e1e-4a1f-9ca2-32aa65086f13
 
 Qwen3.6 27B on the same four tasks: each agent states what it expects, then reads the code to check itself.
 
-<!-- demos/agents-devstral-123b-solo.mp4 -->
+<!-- demo: agents-devstral-123b-solo | one agent on Devstral 2 123B, walking through lilbee's GPU placement code -->
 
 https://github.com/user-attachments/assets/46ce5440-ee9d-4420-a881-031a1ccccec8
 
@@ -566,7 +566,7 @@ And the same setup scales up: Devstral 2 123B, 70GB across two A100 80GB cards, 
 
 It tunes itself, too. Tell a small local model to widen lilbee's search when a first result comes back thin, and the second pass returns full function bodies with file:line citations; a more capable model does the same from a prompt like "improve your search results." The [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) teaches your own model the pattern.
 
-<!-- demos/mcp-code-self-tune.mp4 -->
+<!-- demo: mcp-code-self-tune | agent fine-tunes lilbee mid-conversation: outline, then widened retrieval, then source with file:line citations -->
 
 https://github.com/user-attachments/assets/7bfec600-4c06-4a2f-8f77-be7e92f4f33f
 
@@ -580,7 +580,7 @@ Your files, the search index, and the embeddings stay on your computer. The agen
 
 When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router. This is automatic: ask a question and the model loads split across your cards, answering from your own indexed source. Here a 70B is spread across three consumer cards and answers a mechanic's question from an indexed car manual, citing the page it came from.
 
-<!-- demos/tui-auto-placement.mp4 -->
+<!-- demo: tui-auto-placement | a 70B spread across three cards without being asked, answering from an indexed manual with a citation -->
 
 https://github.com/user-attachments/assets/2a2232e6-d8ce-4302-92e4-6467f4fb1bee
 
@@ -590,35 +590,35 @@ You can also place it by hand. The placement editor pins each role to the cards 
 
 `lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, and the generated wiki. Type `/` for the command list; tab completion works everywhere.
 
-<!-- demos/tui-tour.mp4 -->
+<!-- demo: tui-tour | sweep through every TUI screen -->
 
 https://github.com/user-attachments/assets/ab4c5847-2261-421d-91a0-e3838498901c
 
 `Ctrl+P` opens the Textual command palette, `?` on an empty prompt (or `F1` anywhere) toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
 
-<!-- demos/tui-palette.mp4 -->
+<!-- demo: tui-palette | command palette, keybinding cheat sheet, slash-command catalog -->
 
 https://github.com/user-attachments/assets/7c4f1096-44a4-40b5-b511-0f6496c520c5
 
 Conversations are kept. Reopen an earlier one and it comes back with its history and citations intact.
 
-<!-- demos/sessions.mp4 -->
+<!-- demo: sessions | resume an earlier conversation from the sessions drawer -->
 
 https://github.com/user-attachments/assets/3ee7fb50-b983-4761-807c-2f024bbc3756
 
 Tell it something about yourself and it remembers, across conversations rather than only within one.
 
-<!-- demos/tui-memory.mp4 -->
+<!-- demo: tui-memory | remember a fact and a preference, then answer from them in a brand new chat -->
 
 https://github.com/user-attachments/assets/08a69c31-d74f-4e0a-97b6-340dc195848c
 
 Every setting is editable in the app, and the first run opens the model catalog to get you started.
 
-<!-- demos/tui-settings.mp4 -->
+<!-- demo: tui-settings | walk every settings pane without leaving the terminal -->
 
 https://github.com/user-attachments/assets/a578dfd1-61a5-4008-b9bf-e94539003b6e
 
-<!-- demos/tui-setup.mp4 -->
+<!-- demo: tui-setup | first run: pick a model from the catalog, and go -->
 
 https://github.com/user-attachments/assets/702975d8-5c1f-4fa7-92a6-bf594ef9d2e3
 
@@ -679,7 +679,7 @@ lilbee reads the documents you've indexed and writes a wiki about them: one page
 
 Pages are written on demand: open one that does not exist yet and lilbee writes it from the sources it has, then links it into the rest.
 
-<!-- demos/wiki-lazy.mp4 -->
+<!-- demo: wiki-lazy | browse a cited wiki, then watch lilbee write a new page on demand -->
 
 https://github.com/user-attachments/assets/3ba1478e-86b0-4a90-aba1-99384b4f92fb
 
