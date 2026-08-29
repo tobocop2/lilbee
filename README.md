@@ -380,7 +380,7 @@ Measured with a small chat model (Qwen3 0.6B):
 | | Very first launch | Every launch after |
 |---|---|---|
 | Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
-| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
+| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** inside the idle window |
 | Answers after that | model speed | model speed |
 
 Bigger models load longer; the bubble shows real progress while the weights load.

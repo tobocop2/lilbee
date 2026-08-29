@@ -3902,13 +3902,6 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     assert stopped == [machine]
 
 
-def test_warm_on_pins_weights_resident(monkeypatch) -> None:
-    # keep_engine_warm means the model stays loaded, so the idle unload is off.
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
-    assert prov_mod._warm_ttl_seconds() == 0
-
-
 def test_ttl_applies_with_warm_off(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
