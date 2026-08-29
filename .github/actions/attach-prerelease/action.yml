@@ -54,3 +54,62 @@ runs:
           schema/openapi.json
         generate_release_notes: ${{ inputs.generate-notes == 'true' }}
         prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
+
+    # A llama.cpp pin bump reaches the notes as one line ("Bump the bundled
+    # llama.cpp engine to <ref>"), which hides the model support it adds. Append
+    # the architectures this tag gained over the previous one, read from the two
+    # tags' generated arch table. Runs after the step above regenerated the
+    # body, so a rerun of this job reproduces the same notes rather than
+    # stacking a second copy.
+    #
+    # Never fatal. The notes are cosmetic and this job is what puts the
+    # executables on the release, so a hiccup reading two blobs must not strand
+    # a release. Composite-action steps do not support continue-on-error, so the
+    # script contains its own failure.
+    - name: Append the new model architectures to the notes
+      if: inputs.generate-notes == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        append_arch_table() {
+          set -euo pipefail
+          local archs="src/lilbee/_generated/engine_archs.py"
+          local prev
+          prev=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 30 \
+            --json tagName -q "first(.[].tagName | select(startswith(\"v\") and . != \"${TAG}\"))")
+          if [ -z "${prev}" ]; then
+            echo "no previous release to diff architectures against"
+            return 0
+          fi
+          # Read both sides over the API: this job checks out at depth 1, so the
+          # previous tag's blob is not in the local history.
+          local side name ref
+          for side in "prev:${prev}" "new:${TAG}"; do
+            name="${side%%:*}"; ref="${side#*:}"
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${archs}?ref=${ref}" \
+              -q .content | base64 -d > "${name}-archs.py"
+          done
+          local body updated
+          body=$(mktemp)
+          updated=$(mktemp)
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$body" || return 0
+          # Guard the one destructive call. `set -e` does not abort a function
+          # invoked as the left side of `||`, so a failed read above would
+          # otherwise reach `gh release edit` with an empty file and replace the
+          # notes with nothing but this table.
+          [ -s "$body" ] || return 0
+          python3 tools/release_arch_table.py \
+            --old-file prev-archs.py --new-file new-archs.py --body-file "$body" > "$updated"
+          # Only write when the notes would actually change. The section is
+          # replaced rather than appended, so a rerun of this job is a no-op
+          # instead of a second copy of the table.
+          if cmp -s "$body" "$updated"; then
+            echo "the architecture section is already current; nothing to write"
+            return 0
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$updated"
+          echo "updated the architecture section in the notes"
+        }
+        append_arch_table || echo "could not append the architecture table; the release is unaffected"

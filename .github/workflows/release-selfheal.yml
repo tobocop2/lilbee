@@ -1,0 +1,111 @@
+name: Release self-heal
+
+run-name: Self-heal ${{ github.event.workflow_run.head_branch || inputs.run_id }}
+
+# A release candidate builds for hours across ~30 cells, and a cell that dies
+# from an infra flake (runner lost communication, no space left on device)
+# strands the release short of promotion until a human notices. This reruns the
+# cells that failed, so the candidate corrects itself.
+#
+# `gh run rerun --failed` is the whole mechanism. It reruns the failed jobs plus
+# the jobs skipped behind them and leaves the successful cells alone, which is
+# what both failure modes need:
+#
+#   - A soft cell (every cell in build-gpu-executables.yml is
+#     continue-on-error) carries conclusion=failure while the run stays green.
+#     Nothing is skipped, so only that cell reruns; its own release_tag step
+#     attaches the missing asset, and verify-release re-fires when the run
+#     completes again.
+#   - A hard cell takes the run red, which skips attach-prerelease and all five
+#     dispatch jobs. Rerunning the cell alone would leave them skipped forever,
+#     because a per-job rerun does not re-queue dependents. `--failed` picks the
+#     stranded cascade up with the cell.
+#
+# Every dispatch job on a tag build shares one `if` (push + refs/tags/v), so a
+# skipped job there always means "stranded", never "skipped by design". That is
+# what makes --failed safe to point at this workflow.
+#
+# The retry is blind: it does not read logs to guess whether a failure was a
+# flake or a defect. Signature matching against GitHub's error text is a list
+# that goes stale, and a defect just fails again and stops at the attempt bound
+# below, which costs one cell rebuild.
+
+on:
+  workflow_run:
+    workflows: ["Release candidate"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release candidate run to heal."
+        required: true
+
+permissions:
+  actions: write
+
+concurrency:
+  group: release-selfheal-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+env:
+  # One retry. A second flake on the same cell is rare enough to be worth a
+  # human look, and this is the only thing standing between a real defect and
+  # an unbounded rebuild loop.
+  MAX_ATTEMPTS: 2
+
+jobs:
+  heal:
+    # Only tag builds: a workflow_dispatch candidate skips create-prerelease and
+    # the whole dispatch cascade by design, so "skipped" would not mean
+    # "stranded" there and --failed would fire dispatches that were never meant
+    # to run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rerun the cells that failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          attempt=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .run_attempt)
+          conclusion=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .conclusion)
+
+          failed=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+            --paginate -q '.jobs[] | select(.conclusion == "failure") | .name')
+
+          {
+            echo "## Release self-heal"
+            echo
+            echo "Run [${RUN_ID}](https://github.com/${REPO}/actions/runs/${RUN_ID}), attempt ${attempt}, concluded ${conclusion}."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "${failed}" ]; then
+            echo "no failed cells; nothing to heal" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "Failed cells:"
+            echo
+            echo "${failed}" | sed 's/^/- /'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+            echo "attempt ${attempt} reached the bound of ${MAX_ATTEMPTS}; not retrying again" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "These cells failed twice. Read the logs before rerunning: a second failure is a defect until proven otherwise." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "rerunning the failed cells and anything stranded behind them"
+          gh run rerun "${RUN_ID}" --repo "${REPO}" --failed
+          echo "Retried as attempt $((attempt + 1))." >> "$GITHUB_STEP_SUMMARY"

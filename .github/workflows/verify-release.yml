@@ -5,10 +5,12 @@ run-name: Verify release ${{ inputs.tag || github.event.workflow_run.head_branch
 # Downloads the user-facing assets from the GH release at a tag (standalone
 # executables and the pip wheel pair) and runs the core-functionality sweep
 # against each one: engine inference (chat + embedding), document ingest,
-# search, a RAG ask, and an http-mode crawl. This is the promotion gate:
-# `make release-promote` refuses to mark a tag latest until this workflow has
-# passed for it. Fires automatically when a Release candidate run finishes
-# green on a tag, or on demand for any tag.
+# search, a RAG ask, and an http-mode crawl. This is the promotion gate, and
+# it promotes: the final job marks the tag latest once every check above has
+# passed against the assets a user downloads. Fires automatically when a
+# Release candidate run finishes green on a tag, or on demand for any tag.
+# `make release-promote` stays as the manual path for a tag this workflow did
+# not run for.
 
 on:
   workflow_dispatch:
@@ -254,3 +256,30 @@ jobs:
           # name from PyPI instead of the wheel under test.
           "${bin}/pip" install "${lilbee_whl}[crawler,litellm,graph]"
           LILBEE_EXE="${bin}/lilbee" bash tools/qa/artifact_smoke.sh
+
+  # The promotion gate itself. Every check above passed against the assets a
+  # user actually downloads, so the tag is promotable and nothing is left for a
+  # human to decide. `make release-promote` stays as the manual path for a tag
+  # this workflow did not run for, and for rewriting notes on purpose.
+  promote:
+    needs: [resolve, verify-cuda-bundles, verify-channel-assets, verify-openapi, verify-executables, verify-wheels]
+    # Only the candidate that just built. A workflow_dispatch run verifies any
+    # tag on demand, including an old one, and promoting there would move
+    # `latest` backwards onto a superseded release. Use `make release-promote`
+    # for a tag this workflow did not fire for on its own.
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Mark the release latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The body is left exactly as it is. attach-prerelease already wrote
+          # the notes, including the new-architecture table, and regenerating
+          # here would overwrite anything written by hand since.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          echo "promoted $TAG to latest" >> "$GITHUB_STEP_SUMMARY"
