@@ -74,7 +74,7 @@ promote:  ## Re-release an existing tag's source under a new version (FROM=v0.6.
 	@[ -n "$(FROM)" ] && [ -n "$(TO)" ] || { echo "promote: FROM=v... TO=<new-version> required"; exit 1; }
 	bash scripts/promote_release.sh $(FROM) $(TO)
 
-release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
+release-promote:  ## Manual promote: rewrite notes as headings and mark a release latest (TAG=... or newest). verify-release.yml promotes on its own; use this to rewrite notes or to promote a tag it never ran for
 	@tag="$(TAG)"; \
 	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\")))"); \
 	verified=$$(gh run list --repo tobocop2/lilbee --workflow=verify-release.yml --limit 50 --json displayTitle,conclusion -q "[.[] | select(.displayTitle == \"Verify release $$tag\" and .conclusion == \"success\")] | length"); \

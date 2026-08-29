@@ -459,6 +459,16 @@ closure. These rules exist because each one shipped a broken artifact once.
   dispatch job in `release-candidate.yml`, and its assets belong in
   `verify-release.yml`. Adding the gate without the dispatcher makes every release
   unpromotable: the wait loop burns its full timeout, then promotion refuses.
+- **A failed build cell is retried once, not forever.** `release-selfheal.yml`
+  watches every Release candidate run and reruns the failed cells with
+  `gh run rerun --failed`, which also picks up whatever was skipped behind them.
+  It gives up at `run_attempt` 2, so a real defect surfaces instead of looping.
+  The retry is deliberately blind: matching GitHub's error text to tell a flake
+  from a defect is a list that goes stale, and a defect costs one rebuild.
+- **A skipped job on a tag build means stranded, never "skipped by design".**
+  Every dispatch job in `release-candidate.yml` shares one `if` (push +
+  `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new
+  job with a narrower `if` breaks that, and self-heal would fire it.
 - **A new gate must be proven to fail.** Run it against the input it is supposed to
   reject before trusting it. A loader check that counted glob matches passed a bundle
   with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
@@ -475,8 +485,8 @@ closure. These rules exist because each one shipped a broken artifact once.
   Executable cells, the `smoke-wheels` PyPI-channel job, and `verify-release.yml`
   (against the downloadable assets) all run it. `--version`/`--help` passing is
   the "test passes but covers nothing" smell applied to a binary — it does not
-  count as verification, and `make release-promote` refuses to mark a tag latest
-  without a green `verify-release` run.
+  count as verification, and nothing marks a tag latest without a green
+  `verify-release` run. That workflow promotes the tag itself as its last job.
 - **Never `continue-on-error` a smoke or correctness gate.** A swallowed gate is
   how the broken macOS bundle shipped. Skip a gate that genuinely can't run in
   an environment (GPU-driver backends link `libcuda.so.1` / `libamdhip64.so`
