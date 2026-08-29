@@ -309,9 +309,10 @@ def services_scope(services: Services) -> Iterator[None]:
 def mark_interactive_session() -> None:
     """Record that this process is an interactive session before services build.
 
-    The TUI owns the process for its whole lifetime, so the fleet it builds keeps
-    its weights resident rather than idle-unloading under a user who is still in
-    the app; closing lilbee releases it. Called by the interactive entry point
+    The TUI owns the process for its whole lifetime, so an engine bound to it
+    keeps its weights resident rather than idle-unloading under a user who is
+    still in the app; closing lilbee releases it. A keep-warm engine outlives the
+    session and keeps its idle window instead. Called by the interactive entry point
     before anything touches ``get_services``, so the provider is constructed with
     that intent; a one-shot CLI or the MCP server never calls it.
     """
