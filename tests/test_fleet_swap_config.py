@@ -212,18 +212,38 @@ class TestHealthCheckTimeoutScaling:
 
 
 class TestWarmTtlSeconds:
-    def test_keep_engine_warm_pins_weights_resident(self, monkeypatch) -> None:
-        # keep_engine_warm means the model stays ready, so the idle unload is off.
+    def test_keep_engine_warm_unloads_on_the_idle_window(self, monkeypatch) -> None:
+        # keep_engine_warm keeps the engine process alive across launches, not
+        # the weights: it outlives every holder, so its idle unload stays armed.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 0
+        assert _warm_ttl_seconds() == 900
+
+    def test_keep_engine_warm_ignores_the_session_hold(self, monkeypatch) -> None:
+        # A session hold pins weights only in an engine bound to that session. A
+        # keep-warm engine survives the session, so the hold must not follow it.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+        assert _warm_ttl_seconds(hold_warm_for_session=True) == 900
+
+    def test_keep_engine_warm_with_zero_ttl_keeps_weights_loaded(self, monkeypatch) -> None:
+        # The user's explicit 0 is the only way a keep-warm engine pins weights.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
+        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
 
     def test_interactive_session_pins_weights_resident(self, monkeypatch) -> None:
-        # A provider serving an interactive session (the TUI) holds the engine warm
-        # for its whole lifetime, regardless of the idle window or keep_engine_warm.
+        # A provider serving an interactive session (the TUI) holds its bound
+        # engine warm for its whole lifetime, regardless of the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
 
