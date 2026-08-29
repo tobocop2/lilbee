@@ -8,7 +8,9 @@ name: Release candidate
 # indexes or the downstream publish. publish.yml (PyPI) is auto-dispatched
 # once every artifact is attached and the wheel smoke passes; it just
 # downloads this run's artifacts, nothing downstream rebuilds. Promotion to
-# latest stays gated behind verify-release.yml (see make release-promote).
+# latest is verify-release.yml's last job, which runs once every artifact
+# check passes. A cell that dies from an infra flake is retried by
+# release-selfheal.yml rather than stranding the release.
 
 on:
   push:
