@@ -91,24 +91,25 @@ runs:
             gh api "repos/${GITHUB_REPOSITORY}/contents/${archs}?ref=${ref}" \
               -q .content | base64 -d > "${name}-archs.py"
           done
-          python3 tools/release_arch_table.py \
-            --old-file prev-archs.py --new-file new-archs.py > arch-table.md
-          if [ ! -s arch-table.md ]; then
-            echo "the engine pin added no architectures; notes unchanged"
-            return 0
-          fi
-          local body
+          local body updated
           body=$(mktemp)
+          updated=$(mktemp)
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$body" || return 0
           # Guard the one destructive call. `set -e` does not abort a function
           # invoked as the left side of `||`, so a failed read above would
           # otherwise reach `gh release edit` with an empty file and replace the
           # notes with nothing but this table.
           [ -s "$body" ] || return 0
-          printf '\n\n' >> "$body"
-          cat arch-table.md >> "$body"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$body"
-          echo "appended the new architectures to the notes:"
-          cat arch-table.md
+          python3 tools/release_arch_table.py \
+            --old-file prev-archs.py --new-file new-archs.py --body-file "$body" > "$updated"
+          # Only write when the notes would actually change. The section is
+          # replaced rather than appended, so a rerun of this job is a no-op
+          # instead of a second copy of the table.
+          if cmp -s "$body" "$updated"; then
+            echo "the architecture section is already current; nothing to write"
+            return 0
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$updated"
+          echo "updated the architecture section in the notes"
         }
         append_arch_table || echo "could not append the architecture table; the release is unaffected"

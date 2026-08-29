@@ -104,3 +104,53 @@ def test_cli_prints_nothing_when_the_pin_is_unchanged(tmp_path, capsys) -> None:
     same.write_text(_OLD, encoding="utf-8")
     assert rat.main(["--old-file", str(same), "--new-file", str(same)]) == 0
     assert capsys.readouterr().out == ""
+
+
+_BODY = "## What's Changed\n* a PR\n\n**Full Changelog**: https://example/compare\n"
+
+
+def test_applying_a_table_to_a_body_appends_the_section() -> None:
+    out = rat.apply_to_body(_BODY, rat.render(_OLD, _NEW))
+    assert out.startswith(_BODY.rstrip("\n"))
+    assert "## New model architectures" in out
+
+
+def test_applying_twice_does_not_stack_a_second_copy() -> None:
+    # self-heal makes a rerun of attach-prerelease routine, so the append has to
+    # be idempotent or every retry adds another table.
+    table = rat.render(_OLD, _NEW)
+    once = rat.apply_to_body(_BODY, table)
+    twice = rat.apply_to_body(once, table)
+    assert once == twice
+    assert once.count("## New model architectures") == 1
+
+
+def test_an_empty_table_leaves_the_body_untouched() -> None:
+    assert rat.apply_to_body(_BODY, "") == _BODY
+
+
+def test_an_empty_table_strips_a_section_that_no_longer_applies() -> None:
+    stale = rat.apply_to_body(_BODY, rat.render(_OLD, _NEW))
+    assert rat.apply_to_body(stale, "") == _BODY
+
+
+def test_the_section_does_not_swallow_a_heading_that_follows_it() -> None:
+    body = _BODY + "\n## New model architectures\n\nold junk\n\n## Credits\n\nthanks\n"
+    out = rat.apply_to_body(body, rat.render(_OLD, _NEW))
+    assert "## Credits" in out
+    assert "old junk" not in out
+    assert out.count("## New model architectures") == 1
+
+
+def test_cli_body_mode_prints_the_updated_body(tmp_path, capsys) -> None:
+    old = tmp_path / "old.py"
+    new = tmp_path / "new.py"
+    body = tmp_path / "body.md"
+    old.write_text(_OLD, encoding="utf-8")
+    new.write_text(_NEW, encoding="utf-8")
+    body.write_text(_BODY, encoding="utf-8")
+    args = ["--old-file", str(old), "--new-file", str(new), "--body-file", str(body)]
+    assert rat.main(args) == 0
+    printed = capsys.readouterr().out
+    assert "## New model architectures" in printed
+    assert printed.count("What's Changed") == 1

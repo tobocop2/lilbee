@@ -33,6 +33,10 @@ import sys
 from pathlib import Path
 
 _REPO = "https://github.com/ggml-org/llama.cpp"
+_HEADING = "## New model architectures"
+# The section runs to the next second-level heading, so a body that already has
+# sections after it keeps them.
+_SECTION = re.compile(rf"\n*{re.escape(_HEADING)}\n.*?(?=\n## |\Z)", re.DOTALL)
 
 _ARCH_ENTRY = re.compile(r'^\s*"([a-z0-9._-]+)",\s*$', re.IGNORECASE | re.MULTILINE)
 _SET_BLOCK = re.compile(r"SUPPORTED_ARCHS.*?frozenset\(\s*\{(.*?)\}\s*\)", re.DOTALL)
@@ -106,6 +110,20 @@ def render(old: str, new: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def apply_to_body(body: str, table: str) -> str:
+    """``body`` carrying exactly ``table`` as its architecture section.
+
+    Idempotent: an existing section is replaced rather than appended to, because
+    release-selfheal.yml makes a rerun of the job that writes these notes
+    routine, and a plain append would stack a copy per retry. An empty ``table``
+    strips a section that no longer applies.
+    """
+    stripped = _SECTION.sub("", body).rstrip("\n")
+    if not table:
+        return stripped + "\n" if body.endswith("\n") else stripped
+    return f"{stripped}\n\n{table.strip()}\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -114,14 +132,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--new-file", type=Path, required=True, help="engine_archs.py at the tag being released"
     )
+    parser.add_argument(
+        "--body-file",
+        type=Path,
+        help="existing release body; prints that body with the section applied instead of the "
+        "section alone, so the caller can skip the write when nothing changed",
+    )
     args = parser.parse_args(argv)
 
-    sys.stdout.write(
-        render(
-            args.old_file.read_text(encoding="utf-8"),
-            args.new_file.read_text(encoding="utf-8"),
-        )
+    table = render(
+        args.old_file.read_text(encoding="utf-8"),
+        args.new_file.read_text(encoding="utf-8"),
     )
+    if args.body_file:
+        sys.stdout.write(apply_to_body(args.body_file.read_text(encoding="utf-8"), table))
+    else:
+        sys.stdout.write(table)
     return 0
 
 
