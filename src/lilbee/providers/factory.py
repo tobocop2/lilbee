@@ -15,9 +15,10 @@ if TYPE_CHECKING:
 def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
 
-    *hold_warm* marks the provider as serving an interactive session, so the local
-    fleet it composes keeps its weights resident instead of idle-unloading for as
-    long as that session owns the process. Irrelevant to a remote provider, which
+    *hold_warm* marks the provider as serving an interactive session, so a local
+    fleet bound to that session keeps its weights resident instead of
+    idle-unloading for as long as the session owns the process (a keep-warm fleet
+    outlives it and keeps its idle window). Irrelevant to a remote provider, which
     has no local engine to hold.
     """
     match config.llm_provider:
