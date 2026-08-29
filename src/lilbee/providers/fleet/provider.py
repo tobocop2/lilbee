@@ -822,15 +822,19 @@ def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
 
     A ttl of 0 keeps weights resident until the engine is stopped; otherwise an
     idle engine releases its weights after ``engine_idle_ttl_minutes`` and reloads
-    transparently on the next prompt. The timer is held off (ttl 0) whenever
-    someone is actively depending on an instant response: *hold_warm_for_session*
-    is set for a provider serving an interactive session, which owns the process
-    for its whole lifetime (close lilbee to release the engine); a bulk ingest
-    holds the fleet resident for its run so an unevenly loaded replica cannot
-    idle-unload and reload cold mid-run; and ``keep_engine_warm`` pins the weights
-    for a process meant to stay ready.
+    transparently on the next prompt. The timer is held off (ttl 0) while someone
+    who owns the engine's lifetime depends on an instant response: an interactive
+    session (*hold_warm_for_session*) whose engine dies with it, or a bulk ingest
+    whose unevenly loaded replicas must not idle-unload and reload cold mid-run.
+
+    A ``keep_engine_warm`` engine outlives every holder, so no holder may pin its
+    weights: llama-swap's ttl is fixed at launch, and a session hold baked into a
+    detached engine would keep the weights loaded for as long as the machine
+    stays up. Keep-warm keeps the engine process (a small proxy, no weights)
+    alive across launches; the weights follow the idle window like every other
+    mode, and only the user's explicit 0 keeps them loaded.
     """
-    if hold_warm_for_session or ingest_keep_warm() or cfg.keep_engine_warm:
+    if not cfg.keep_engine_warm and (hold_warm_for_session or ingest_keep_warm()):
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 

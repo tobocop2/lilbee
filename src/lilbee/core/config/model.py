@@ -580,9 +580,10 @@ class Config(BaseSettings):
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
-    # On keeps the engine resident: it never idle-unloads and survives app close
-    # so the next launch binds instantly. Off (default): the engine stops when
-    # the last lilbee process exits, leaving the machine clean.
+    # On keeps the engine process alive across app close so the next launch
+    # binds instantly; its weights still follow engine_idle_ttl_minutes. Off
+    # (default): the engine stops when the last lilbee process exits, leaving
+    # the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
     # Hugging Face's high-performance transfer mode: more connections and much
