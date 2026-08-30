@@ -1,5 +1,5 @@
 {
-    "version": "0.6.90b430",
+    "version": "0.6.90b431",
     "description": "Run and manage local AI models, then search your files, code, and crawled web pages, with answers that cite the source. One program, no server to run.",
     "homepage": "https://lilbee.sh/",
     "license": {
@@ -8,8 +8,8 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://github.com/tobocop2/lilbee/releases/download/v0.6.90b430/lilbee-windows-x86_64.exe#/lilbee.exe",
-            "hash": "3beeb43b0c514ec72cdae5b56393d9273d747d8a5d75d81fa4c39cd53a1e3ee9"
+            "url": "https://github.com/tobocop2/lilbee/releases/download/v0.6.90b431/lilbee-windows-x86_64.exe#/lilbee.exe",
+            "hash": "6e5ff0b153cfef5f7b8ff3f29a5ac95ab5251f5f69fc8b6c79cbdcaf47bce88f"
         }
     },
     "bin": "lilbee.exe",
@@ -32,8 +32,8 @@
         "}",
         "if ($build) {",
         "    $cudaHashes = @{",
-        "        'cu125' = 'e408a9e5d00dc38cad2013e74151578186a1f661626c0faf49b47026801594c7'",
-        "        'cu124' = '96a8db413fe48b8a2cc40fdeb4e2af780b27feed937398590801ee84e97f7766'",
+        "        'cu125' = '73d229e824e7468258cf1a187a5c332aa129a9c10a1f88be5a2cddce13fd25e2'",
+        "        'cu124' = '89e0ef653d97ac601cd10fc762f4889e89d27df2a66fa52a90e119a43fe057e1'",
         "    }",
         "    $expected = $cudaHashes[$build]",
         "    $url = \"https://github.com/tobocop2/lilbee/releases/download/v$version/lilbee-windows-x86_64-$build.exe\"",
