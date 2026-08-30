@@ -45,6 +45,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # The runner image ships third-party apt repos this job never installs
+        # from, and packages.microsoft.com answers 403 often enough to kill the
+        # step. Only the distro sources stay.
+        sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
         sudo apt-get update -qq
         sudo apt-get install -y -qq flatpak flatpak-builder
         flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
