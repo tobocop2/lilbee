@@ -232,7 +232,10 @@ jobs:
 
       - name: Install Tesseract (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+        run: |
+          # Only the distro sources: the runner's third-party repos 403 intermittently.
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          sudo apt-get update && sudo apt-get install -y tesseract-ocr
 
       - name: Install Tesseract (macOS)
         if: runner.os == 'macOS'
