@@ -364,16 +364,13 @@ a progress bar, and the model loads before your first answer, shown live inside
 the answer bubble. Every launch after that opens straight to chat in a couple
 of seconds.
 
-<table>
-  <tr>
-    <th align="center">Very first launch</th>
-    <th align="center">Every launch after</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380"></td>
-    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380"></td>
-  </tr>
-</table>
+**Very first launch**
+
+<img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="380">
+
+**Every launch after**
+
+<img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="380">
 
 Measured with a small chat model (Qwen3 0.6B):
 
