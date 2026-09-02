@@ -31,6 +31,7 @@
   - [Data locations](#data-locations)
   - [Config file (config.toml)](#config-file)
   - [Environment variables](#environment-variables)
+  - [Settings reference](settings.md)
   - [Optional extras](#optional-extras)
   - [Cross-encoder reranking](#cross-encoder-reranking)
   - [Semantic chunking](#semantic-chunking)
@@ -878,7 +879,8 @@ authenticated HTTP API.
 
 ### Memory
 
-Requires memory enabled (`lilbee set memory_enabled true`). See
+Requires memory enabled (`LILBEE_MEMORY_ENABLED=1`, or `/set memory_enabled true`
+in the TUI). See
 [Memory](#memory) for the full model.
 
 ```bash
@@ -1017,9 +1019,9 @@ Every persisted lilbee setting lives in a single TOML file at
 next to your code. Same file, same shape, regardless of which data dir you're
 on; the path just follows wherever the data dir is resolved to.
 
-Sections mirror the settings categories in
-[Environment variables](#environment-variables) below: `[general]`,
-`[retrieval]`, `[chunking]`, `[generation]`, `[server]`, etc. Example:
+Sections mirror the setting groups in the
+[settings reference](settings.md): `[general]`, `[retrieval]`, `[chunking]`,
+`[generation]`, `[server]`, etc. Example:
 
 ```toml
 # .lilbee/config.toml
@@ -1045,169 +1047,21 @@ touching the file.
 
 ## Environment variables
 
-Every setting has a default that works out of the box, and every value below is
-also editable from `/settings` in the TUI. The tables exist for scripted
-overrides, headless deployments, and CI; you should not normally need to touch
-them by hand. Tables are grouped from most-commonly-touched to rarely-touched,
-so you can skim the top and skip the bottom unless you have a specific reason.
+Every setting is also an environment variable, named `LILBEE_` plus the setting
+in upper case: `top_k` is `LILBEE_TOP_K`, `wiki` is `LILBEE_WIKI`. An
+environment variable applies to the process you launch and does not persist;
+`/settings` and `config.toml` persist.
 
-### Common settings
+A handful of variables are not settings and so have no `config.toml` entry:
+`LILBEE_DATA` (the data directory), `LILBEE_LOG_LEVEL`, `LILBEE_ENGINE_DIR`,
+`LILBEE_TOKEN`, and a few ingest and debugging knobs. The settings reference
+lists them under
+[Environment-only variables](settings.md#environment-only-variables).
 
-The ones most users set at least once.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
-| `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
-| `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
-| `LILBEE_OCR_TIMEOUT` | `300` | Per-page vision OCR timeout in seconds (`0` = no limit) |
-| `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LILBEE_RAG_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG (search-mode) answers |
-| `LILBEE_GENERAL_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for chat-mode (ungrounded) answers |
-| `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
-| `LILBEE_COMPLETIONS_REASONING` | `separate` | How `/v1/chat/completions` presents thinking: `separate` (own `reasoning_content` field), `inline` (thinking streams as plain `content` text, tags stripped, for clients that never render `reasoning_content`), or `off` (ask the model not to think). A request's `reasoning` field overrides it per call |
-| `LILBEE_MESSAGES_REASONING` | `separate` | How `/v1/messages` presents thinking a request asked for: `separate` (own `thinking` block), `inline` (folded into the answer text, tags stripped), or `off` (refuse thinking on this surface). Thinking is opt-in per request, as on Anthropic's API: a body with no `thinking` parameter gets none. `off` reaches the model's template only on a locally served model; against a remote chat backend it drops the thinking from the response but the model still produces it |
-| `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
-
-### Retrieval tuning
-
-Reach for these when search quality matters. Defaults are solid; tune only if
-something feels off.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_TOP_K` | `12` | Number of retrieval results returned |
-| `LILBEE_MAX_DISTANCE` | `0.75` | Cosine distance cutoff for rows without keyword support. Lower = stricter filtering. `0` disables filtering |
-| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance on the vector-only fallback path (no effect on the default hybrid search) |
-| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `5` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
-| `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
-| `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
-| `LILBEE_RERANK_CANDIDATES` | `60` | Candidates to rerank when a reranker is configured |
-| `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
-| `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
-| `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
-| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks. Documents indexed before this feature existed have no stored title; run `lilbee rebuild` to make them title-searchable |
-| `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
-| `LILBEE_LEXICAL_FUSION_WEIGHT` | `1.0` | BM25 arm weight in rank fusion (1.0 = equal to the vector arm; lower it when a strong embedder should dominate a corpus where the lexical arm adds noise) |
-| `LILBEE_ADAPTIVE_FUSION` | `false` | Scale the BM25 arm's weight per query by how confident the vector arm is (a peaked dense ranking quiets lexical, a flat one keeps it) instead of using a fixed `LILBEE_LEXICAL_FUSION_WEIGHT`. That weight becomes the ceiling the adaptive rule scales down from. Off pending retrieval-quality evaluation |
-| `LILBEE_ADAPTIVE_FUSION_MARGIN` | `0.15` | Vector-similarity margin (top hit minus a fixed window of runners-up) at which adaptive fusion quiets the lexical arms to their floor; smaller values downweight lexical more aggressively. `0` disables adaptation, leaving the lexical arm at its full fixed weight |
-| `LILBEE_FTS_LANGUAGE` | `English` | Stemmer/stop-word language for the BM25 indexes (a tantivy language name such as `German` or `French`). Applied when an index is built; run `lilbee rebuild` after changing it |
-| `LILBEE_EMBED_TITLES` | `false` | Prefix each chunk's document title to its embedding input (stored chunk text is unchanged). Changes the embedding space, so toggling needs `lilbee rebuild` |
-| `LILBEE_CONTEXTUAL_ENRICHMENT` | `false` | Ask the chat model for one sentence situating each chunk in its document and embed it with the chunk (contextual retrieval). One generation per chunk makes ingest much slower; toggling needs `lilbee rebuild` |
-| `LILBEE_RERANK_MIN_SCORE` | unset | Drop rerank candidates whose raw cross-encoder score falls below this, so a uniformly irrelevant pool can come back empty instead of confidently ranked. Unset disables; the scale is reranker-model specific (bge logits can be negative) |
-| `LILBEE_FILTER_STRUCTURAL_CHUNKS` | `false` | Drop tables-of-contents and banner-style cover/title pages from search results. TOC detection requires ordered page numbers (data pages with dot leaders stay), the cover gate counts whole banner lines rather than words (acronym-heavy prose stays), and a query-matched or top-ranked page is never dropped. Still off by default pending retrieval-quality evaluation |
-| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
-| `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
-| `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
-| `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
-| `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
-| `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
-| `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
-| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking per answer, across chat, search, and both chat APIs. When thinking passes the cap, lilbee asks the model to answer directly. On a non-streaming call it re-issues only a turn that produced no answer. `0` removes the cap. A request's `thinking.budget_tokens` tightens it, never raises it |
-| `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
-| `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
-
-### Ingestion and chunking
-
-How documents become chunks. Changes here require `lilbee rebuild` to take
-effect on already-indexed material.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_IGNORE_DIRS` | (none) | Extra directory names to skip during discovery, comma-separated. Adds to the built-in list; it cannot remove a built-in name. For patterns rather than bare names, see [Keeping files out of the index](#keeping-files-out-of-the-index) |
-| `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk |
-| `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
-| `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
-| `LILBEE_SEMANTIC_CHUNKING` | `false` | Topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
-| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats. Set `LILBEE_LAYOUT_DETECTION=1` alongside it to use the table structure model; on its own it falls back to the native extractor |
-| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction (xberg AUTO strategy): text follows the detected reading order and running headers/footers are stripped. Off by default: enabling it downloads the ONNX layout and table-structure models and adds per-page inference |
-| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
-| `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
-| `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
-| `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
-| `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
-| `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
-| `LILBEE_INGEST_PROCESSES` | `1` | Worker **processes** for extract/embed. Off by default. Turn it on (an explicit `N`, or `0` to auto-size) only when one process cannot keep a multi-GPU fleet busy: a large corpus with a small, fast embedder and GPUs to spare. A large or GPU-bound embedder (e.g. an 8B) ties single-process no matter the count, because the parent that writes the one index is serial, so leave it off there. For a one-off run, `lilbee sync --processes N` (also on `add` and `rebuild`) overrides the config value. See [architecture](architecture.md) |
-
-### Generation
-
-LLM output shape. lilbee sets conservative defaults below; the model's own
-defaults apply only when a value is explicitly unset in code or config.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_TEMPERATURE` | `0.1` | Sampling temperature |
-| `LILBEE_TOP_P` | `0.9` | Nucleus sampling threshold |
-| `LILBEE_TOP_K_SAMPLING` | `40` | Top-k sampling |
-| `LILBEE_REPEAT_PENALTY` | `1.1` | Repetition penalty |
-| `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
-| `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `64-128 GiB → 24576`, `≥128 GiB → 65536`. 8192 is the floor on smaller hosts; the top tier holds an agent client's first turn. The picker still clamps the result to the model's training context and available memory at worker start. Set explicitly to override |
-| `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
-| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
-| `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
-| `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
-| `LILBEE_CPU_MOE` | `false` | Keep a mixture-of-experts model's expert weights in system memory so it fits a smaller GPU. Only the ~3B active parameters stay on the card, which is what lets an 80B MoE run on a single consumer GPU. No effect on dense models, which have no expert tensors |
-| `LILBEE_N_CPU_MOE` | *(none)* | Offload only the first N layers' experts instead of all of them. Takes precedence over `LILBEE_CPU_MOE`; a smaller N keeps more of the model on the GPU, so tune it up until the model fits |
-| `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
-| `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
-
-### Server
-
-Only relevant when running the HTTP server.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
-| `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
-| `LILBEE_EXCLUSIVE_SCOPE` | *(none)* | Directory that at most one server may serve at a time, on top of the per-data-dir lock. A second `lilbee serve` pointed at the same scope waits up to fifteen seconds, then exits with an error naming the data dir the running server is serving. Managed supervisors set this (the Obsidian plugin passes its shared root) |
-| `LILBEE_ENGINE_DIR` | *(platform default)* | Where the shared engine slot lives. Every lilbee on the machine binds the engine recorded here rather than starting its own, so pointing two installs at the same path makes them share one fleet. Set this when the default lands on a filesystem without working file locks, where lilbee declines to share and logs that it is doing so |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
-| `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
-| `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
-
-### Wiki tuning
-
-Only relevant if you use the wiki layer. `LILBEE_WIKI` and `LILBEE_WIKI_DIR` need to be set before the first build; the rest tune generation.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_WIKI` | `false` | Enable the wiki layer. On its own this only shows the Wiki tab and the chat scope picker; nothing is generated until you wikify |
-| `LILBEE_WIKI_AUTO_UPDATE` | `false` | Regenerate touched wiki pages after every sync. Off means you wikify explicitly (`lilbee wiki build` / `wiki update`, `b` on the TUI wiki screen, or the HTTP and MCP build endpoints) |
-| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Touched-page cap for auto-update. A sync that touches more pages than this skips regeneration and tells you to run `lilbee wiki update` |
-| `LILBEE_WIKI_DIR` | `wiki` | Directory under the data root where pages live. Set it before the first build; changing it later strands the pages already written |
-| `LILBEE_WIKI_ENTITY_MODE` | `ner_entities` | Entity extraction strategy. `ner_entities` (typed spaCy NER) is the only one implemented today; `ner_concepts_plus_llm_types` and `llm_tagged` are accepted but fall back to `ner_entities` with a warning |
-| `LILBEE_WIKI_ENTITY_MIN_MENTIONS` | `3` | Distinct chunk mentions an entity or concept needs before it earns its own page |
-| `LILBEE_WIKI_EXTRACT_CONCEPTS` | `true` | Ask the batched call to curate concept pages alongside the extracted entities. `false` writes entity sections only |
-| `LILBEE_WIKI_BATCH_MIN_CHUNKS` | `3` | Chunks a source must contribute before it is eligible for concept curation. Keeps tables of contents and appendices from burning a call to invent concepts |
-| `LILBEE_WIKI_TEMPERATURE` | `0.1` | Sampling temperature for wiki generation. Low on purpose: the model has to reproduce the section format and quote sources verbatim |
-| `LILBEE_WIKI_SUMMARY_MAX_TOKENS` | `2048` | Output token cap per wiki call. Also sets how much of the context window is left for chunks |
-| `LILBEE_WIKI_EMBEDDING_FAITHFULNESS_THRESHOLD` | `0.5` | Minimum cosine similarity between a page body and the mean of its source chunk vectors before the page publishes. Below it, the page routes to `drafts/` |
-| `LILBEE_WIKI_DRIFT_THRESHOLD` | `0.3` | Fraction of a page's content a rebuild may change before the new version goes to `drafts/` for review instead of overwriting |
-| `LILBEE_WIKI_STALE_CITATION_THRESHOLD` | `0.5` | Fraction of stale citations before `lilbee wiki prune` flags a page |
-| `LILBEE_WIKI_PRUNE_RAW` | `false` | Delete a source's raw chunks once it has been summarized into the wiki |
-| `LILBEE_WIKI_CLUSTERER` | `embedding` | Clusterer behind `lilbee wiki synthesize`: `embedding` or `concepts`. `concepts` needs the `[graph]` extra and falls back to `embedding` without it |
-| `LILBEE_WIKI_CLUSTERER_K` | `0` | Neighborhood size for the synthesis graph. `0` scales it from the corpus size |
-| `LILBEE_WIKI_SYNTHESIS_PROMPT` | *(built in)* | Prompt template for cross-source synthesis pages. Must keep the `{topic}`, `{source_list}`, and `{chunks_text}` placeholders |
-| `LILBEE_WIKI_ENTITY_BATCH_PROMPT` | *(built in)* | Prompt template for the per-source batched call. Must keep the `{source}`, `{entity_list}`, `{chunks_text}`, and `{concept_instruction}` placeholders |
-
-### Advanced
-
-Rarely touched. Defaults derived from published IR research; there's usually a
-reason the defaults are the defaults.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 confidence above which query expansion is skipped; confidence is `s / (s + 5)`, so 0.8 = raw score 20 |
-| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Minimum relative raw-score gap between top-1 and top-2, `(top - second) / top`, for expansion to skip |
-| `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
-| `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
-| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool as a multiple of top_k, feeding MMR reranking |
-| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities for exact count answers; fully automatic at sync (schema induced from the corpus, stored inside the index, and re-induced as the library grows) |
-| `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
-| `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
-| `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |
-| `LILBEE_INTENT_LLM` | `false` | Classify count questions with the chat model when the fast patterns miss; covers phrasing variants and other languages at the cost of one short LLM call on those turns |
+**[docs/settings.md](settings.md) lists every setting**, with its type, default,
+help text, and a column per surface saying whether the TUI, MCP, HTTP API, or
+CLI can change it. It is generated from lilbee's own configuration fields, so it
+never drifts from the code.
 
 ## Optional extras
 
@@ -1640,8 +1494,12 @@ languages with `+` (Tesseract's own convention), for example `eng+deu` for
 English and German. The setting is the same value everywhere:
 
 ```bash
-export LILBEE_OCR_LANGUAGE=eng+deu   # environment
-lilbee set ocr_language eng+deu      # CLI / persisted to config.toml
+export LILBEE_OCR_LANGUAGE=eng+deu   # environment, this process only
+```
+
+```toml
+# .lilbee/config.toml -- persisted
+ocr_language = "eng+deu"
 ```
 
 You can also set it in the `/settings` screen in the TUI, or over the HTTP and
