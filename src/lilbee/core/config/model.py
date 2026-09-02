@@ -82,7 +82,14 @@ class Config(BaseSettings):
     )
 
     # Paths: resolved from env/defaults in model_validator(mode='before')
-    data_root: Path = Field(default=Path())
+    data_root: Path = Field(
+        default=Path(),
+        description=(
+            "Root directory for this library. Resolved at start from LILBEE_DATA, "
+            "then a .lilbee/ directory walked up from the working directory, then "
+            "the platform default. Every other path below hangs off it"
+        ),
+    )
     # Writable so plugin-managed servers can pivot storage to a vault path on
     # first boot; rebuild the index after migrating.
     documents_dir: Path = ConfigField(default=Path(), writable=True)
@@ -91,10 +98,32 @@ class Config(BaseSettings):
     # prefixes their source keys so a root at /data/corpus keys as ``corpus/…``.
     # Managed by ``add`` / ``remove``, so it is writable (persisted to
     # config.toml) but not surfaced in the settings UI.
-    linked_roots: dict[str, str] = ConfigField(default_factory=dict, writable=True, public=False)
-    data_dir: Path = Field(default=Path())
-    lancedb_dir: Path = Field(default=Path())
-    models_dir: Path = Field(default=Path())
+    linked_roots: dict[str, str] = ConfigField(
+        default_factory=dict,
+        writable=True,
+        public=False,
+        description=(
+            "External source roots that `add` registered, as label -> absolute path. "
+            "`add` and `remove` maintain it; do not edit it by hand"
+        ),
+    )
+    data_dir: Path = Field(
+        default=Path(),
+        description="Directory holding the database. Defaults to data_root/data",
+    )
+    lancedb_dir: Path = Field(
+        default=Path(),
+        description=(
+            "Directory holding the LanceDB vector tables. Defaults to data_root/data/lancedb"
+        ),
+    )
+    models_dir: Path = Field(
+        default=Path(),
+        description=(
+            "Directory holding downloaded model files. Shared across libraries, so a "
+            "model pulled for one is available to all"
+        ),
+    )
     # Markdown vault root; when set, search results carry a vault-relative
     # ``vault_path`` so a host UI can deep-link into the vault.
     vault_base: Path | None = ConfigField(default=None, writable=True)
@@ -119,7 +148,14 @@ class Config(BaseSettings):
     # Vision OCR model for scanned PDFs and image-only pages. Empty = disabled;
     # there is no cross-role fallback onto the chat model even if multimodal.
     vision_model: str = ConfigField(default="", public=True)
-    embedding_dim: int = Field(default=768, ge=1)
+    embedding_dim: int = Field(
+        default=768,
+        ge=1,
+        description=(
+            "Vector width the index is built with. The embedding model sets it; "
+            "change it only to match a model lilbee cannot introspect"
+        ),
+    )
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
@@ -138,16 +174,38 @@ class Config(BaseSettings):
     # continuous-batching slots full: small per-passage requests leave the card
     # batch-starved (~96% util, low throughput). The engine still re-splits to
     # its physical batch, so raising this only helps up to the server's --batch.
-    embed_batch_sequences: int = ConfigField(default=64, ge=1, writable=True)
+    embed_batch_sequences: int = ConfigField(
+        default=64,
+        ge=1,
+        writable=True,
+        description=(
+            "Passages packed into one embed request. Larger batches keep a GPU's "
+            "continuous-batching slots full. The engine re-splits to its physical "
+            "batch, so raising this helps only up to the server's --batch"
+        ),
+    )
     # Files allowed in their compute phase at once during ingest. 0 = auto: the
     # ceiling scales with the detected embed fleet (replicas x per-replica
     # in-flight) so a multi-GPU box is kept fed without a manual cap, falling back
     # to the CPU quota on a single card. Set a positive value only to override the
     # auto sizing. Sizes the extract+embed fan-out, not the plan pass.
-    ingest_max_inflight: int = ConfigField(default=0, ge=0, writable=True)
+    ingest_max_inflight: int = ConfigField(
+        default=0,
+        ge=0,
+        writable=True,
+        description=(
+            "Files allowed in their compute phase at once during ingest. 0 = auto, "
+            "scaled to the detected embed fleet. Sizes the extract and embed fan-out, "
+            "not the planning pass"
+        ),
+    )
     # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)
-    max_embed_chars: int = Field(default=2000, ge=1)
+    max_embed_chars: int = Field(
+        default=2000,
+        ge=1,
+        description="Maximum characters sent to the embedding model per chunk. Longer text is cut",
+    )
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
     # Abstention floor against the [0, 1] fused relevance score (0.0 = no
@@ -164,7 +222,13 @@ class Config(BaseSettings):
         default=DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
     )
     chat_mode: str = ConfigField(default=ChatMode.SEARCH.value, writable=True)
-    ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
+    ignore_dirs: frozenset[str] = Field(
+        default=DEFAULT_IGNORE_DIRS,
+        description=(
+            "Directory names ingest never walks (.git, node_modules, and similar). "
+            "Use a .lilbeeignore file for per-library patterns"
+        ),
+    )
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).
     # True = force OCR regardless of detection.
@@ -225,15 +289,39 @@ class Config(BaseSettings):
     # conversion is synchronous, so this keeps it off the event loop that serves
     # requests. 0 converts inline on the loop.
     crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
-    server_host: str = "127.0.0.1"
-    server_port: int = Field(default=0, ge=0, le=65535)
-    cors_origins: list[str] = Field(default_factory=list)
-    cors_origin_regex: str = Field(default=DEFAULT_CORS_ORIGIN_REGEX)
+    server_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Address `lilbee serve` binds. Loopback by default; set 0.0.0.0 to accept "
+            "connections from the network"
+        ),
+    )
+    server_port: int = Field(
+        default=0,
+        ge=0,
+        le=65535,
+        description="Port `lilbee serve` binds. 0 picks a free port and prints it",
+    )
+    cors_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra browser origins the HTTP server accepts, in addition to cors_origin_regex"
+        ),
+    )
+    cors_origin_regex: str = Field(
+        default=DEFAULT_CORS_ORIGIN_REGEX,
+        description="Regular expression matching browser origins the HTTP server accepts",
+    )
     # Seconds between SSE heartbeat events when the producer queue is idle.
     # Must stay well below the plugin's STREAM_IDLE_TIMEOUT_MS (120s) so a
     # single long-running vision OCR page can't starve the client into aborting.
     sse_heartbeat_interval: float = ConfigField(default=30.0, ge=0.0, writable=True)
-    json_mode: bool = False
+    json_mode: bool = Field(
+        default=False,
+        description=(
+            "Emit structured JSON from CLI commands. The --json flag sets it for one invocation"
+        ),
+    )
     temperature: float | None = ConfigField(default=0.1, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=0.9, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=40, ge=1, writable=True)
@@ -377,10 +465,25 @@ class Config(BaseSettings):
 
     # Saturating BM25 confidence (s / (s + 5)) above which query expansion is
     # skipped; 0.8 corresponds to a raw BM25 score of 20.
-    expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    expansion_skip_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Saturating BM25 confidence above which query expansion is skipped. "
+            "0.8 corresponds to a raw BM25 score of 20"
+        ),
+    )
 
     # Min relative BM25 top-1 vs top-2 gap ((top - second) / top) to skip expansion.
-    expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
+    expansion_skip_gap: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum relative BM25 gap between the top two hits that skips query expansion"
+        ),
+    )
 
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
@@ -401,10 +504,15 @@ class Config(BaseSettings):
     hyde_weight: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
     # HyDE prompt template. Must contain {question} placeholder.
-    hyde_prompt: str = (
-        "Write a 50-100 word passage that directly answers this question as if "
-        "it were an excerpt from a real document. Do not include any preamble, "
-        "just write the passage.\n\nQuestion: {question}"
+    hyde_prompt: str = Field(
+        default=(
+            "Write a 50-100 word passage that directly answers this question as if "
+            "it were an excerpt from a real document. Do not include any preamble, "
+            "just write the passage.\n\nQuestion: {question}"
+        ),
+        description=(
+            "Prompt template HyDE uses to write the hypothetical answer. Must contain {question}"
+        ),
     )
 
     # Reranker model ref. Empty disables reranking. Native GGUFs run on
@@ -518,7 +626,11 @@ class Config(BaseSettings):
     crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
 
     # 0 = unlimited, default = CPU count.
-    crawl_max_concurrent: int = Field(default=0, ge=0)
+    crawl_max_concurrent: int = Field(
+        default=0,
+        ge=0,
+        description="Pages fetched in parallel during a crawl. 0 = unlimited; default = CPU count",
+    )
 
     # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
@@ -694,17 +806,38 @@ class Config(BaseSettings):
     # to the listed device indices, with an optional tensor_split and replica count.
     # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
     # settings list, so public=False. None hands off to the VRAM-aware auto planner.
-    placement: str | None = ConfigField(default=None, writable=True, public=False)
+    placement: str | None = ConfigField(
+        default=None,
+        writable=True,
+        public=False,
+        description=(
+            "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
+            "each active role pins to the listed device indices. Edit it with the "
+            "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+        ),
+    )
 
     # Allow PUT/DELETE /api/placement to apply or clear placement over HTTP.
     # Off by default because applying placement restarts the shared fleet's moved roles, which
     # is unsafe across concurrent HTTP clients. Turn it on (LILBEE_ALLOW_HTTP_PLACEMENT=1)
     # only for a single-client / owned deployment: the plugin's managed local
     # server, or a personally-owned pod where one operator runs `lilbee serve`.
-    allow_http_placement: bool = Field(default=False)
+    allow_http_placement: bool = Field(
+        default=False,
+        description=(
+            "Let PUT and DELETE /api/placement change model placement over HTTP. Off by "
+            "default because applying placement restarts the moved roles, which is unsafe "
+            "with concurrent clients. Turn it on only for a deployment you alone use"
+        ),
+    )
 
     # True = Markdown widget for chat; False = plain Static (faster).
-    markdown_rendering: bool = True
+    markdown_rendering: bool = Field(
+        default=True,
+        description=(
+            "Render chat replies as Markdown in the TUI. Off draws plain text, which is faster"
+        ),
+    )
 
     # TUI theme name; persists the last Ctrl+T pick across sessions.
     theme: str = ConfigField(default="rose-pine", writable=True)
@@ -812,7 +945,13 @@ class Config(BaseSettings):
     # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,
     # ORDINAL, ...) is dropped before aggregation. Override via
     # LILBEE_CONCEPT_ALLOWED_ENT_TYPES as a comma-separated list.
-    concept_allowed_ent_types: frozenset[str] = Field(default=DEFAULT_ALLOWED_NER_LABELS)
+    concept_allowed_ent_types: frozenset[str] = Field(
+        default=DEFAULT_ALLOWED_NER_LABELS,
+        description=(
+            "spaCy NER labels the wiki entity extractor keeps. It drops everything else "
+            "(QUANTITY, CARDINAL, DATE, and so on) before aggregation"
+        ),
+    )
 
     # Strategy used to extract entities for the concept/entity wiki.
     # NER_ENTITIES (default) pulls typed NER entities with spaCy; concept

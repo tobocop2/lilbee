@@ -83,7 +83,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
 | `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
 | `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the model picks + Hugging Face. Use before `lilbee_model_pull` to pick what to install. Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. |
-| `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. |
+| `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. Groups: `Models`, `Retrieval`, `Generation`, `Ingest`, `Wiki`, `Memory`, `Crawling`, `Local-Servers`, `API-Keys`, `Display`, `System`, `General`. |
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
 | `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
@@ -260,6 +260,27 @@ For a clean slate: `lilbee_reset(confirm=true)` via the worker.
   file is present on disk.
 - **Confused about what changed in this session.** `lilbee_settings_list` always
   reflects current state.
+
+## Settings you can change, and what a change needs
+
+`lilbee_settings_list` returns the full writable surface at runtime, and
+[docs/settings.md](https://github.com/tobocop2/lilbee/blob/main/docs/settings.md) is the
+written reference: every setting, its default, and a column per surface saying whether
+MCP can set it. Three cases need an extra step after the write succeeds.
+
+**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled` and
+`mcp_sessions_enabled` decide which tools register, and that is decided once, when the
+server starts. `lilbee_settings_set({"wiki": true})` succeeds and persists, and the
+`lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
+do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
+confirm `wiki_enabled` before and after.
+
+**Turning a feature on does not run it.** After enabling the wiki, pages exist only once
+you build them: `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for a single page,
+or `lilbee_wiki_build` for the corpus (roughly one LLM call per source document, so hand
+it to the `lilbee-worker` subagent).
+
+**A reindex-forcing setting invalidates the index.** See the `reindex_required` note below.
 
 ## Secrets stay out of MCP reads
 
