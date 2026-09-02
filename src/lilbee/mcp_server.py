@@ -204,6 +204,13 @@ def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
     return deco
 
 
+# Settings read once per server build to decide which tools register. Writing
+# one over ``settings_set`` persists it, but the tool list only changes on the
+# next connection: MCP sends no ``tools/list_changed`` from here. The settings
+# reference documents that, and generates the list from this set.
+TOOL_GATE_SETTINGS: frozenset[str] = frozenset({"wiki", "memory_enabled", "mcp_sessions_enabled"})
+
+
 def _wiki_enabled() -> bool:
     return cfg.wiki
 
