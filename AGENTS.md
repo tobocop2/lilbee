@@ -623,7 +623,9 @@ group in `core/config/model.py` and `app/settings_map.py`. Prefix with `wiki_`
 (for module-level behaviour) or `wiki_concept_` / `wiki_entity_`
 (for strategy-scoped knobs). Use `ConfigField(writable=True)` so the
 setting appears in `/settings`, `PATCH /api/config`, the MCP
-`settings_set` tool, and `LILBEE_*` env vars.
+`settings_set` tool, and `LILBEE_*` env vars. Give it a `help_text` in
+`settings_map.py`; `docs/settings.md` is generated from those fields and
+`make lint` fails when a setting has no help text.
 
 **Writing to log.md**. Use `append_wiki_log(action, details)` from
 `wiki/index.py` with a `WikiLogAction` member from `wiki/shared.py`

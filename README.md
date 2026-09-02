@@ -157,7 +157,7 @@ lilbee self-check    # ~90 MB download; runs an inference + an embedding; "SELF-
 lilbee               # launch the terminal app; pick your models from the catalog on first run
 ```
 
-The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, CLI, HTTP server, MCP, env vars, and `config.toml`.
+The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, CLI, HTTP server, MCP, env vars, and `config.toml`. The [settings reference](docs/settings.md) lists every setting and which of those surfaces can change it.
 
 ### On older CPUs (pre-AVX2)
 
@@ -271,7 +271,7 @@ Two recommended ways to use lilbee, depending on whether you're the one driving:
 - **Run `lilbee`** for the full-screen terminal app. On first run you pick a chat model straight from the catalog, fit-checked against your hardware, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
 - **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](src/lilbee/skills/lilbee_mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [A reference for AI agents](#a-reference-for-ai-agents).
 
-Retrieval defaults are sane, and every setting is tunable from the TUI, `/set`, MCP, env vars, or `config.toml`. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
+Retrieval defaults are sane, and every setting is tunable from env vars or `config.toml`, most of them from the TUI, MCP, and the HTTP API too; the [settings reference](docs/settings.md) has a column per surface. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
 
 ## Highlights
 
