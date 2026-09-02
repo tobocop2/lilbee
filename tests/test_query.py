@@ -30,6 +30,7 @@ from lilbee.retrieval.query.formatting import (
 from lilbee.retrieval.query.searcher import (
     _CONTEXT_TEMPLATE_TOKENS,
     _PER_SOURCE_TOKENS,
+    _SOURCE_LISTING_LINES,
     EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -2638,6 +2639,38 @@ class TestAggregateRoute:
         assert "369" in result.answer
         assert "123456" in result.answer
 
+    def test_listing_names_the_indexed_sources(self, mock_svc):
+        """The reported break: with 180 documents indexed, "what files can you
+        see?" fell through to top-k retrieval and named about seven of them."""
+        mock_svc.store.count_sources.return_value = 3
+        mock_svc.store.get_sources.return_value = [
+            {"filename": name} for name in ("b.pdf", "a.md", "c.txt")
+        ]
+        result = get_services().searcher.ask_raw("what files can you see?")
+        assert "a.md" in result.answer
+        assert "b.pdf" in result.answer
+        assert "c.txt" in result.answer
+        assert "3 documents" in result.answer
+        mock_svc.provider.chat.assert_not_called()
+        mock_svc.store.search.assert_not_called()
+
+    def test_listing_caps_a_large_corpus_and_says_so(self, mock_svc):
+        mock_svc.store.count_sources.return_value = 180
+        mock_svc.store.get_sources.return_value = [
+            {"filename": f"doc-{i:03d}.pdf"} for i in range(_SOURCE_LISTING_LINES)
+        ]
+        result = get_services().searcher.ask_raw("list the documents")
+        assert mock_svc.store.get_sources.call_args.kwargs["limit"] == _SOURCE_LISTING_LINES
+        assert result.answer.count("doc-") == _SOURCE_LISTING_LINES
+        assert f"{_SOURCE_LISTING_LINES} of them" in result.answer
+        assert "180 documents" in result.answer
+
+    def test_listing_with_nothing_tracked_says_so(self, mock_svc):
+        mock_svc.store.count_sources.return_value = 0
+        result = get_services().searcher.ask_raw("what documents do you have?")
+        assert "No documents are indexed" in result.answer
+        mock_svc.store.get_sources.assert_not_called()
+
     def test_typed_count_declines_precisely(self, mock_svc, tmp_path):
         old_dir = cfg.data_dir
         cfg.data_dir = tmp_path / "no_schema_here"
@@ -2828,6 +2861,76 @@ class TestHistoryCondensation:
             cfg.query_expansion_count = 3
         mock_svc.provider.chat.assert_not_called()
         assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"
+
+    def test_chatty_rewrite_does_not_reach_retrieval(self, mock_svc):
+        """The reported break: a small model answers the condense prompt with a
+        lead-in, and retrieval ran on text the user never typed."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "Sure, here is the standalone search query you asked for:"
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"
+        assert rag.retrieval_query == ""
+
+    def test_query_after_a_lead_in_still_reaches_retrieval(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result(
+            "Sure, here is the standalone query:\nwhen was the Split Rock journal written"
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        expected = "when was the Split Rock journal written"
+        assert mock_svc.store.search.call_args[1]["query_text"] == expected
+
+    def test_rewrite_is_reported_on_the_context(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == rewritten
+
+    def test_unrewritten_turn_reports_nothing(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == ""
+
+    def test_ask_raw_carries_the_rewrite(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.side_effect = [_text_result(rewritten), _text_result("an answer")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.retrieval_query == rewritten
 
     def test_reasoning_stripped_from_rewrite(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result(

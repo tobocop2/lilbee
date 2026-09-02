@@ -5,8 +5,9 @@ shapes reach the same pipe and fail structurally:
 
 - A known-item lookup ("summarize survey_214.pdf") names the thing it
   wants; the answer is a document, not a ranking.
-- An aggregate ("how many documents mention the observatory") is a property
-  of the whole corpus; the top 20 of 500k chunks cannot count anything.
+- An aggregate ("how many documents mention the observatory", "what files
+  can you see") is a property of the whole corpus; the top 20 of 500k chunks
+  cannot count or enumerate anything.
 
 Detection here is deterministic and deliberately conservative: a missed
 route degrades to topical retrieval, which handles the query the way it
@@ -31,12 +32,13 @@ from lilbee.retrieval.language import QueryLanguage, query_language
 
 
 class AggregateKind(Enum):
-    """What a count-shaped question is asking to count."""
+    """What a question about the corpus as a whole is asking for."""
 
     TOTAL_SOURCES = "total_sources"
     TERM_MENTIONS = "term_mentions"
     DISTINCT_TYPE = "distinct_type"
     TYPE_ASSOCIATION = "type_association"
+    SOURCE_LISTING = "source_listing"
     UNSUPPORTED = "unsupported"
 
 
@@ -189,18 +191,26 @@ def matches_stored_title(title: str, stored: str | None, lang: QueryLanguage | N
     return bool(title_tokens) and title_tokens == _title_tokens(stored, lang)
 
 
-def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> AggregateQuery | None:
-    """Parse a count-shaped question, or ``None`` for anything else.
+def _parse_listing(question: str, lang: QueryLanguage) -> AggregateQuery | None:
+    """A listing question ("what files can you see"), or ``None`` for anything else."""
+    if lang.listing_pattern.search(question):
+        return AggregateQuery(AggregateKind.SOURCE_LISTING)
+    return None
 
-    Only "how many ..." questions qualify; of those, term-mention and
-    corpus-total forms are answerable against today's schema. The rest
-    (counts over typed records the store does not hold) come back as
-    ``UNSUPPORTED`` so the caller can decline precisely instead of feeding
-    the question to top-k retrieval that structurally cannot count.
+
+def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> AggregateQuery | None:
+    """Parse a corpus-level question, or ``None`` for anything else.
+
+    Two shapes qualify. A listing ("what files can you see") asks which
+    documents the index holds. A count ("how many ...") asks how many; of
+    those, term-mention and corpus-total forms are answerable against today's
+    schema, and the rest (counts over typed records the store does not hold)
+    come back as ``UNSUPPORTED`` so the caller can decline precisely instead
+    of feeding the question to top-k retrieval that structurally cannot count.
     """
     lang = lang or query_language()
     if not lang.how_many_pattern.search(question):
-        return None
+        return _parse_listing(question, lang)
     m = lang.association_pattern.search(question) or lang.per_pattern.search(question)
     if m:
         return AggregateQuery(
@@ -243,6 +253,8 @@ term; put that term in "term"
 the type noun in "noun"
 - "type_association": asks how many X each Y has; put X in "noun" and Y in \
 "group_noun"
+- "source_listing": asks which documents/files the collection holds, or to \
+list them
 
 When unsure, use "topical".
 
@@ -255,6 +267,7 @@ _LLM_KINDS = {
     "term_mentions": AggregateKind.TERM_MENTIONS,
     "distinct_type": AggregateKind.DISTINCT_TYPE,
     "type_association": AggregateKind.TYPE_ASSOCIATION,
+    "source_listing": AggregateKind.SOURCE_LISTING,
 }
 
 
@@ -281,6 +294,7 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
     group_noun = str(data.get("group_noun", "") or "").strip()
     required_ok = {
         AggregateKind.TOTAL_SOURCES: True,
+        AggregateKind.SOURCE_LISTING: True,
         AggregateKind.TERM_MENTIONS: bool(term),
         AggregateKind.DISTINCT_TYPE: bool(noun),
         AggregateKind.TYPE_ASSOCIATION: bool(noun and group_noun),

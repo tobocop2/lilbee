@@ -40,6 +40,7 @@ class SseEvent(StrEnum):
     WARM = "warm"
     COMPACTING = "compacting"
     COMPACTION = "compaction"
+    RETRIEVAL_QUERY = "retrieval_query"
     MEMORY_EXTRACTED = "memory_extracted"
     GPU_STATS = "gpu_stats"
 

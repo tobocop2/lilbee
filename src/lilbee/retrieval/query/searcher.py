@@ -56,6 +56,7 @@ from lilbee.retrieval.query.expansion import (
     EXPANSION_MAX_TOKENS,
     EXPANSION_PROMPT,
     HYDE_MAX_TOKENS,
+    choose_retrieval_query,
 )
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
@@ -189,6 +190,11 @@ SEARCH_NEEDS_EMBEDDER = (
 
 # Association answers list at most this many groups before summarizing.
 _ASSOCIATION_LINES = 15
+
+# Documents named when a listing question is answered. Enough that a user
+# recognizes their library, short enough to stay one readable answer.
+_SOURCE_LISTING_LINES = 50
+
 # One retry after a provider context-overflow, refitting to this fraction of
 # the budget. The estimator is a heuristic; overflow must degrade, not fail.
 _OVERFLOW_RETRY_SCALE = 0.6
@@ -217,6 +223,8 @@ class AskResult(BaseModel):
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
+    retrieval_query: str = ""
+    """The query retrieval ran when a history rewrite replaced the question, else empty."""
 
 
 class StructuredQuery(NamedTuple):
@@ -237,6 +245,12 @@ class RagContext(NamedTuple):
     results: list[SearchChunk]
     messages: list[ChatMessage]
     base_results: list[SearchChunk] | None = None
+    retrieval_query: str = ""
+    """The query retrieval ran, when a history rewrite replaced the question.
+
+    Empty when retrieval used the question as typed, so a surface can report
+    the rewrite without the caller comparing strings.
+    """
 
 
 class Searcher:
@@ -676,8 +690,9 @@ class Searcher:
         Retrieval sees only the query text; without this, "what about his
         brother?" is embedded and BM25-matched with its pronouns. The
         rewritten form drives retrieval only; the user's original wording
-        still reaches the answering prompt. Falls back to the original
-        question on any failure or empty rewrite.
+        still reaches the answering prompt. The reply is validated by
+        ``choose_retrieval_query``: a lead-in, refusal, or reasoning text
+        falls back to the original question, as does any provider failure.
         """
         recent = history[-CONDENSE_HISTORY_TURNS:]
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
@@ -688,14 +703,16 @@ class Searcher:
                 stream=False,
                 options={"num_predict": CONDENSE_MAX_TOKENS},
             )
-            rewritten = strip_reasoning(response.text).strip().splitlines()
-            first_line = rewritten[0].strip() if rewritten else ""
-            if first_line:
-                log.debug("Condensed follow-up %r -> %r", question, first_line)
-                return first_line
+            reply = strip_reasoning(response.text)
         except Exception:
             log.debug("History condensation failed; using the raw question", exc_info=True)
-        return question
+            return question
+        rewritten = choose_retrieval_query(reply, question, transcript)
+        if rewritten != question:
+            # The effective query at INFO, beside the aggregate routing
+            # decisions: an off-topic answer is unexplainable without it.
+            log.info("Condensed follow-up %r -> %r", question, rewritten)
+        return rewritten
 
     def summarize_history(
         self,
@@ -931,6 +948,8 @@ class Searcher:
         retrieval_query = question
         if history and self._config.history_rewrite:
             retrieval_query = self._condense_question(question, history)
+        # Reported only when it differs; the caller already has the question.
+        rewrite = retrieval_query if retrieval_query != question else ""
         # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
         # it names reaches the known-item route and the wiki-disabled guard. Left
         # in the query, the prefix sits in front of a document name and
@@ -968,12 +987,14 @@ class Searcher:
                 # prompt instead of a refusal. Facts only -- always-injected
                 # preferences say nothing about answerability.
                 if self._memory_facts(question):
-                    return RagContext([], self.direct_messages(question, history))
+                    return RagContext(
+                        [], self.direct_messages(question, history), retrieval_query=rewrite
+                    )
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
-        return self._finalize_context(results, question, history)
+        return self._finalize_context(results, question, history, retrieval_query=rewrite)
 
     def _finalize_context(
         self,
@@ -981,6 +1002,7 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
+        retrieval_query: str = "",
     ) -> RagContext:
         """Fit *results* to the context budget and assemble the prompt.
 
@@ -998,7 +1020,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages, base_results)
+        return RagContext(results, messages, base_results, retrieval_query)
 
     def _context_budget(
         self,
@@ -1119,14 +1141,17 @@ class Searcher:
         )
 
     def _answer_aggregate(self, aggregate: AggregateQuery) -> str:
-        """Answer a count-shaped question with an exact full-corpus scan.
+        """Answer a corpus-level question with an exact full-corpus scan.
 
         Top-k retrieval sees a handful of chunks out of the whole corpus, so
-        it structurally cannot count; the faithful-but-useless outcome is a
-        model hedging that "the context does not provide precise counts".
-        Counting is a scan, and a scan needs no language model: the numbers
-        below are exact, not generated.
+        it structurally cannot count or enumerate; the faithful-but-useless
+        outcome is a model hedging that "the context does not provide precise
+        counts", or naming the few sources its chunks happened to come from.
+        A scan needs no language model: the numbers and names below are exact,
+        not generated.
         """
+        if aggregate.kind is AggregateKind.SOURCE_LISTING:
+            return self._answer_source_listing()
         if aggregate.kind is AggregateKind.TOTAL_SOURCES:
             sources = self._store.count_sources()
             chunks = self._store.count_chunks()
@@ -1143,6 +1168,24 @@ class Searcher:
             if typed is not None:
                 return typed
         return self._decline_aggregate()
+
+    def _answer_source_listing(self) -> str:
+        """Name the indexed documents, capped, alongside the total.
+
+        A user asking what the index holds is asking about the corpus, not
+        about a passage: retrieval would answer from the sources of its top-k
+        chunks, capped again per source, and report a handful of documents
+        from a library of hundreds.
+        """
+        total = self._store.count_sources()
+        if not total:
+            return "No documents are indexed yet."
+        records = self._store.get_sources(limit=_SOURCE_LISTING_LINES)
+        names = sorted(record["filename"] for record in records)
+        lines = "\n".join(f"  {name}" for name in names)
+        if total > len(names):
+            return f"The index holds {total} documents. Listing {len(names)} of them:\n{lines}"
+        return f"The index holds {total} documents:\n{lines}"
 
     def _decline_aggregate(self) -> str:
         """The honest no-capability answer, naming what IS countable."""
@@ -1378,6 +1421,7 @@ class Searcher:
                 question,
                 history,
                 scale=_OVERFLOW_RETRY_SCALE,
+                retrieval_query=rag.retrieval_query,
             )
             results, messages = retry.results, retry.messages
             result = self._provider.chat(
@@ -1391,6 +1435,7 @@ class Searcher:
             answer=clean,
             sources=results,
             cited_sources=cited_subset(strip_llm_citations(clean), results),
+            retrieval_query=rag.retrieval_query,
         )
 
     def ask(

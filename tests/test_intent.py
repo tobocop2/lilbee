@@ -46,6 +46,55 @@ class TestDocumentReferences:
         assert document_references("is there a document that lists the deliveries?") == []
 
 
+class TestSourceListing:
+    """ "What files can you see?" is a corpus property, not a topical question:
+    ordinary retrieval answers it from the handful of sources its top-k chunks
+    came from, which reads as a far smaller library than the index holds."""
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "what files can you see?",
+            "what documents do you have?",
+            "which files are indexed?",
+            "list the documents",
+            "show me the files you have",
+            "name all the sources in the index",
+            "list all indexed documents",
+            "what documents are in your library?",
+            "which files have been indexed?",
+            "what documents have you indexed?",
+            "what files did you index?",
+        ],
+    )
+    def test_listing_shapes_route(self, question):
+        parsed = parse_aggregate(question)
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.SOURCE_LISTING
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "which documents mention the observatory?",
+            "what files discuss the harbor?",
+            "list the deliveries in October",
+            "what did the keeper record in October?",
+        ],
+    )
+    def test_topical_questions_stay_topical(self, question):
+        assert parse_aggregate(question) is None
+
+    def test_count_shape_still_counts(self):
+        parsed = parse_aggregate("how many documents are there?")
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.TOTAL_SOURCES
+
+    def test_classifier_can_route_a_listing(self):
+        parsed = parse_llm_aggregate('{"kind": "source_listing"}')
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.SOURCE_LISTING
+
+
 class TestTermMentionPhrasings:
     """Natural corpus-noun phrasings must route to the exact scan (bb repro:
     'how many of these books mention blood?' declined while the answer was a

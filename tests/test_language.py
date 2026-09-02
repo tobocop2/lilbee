@@ -13,6 +13,7 @@ SPANISH_LIKE = QueryLanguage(
     code="xx",
     doc_ref_pattern=re.compile(r"\b(?:documento|informe)\s+#?([\w][\w.-]{0,23})\b", re.IGNORECASE),
     ref_stopwords=frozenset({"que", "el", "la"}),
+    stopwords=frozenset({"que", "el", "la", "los", "las", "de", "en", "es", "son", "tienes"}),
     how_many_pattern=re.compile(r"^\s*cu[aá]ntos\b", re.IGNORECASE),
     total_pattern=re.compile(r"cu[aá]ntos\s+documentos\s+hay[?\s]*$", re.IGNORECASE),
     association_pattern=re.compile(
@@ -25,6 +26,7 @@ SPANISH_LIKE = QueryLanguage(
     term_mention_pattern=re.compile(
         r"cu[aá]ntos\s+documentos\s+mencionan\s+(.+?)[?\s]*$", re.IGNORECASE
     ),
+    listing_pattern=re.compile(r"^\s*qu[eé]\s+documentos\s+tienes[?\s]*$", re.IGNORECASE),
     leading_article_pattern=re.compile(r"^(?:el|la|los|las)\s+", re.IGNORECASE),
     known_item_patterns=(re.compile(r"^\s*resume\s+(.+?)[?\s]*$", re.IGNORECASE),),
     noun_variants=lambda noun: {noun.strip().lower()},
@@ -55,6 +57,12 @@ class TestPackDrivenParsing:
 
     def test_foreign_pack_ignores_english_shapes(self):
         assert parse_aggregate("how many documents are there", SPANISH_LIKE) is None
+        assert parse_aggregate("what files can you see?", SPANISH_LIKE) is None
+
+    def test_foreign_pack_parses_its_own_listing_question(self):
+        parsed = parse_aggregate("qué documentos tienes?", SPANISH_LIKE)
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.SOURCE_LISTING
 
     def test_foreign_pack_doc_references(self):
         refs = document_references("resume el documento 214", SPANISH_LIKE)

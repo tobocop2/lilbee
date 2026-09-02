@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import re
 
+from lilbee.retrieval.language import QueryLanguage, query_language
+
 _MIN_TOKEN_LEN = 2
 _TOKEN_SPLIT_RE = re.compile(r"\W+")
 
@@ -12,6 +14,16 @@ _TOKEN_SPLIT_RE = re.compile(r"\W+")
 def _tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens, split on any non-alnum run."""
     return [word for word in _TOKEN_SPLIT_RE.split(text.lower()) if len(word) >= _MIN_TOKEN_LEN]
+
+
+def content_tokens(text: str, lang: QueryLanguage | None = None) -> set[str]:
+    """Meaning-carrying tokens of *text*: its tokens minus the pack's function words.
+
+    Two texts about the same thing share these; two texts sharing only
+    function words are about different things.
+    """
+    lang = lang or query_language()
+    return {token for token in _tokenize(text) if token not in lang.stopwords}
 
 
 def _idf_weights(

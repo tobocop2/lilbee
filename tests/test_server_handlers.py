@@ -42,13 +42,13 @@ _SAMPLE_CHUNK = SearchChunk(
 )
 
 
-def _rag_return(chunks: list[SearchChunk] | None = None):
+def _rag_return(chunks: list[SearchChunk] | None = None, retrieval_query: str = ""):
     """Build a mock build_rag_context return value."""
     from lilbee.retrieval.query.searcher import RagContext
 
     results = chunks or [_SAMPLE_CHUNK]
     messages = [{"role": "system", "content": "test"}, {"role": "user", "content": "q"}]
-    return RagContext(results, messages)
+    return RagContext(results, messages, retrieval_query=retrieval_query)
 
 
 @pytest.fixture(autouse=True)
@@ -408,6 +408,22 @@ class TestAsk:
         assert result.answer == "No docs found."
         assert result.sources == []
 
+    async def test_reports_a_rewritten_retrieval_query(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="ok", sources=[], retrieval_query="when was the journal written"
+        )
+        result = await handlers.ask("and when was it written?")
+        assert result.retrieval_query == "when was the journal written"
+
+    async def test_reports_no_query_when_the_question_was_used(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        result = await handlers.ask("what?")
+        assert result.retrieval_query is None
+
     async def test_empty_question_raises(self):
         with pytest.raises(ValueError, match="question must not be empty"):
             await handlers.ask("")
@@ -472,6 +488,25 @@ class TestAskStream:
         assert "token" in event_types
         assert "sources" in event_types
         assert "done" in event_types
+
+    async def test_rewritten_query_is_reported(self, mock_svc):
+        """A history rewrite is what retrieval actually searched for, so the
+        stream names it before the answer; otherwise an off-topic answer has
+        no explanation on the client."""
+        mock_svc.searcher.build_rag_context.return_value = _rag_return(
+            retrieval_query="when was the Split Rock journal written"
+        )
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("and when was it written?")]
+        frame = next(e for e in events if e.startswith("event: retrieval_query"))
+        payload = json.loads(frame.split("data: ")[1].strip())
+        assert payload == {"query": "when was the Split Rock journal written"}
+
+    async def test_unrewritten_query_reports_nothing(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("question")]
+        assert not any(e.startswith("event: retrieval_query") for e in events)
 
     async def test_emits_warming_event_when_chat_cold(self, mock_svc):
         # A cold chat server yields an early "warming" event so the client shows
@@ -877,6 +912,53 @@ class TestChat:
         await handlers.chat("q", [], chunk_type="raw")
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
+    async def test_reports_a_rewritten_retrieval_query(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return(
+            retrieval_query="when was the journal written"
+        )
+        result = await handlers.chat("and when was it written?", [])
+        assert result.retrieval_query == "when was the journal written"
+
+    async def test_retrieval_off_reports_no_query(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        mock_svc.searcher.skip_retrieval.return_value = True
+        result = await handlers.chat("q", [])
+        assert result.retrieval_query is None
+
     async def test_populates_cited_sources(self, mock_svc, monkeypatch):
         """bb-ky3: /chat mirrors /ask and carries the answer's cited subset."""
         from lilbee.server.chat_dispatch.canonical import (
@@ -1028,6 +1110,20 @@ class TestChatStream:
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_rewritten_query_is_reported(self, mock_svc, monkeypatch):
+        """Both streams resolve retrieval through one helper, so the chat
+        stream names the rewrite exactly like the ask stream."""
+        mock_svc.searcher.build_rag_context.return_value = _rag_return(
+            retrieval_query="when was the Split Rock journal written"
+        )
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["reply"])
+        )
+        events = [e async for e in handlers.chat_stream("and when was it written?", [])]
+        frame = next(e for e in events if e.startswith("event: retrieval_query"))
+        payload = json.loads(frame.split("data: ")[1].strip())
+        assert payload == {"query": "when was the Split Rock journal written"}
 
     async def test_top_k_zero_skips_retrieval(self, mock_svc, monkeypatch):
         """bb-szm: streaming chat with an explicit top_k:0 bypasses retrieval and
@@ -4033,6 +4129,20 @@ class TestCrawlStream:
                 break
         await asyncio.sleep(0.05)
         assert any("Crawl stream cancelled by client" in r.message for r in caplog.records)
+
+
+class TestRetrievalQueryFrames:
+    """The frame builder, exercised directly rather than only through the
+    stream handlers, which run it in a worker thread."""
+
+    def test_rewrite_becomes_one_frame(self):
+        frames = _rag_h._retrieval_query_frames(_rag_return(retrieval_query="when written"))
+        assert len(frames) == 1
+        assert frames[0].startswith("event: retrieval_query")
+        assert json.loads(frames[0].split("data: ")[1].strip()) == {"query": "when written"}
+
+    def test_no_rewrite_becomes_no_frame(self):
+        assert _rag_h._retrieval_query_frames(_rag_return()) == []
 
 
 class TestSseHelpers:

@@ -259,6 +259,13 @@ class AskResponse(BaseModel):
     cited_sources: list[CleanedChunk] = Field(default_factory=list)
     compaction: CompactionInfo | None = None
     """Set when a /api/chat turn compacted its history before answering."""
+    retrieval_query: str | None = None
+    """The query retrieval ran when a history rewrite replaced the question.
+
+    ``None`` means retrieval used the question as typed. A client showing this
+    can tell an off-topic answer caused by a bad rewrite from one caused by
+    the corpus.
+    """
 
 
 class SetModelResponse(BaseModel):

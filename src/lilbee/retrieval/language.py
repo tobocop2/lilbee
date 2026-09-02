@@ -29,6 +29,9 @@ class QueryLanguage:
     # Generic nouns that follow a document noun in topical questions ("the
     # documents mention...", "which document says..."); never identifiers.
     ref_stopwords: frozenset[str]
+    # Function words that carry no retrieval meaning. Removing them leaves the
+    # tokens two texts must share to be about the same thing.
+    stopwords: frozenset[str]
     # Count-question shapes; routing rules live in ``query.intent.parse_aggregate``.
     how_many_pattern: re.Pattern[str]
     total_pattern: re.Pattern[str]
@@ -36,6 +39,10 @@ class QueryLanguage:
     per_pattern: re.Pattern[str]
     distinct_pattern: re.Pattern[str]
     term_mention_pattern: re.Pattern[str]
+    # "what files can you see", "list the documents": asks which sources the
+    # index holds. Anchored end to end, so a topical question that merely
+    # starts the same way ("which documents mention X") never matches.
+    listing_pattern: re.Pattern[str]
     # Leading article stripped from a counted term ("the observatory").
     leading_article_pattern: re.Pattern[str]
     # Known-item question shapes ("summarize X", "what is X about"): each
@@ -100,6 +107,158 @@ _EN_CORPUS_NOUNS = (
 # "how many of these books ...", "how many of the stories ...".
 _EN_OF_THESE = r"(?:of\s+(?:these|those|the|my|our)\s+)?"
 
+# Listing questions open with an imperative or an interrogative, name the
+# corpus's own units, and end there or on an index-scope cue.
+_EN_LISTING_LEAD = r"(?:list|show(?:\s+me)?|name|give\s+me|tell\s+me|what|which)"
+_EN_LISTING_DETERMINER = r"(?:all\s+|of\s+the\s+|the\s+|your\s+|my\s+|these\s+|those\s+)*"
+_EN_INDEX_SCOPE = (
+    r"(?:(?:can\s+|do\s+|did\s+|have\s+)?you\s+"
+    r"(?:have|see|access|hold|index|indexed|know\s+(?:about|of))"
+    r"|(?:are\s+|is\s+)?(?:there|indexed|available|loaded)"
+    r"|(?:are\s+|is\s+)?in\s+(?:the|your)\s+(?:index|corpus|collection|library|vault)"
+    r"|(?:have|has)\s+been\s+indexed)"
+)
+
+_EN_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "if",
+        "then",
+        "than",
+        "so",
+        "as",
+        "of",
+        "to",
+        "in",
+        "into",
+        "on",
+        "at",
+        "by",
+        "for",
+        "from",
+        "with",
+        "without",
+        "about",
+        "over",
+        "under",
+        "again",
+        "further",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "any",
+        "both",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "too",
+        "very",
+        "just",
+        "also",
+        "up",
+        "out",
+        "down",
+        "off",
+        "between",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "i",
+        "me",
+        "my",
+        "mine",
+        "myself",
+        "we",
+        "us",
+        "our",
+        "ours",
+        "you",
+        "your",
+        "yours",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "hers",
+        "it",
+        "its",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "this",
+        "that",
+        "these",
+        "those",
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "which",
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "done",
+        "have",
+        "has",
+        "had",
+        "having",
+        "can",
+        "could",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "must",
+        "please",
+        "tell",
+        "give",
+        "show",
+        "say",
+        "said",
+        "get",
+        "got",
+        "make",
+        "made",
+        "take",
+        "taken",
+    }
+)
+
 ENGLISH = QueryLanguage(
     code="en",
     doc_ref_pattern=re.compile(
@@ -109,6 +268,7 @@ ENGLISH = QueryLanguage(
     ref_stopwords=frozenset(
         {"that", "which", "the", "this", "these", "those", "it", "them", "was", "is", "are"}
     ),
+    stopwords=_EN_STOPWORDS,
     how_many_pattern=re.compile(
         r"^\s*(?:roughly\s+|approximately\s+|about\s+)?how\s+many\b", re.IGNORECASE
     ),
@@ -140,6 +300,21 @@ ENGLISH = QueryLanguage(
         r"how\s+many\s+" + _EN_OF_THESE + _EN_CORPUS_NOUNS + r"\s+"
         r"(?:mention|mentions|mentioning|contain|contains|containing|reference|references|referencing|discuss|discussing)\s+"
         r"(.+?)[?.\s]*$",
+        re.IGNORECASE,
+    ),
+    # "what files can you see?", "list the indexed documents", "which files
+    # are in your index?". A trailing topical clause ("... that mention X")
+    # leaves the anchored pattern unmatched, so it stays a topical question.
+    listing_pattern=re.compile(
+        r"^\s*"
+        + _EN_LISTING_LEAD
+        + r"\s+"
+        + _EN_LISTING_DETERMINER
+        + r"(?:indexed\s+)?"
+        + _EN_CORPUS_NOUNS
+        + r"\b(?:\s+"
+        + _EN_INDEX_SCOPE
+        + r")?[?.!\s]*$",
         re.IGNORECASE,
     ),
     leading_article_pattern=re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE),
