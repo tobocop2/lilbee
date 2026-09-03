@@ -22,8 +22,7 @@ log = logging.getLogger(__name__)
 
 _PDF_MIME = "application/pdf"
 
-# MIME subtypes that name a container of other files. Matched against the base
-# subtype, so a format merely packaged as zip keeps its own identity.
+# Base MIME subtypes that name a container of other files.
 _ARCHIVE_SUBTYPES = frozenset(
     {
         "7z-compressed",
@@ -54,8 +53,7 @@ class ExclusionReason(StrEnum):
     VECTOR_GRAPHIC = "vector graphic, not a document"
 
 
-# What the MIME type cannot say. An SVG is image/svg+xml, so it routes to OCR
-# like a scan, but it is a drawing: a logo yields an empty page.
+# Refusals the MIME type cannot express: image/svg+xml is a drawing, not a scan.
 _DENIED_EXTENSIONS: dict[str, ExclusionReason] = {".svg": ExclusionReason.VECTOR_GRAPHIC}
 
 
@@ -75,11 +73,9 @@ def _normalized_ext(extension: str) -> str:
 
 
 def _is_archive_mime(mime: str) -> bool:
-    """Whether *mime* names a container of other files rather than a document.
+    """Whether the base subtype of *mime* names an archive.
 
-    The base subtype decides. The structured suffix is dropped, so
-    ``application/epub+zip`` reads as ``epub`` and a book survives; the ``x-`` or
-    vendor prefix is dropped, so ``application/x-tar`` reads as ``tar``.
+    ``application/epub+zip`` reads as ``epub``; ``application/x-tar`` reads as ``tar``.
     """
     subtype = mime.partition("/")[2].partition("+")[0].strip().lower()
     for prefix in _SUBTYPE_PREFIXES:
@@ -91,12 +87,8 @@ def _is_archive_mime(mime: str) -> bool:
 def excluded_extension_reasons() -> dict[str, ExclusionReason]:
     """Extension -> why discovery refuses it, for xberg formats lilbee will not ingest.
 
-    An archive holds other files, so extracting one yields the concatenated text
-    of everything inside under a single source name: two gzipped run files became
-    28,449 chunks that drowned out the corpus around them. The rule reads the MIME
-    type xberg reports rather than a list of extension names, so a format lilbee
-    has never seen is classified the moment xberg supports it. ``_DENIED_EXTENSIONS``
-    covers the few cases the MIME type cannot express.
+    Archives are found by the MIME type xberg reports; ``_DENIED_EXTENSIONS`` adds
+    the refusals a MIME type cannot express.
     """
     from xberg import list_supported_formats
 
@@ -292,8 +284,7 @@ def _walk_root(
 ) -> Iterator[ScannedFile]:
     """Yield the files under *base* lilbee knows, keyed relative to it (prefixed by *label*).
 
-    A refused format is yielded with its reason rather than dropped, so a caller
-    can report it; everything lilbee cannot read at all is left out.
+    A refused format is yielded with its reason; an unknown format is left out.
 
     Symlinks are not followed (``followlinks=False``): each root is walked as the
     real tree it names, so there is no traversal loop and no path can escape the
@@ -350,9 +341,7 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
 def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = None) -> CorpusScan:
     """Scan the owned documents dir and every registered root into a :class:`CorpusScan`.
 
-    Files whose format lilbee refuses (see ``excluded_extension_reasons``) are kept
-    apart from the ingestable ones rather than dropped, so a sync can report each
-    one as skipped with the reason instead of passing over it silently.
+    A refused file (see ``excluded_extension_reasons``) lands in ``excluded``, not ``files``.
     """
     files: dict[str, Path] = {}
     excluded: dict[str, ExclusionReason] = {}

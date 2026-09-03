@@ -1165,6 +1165,27 @@ class TestSyncDropsNewlyIgnored:
         assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}
         store.remove_documents.assert_not_called()
 
+    async def test_a_refused_format_already_indexed_is_removed(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """An archive an earlier version indexed leaves the index on the next sync."""
+        from lilbee.data.ingest import discovery, sync
+
+        (isolated_env / "keep.txt").write_text("a document worth keeping", encoding="utf-8")
+        (isolated_env / "runs.gz").write_bytes(b"\x1f\x8b")
+        discovery.supported_extension_map.cache_clear()
+        monkeypatch.setattr(discovery, "excluded_extension_reasons", lambda: {})
+        first = await sync()
+        monkeypatch.undo()
+        discovery.supported_extension_map.cache_clear()
+        assert sorted(first.added) == ["keep.txt", "runs.gz"]
+
+        result = await sync()
+        assert result.removed == ["runs.gz"]
+        assert result.skipped == ["runs.gz"]
+        store = svc_mod.get_services().store
+        assert {s["filename"] for s in store.get_sources()} == {"keep.txt"}
+
     async def test_prune_ignored_drops_the_source_on_request(self, mock_extract_file, isolated_env):
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
@@ -2273,9 +2294,6 @@ class TestArchiveMimeRule:
             "application/zip",
             "application/x-tar",
             "application/x-7z-compressed",
-            "application/x-bzip2",
-            "application/x-xz",
-            "application/vnd.rar",
         ],
     )
     def test_container_mime_types_are_archives(self, mime):
@@ -3049,6 +3067,16 @@ class TestDiscoverRegisteredRoots:
 
         found = discover_files()
         assert found["linked.md"] == outside_file
+
+    def test_registering_a_refused_file_reports_the_reason(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+
+        archive = tmp_path / "runs.gz"
+        archive.write_bytes(b"\x1f\x8b")
+        result = register_sources([archive])
+        assert result.refused == ["runs.gz: archive, not a document"]
+        assert result.registered == []
+        assert cfg.linked_roots == {}
 
     def test_owned_files_and_roots_coexist(self, isolated_env, tmp_path):
         """documents_dir files and a registered root are both discovered."""

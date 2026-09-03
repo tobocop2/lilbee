@@ -533,13 +533,14 @@ class TestAggregateResults:
             fanout.ShardDone(
                 kind="done",
                 index=1,
-                result=SyncResult(updated=["b"], failed=["c"], unchanged=3),
+                result=SyncResult(updated=["b"], failed=["c"], removed=["d.gz"], unchanged=3),
                 error=None,
             ),
             fanout.ShardDone(kind="done", index=2, result=None, error="died"),
         ]
         result = fanout.aggregate_results(verdicts)
         assert (result.added, result.updated, result.failed) == (["a"], ["b"], ["c"])
+        assert result.removed == ["d.gz"]
         assert (result.unchanged, result.truncated) == (5, 1)
 
 

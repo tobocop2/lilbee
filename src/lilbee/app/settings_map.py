@@ -945,9 +945,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Chunks one file may contribute before it is skipped instead of embedded. "
-            "Raise it, or set 0 for no limit, to index a genuinely long document such "
-            "as a thousand-page manual at a small chunk_size"
+            "Most chunks one file can add to the index; a file over the limit is skipped, "
+            "not embedded (0 = no limit). Raise it for a long document such as a "
+            "thousand-page manual at a small chunk_size, then retry skipped files"
         ),
     ),
     "tesseract_timeout": SettingDef(

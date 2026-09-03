@@ -821,11 +821,7 @@ _EXCLUDED_LOG_SAMPLE = 5
 
 
 def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
-    """Warn once per refused format, so a passed-over archive is never silent.
-
-    Grouped rather than one line per file: a vault of a hundred logos would
-    otherwise bury the sync's own output.
-    """
+    """Warn once per exclusion reason, naming at most ``_EXCLUDED_LOG_SAMPLE`` files."""
     by_reason: dict[ExclusionReason, list[str]] = {}
     for name, why in excluded.items():
         by_reason.setdefault(why, []).append(name)
@@ -945,6 +941,20 @@ def _forget_ignored(sources: list[SourceRecord], rules: IgnoreRules) -> list[str
     source back on the next sync.
     """
     names = _ignored_sources(sources, rules)
+    if not names:
+        return []
+    from lilbee.app.ingest import forget_removed_from_wiki_index
+
+    removed = list(get_services().store.remove_documents(names).removed)
+    forget_removed_from_wiki_index(removed)
+    return removed
+
+
+def _forget_refused(
+    excluded: Mapping[str, ExclusionReason], existing: Mapping[str, SourceRecord]
+) -> list[str]:
+    """Drop indexed sources that discovery now refuses. Returns what went."""
+    names = [name for name in excluded if name in existing]
     if not names:
         return []
     from lilbee.app.ingest import forget_removed_from_wiki_index
@@ -1157,9 +1167,7 @@ async def sync(
     skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
-    # Files whose format lilbee refuses start the run skipped, so the summary says
-    # an archive was passed over and why. No skip marker is written for them: the
-    # verdict comes from the extension, so every sync re-reports it for free.
+    # Refused formats start the run skipped; they get no skip marker (no planned hash).
     skipped: dict[str, None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
@@ -1169,13 +1177,15 @@ async def sync(
     # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
     # table, so it leaves this pass to the parent rather than racing its siblings.
     ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
+    # Shard-safe: a worker removes only keys from its own slice.
+    refused = _forget_refused(scan.excluded, existing_sources)
 
     # Sources whose backing file is not on disk this pass. A vanished file is NOT
     # removed: it stays indexed and searchable, a dead path-link the user
     # discovers only when they try to open it, and the set pairs a reappeared
     # identical file to its old key below. What was just removed leaves the set,
     # where it could otherwise capture a real move.
-    gone = set(ignored)
+    gone = set(ignored) | set(refused)
     absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
@@ -1263,7 +1273,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=ignored,
+        removed=ignored + refused,
         unchanged=state.unchanged,
         relocated=relocated,
         failed=list(failed),
@@ -1380,13 +1390,7 @@ def _over_limit_result(
     pages_done: list[int],
     on_progress: DetailedProgressCallback,
 ) -> _IngestResult:
-    """A file refused for exceeding the per-file chunk limit, recorded as skipped.
-
-    The hash rides along so the skip marker holds the file out of the next sync:
-    the verdict is deterministic, and re-extracting it every pass is the cost this
-    limit exists to avoid. Editing the file, raising the limit and re-running with
-    ``retry-skipped``, or ``rebuild`` all re-arm it.
-    """
+    """A file over the per-file chunk limit, recorded as skipped and skip-marked at its hash."""
     log.warning("Skipped %s: %s", entry.name, exc)
     with contextlib.suppress(TaskCancelledError):
         on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
