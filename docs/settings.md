@@ -144,6 +144,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `ingest_processes` | `LILBEE_INGEST_PROCESSES` | `int` | `0` | yes | yes | yes | no | Ingest worker processes, one GPU each (0 = auto, one per card). Used once the corpus is big enough to pay for them; 1 keeps ingest in this process. |
 | `ingest_workers` | `LILBEE_INGEST_WORKERS` | `int` | `0` | yes | yes | yes | no | Workers for discovering and hashing files (0 = auto, all available cores). |
 | `layout_detection` | `LILBEE_LAYOUT_DETECTION` | `bool` | `false` | yes | yes | yes | no | Layout-aware PDF extraction: reading order plus header/footer stripping (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
+| `max_chunks_per_file` | `LILBEE_MAX_CHUNKS_PER_FILE` | `int` | `3000` | yes | yes | yes | no | Chunks one file may contribute before it is skipped instead of embedded. Raise it, or set 0 for no limit, to index a genuinely long document such as a thousand-page manual at a small chunk_size. |
 | `ocr_language` | `LILBEE_OCR_LANGUAGE` | `list` | `eng` | yes | yes | yes | no | Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu. |
 | `ocr_timeout` | `LILBEE_OCR_TIMEOUT` | `float` | `300.0` | yes | yes | yes | no | Per-page timeout in seconds for vision OCR (0 = no limit). |
 | `semantic_chunking` | `LILBEE_SEMANTIC_CHUNKING` | `bool` | `false` | yes | yes | yes | no | Opt-in topic-aware chunker (default off; may fragment numbered procedures). |

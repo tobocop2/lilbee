@@ -27,6 +27,7 @@ from rich.progress import (
 
 from lilbee.app.services import get_services
 from lilbee.core.config import Config, active_config
+from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_document,
@@ -44,7 +45,9 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import (
+    ExclusionReason,
     classify_file,
+    discover_corpus,
     discover_files,
     file_hash,
     resolve_source_root,
@@ -813,6 +816,25 @@ def detect_pending() -> int:
     return len(plan.files_to_process)
 
 
+# Refused files named in the log line before it falls back to a count.
+_EXCLUDED_LOG_SAMPLE = 5
+
+
+def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
+    """Warn once per refused format, so a passed-over archive is never silent.
+
+    Grouped rather than one line per file: a vault of a hundred logos would
+    otherwise bury the sync's own output.
+    """
+    by_reason: dict[ExclusionReason, list[str]] = {}
+    for name, why in excluded.items():
+        by_reason.setdefault(why, []).append(name)
+    for why, names in by_reason.items():
+        shown = sorted(names)[:_EXCLUDED_LOG_SAMPLE]
+        more = f" and {len(names) - len(shown)} more" if len(names) > len(shown) else ""
+        log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
+
+
 def _load_sync_skip_markers(*, clear_first: bool) -> dict[str, str]:
     """Read the skip-marker file, optionally clearing it first.
 
@@ -1128,15 +1150,21 @@ async def sync(
         )
 
     rules = IgnoreRules.for_corpus()
-    disk_files = discover_files(shard, rules)
+    scan = discover_corpus(shard, rules)
+    disk_files = scan.files
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
-    skipped: dict[str, None] = {}
-    reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
+    # Files whose format lilbee refuses start the run skipped, so the summary says
+    # an archive was passed over and why. No skip marker is written for them: the
+    # verdict comes from the extension, so every sync re-reports it for free.
+    skipped: dict[str, None] = dict.fromkeys(scan.excluded)
+    # filename → why it was skipped/failed (for reporting)
+    reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
     flush_failed: set[str] = set()
+    _log_excluded(scan.excluded)
 
     # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
     # table, so it leaves this pass to the parent rather than racing its siblings.
@@ -1345,6 +1373,35 @@ def _failed_result(
     return _IngestResult(entry.name, entry.path, 0, error=exc)
 
 
+def _over_limit_result(
+    exc: ChunkLimitError,
+    entry: FileToProcess,
+    *,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+) -> _IngestResult:
+    """A file refused for exceeding the per-file chunk limit, recorded as skipped.
+
+    The hash rides along so the skip marker holds the file out of the next sync:
+    the verdict is deterministic, and re-extracting it every pass is the cost this
+    limit exists to avoid. Editing the file, raising the limit and re-running with
+    ``retry-skipped``, or ``rebuild`` all re-arm it.
+    """
+    log.warning("Skipped %s: %s", entry.name, exc)
+    with contextlib.suppress(TaskCancelledError):
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
+    pages_done[0] += 1
+    return _IngestResult(
+        entry.name,
+        entry.path,
+        0,
+        error=None,
+        file_hash=entry.file_hash,
+        skip_reason=str(exc),
+        needs_cleanup=entry.needs_cleanup,
+    )
+
+
 async def _stream_tasks(
     plan_batches: AsyncGenerator[list[FileToProcess]],
     make_task: Callable[[FileToProcess, int], Coroutine[Any, Any, _IngestResult]],
@@ -1454,6 +1511,10 @@ async def ingest_stream(
                     concept_records=concept_records,
                     entity_rows=entity_rows,
                     meta=meta,
+                )
+            except ChunkLimitError as exc:
+                return _over_limit_result(
+                    exc, entry, pages_done=pages_done, on_progress=on_progress
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -1829,11 +1890,18 @@ def _classify_result(
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
 
-    Failures and zero-chunk files are tracked here; a successful file is reported
-    as ``INGESTED`` and its chunks are persisted by the batched flush, so it stays
-    in ``added`` / ``updated`` until then. When *reasons* is given, the
+    Failures, refusals and zero-chunk files are tracked here; a successful file is
+    reported as ``INGESTED`` and its chunks are persisted by the batched flush, so
+    it stays in ``added`` / ``updated`` until then. When *reasons* is given, the
     human-readable cause is recorded there (filename → reason) for reporting.
     """
+    if result.skip_reason is not None:
+        added.pop(result.name, None)
+        updated.pop(result.name, None)
+        skipped[result.name] = None
+        if reasons is not None:
+            reasons[result.name] = result.skip_reason
+        return BatchStatus.SKIPPED
     if result.error is not None:
         # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
         log.warning("Failed to ingest %s: %s", result.name, result.error)

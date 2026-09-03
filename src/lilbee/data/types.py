@@ -176,6 +176,8 @@ class _IngestResult:
     and ``concept_records`` the file's concept-table rows, and ``entity_rows``
     the file's typed-entity rows, all written by the same flush. ``meta``
     carries the document's extraction-time metadata for the source row.
+    ``skip_reason`` is set when the file was refused rather than attempted, and
+    it decides the outcome ahead of the chunk count.
     """
 
     name: str
@@ -183,6 +185,7 @@ class _IngestResult:
     chunk_count: int
     error: Exception | None
     file_hash: str = ""
+    skip_reason: str | None = None
     records: list[ChunkRecord] | None = None
     needs_cleanup: bool = True
     page_texts: list[PageTextRecord] | None = None

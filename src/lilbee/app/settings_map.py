@@ -940,6 +940,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Tokens of overlap between adjacent chunks (preserves context across boundaries)",
     ),
+    "max_chunks_per_file": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Chunks one file may contribute before it is skipped instead of embedded. "
+            "Raise it, or set 0 for no limit, to index a genuinely long document such "
+            "as a thousand-page manual at a small chunk_size"
+        ),
+    ),
     "tesseract_timeout": SettingDef(
         float,
         nullable=False,

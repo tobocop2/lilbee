@@ -135,3 +135,27 @@ def chunk_text(
     if doc.chunks:
         return [c.content for c in doc.chunks]
     return []
+
+
+class ChunkLimitError(Exception):
+    """One file produced more chunks than ``cfg.max_chunks_per_file`` allows."""
+
+    def __init__(self, count: int, limit: int) -> None:
+        super().__init__(
+            f"{count} chunks exceed the per-file limit of {limit}; "
+            f"raise max_chunks_per_file (0 = no limit) to index this file"
+        )
+        self.count = count
+        self.limit = limit
+
+
+def enforce_chunk_limit(count: int) -> None:
+    """Refuse a file whose *count* chunks exceed ``cfg.max_chunks_per_file``.
+
+    Called after chunking and before embedding, so a container-shaped file costs
+    one extraction rather than tens of thousands of embeddings. A limit of 0
+    accepts any count.
+    """
+    limit = active_config().max_chunks_per_file
+    if limit and count > limit:
+        raise ChunkLimitError(count, limit)
