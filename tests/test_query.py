@@ -2844,6 +2844,92 @@ class TestHistoryCondensation:
         expected = "when was the Split Rock journal written"
         assert mock_svc.store.search.call_args[1]["query_text"] == expected
 
+    def test_context_carries_the_rewrite(self, mock_svc):
+        """The query retrieval actually ran is on the context, so a client can
+        show why an answer went off-topic."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == rewritten
+
+    def test_context_carries_no_rewrite_when_the_question_stands(self, mock_svc):
+        """No history means no rewrite, so nothing to surface."""
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query is None
+
+    def test_memory_grounded_turn_carries_the_rewrite(self, mock_svc):
+        """Retrieval found nothing and memory answers instead; the rewrite that
+        was searched still reaches the caller."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = []
+        mock_svc.store.bm25_probe.return_value = []
+        mock_svc.store.get_memories.return_value = []
+        mock_svc.store.search_memories.return_value = [_memory_fact("the journal is the user's")]
+        cfg.memory_enabled = True
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.memory_enabled = False
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == rewritten
+
+    def test_ask_raw_carries_the_rewrite(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.side_effect = [_text_result(rewritten), _text_result("In 1910 [1].")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.retrieval_query == rewritten
+
+    def test_ask_raw_carries_no_rewrite_without_history(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("In 1910 [1].")
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.retrieval_query is None
+
+    def test_accepted_rewrite_logs_at_info(self, mock_svc, caplog):
+        """The rewrite sits beside the other routing decisions in the log."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            with caplog.at_level("INFO"):
+                get_services().searcher.build_rag_context(
+                    "and when was it written?", history=list(self._HISTORY)
+                )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rewritten in caplog.text
+
 
 class TestAskRawWithReranker:
     def test_reranker_called_when_configured(self, mock_svc):

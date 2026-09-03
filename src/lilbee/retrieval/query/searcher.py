@@ -212,11 +212,14 @@ class AskResult(BaseModel):
     ``sources`` is the full retrieved/reranked set; ``cited_sources`` is the subset the
     answer actually referenced via [n] markers (empty when it cited nothing), so a JSON
     consumer can tell whether the answer was grounded without re-parsing the text.
+    ``retrieval_query`` carries the follow-up rewrite retrieval ran on, or ``None``
+    when the question as typed was searched.
     """
 
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
+    retrieval_query: str | None = None
 
 
 class StructuredQuery(NamedTuple):
@@ -232,11 +235,15 @@ class RagContext(NamedTuple):
     ``base_results`` is the pre-widen selected set. An overflow retry refits from
     it, not from ``results`` (whose neighbor text is baked in and can no longer
     be shed), so a tighter fit drops expansion before it drops an original chunk.
+
+    ``retrieval_query`` is the standalone rewrite retrieval ran on, set only when
+    it replaced the question as typed, so no surface has to compare strings.
     """
 
     results: list[SearchChunk]
     messages: list[ChatMessage]
     base_results: list[SearchChunk] | None = None
+    retrieval_query: str | None = None
 
 
 class Searcher:
@@ -691,7 +698,7 @@ class Searcher:
             rewritten = strip_reasoning(response.text).strip().splitlines()
             first_line = rewritten[0].strip() if rewritten else ""
             if first_line:
-                log.debug("Condensed follow-up %r -> %r", question, first_line)
+                log.info("Condensed follow-up %r -> %r", question, first_line)
                 return first_line
         except Exception:
             log.debug("History condensation failed; using the raw question", exc_info=True)
@@ -931,6 +938,7 @@ class Searcher:
         retrieval_query = question
         if history and self._config.history_rewrite:
             retrieval_query = self._condense_question(question, history)
+        rewrite = retrieval_query if retrieval_query != question else None
         # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
         # it names reaches the known-item route and the wiki-disabled guard. Left
         # in the query, the prefix sits in front of a document name and
@@ -968,12 +976,14 @@ class Searcher:
                 # prompt instead of a refusal. Facts only -- always-injected
                 # preferences say nothing about answerability.
                 if self._memory_facts(question):
-                    return RagContext([], self.direct_messages(question, history))
+                    return RagContext(
+                        [], self.direct_messages(question, history), retrieval_query=rewrite
+                    )
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
-        return self._finalize_context(results, question, history)
+        return self._finalize_context(results, question, history, retrieval_query=rewrite)
 
     def _finalize_context(
         self,
@@ -981,6 +991,8 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
+        *,
+        retrieval_query: str | None = None,
     ) -> RagContext:
         """Fit *results* to the context budget and assemble the prompt.
 
@@ -998,7 +1010,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages, base_results)
+        return RagContext(results, messages, base_results, retrieval_query)
 
     def _context_budget(
         self,
@@ -1391,6 +1403,7 @@ class Searcher:
             answer=clean,
             sources=results,
             cited_sources=cited_subset(strip_llm_citations(clean), results),
+            retrieval_query=rag.retrieval_query,
         )
 
     def ask(
