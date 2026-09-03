@@ -188,29 +188,20 @@ class TestMatchesReference:
 
 
 class TestContainsReference:
-    def test_multi_word_reference_spans_whole_tokens(self):
-        assert contains_reference("harbor survey 2010", "harbor-survey-2010.pdf")
-
-    def test_reference_runs_inside_a_longer_stem(self):
-        assert contains_reference("harbor survey", "2010-harbor-survey-final.pdf")
-
-    def test_reference_inside_a_word_does_not_match(self):
-        """The failure this exists to stop: "we" is inside "Web", and a
-        substring hit routed the whole retrieval context to that one note."""
-        assert not contains_reference("we", "notes/DSO Web Hosting.md")
-        assert not contains_reference("port", "Airport Signage.md")
-
-    def test_short_reference_never_matches(self):
-        """Under three characters a reference is a common word as often as a
-        name, so it cannot route even when the stem is exactly it."""
-        assert not contains_reference("we", "we.md")
-        assert contains_reference("web", "web.md")
-
-    def test_reference_tokens_must_be_contiguous(self):
-        assert not contains_reference("harbor 2010", "harbor-survey-2010.pdf")
-
-    def test_reference_with_no_alphanumeric_tokens_does_not_match(self):
-        assert not contains_reference("--", "a-b.md")
+    @pytest.mark.parametrize(
+        ("ref", "filename", "expected"),
+        [
+            pytest.param("harbor survey 2010", "harbor-survey-2010.pdf", True, id="whole-stem"),
+            pytest.param("harbor survey", "2010-harbor-survey-final.pdf", True, id="inner-run"),
+            pytest.param("we", "we.md", True, id="single-token"),
+            pytest.param("we", "notes/DSO Web Hosting.md", False, id="inside-a-word"),
+            pytest.param("port", "Airport Signage.md", False, id="suffix-of-a-word"),
+            pytest.param("harbor 2010", "harbor-survey-2010.pdf", False, id="not-contiguous"),
+            pytest.param("--", "a-b.md", False, id="no-alphanumerics"),
+        ],
+    )
+    def test_matches_whole_token_runs(self, ref, filename, expected):
+        assert contains_reference(ref, filename) is expected
 
 
 class TestParseAggregate:

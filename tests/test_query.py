@@ -2611,29 +2611,22 @@ class TestKnownItemRoute:
         mock_svc.store.get_chunks_by_source.assert_not_called()
         mock_svc.store.search.assert_called_once()
 
-    def test_short_common_word_reference_stays_topical(self, mock_svc):
-        """The user's log: "Known-item route: 'we' resolved to notes/DSO Web
-        Hosting.md". The pronoun after "file" became a reference, substring-hit
-        "We" inside "Web", and replaced the whole retrieval context with that
-        one note. A reference under three characters never routes."""
-        mock_svc.store.get_sources.return_value = [self._source("notes/DSO Web Hosting.md")]
+    @pytest.mark.parametrize(
+        ("question", "filename"),
+        [
+            pytest.param("summarize the file we discussed", "notes/DSO Web Hosting.md", id="we"),
+            pytest.param("summarize document port", "Airport Signage.md", id="port"),
+        ],
+    )
+    def test_reference_inside_a_word_stays_topical(self, mock_svc, question, filename):
+        """A unique substring candidate routes only when the reference lands on
+        whole tokens of the stem: "we" inside "Web" once replaced the whole
+        retrieval context with that one note."""
+        mock_svc.store.get_sources.return_value = [self._source(filename)]
         mock_svc.store.search.return_value = [_make_result()]
         cfg.query_expansion_count = 0
         try:
-            get_services().searcher.build_rag_context("summarize the file we discussed")
-        finally:
-            cfg.query_expansion_count = 3
-        mock_svc.store.get_chunks_by_source.assert_not_called()
-        mock_svc.store.search.assert_called_once()
-
-    def test_reference_inside_a_longer_word_stays_topical(self, mock_svc):
-        """Length alone is not enough: a reference must land on whole tokens of
-        the filename, so "port" inside "Airport" is not the document named."""
-        mock_svc.store.get_sources.return_value = [self._source("Airport Signage.md")]
-        mock_svc.store.search.return_value = [_make_result()]
-        cfg.query_expansion_count = 0
-        try:
-            get_services().searcher.build_rag_context("summarize document port")
+            get_services().searcher.build_rag_context(question)
         finally:
             cfg.query_expansion_count = 3
         mock_svc.store.get_chunks_by_source.assert_not_called()

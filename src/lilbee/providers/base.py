@@ -100,14 +100,10 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
 
 
 def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
-    """Options for an auxiliary call: a token cap with thinking off.
+    """Options for an internal call: a cap sized for its answer, with thinking off.
 
-    The pipeline's internal calls (query expansion, HyDE, condensation,
-    classification, chunk enrichment, entity induction and extraction) each run
-    on a cap sized for their answer alone. A thinking model spends that whole
-    cap inside <think>, which llama.cpp force-closes at the limit and
-    ``strip_reasoning`` then deletes whole, so the call returns nothing at full
-    cost.
+    A thinking model spends a small cap inside <think>, which ``strip_reasoning``
+    then deletes whole, so the call returns nothing.
     """
     return {"num_predict": num_predict, "think": False, **extra}
 

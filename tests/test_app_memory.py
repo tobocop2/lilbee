@@ -18,6 +18,7 @@ from lilbee.data.store import (
     local_owner_predicate,
 )
 from lilbee.providers.base import ChatResult, FinishReason
+from lilbee.retrieval.query.memory_extract import MEMORY_EXTRACT_MAX_TOKENS
 from tests.conftest import make_mock_services
 
 
@@ -172,6 +173,17 @@ class TestAutoExtract:
         assert stored[0].kind is MemoryKind.FACT
         record = svc.store.add_memory.call_args.args[0]
         assert record.source is MemorySource.EXTRACTED
+
+    def test_extraction_is_an_auxiliary_call(self, svc):
+        """The extraction call carries the auxiliary cap and thinking off."""
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = True
+        svc.provider.chat.return_value = _chat_result("[]")
+        app_memory.auto_extract("hi", "hello")
+        options = svc.provider.chat.call_args.kwargs["options"]
+        assert options["num_predict"] == MEMORY_EXTRACT_MAX_TOKENS
+        assert options["think"] is False
+        assert "response_format" in options
 
     def test_nothing_extracted_stores_nothing(self, svc):
         cfg.memory_enabled = True
