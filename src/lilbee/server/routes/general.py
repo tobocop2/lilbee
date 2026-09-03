@@ -13,12 +13,13 @@ from typing import Any
 
 from litestar import Response, get, patch, post
 from litestar.background_tasks import BackgroundTask
-from litestar.exceptions import NotFoundException, ValidationException
+from litestar.exceptions import HTTPException, NotFoundException, ValidationException
 from litestar.params import FromQuery
 from litestar.response import Stream
-from litestar.status_codes import HTTP_202_ACCEPTED
+from litestar.status_codes import HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
 from pydantic import ValidationError
 
+from lilbee.core.settings import CONFIG_FILE_NAME
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
@@ -83,6 +84,14 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
         return await handlers.update_config(data)
     except (ValueError, ValidationError) as exc:
         raise ValidationException(str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Could not write {CONFIG_FILE_NAME}: {exc}. "
+                "Another program may have the file open."
+            ),
+        ) from exc
 
 
 @get("/api/source")

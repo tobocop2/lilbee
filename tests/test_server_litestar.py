@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1121,6 +1122,55 @@ class TestConfigUpdateRoute:
         )
         assert resp.status_code == 200
         assert "crawl_exclude_patterns" in resp.json()["updated"]
+
+    @mock.patch(
+        "lilbee.server.handlers.update_config",
+        new_callable=AsyncMock,
+        side_effect=PermissionError(13, "The process cannot access the file"),
+    )
+    def test_an_unwritable_config_file_returns_503_naming_the_file(self, mock_update, client):
+        """A held config.toml is transient, so the client gets a cause it can act on."""
+        resp = client.patch("/api/config", json={"documents_dir": "/vault"})
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert "config.toml" in detail
+        assert "The process cannot access the file" in detail
+
+    def test_a_config_toml_held_open_rolls_back_and_answers_503(self, client, monkeypatch):
+        """The whole chain: the rename gives up, cfg rolls back, the route maps it.
+
+        The plugin PATCHes documents_dir on every managed start, so a write
+        failure here must answer with its cause, never a bare 500.
+        """
+
+        def refuse(_src, _dst):
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(os, "replace", refuse)
+
+        resp = client.patch("/api/config", json={"temperature": 0.42})
+
+        assert resp.status_code == 503
+        assert "config.toml" in resp.json()["detail"]
+        assert cfg.temperature != 0.42
+
+    def test_path_settings_persist_as_strings(self, client, isolated_env):
+        """documents_dir and vault_base are Path fields; the write must not hand
+        tomli_w a Path. This PATCH answered a bare 500 on every platform since
+        the emitter switch, and it is what the plugin sends at first managed setup.
+        """
+        from lilbee.core import settings
+
+        vault = isolated_env / "vault"
+        resp = client.patch(
+            "/api/config",
+            json={"documents_dir": str(vault / "lilbee"), "vault_base": str(vault)},
+        )
+        assert resp.status_code == 200
+        assert set(resp.json()["updated"]) >= {"documents_dir", "vault_base"}
+        saved = settings.load(isolated_env)
+        assert saved["documents_dir"] == str(vault / "lilbee")
+        assert saved["vault_base"] == str(vault)
 
 
 class TestModelsSetEmbeddingRoute:
@@ -2258,3 +2308,28 @@ class TestReadOnlyDecoratorOrdering:
             return {}
 
         assert authenticates_itself(_right_order.fn)
+
+
+class TestUnhandledErrorsReachTheLog:
+    """A 500 must never leave the server without a line in server.log.
+
+    Only HTTPException had a handler, so any other failure went to litestar's
+    default handler and the operator saw an empty log next to the 500.
+    """
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("engine exploded"),
+    )
+    def test_an_unhandled_failure_is_logged_with_the_request_path(
+        self, mock_health, client, caplog
+    ):
+        with caplog.at_level(logging.ERROR, logger="lilbee.server.app"):
+            resp = client.get("/api/health")
+
+        assert resp.status_code == 500
+        assert resp.json()["status_code"] == 500
+        assert "GET" in caplog.text
+        assert "/api/health" in caplog.text
+        assert "engine exploded" in caplog.text

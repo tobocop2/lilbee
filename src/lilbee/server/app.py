@@ -252,6 +252,16 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
     return response
 
 
+def _unhandled_error_response(request: Request, exc: Exception) -> Response:
+    """Log an unmapped failure, then answer it as the same JSON 500.
+
+    Litestar's default handler writes no log line, so a 500 left the operator
+    with an empty server.log and nothing to act on.
+    """
+    log.error("Unhandled error serving %s %s", request.method, request.url.path, exc_info=exc)
+    return _json_error_response(request, exc)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -264,7 +274,10 @@ def create_app() -> Litestar:
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
         middleware=[DefineMiddleware(AuthMiddleware)],
-        exception_handlers={HTTPException: _json_error_response},
+        exception_handlers={
+            HTTPException: _json_error_response,
+            Exception: _unhandled_error_response,
+        },
         route_handlers=[
             mcp_route,
             health_route,

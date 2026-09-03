@@ -6,7 +6,7 @@ import threading
 import tomllib
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
 import tomli_w
@@ -23,10 +23,11 @@ T = TypeVar("T")
 # data root, so the in-process mutex alone lets two of them interleave a
 # read-modify-write and silently drop each other's keys.
 _CONFIG_LOCK_TIMEOUT_S = 10.0
+CONFIG_FILE_NAME = "config.toml"
 
 
 def _config_path(data_root: Path) -> Path:
-    return data_root / "config.toml"
+    return data_root / CONFIG_FILE_NAME
 
 
 @contextmanager
@@ -70,10 +71,16 @@ def save(data_root: Path, settings: dict[str, Any]) -> None:
 
     A ``None`` is dropped rather than written. TOML has no null, and the old
     emitter wrote the literal string "None", which then read back as a set
-    value instead of an absent one.
+    value instead of an absent one. A path is written as its string: tomli_w
+    refuses ``Path`` objects, and the config's path fields hold them after
+    validation.
     """
     path = _config_path(data_root)
-    present = {k: v for k, v in sorted(settings.items()) if v is not None}
+    present = {
+        k: str(v) if isinstance(v, PurePath) else v
+        for k, v in sorted(settings.items())
+        if v is not None
+    }
     # config.toml can hold provider API keys, so it gets the same owner-only
     # treatment as the session token rather than a post-hoc chmod.
     write_private_text(path, tomli_w.dumps(present))
