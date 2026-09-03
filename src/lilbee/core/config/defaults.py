@@ -1,9 +1,9 @@
 """Default values and constants for :mod:`lilbee.core.config`.
 
-Holds frozen literal data: directory ignore lists, the NER label allow-list,
-LanceDB table names, the default HTTP timeout and context size, the crawl URL
-exclusion patterns (grouped per category), the default RAG and general system
-prompts, and the CORS allow-origin regex.
+Holds frozen literal data: the config file name, directory ignore lists, the
+NER label allow-list, LanceDB table names, the default HTTP timeout and context
+size, the crawl URL exclusion patterns (grouped per category), the default RAG
+and general system prompts, and the CORS allow-origin regex.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ DEFAULT_HTTP_TIMEOUT = 30.0
 
 # Safe default + cap for chat-mode n_ctx; full 128K+ training contexts OOM laptops.
 DEFAULT_NUM_CTX = 8192
+CONFIG_FILE_NAME = "config.toml"
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"

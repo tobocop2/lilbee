@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core.config import cfg
+from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
@@ -23,7 +23,6 @@ T = TypeVar("T")
 # data root, so the in-process mutex alone lets two of them interleave a
 # read-modify-write and silently drop each other's keys.
 _CONFIG_LOCK_TIMEOUT_S = 10.0
-CONFIG_FILE_NAME = "config.toml"
 
 
 def _config_path(data_root: Path) -> Path:

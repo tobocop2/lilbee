@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from lilbee.core.system import scaled_chat_ctx_target_default
 
 from .defaults import (
+    CONFIG_FILE_NAME,
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
@@ -1395,7 +1396,7 @@ class Config(BaseSettings):
             toml_dir = local if local else default_data_dir()
         # Same call as the root itself, so this looks where the root resolves to;
         # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / "config.toml"
+        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]

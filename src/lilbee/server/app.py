@@ -255,8 +255,7 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
 def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     """Log an unmapped failure, then answer it as the same JSON 500.
 
-    Litestar's default handler writes no log line, so a 500 left the operator
-    with an empty server.log and nothing to act on.
+    Litestar's own handler logs nothing outside debug mode.
     """
     log.error("Unhandled error serving %s %s", request.method, request.url.path, exc_info=exc)
     return _json_error_response(request, exc)

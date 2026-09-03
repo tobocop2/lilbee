@@ -1137,11 +1137,7 @@ class TestConfigUpdateRoute:
         assert "The process cannot access the file" in detail
 
     def test_a_config_toml_held_open_rolls_back_and_answers_503(self, client, monkeypatch):
-        """The whole chain: the rename gives up, cfg rolls back, the route maps it.
-
-        The plugin PATCHes documents_dir on every managed start, so a write
-        failure here must answer with its cause, never a bare 500.
-        """
+        """The rename fails, cfg rolls back, and the route answers 503 with the cause."""
 
         def refuse(_src, _dst):
             raise PermissionError(13, "The process cannot access the file")
@@ -1151,14 +1147,21 @@ class TestConfigUpdateRoute:
         resp = client.patch("/api/config", json={"temperature": 0.42})
 
         assert resp.status_code == 503
-        assert "config.toml" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "Could not write config.toml" in detail
+        assert "Close the program that holds config.toml open" in detail
         assert cfg.temperature != 0.42
 
+    def test_a_disk_error_names_no_program_to_close(self):
+
+        from lilbee.server.routes.general import _config_write_failure
+
+        detail = _config_write_failure(OSError(28, "No space left on device"))
+
+        assert detail == "Could not write config.toml: [Errno 28] No space left on device."
+
     def test_path_settings_persist_as_strings(self, client, isolated_env):
-        """documents_dir and vault_base are Path fields; the write must not hand
-        tomli_w a Path. This PATCH answered a bare 500 on every platform since
-        the emitter switch, and it is what the plugin sends at first managed setup.
-        """
+        """documents_dir and vault_base are Path fields; save() must not hand tomli_w a Path."""
         from lilbee.core import settings
 
         vault = isolated_env / "vault"
@@ -2311,11 +2314,7 @@ class TestReadOnlyDecoratorOrdering:
 
 
 class TestUnhandledErrorsReachTheLog:
-    """A 500 must never leave the server without a line in server.log.
-
-    Only HTTPException had a handler, so any other failure went to litestar's
-    default handler and the operator saw an empty log next to the 500.
-    """
+    """A 500 must never leave the server without a line in server.log."""
 
     @mock.patch(
         "lilbee.server.handlers.health",

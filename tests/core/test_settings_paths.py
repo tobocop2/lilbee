@@ -11,11 +11,7 @@ from lilbee.core import settings
 
 @pytest.mark.parametrize("key", ["documents_dir", "vault_base"])
 def test_a_path_value_is_written_as_its_string_and_read_back(tmp_path: Path, key: str) -> None:
-    """tomli_w refuses Path objects; save() must hand it the string form.
-
-    A user's storage move (PATCH documents_dir and vault_base) answered 500
-    from exactly this: the validated Path reached the writer unchanged.
-    """
+    """tomli_w refuses Path objects; save() must hand it the string form."""
     target = tmp_path / "vault" / "lilbee"
     settings.save(tmp_path, {key: target})
     assert settings.load(tmp_path) == {key: str(target)}
