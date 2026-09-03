@@ -62,6 +62,7 @@ from lilbee.data.ingest.fanout import (
 from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
+    describe_skips,
     load_skip_markers,
     load_skip_reasons,
     write_skip_markers,
@@ -299,11 +300,17 @@ def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
 
 @dataclass(frozen=True)
 class _FileChangeVerdict:
-    """One file's sync verdict: process it, or unchanged (optionally backfilling its stat)."""
+    """One file's sync verdict: process it, hold it out, or leave it unchanged.
+
+    ``held`` marks a file a skip marker keeps out of this sync. It shares the
+    "nothing to ingest" shape with unchanged but not its meaning: the file is
+    not in the index, so the two are counted separately.
+    """
 
     to_process: FileToProcess | None = None
     backfill: SourceStatBackfill | None = None
     is_update: bool = False
+    held: bool = False
 
 
 def _classify_file_change(
@@ -338,7 +345,7 @@ def _classify_file_change(
         return _FileChangeVerdict(backfill=backfill)
     if skip_markers.get(name) == current_hash:
         # Failed last sync at this exact hash; skip the retry.
-        return _FileChangeVerdict()
+        return _FileChangeVerdict(held=True)
     # needs_cleanup=True unconditionally: delete_by_source is idempotent,
     # and this closes the race where a prior ingest wrote chunks but died
     # before upsert_source, leaving orphaned chunks that would duplicate.
@@ -510,8 +517,9 @@ def _plan_items(
     mtime predates the stat capture (see :func:`_stat_unchanged`), is unchanged
     without reading its bytes; everything else is SHA-256 hashed. A file whose
     current hash matches a marker in ``skip_markers`` (set by a prior failed
-    attempt) is treated as unchanged so we don't retry every sync. Edit the file
-    or run ``/sync --force-rebuild`` to clear the marker and try again.
+    attempt) is held out rather than retried every sync, and is reported as held
+    out rather than counted unchanged. Edit the file or run
+    ``/sync --force-rebuild`` to clear the marker and try again.
 
     Classification fans across a thread pool (see :func:`_classify_changes`); the
     plan is assembled from the results in the original sorted order, so a partial
@@ -526,6 +534,7 @@ def _plan_items(
     added: dict[str, None] = {}
     updated: dict[str, None] = {}
     stat_backfills: list[SourceStatBackfill] = []
+    held_out: list[str] = []
     unchanged = 0
     # Assemble in the original sorted order so a partial (cancelled) or reordered
     # completion never changes the plan the serial pass would have produced.
@@ -534,7 +543,10 @@ def _plan_items(
         if verdict is None:
             continue  # cancelled before this file was classified
         if verdict.to_process is None:
-            unchanged += 1
+            if verdict.held:
+                held_out.append(name)
+            else:
+                unchanged += 1
             if verdict.backfill is not None:
                 stat_backfills.append(verdict.backfill)
             continue
@@ -543,7 +555,7 @@ def _plan_items(
             updated[name] = None
         else:
             added[name] = None
-    return FileChangePlan(files_to_process, added, updated, unchanged, stat_backfills)
+    return FileChangePlan(files_to_process, added, updated, unchanged, stat_backfills, held_out)
 
 
 @dataclass(frozen=True)
@@ -672,6 +684,9 @@ class _StreamedPlan:
     # double-count and its dead chunk refs occupy the per-subject cap.
     relocated_from: list[str] = field(default_factory=list)
     unchanged: int = 0
+    # Files a skip marker held out of this run, in plan order. Ordered set, so a
+    # file cannot be reported twice if two batches ever cover it.
+    held_out: dict[str, None] = field(default_factory=dict)
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
     # first batch is planned, so it is what progress is measured against: the
@@ -683,13 +698,13 @@ class _StreamedPlan:
     def resolved(self) -> int:
         """Files the plan disposed of without ingest, as it disposes of them.
 
-        Unchanged (or skip-marked) files and repointed moves are done as far as
-        the corpus is concerned, and nothing downstream reports them, so an
-        incremental sync would otherwise show a handful of changed files against
-        the whole corpus. Files a cancelled plan never classified are absent from
-        both counts and so are not claimed as done.
+        Unchanged files, skip-marker held-out files and repointed moves are done
+        as far as the corpus is concerned, and nothing downstream ingests them,
+        so an incremental sync would otherwise show a handful of changed files
+        against the whole corpus. Files a cancelled plan never classified are
+        absent from every count and so are not claimed as done.
         """
-        return self.unchanged + len(self.relocated)
+        return self.unchanged + len(self.held_out) + len(self.relocated)
 
 
 async def _absorb_plan_batch(
@@ -703,6 +718,7 @@ async def _absorb_plan_batch(
     store = get_services().store
     entries = plan.files_to_process
     state.unchanged += plan.unchanged
+    state.held_out.update(dict.fromkeys(plan.held_out))
     state.added.update(plan.added)
     state.updated.update(plan.updated)
 
@@ -880,17 +896,20 @@ def _reconcile_missing(
     sources: list[SourceRecord],
     failed: Iterable[str],
     skipped: Iterable[str],
+    held: Iterable[str],
 ) -> list[str]:
-    """On-disk document files absent from the store and not reported failed/skipped.
+    """On-disk document files absent from the store that no mechanism accounts for.
 
     A file discovery found and classified that ended up in neither the sources table
-    nor the run's failed/skipped lists was dropped with no signal -- the silent
+    nor any of the accounting sets was dropped with no signal -- the silent
     data-loss case (a scanned PDF that never made it into the index yet reported no
     error). Everything legitimately not indexed is excluded: a failed extraction is in
-    ``failed``, a zero-text file is in ``skipped``, and an unsupported type was never
-    returned by discovery in the first place.
+    ``failed``, a zero-text file this run attempted is in ``skipped``, a file an
+    earlier run skip-marked is in ``held`` (this run never attempted it, so it is in
+    neither of the other two), and an unsupported type was never returned by
+    discovery in the first place.
     """
-    accounted = {s["filename"] for s in sources} | set(failed) | set(skipped)
+    accounted = {s["filename"] for s in sources} | set(failed) | set(skipped) | set(held)
     return sorted(name for name in disk_files if name not in accounted)
 
 
@@ -1222,9 +1241,13 @@ async def sync(
         )
 
     # Reconciliation guard against silent data loss: any on-disk document file that
-    # ended up in neither the index nor the failed/skipped lists was dropped without
-    # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    if missing := _reconcile_missing(disk_files, _store.get_sources(), failed, skipped):
+    # ended up in neither the index nor an accounting set was dropped without a
+    # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
+    # The persisted markers are subtracted, not just this run's lists: a file an
+    # earlier run marked is in neither, and would otherwise be reported every sync.
+    if missing := _reconcile_missing(
+        disk_files, _store.get_sources(), failed, skipped, skip_markers
+    ):
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "
             "with no failure reported (possible silent drop): %s",
@@ -1240,6 +1263,7 @@ async def sync(
         relocated=relocated,
         failed=list(failed),
         skipped=list(skipped),
+        held_out=describe_skips(config.data_root, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
     )
     on_progress(

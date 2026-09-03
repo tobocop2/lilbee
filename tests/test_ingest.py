@@ -226,8 +226,22 @@ def test_reconcile_missing_flags_only_silent_drops():
 
     disk = {n: Path(n) for n in ("a.pdf", "b.pdf", "c.pdf", "d.pdf")}
     # a indexed, b failed, c skipped, d dropped with no signal.
-    missing = _reconcile_missing(disk, [{"filename": "a.pdf"}], failed=["b.pdf"], skipped=["c.pdf"])
+    missing = _reconcile_missing(
+        disk, [{"filename": "a.pdf"}], failed=["b.pdf"], skipped=["c.pdf"], held=[]
+    )
     assert missing == ["d.pdf"]
+
+
+def test_reconcile_missing_accounts_for_persisted_skip_markers():
+    """A file an earlier run marked is in neither this run's failed nor skipped
+    lists, so without the marker set it reads as a silent drop every sync."""
+    from pathlib import Path
+
+    from lilbee.data.ingest.pipeline import _reconcile_missing
+
+    disk = {n: Path(n) for n in ("held.md", "dropped.md")}
+    missing = _reconcile_missing(disk, [], failed=[], skipped=[], held={"held.md": "deadbeef"})
+    assert missing == ["dropped.md"]
 
 
 @mock.patch(
@@ -1490,6 +1504,51 @@ class TestSkipMarkerLifecycle:
             assert "scanned.pdf" not in second.skipped
             assert "scanned.pdf" not in second.added
 
+    async def test_held_out_file_is_reported_apart_from_unchanged(self, isolated_env, mock_svc):
+        """A marker-held file must not be tallied as unchanged: it is not indexed,
+        and 'Unchanged: N' would present it as a file the index already holds."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.pipeline import produce_records as orig
+
+        async def _zero_for_the_scan(path, name, content_type, **kwargs):
+            if name == "scanned.pdf":
+                return self._zero_chunks()
+            return await orig(path, name, content_type, **kwargs)
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "readable.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=_zero_for_the_scan
+        ):
+            first = await sync(quiet=True)
+            assert "readable.txt" in first.added
+            second = await sync(quiet=True)
+
+        assert [held.filename for held in second.held_out] == ["scanned.pdf"]
+        assert second.held_out[0].reason == "no text extracted (0 chunks)"
+        assert second.unchanged == 1  # readable.txt only; the held file is not counted here
+        assert "Held out: 1" in str(second)
+        assert "no text extracted (0 chunks)" in str(second)
+
+    async def test_held_out_file_does_not_trip_the_reconciliation_guard(
+        self, isolated_env, mock_svc, caplog
+    ):
+        """The marker accounts for the file, so the data-loss warning must stay
+        silent rather than naming the same file on every sync."""
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            await sync(quiet=True)
+            with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+                await sync(quiet=True)
+
+        assert "possible silent drop" not in caplog.text
+
     async def test_retry_skipped_clears_markers(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 
@@ -1512,6 +1571,50 @@ class TestSkipMarkerLifecycle:
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
+
+
+class TestStatusReportsHeldOutFiles:
+    """/api/status and `lilbee status --json` read the skip sidecars, so a client
+    can show which files are held out of the index and why."""
+
+    def test_status_lists_held_out_files_with_reasons(self):
+        from lilbee.app.status import gather_status
+        from lilbee.data.ingest.skip_marker import (
+            DEFAULT_SKIP_REASON,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        write_skip_markers(cfg.data_root, {"scan.pdf": "deadbeef", "blank.md": "cafef00d"})
+        write_skip_reasons(cfg.data_root, {"scan.pdf": "OCR timed out after 300s"})
+
+        status = gather_status()
+
+        assert [(s.filename, s.reason) for s in status.skipped] == [
+            ("blank.md", DEFAULT_SKIP_REASON),
+            ("scan.pdf", "OCR timed out after 300s"),
+        ]
+        assert status.skipped_total == 2
+
+    def test_status_caps_the_list_but_reports_the_real_total(self, monkeypatch):
+        from lilbee.app import status as status_mod
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        monkeypatch.setattr(status_mod, "STATUS_SKIPPED_LIMIT", 2)
+        write_skip_markers(cfg.data_root, {f"scan{i}.pdf": "hash" for i in range(5)})
+
+        status = status_mod.gather_status()
+
+        assert [s.filename for s in status.skipped] == ["scan0.pdf", "scan1.pdf"]
+        assert status.skipped_total == 5
+
+    def test_status_is_empty_when_nothing_is_held_out(self):
+        from lilbee.app.status import gather_status
+
+        status = gather_status()
+
+        assert status.skipped == []
+        assert status.skipped_total == 0
 
 
 class TestZeroChunkPageTextPersistence:

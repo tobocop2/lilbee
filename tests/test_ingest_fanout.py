@@ -12,7 +12,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
-from lilbee.data.types import ShardId, SyncResult
+from lilbee.data.types import ShardId, SkippedSource, SyncResult
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -533,7 +533,12 @@ class TestAggregateResults:
             fanout.ShardDone(
                 kind="done",
                 index=1,
-                result=SyncResult(updated=["b"], failed=["c"], unchanged=3),
+                result=SyncResult(
+                    updated=["b"],
+                    failed=["c"],
+                    unchanged=3,
+                    held_out=[SkippedSource(filename="d.pdf", reason="no text extracted")],
+                ),
                 error=None,
             ),
             fanout.ShardDone(kind="done", index=2, result=None, error="died"),
@@ -541,6 +546,9 @@ class TestAggregateResults:
         result = fanout.aggregate_results(verdicts)
         assert (result.added, result.updated, result.failed) == (["a"], ["b"], ["c"])
         assert (result.unchanged, result.truncated) == (5, 1)
+        # Each worker owns one slice, so the held-out files of every slice have to
+        # reach the one result or a shard's markers go unreported.
+        assert [held.filename for held in result.held_out] == ["d.pdf"]
 
 
 class TestDrain:

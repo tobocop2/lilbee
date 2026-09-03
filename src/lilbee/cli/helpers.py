@@ -107,6 +107,22 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
     yield ""
 
+    if status.skipped:
+        held = Table(title="Held out of the index")
+        held.add_column("File", style=theme.ACCENT)
+        held.add_column("Reason", style=theme.MUTED)
+        for skipped in status.skipped:
+            held.add_row(skipped.filename, skipped.reason)
+        yield held
+        b = theme.LABEL
+        hidden = status.skipped_total - len(status.skipped)
+        more = f" ({hidden} more not shown)" if hidden > 0 else ""
+        yield (
+            f"[{b}]{status.skipped_total}[/{b}] held out{more}; "
+            "run 'lilbee sync --retry-skipped' to try them again"
+        )
+        yield ""
+
     if not status.sources:
         yield (
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."

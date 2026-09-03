@@ -10,10 +10,16 @@ from pydantic import BaseModel
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
+from lilbee.data.ingest.skip_marker import describe_skips, load_skip_markers
+from lilbee.data.types import SkippedSource
 
 LILBEE_LABEL_MAX_LEN = 40
 """Hard cap on the compact-label width. The leaf gets its own internal
 ellipsis when even the leaf alone would breach the cap."""
+
+STATUS_SKIPPED_LIMIT = 50
+"""Held-out files listed in one status response. A corpus of unextractable
+scans can hold out thousands; the payload stays bounded and reports the total."""
 
 _ELLIPSIS = "…"
 
@@ -112,6 +118,12 @@ class StatusResult(BaseModel):
     sources: list[SourceInfo]
     total_chunks: int
     entities: EntityStatus | None = None
+    skipped: list[SkippedSource] = []
+    """Files a skip marker currently holds out of the index, with the reason.
+
+    Capped at ``STATUS_SKIPPED_LIMIT``; ``skipped_total`` carries the real count.
+    """
+    skipped_total: int = 0
 
 
 def gather_status() -> StatusResult:
@@ -119,6 +131,7 @@ def gather_status() -> StatusResult:
     sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
+    held_out = sorted(load_skip_markers(cfg.data_root))
     return StatusResult(
         config=StatusConfig(
             documents_dir=str(cfg.documents_dir),
@@ -140,6 +153,8 @@ def gather_status() -> StatusResult:
         ],
         total_chunks=total_chunks,
         entities=entity_status(),
+        skipped=describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]),
+        skipped_total=len(held_out),
     )
 
 

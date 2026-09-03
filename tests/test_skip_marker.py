@@ -12,9 +12,11 @@ from pathlib import Path
 import pytest
 
 from lilbee.data.ingest.skip_marker import (
+    DEFAULT_SKIP_REASON,
     SKIP_MARKER_FILENAME,
     SKIP_REASON_FILENAME,
     clear_skip_markers,
+    describe_skips,
     load_skip_markers,
     load_skip_reasons,
     write_skip_markers,
@@ -160,3 +162,22 @@ class TestSkipReasons:
     def test_load_handles_corrupt_json(self, tmp_path: Path) -> None:
         (tmp_path / SKIP_REASON_FILENAME).write_text("not json {{{", encoding="utf-8")
         assert load_skip_reasons(tmp_path) == {}
+
+
+class TestDescribeSkips:
+    """Pairing held-out filenames with their reasons, for the sync summary and
+    the status payload."""
+
+    def test_pairs_names_with_reasons_in_the_given_order(self, tmp_path: Path) -> None:
+        write_skip_reasons(tmp_path, {"a.pdf": "OCR timed out", "b.tiff": "decode failure"})
+        described = describe_skips(tmp_path, ["b.tiff", "a.pdf"])
+        assert [(d.filename, d.reason) for d in described] == [
+            ("b.tiff", "decode failure"),
+            ("a.pdf", "OCR timed out"),
+        ]
+
+    def test_falls_back_when_no_reason_was_recorded(self, tmp_path: Path) -> None:
+        # A marker written before the reasons sidecar existed still has to say
+        # something, or the user sees a held-out file with a blank explanation.
+        described = describe_skips(tmp_path, ["orphan.pdf"])
+        assert [(d.filename, d.reason) for d in described] == [("orphan.pdf", DEFAULT_SKIP_REASON)]

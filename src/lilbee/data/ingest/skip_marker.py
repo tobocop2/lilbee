@@ -20,12 +20,16 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
+
+from lilbee.data.types import SkippedSource
 
 log = logging.getLogger(__name__)
 
 SKIP_MARKER_FILENAME = "skipped_sources.json"
 SKIP_REASON_FILENAME = "skip_reasons.json"
+DEFAULT_SKIP_REASON = "held out by an earlier sync"
 
 
 def _load_str_map(path: Path) -> dict[str, str]:
@@ -80,6 +84,20 @@ def load_skip_reasons(data_root: Path) -> dict[str, str]:
 def write_skip_reasons(data_root: Path, reasons: dict[str, str]) -> None:
     """Replace the reasons sidecar atomically. Best-effort: errors are logged, not raised."""
     _write_str_map(data_root / SKIP_REASON_FILENAME, reasons)
+
+
+def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
+    """Pair each name with its recorded reason, in the order given.
+
+    A marker written before the reasons sidecar existed, or one whose reason a
+    partial write lost, falls back to ``DEFAULT_SKIP_REASON`` so every held-out
+    file still carries an explanation.
+    """
+    reasons = load_skip_reasons(data_root)
+    return [
+        SkippedSource(filename=name, reason=reasons.get(name, DEFAULT_SKIP_REASON))
+        for name in names
+    ]
 
 
 def clear_skip_markers(data_root: Path) -> None:

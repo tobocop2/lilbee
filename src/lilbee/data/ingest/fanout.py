@@ -409,6 +409,7 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         relocated=[name for r in results for name in r.relocated],
         failed=[name for r in results for name in r.failed],
         skipped=[name for r in results for name in r.skipped],
+        held_out=[held for r in results for held in r.held_out],
         unchanged=sum(r.unchanged for r in results),
         truncated=sum(r.truncated for r in results),
     )

@@ -13,6 +13,7 @@ from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigF
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
+from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.sessions import MessageRole
@@ -190,6 +191,13 @@ class StatusResponse(BaseModel):
     sources: list[StatusSourceInfo]
     total_chunks: int
     entities: StatusEntityInfo | None = None
+    skipped: list[SkippedSource] = []
+    """Files a skip marker currently holds out of the index, with the reason.
+
+    Capped so a corpus with thousands of unextractable files cannot bloat the
+    payload; ``skipped_total`` carries the real count.
+    """
+    skipped_total: int = 0
 
 
 class ShutdownResponse(BaseModel):
@@ -415,6 +423,7 @@ class SyncSummary(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    held_out: list[SkippedSource] = []
     truncated: int = 0
 
 
