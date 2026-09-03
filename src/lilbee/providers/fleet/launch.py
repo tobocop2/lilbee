@@ -8,6 +8,8 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 
 # Separator between a role and its replica index in a llama-swap model id.
 _REPLICA_SEP = "-"
+# Stand-in for the binary of a record whose argv arrived empty (a foreign state file).
+_UNKNOWN_BINARY = "an unrecorded binary"
 
 
 def role_model_prefix(role: WorkerRole) -> str:
@@ -98,6 +100,11 @@ class InstanceLaunch:
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
         )
+
+    @property
+    def binary(self) -> str:
+        """The llama-server this instance runs: the argv's first word."""
+        return next(iter(self.argv), _UNKNOWN_BINARY)
 
     @property
     def model_id(self) -> str:

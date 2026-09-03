@@ -36,6 +36,14 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "vision_model",
         "reranker_model",
         "reranker_type",
+        # The embed/rerank window is planned from the chunk budget
+        # (providers.engine_params.resolve_embed_ctx), and token_sizing decides
+        # whether that budget counts tokens or characters. A change relaunches
+        # the embed role rather than keep embedding against the window the old
+        # budget sized, and an engine launched under another budget computes a
+        # different pin, so a peer never adopts its token cap.
+        "chunk_size",
+        "token_sizing",
     }
 )
 

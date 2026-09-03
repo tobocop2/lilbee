@@ -42,6 +42,10 @@ class _RecordingProvider:
     ) -> str:
         return ""
 
+    def count_tokens(self, text: str) -> int:
+        # The xberg tokenizer backend binds to this when token_sizing is written.
+        return len(text)
+
     def role_ready(self, role: object) -> bool:
         # The bottom TaskBar polls chat readiness on every screen; report ready so
         # this settings-eviction host isn't treated as mid-warm.
@@ -122,6 +126,31 @@ def test_kv_cache_type_change_drops_fleet():
     provider = _install_recording_provider()
     try:
         apply_settings_update({"kv_cache_type": KvCacheType.Q8_0})
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
+    finally:
+        _restore_services()
+
+
+def test_chunk_size_change_drops_fleet():
+    """chunk_size sizes the embed/rerank window (resolve_embed_ctx), so a change
+    must respawn the servers still embedding against the old one. It owns no
+    single model role, so it routes to the whole-fleet drop like num_ctx."""
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"chunk_size": 1024})
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
+    finally:
+        _restore_services()
+
+
+def test_token_sizing_change_drops_fleet():
+    """token_sizing decides whether chunk_size counts tokens or characters, so it
+    changes the same window and takes the same path."""
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"token_sizing": True})
         assert provider.dropped == 1
         assert provider.reloaded_roles == []
     finally:

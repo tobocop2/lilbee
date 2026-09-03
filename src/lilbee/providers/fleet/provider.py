@@ -258,6 +258,15 @@ def _bindable_group(
     return (state, launches, pairs) if pairs else None
 
 
+def _log_adopted_launches(
+    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]],
+) -> None:
+    """Name the engine every bound instance now runs on, and the pid that owns it."""
+    for _group, state, launches in candidates:
+        for launch in launches:
+            planning.log_engine_launch(launch, owner_pid=state.pid)
+
+
 class _PrimedStream:
     """A stream re-fronted with its eagerly-pulled first frame.
 
@@ -1093,6 +1102,7 @@ class FleetProvider:
                 self._adopt_group(group, swap, launches)
                 self._group_dirs[group] = engine_dir
         log.info("Bound to the running engine at %s", engine_dir)
+        _log_adopted_launches(candidates)
         return True
 
     def _reload_dir(self) -> Path:

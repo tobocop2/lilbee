@@ -244,6 +244,27 @@ class TestEnginePin:
             for key, value in originals.items():
                 setattr(cfg, key, value)
 
+    def test_chunk_sizing_is_part_of_the_load_signature(self) -> None:
+        # The embed window is planned from the chunk budget, so an engine built
+        # under a different one serves a token cap this process never planned
+        # for: a default-config server adopted a warm engine planned at
+        # chunk_size=126 and embedded against a 504-token cap. Unlike the ctx
+        # keys, both have a fixed default, so equality never splits peers that
+        # merely computed their own.
+        originals = {key: getattr(cfg, key) for key in ("chunk_size", "token_sizing")}
+        try:
+            cfg.chunk_size = 512
+            cfg.token_sizing = False
+            base = binary_mod._load_config_signature()
+            cfg.chunk_size = 126
+            assert binary_mod._load_config_signature() != base
+            cfg.chunk_size = 512
+            cfg.token_sizing = True
+            assert binary_mod._load_config_signature() != base
+        finally:
+            for key, value in originals.items():
+                setattr(cfg, key, value)
+
     def test_gpu_devices_is_part_of_the_load_signature(self) -> None:
         original = cfg.gpu_devices
         try:

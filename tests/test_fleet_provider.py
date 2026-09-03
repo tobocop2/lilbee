@@ -4198,6 +4198,26 @@ def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
         holder.release_and_check_last()
 
 
+def test_binding_logs_the_engine_and_the_pid_that_owns_it(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    """Adoption names the engine it joined, so a wrong backend is traceable."""
+    swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    monkeypatch.setattr(planning_mod, "_engine_build_id", lambda: "wheel:0.6.91")
+    monkeypatch.setattr(planning_mod, "probed_devices", lambda: ())
+
+    p = FleetProvider()
+    with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+        assert p._ensure_fleet() is True
+
+    assert len(swap.binds) == 1  # rode the running engine rather than starting one
+    adopted = [r.message for r in caplog.records if r.message.startswith("Adopted")]
+    assert adopted == [
+        "Adopted chat-0 serving m-chat from engine pid 999998 on "
+        "/bin/llama-server (build wheel:0.6.91, backend unknown, devices: none)"
+    ]
+
+
 def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch) -> None:
     """The bind path handles an undecodable contract itself, not by call ordering.
 
