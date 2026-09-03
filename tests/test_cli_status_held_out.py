@@ -9,8 +9,8 @@ from lilbee.cli.helpers import render_status_result
 from lilbee.data.types import SkippedSource
 
 
-def _status(**overrides: object) -> StatusResult:
-    base = dict(
+def _status(skipped: list[SkippedSource] | None = None, skipped_total: int = 0) -> StatusResult:
+    return StatusResult(
         config=StatusConfig(
             documents_dir="docs",
             data_dir="data",
@@ -19,9 +19,9 @@ def _status(**overrides: object) -> StatusResult:
         ),
         sources=[],
         total_chunks=0,
+        skipped=skipped or [],
+        skipped_total=skipped_total,
     )
-    base.update(overrides)
-    return StatusResult(**base)  # type: ignore[arg-type]
 
 
 def _texts(status: StatusResult) -> tuple[list[Table], list[str]]:

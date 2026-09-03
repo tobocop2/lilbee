@@ -300,11 +300,9 @@ def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
 
 @dataclass(frozen=True)
 class _FileChangeVerdict:
-    """One file's sync verdict: process it, hold it out, or leave it unchanged.
+    """One file's sync verdict: process it, hold it out on its skip marker, or unchanged.
 
-    ``held`` marks a file a skip marker keeps out of this sync. It shares the
-    "nothing to ingest" shape with unchanged but not its meaning: the file is
-    not in the index, so the two are counted separately.
+    A held file is not in the index, so it is never counted as unchanged.
     """
 
     to_process: FileToProcess | None = None
@@ -684,8 +682,7 @@ class _StreamedPlan:
     # double-count and its dead chunk refs occupy the per-subject cap.
     relocated_from: list[str] = field(default_factory=list)
     unchanged: int = 0
-    # Files a skip marker held out of this run, in plan order. Ordered set, so a
-    # file cannot be reported twice if two batches ever cover it.
+    # Files a skip marker held out of this run, in plan order (ordered set).
     held_out: dict[str, None] = field(default_factory=dict)
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
@@ -904,10 +901,10 @@ def _reconcile_missing(
     nor any of the accounting sets was dropped with no signal -- the silent
     data-loss case (a scanned PDF that never made it into the index yet reported no
     error). Everything legitimately not indexed is excluded: a failed extraction is in
-    ``failed``, a zero-text file this run attempted is in ``skipped``, a file an
-    earlier run skip-marked is in ``held`` (this run never attempted it, so it is in
-    neither of the other two), and an unsupported type was never returned by
-    discovery in the first place.
+    ``failed``, a zero-text file this run attempted is in ``skipped``, a file this run
+    held out on its skip marker is in ``held``, and an unsupported type was never
+    returned by discovery in the first place. ``held`` is the run's held-out set, not
+    the marker file: a stale marker (file edited since it failed) must not hide a drop.
     """
     accounted = {s["filename"] for s in sources} | set(failed) | set(skipped) | set(held)
     return sorted(name for name in disk_files if name not in accounted)
@@ -1243,10 +1240,8 @@ async def sync(
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor an accounting set was dropped without a
     # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    # The persisted markers are subtracted, not just this run's lists: a file an
-    # earlier run marked is in neither, and would otherwise be reported every sync.
     if missing := _reconcile_missing(
-        disk_files, _store.get_sources(), failed, skipped, skip_markers
+        disk_files, _store.get_sources(), failed, skipped, state.held_out
     ):
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "

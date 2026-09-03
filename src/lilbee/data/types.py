@@ -73,8 +73,7 @@ class FileChangePlan(NamedTuple):
     updated: dict[str, None]
     unchanged: int
     stat_backfills: list[SourceStatBackfill]
-    # Files a skip marker holds out. Kept apart from ``unchanged``: a held-out
-    # file is not in the index, and counting it as unchanged hides it.
+    # Files a skip marker holds out; not in the index, so never counted as unchanged.
     held_out: list[str]
 
 
@@ -139,9 +138,7 @@ class SyncResult(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
-    # Files an earlier sync skip-marked, which this run therefore did not
-    # attempt. Reported apart from ``unchanged`` so a summary cannot present a
-    # file that is not in the index as one that is.
+    # Files an earlier sync skip-marked, so this run did not attempt them.
     held_out: list[SkippedSource] = []
     # Chunks whose text exceeded the embedder's char budget and were truncated
     # before embedding. Non-zero means some tail content did not reach the index.

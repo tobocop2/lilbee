@@ -1549,6 +1549,36 @@ class TestSkipMarkerLifecycle:
 
         assert "possible silent drop" not in caplog.text
 
+    async def test_stale_marker_does_not_hide_a_silent_drop(self, isolated_env, mock_svc, caplog):
+        """A marker for an older hash accounts for nothing once the file changes.
+        Only the files this run held out are subtracted, so an edited file that
+        then vanishes without a failure is still reported."""
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        scan = isolated_env / "scanned.pdf"
+        scan.write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            await sync(quiet=True)
+
+        async def _drop_everything(plan_batches, *_args, **_kwargs):
+            async for _batch in plan_batches:
+                pass
+
+        scan.write_bytes(b"%PDF-1.4 edited since it was marked")
+        with (
+            mock.patch("lilbee.data.ingest.pipeline.ingest_stream", side_effect=_drop_everything),
+            caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
+        ):
+            result = await sync(quiet=True)
+
+        assert result.held_out == []
+        assert "possible silent drop" in caplog.text
+        assert "scanned.pdf" in caplog.text
+
     async def test_retry_skipped_clears_markers(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 

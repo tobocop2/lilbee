@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.table import Table
 
 from lilbee.app.ingest import RegisterResult, register_sources
@@ -112,7 +113,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         held.add_column("File", style=theme.ACCENT)
         held.add_column("Reason", style=theme.MUTED)
         for skipped in status.skipped:
-            held.add_row(skipped.filename, skipped.reason)
+            held.add_row(escape(skipped.filename), escape(skipped.reason))
         yield held
         b = theme.LABEL
         hidden = status.skipped_total - len(status.skipped)

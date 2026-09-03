@@ -636,7 +636,7 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 ]}
 
 // lilbee --json status
-{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "total_chunks": 42}
+{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "total_chunks": 42, "skipped": [], "skipped_total": 0}
 
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}

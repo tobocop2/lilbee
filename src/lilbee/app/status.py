@@ -18,8 +18,7 @@ LILBEE_LABEL_MAX_LEN = 40
 ellipsis when even the leaf alone would breach the cap."""
 
 STATUS_SKIPPED_LIMIT = 50
-"""Held-out files listed in one status response. A corpus of unextractable
-scans can hold out thousands; the payload stays bounded and reports the total."""
+"""Cap on held-out files in one status response; ``skipped_total`` carries the real count."""
 
 _ELLIPSIS = "…"
 
@@ -119,10 +118,7 @@ class StatusResult(BaseModel):
     total_chunks: int
     entities: EntityStatus | None = None
     skipped: list[SkippedSource] = []
-    """Files a skip marker currently holds out of the index, with the reason.
-
-    Capped at ``STATUS_SKIPPED_LIMIT``; ``skipped_total`` carries the real count.
-    """
+    """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
 
 

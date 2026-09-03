@@ -125,7 +125,7 @@ flowchart TD
     H --> HC{"hash matches<br/>the stored row?"}
     HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
     HC -->|no| SK{"hash matches a<br/>failed-file skip marker?"}
-    SK -->|yes| SKIP["held out — failed here last sync;<br/>counted apart from unchanged,<br/>reported with its reason"]
+    SK -->|yes| SKIP["held out: failed here last sync;<br/>counted apart from unchanged,<br/>reported with its reason"]
     SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
 ```
 

@@ -192,11 +192,7 @@ class StatusResponse(BaseModel):
     total_chunks: int
     entities: StatusEntityInfo | None = None
     skipped: list[SkippedSource] = []
-    """Files a skip marker currently holds out of the index, with the reason.
-
-    Capped so a corpus with thousands of unextractable files cannot bloat the
-    payload; ``skipped_total`` carries the real count.
-    """
+    """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
 
 

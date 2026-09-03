@@ -87,12 +87,7 @@ def write_skip_reasons(data_root: Path, reasons: dict[str, str]) -> None:
 
 
 def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
-    """Pair each name with its recorded reason, in the order given.
-
-    A marker written before the reasons sidecar existed, or one whose reason a
-    partial write lost, falls back to ``DEFAULT_SKIP_REASON`` so every held-out
-    file still carries an explanation.
-    """
+    """Pair each name with its recorded reason, in order; ``DEFAULT_SKIP_REASON`` when none."""
     reasons = load_skip_reasons(data_root)
     return [
         SkippedSource(filename=name, reason=reasons.get(name, DEFAULT_SKIP_REASON))
