@@ -382,6 +382,40 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_prints_the_rewrite_on_stderr_and_the_answer_on_stdout(self, mock_sync, mock_svc):
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                RetrievalNotice(query="when was the journal written"),
+                StreamToken(content="In 1910.", is_reasoning=False),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "and when was it written?"])
+        assert result.exit_code == 0
+        assert "Searching for: when was the journal written" in result.stderr
+        assert "Searching for" not in result.stdout
+        assert "In 1910." in result.stdout
+
+    def test_the_rewrite_notice_is_not_a_first_token(self):
+        """The ready line keys on the first model token; the notice arrives before
+        the model has produced anything."""
+        from lilbee.cli.commands.search_chat import _print_answer_stream
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        firsts: list[int] = []
+        stream = iter(
+            [
+                RetrievalNotice(query="rewrite"),
+                StreamToken(content="answer", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.cli.commands.search_chat.announce_retrieval_query") as announce:
+            _print_answer_stream(stream, on_first_token=lambda: firsts.append(1))
+        announce.assert_called_once_with("rewrite")
+        assert len(firsts) == 1
+
     def test_ask_rejects_empty_question(self, mock_svc):
         result = runner.invoke(app, ["ask", "   "])
         assert result.exit_code != 0
@@ -2309,6 +2343,19 @@ class TestAskJson:
         # bb-ky3: cited_sources is present and empty when the answer cited nothing,
         # so a JSON consumer can tell a grounded answer from an off-corpus one.
         assert data["cited_sources"] == []
+        assert data["retrieval_query"] is None
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_carries_the_rewrite(self, mock_sync, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="In 1910.", sources=[], retrieval_query="when was the journal written"
+        )
+        result = runner.invoke(app, ["--json", "ask", "and when was it written?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["retrieval_query"] == "when was the journal written"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):

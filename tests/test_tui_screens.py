@@ -6728,6 +6728,38 @@ async def test_chat_stream_response_worker(mock_svc):
         assert any(m["role"] == "assistant" for m in app.screen._history)
 
 
+def test_consume_stream_shows_the_rewrite_in_the_status_row():
+    """A retrieval notice lands in the bubble's status row and never in the answer."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    screen = ChatScreen.__new__(ChatScreen)
+    widget = MagicMock()
+    parts: list[str] = []
+    stream = iter(
+        [
+            RetrievalNotice(query="when was the journal written"),
+            StreamToken(content="In 1910.", is_reasoning=False),
+        ]
+    )
+    with (
+        patch(
+            "lilbee.cli.tui.screens.chat._get_worker",
+            return_value=MagicMock(is_cancelled=False),
+        ),
+        patch(
+            "lilbee.cli.tui.screens.chat.call_from_thread",
+            side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+        ),
+    ):
+        screen._consume_stream(stream, widget, parts)
+    widget.set_thinking_status.assert_called_once_with(
+        "Searching for: when was the journal written"
+    )
+    assert parts == ["In 1910."]
+    widget.append_content.assert_called_once_with("In 1910.")
+
+
 async def test_chat_stream_response_error_worker(mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()

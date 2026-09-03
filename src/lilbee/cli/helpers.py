@@ -67,6 +67,16 @@ def announce_ready(err: Console | None, role: object) -> None:
     err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
 
 
+def announce_retrieval_query(query: str) -> None:
+    """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
+    from rich.markup import escape
+
+    from lilbee.cli.tui import messages as msg
+
+    line = msg.SEARCHING_FOR.format(query=escape(query))
+    Console(stderr=True).print(f"[{theme.MUTED}]{line}[/{theme.MUTED}]")
+
+
 def _chat_warm_error(role: object) -> str | None:
     """The chat warm-up's recorded failure, or None when it did not fail.
 

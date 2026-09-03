@@ -2915,6 +2915,39 @@ class TestHistoryCondensation:
             cfg.query_expansion_count = 3
         assert result.retrieval_query is None
 
+    def test_ask_stream_announces_the_rewrite_before_the_first_token(self, mock_svc):
+        """The CLI and TUI stream path learns the rewrite the same way the SSE
+        clients do: one notice ahead of the answer."""
+        from lilbee.retrieval.reasoning import RetrievalNotice
+
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.side_effect = [_text_result(rewritten), iter(["In 1910 [1]."])]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            events = list(
+                get_services().searcher.ask_stream(
+                    "and when was it written?", history=list(self._HISTORY)
+                )
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert events[0] == RetrievalNotice(query=rewritten)
+        assert not any(isinstance(e, RetrievalNotice) for e in events[1:])
+        assert "In 1910 [1]." in "".join(e.content for e in events[1:])
+
+    def test_ask_stream_announces_nothing_without_a_rewrite(self, mock_svc):
+        from lilbee.retrieval.reasoning import RetrievalNotice
+
+        mock_svc.provider.chat.return_value = iter(["In 1910 [1]."])
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            events = list(get_services().searcher.ask_stream("standalone question"))
+        finally:
+            cfg.query_expansion_count = 3
+        assert not any(isinstance(e, RetrievalNotice) for e in events)
+
     def test_accepted_rewrite_logs_at_info(self, mock_svc, caplog):
         """The rewrite sits beside the other routing decisions in the log."""
         rewritten = "when was the Split Rock lighthouse journal written"

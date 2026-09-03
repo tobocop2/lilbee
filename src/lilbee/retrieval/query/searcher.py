@@ -84,6 +84,7 @@ from lilbee.retrieval.query.neighbors import expand_neighbors
 from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
+    RetrievalNotice,
     StreamToken,
     cap_events_as_stream_tokens,
     effective_reasoning_cap,
@@ -1455,8 +1456,12 @@ class Searcher:
         options: dict[str, Any] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> Generator[StreamToken, None, None]:
-        """Stream answer tokens with citations appended at the end."""
+    ) -> Generator[StreamToken | RetrievalNotice, None, None]:
+        """Stream answer tokens with citations appended at the end.
+
+        When retrieval ran on a rewrite of the question, a ``RetrievalNotice``
+        carrying that rewrite precedes the first token.
+        """
         if self.search_unavailable():
             yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
             return
@@ -1472,6 +1477,8 @@ class Searcher:
         if rag is None:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
+        if rag.retrieval_query:
+            yield RetrievalNotice(query=rag.retrieval_query)
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
         # been yielded, so the conservative budget the context fit already
