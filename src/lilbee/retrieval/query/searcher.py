@@ -29,6 +29,7 @@ from lilbee.providers.base import (
     LLMProvider,
     ProviderError,
     ProviderErrorKind,
+    aux_options,
     estimate_budget_tokens,
     prompt_token_budget,
 )
@@ -71,6 +72,7 @@ from lilbee.retrieval.query.intent import (
     INTENT_CLASSIFY_PROMPT,
     AggregateKind,
     AggregateQuery,
+    contains_reference,
     document_references,
     matches_reference,
     matches_stored_title,
@@ -321,7 +323,7 @@ class Searcher:
         prompt = EXPANSION_PROMPT.format(count=count, question=question)
         messages = [{"role": "user", "content": prompt}]
         response = self._provider.chat(
-            messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
+            messages, stream=False, options=aux_options(EXPANSION_MAX_TOKENS)
         )
         text = strip_reasoning(response.text).strip()
         variants = [_strip_list_marker(line.strip()) for line in text.split("\n") if line.strip()]
@@ -429,7 +431,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options={"num_predict": HYDE_MAX_TOKENS},
+                options=aux_options(HYDE_MAX_TOKENS),
             )
             # Reasoning models front-load deliberation; embedding it instead
             # of the passage would search for the model's thought process.
@@ -686,7 +688,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": CONDENSE_MAX_TOKENS},
+                options=aux_options(CONDENSE_MAX_TOKENS),
             )
             rewritten = strip_reasoning(response.text).strip().splitlines()
             first_line = rewritten[0].strip() if rewritten else ""
@@ -769,15 +771,11 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={
-                    "num_predict": summary_cap(self._config.chat_n_ctx_target),
-                    # A thinking model spends the whole budget in a <think>
-                    # block that llama.cpp force-closes and strip_reasoning
-                    # deletes whole, leaving "" and stranding the batch.
-                    "think": False,
+                options=aux_options(
+                    summary_cap(self._config.chat_n_ctx_target),
                     # Deterministic: the same conversation folds the same way.
-                    "temperature": 0,
-                },
+                    temperature=0,
+                ),
             )
             summary = strip_reasoning(response.text).strip()
             if summary:
@@ -881,9 +879,9 @@ class Searcher:
         Filename resolution first: substring search over-matches (a bare
         "482" hits every zero-padded id containing it), so token-exact
         matching disambiguates and only a unique winner routes. A unique
-        substring hit still routes for word refs (quoted titles never
-        token-match hyphenated filenames) but not numeric ones: "12" inside
-        "notes-2012" is the false match token comparison exists to reject.
+        candidate still routes when it carries the reference as whole tokens
+        (quoted titles never token-match hyphenated filenames), which is what
+        rejects "12" inside "notes-2012" and "we" inside "DSO Web Hosting".
 
         When no filename knows the reference, it may be a docket-style number
         living in the document's own text; a BM25 probe resolves it when the
@@ -893,8 +891,10 @@ class Searcher:
         matches = [s for s in candidates if matches_reference(ref, s["filename"])]
         if len(matches) == 1:
             return str(matches[0]["filename"])
-        if not matches and len(candidates) == 1 and not ref.strip().isdigit():
-            return str(candidates[0]["filename"])
+        if not matches and len(candidates) == 1:
+            unique = str(candidates[0]["filename"])
+            if contains_reference(ref, unique):
+                return unique
         if matches:
             return None  # several sources genuinely carry the reference
         return self._resolve_reference_by_content(ref, chunk_type)
@@ -1255,10 +1255,9 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={
-                    "num_predict": INTENT_CLASSIFY_MAX_TOKENS,
-                    "response_format": json_reply_format(),
-                },
+                options=aux_options(
+                    INTENT_CLASSIFY_MAX_TOKENS, response_format=json_reply_format()
+                ),
             )
         except Exception:
             log.debug("LLM intent classification failed; using pattern result", exc_info=True)

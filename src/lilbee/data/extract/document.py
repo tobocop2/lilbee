@@ -24,6 +24,7 @@ from lilbee.data.types import (
     ExtractMode,
     OcrBackendName,
 )
+from lilbee.providers.base import aux_options
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -144,7 +145,7 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
             response = provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": _ENRICH_MAX_TOKENS},
+                options=aux_options(_ENRICH_MAX_TOKENS),
             )
             lines = strip_reasoning(response.text).strip().splitlines()
             sentence = lines[0].strip() if lines else ""

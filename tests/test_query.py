@@ -662,6 +662,14 @@ class TestExpandQuery:
         variants = get_services().searcher._llm_expand("anything at all", 3)
         assert variants == ["first phrasing", "second phrasing", "third phrasing"]
 
+    def test_expansion_turns_thinking_off(self, mock_svc):
+        """The user's log: 9 of 18 completions in a day were expansion calls
+        that produced zero variants. A reasoning model spends the whole cap
+        inside <think>, and stripping it leaves nothing to split into lines."""
+        mock_svc.provider.chat.return_value = _text_result("A\nB")
+        get_services().searcher._llm_expand("explain pod scheduling", 2)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
         assert (
@@ -1801,6 +1809,14 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         assert mock_svc.provider.chat.call_args.kwargs["options"]["num_predict"] == HYDE_MAX_TOKENS
 
+    def test_turns_thinking_off(self, mock_svc):
+        """The passage is the whole point of the call; a reasoning model given
+        this cap spends it deliberating and hands back nothing to embed."""
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
         assert get_services().searcher._hyde_search("test", top_k=5) == []
@@ -2081,6 +2097,18 @@ class TestLlmIntentRouting:
             assert "count" in answer.lower()
         finally:
             cfg.intent_llm = False
+
+    def test_classification_turns_thinking_off(self, mock_svc):
+        """One short JSON verdict on a small cap: a thinking template burns the
+        cap before the JSON, and every question degrades to the pattern result."""
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.return_value = _text_result(self._CLASSIFY_JSON)
+            mock_svc.store.count_term_mentions.return_value = (12, 5)
+            get_services().searcher.route_direct_answer("how many tomes mention blood?")
+        finally:
+            cfg.intent_llm = False
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
 
 class TestSearchStructured:
@@ -2583,6 +2611,34 @@ class TestKnownItemRoute:
         mock_svc.store.get_chunks_by_source.assert_not_called()
         mock_svc.store.search.assert_called_once()
 
+    def test_short_common_word_reference_stays_topical(self, mock_svc):
+        """The user's log: "Known-item route: 'we' resolved to notes/DSO Web
+        Hosting.md". The pronoun after "file" became a reference, substring-hit
+        "We" inside "Web", and replaced the whole retrieval context with that
+        one note. A reference under three characters never routes."""
+        mock_svc.store.get_sources.return_value = [self._source("notes/DSO Web Hosting.md")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize the file we discussed")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+    def test_reference_inside_a_longer_word_stays_topical(self, mock_svc):
+        """Length alone is not enough: a reference must land on whole tokens of
+        the filename, so "port" inside "Airport" is not the document named."""
+        mock_svc.store.get_sources.return_value = [self._source("Airport Signage.md")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize document port")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
     def test_ambiguous_reference_falls_back_to_topical(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
             self._source("report_12a.pdf"),
@@ -2843,6 +2899,16 @@ class TestHistoryCondensation:
             cfg.query_expansion_count = 3
         expected = "when was the Split Rock journal written"
         assert mock_svc.store.search.call_args[1]["query_text"] == expected
+
+    def test_turns_thinking_off(self, mock_svc):
+        """A rewrite that comes back empty silently sends the pronouns to
+        retrieval, which is the failure the rewrite exists to prevent."""
+        mock_svc.provider.chat.return_value = _text_result("standalone question")
+        rewritten = get_services().searcher._condense_question(
+            "and when was it written?", list(self._HISTORY)
+        )
+        assert rewritten == "standalone question"
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
 
 class TestAskRawWithReranker:

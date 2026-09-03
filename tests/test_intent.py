@@ -5,6 +5,7 @@ import pytest
 from lilbee.retrieval.query.intent import (
     AggregateKind,
     AggregateQuery,
+    contains_reference,
     document_references,
     matches_reference,
     parse_aggregate,
@@ -184,6 +185,32 @@ class TestMatchesReference:
         assert matches_reference("0482", "ARC-REC-482.pdf")
         assert matches_reference("482", "ARC-REC-00482.pdf")
         assert not matches_reference("482", "ARC-REC-483.pdf")
+
+
+class TestContainsReference:
+    def test_multi_word_reference_spans_whole_tokens(self):
+        assert contains_reference("harbor survey 2010", "harbor-survey-2010.pdf")
+
+    def test_reference_runs_inside_a_longer_stem(self):
+        assert contains_reference("harbor survey", "2010-harbor-survey-final.pdf")
+
+    def test_reference_inside_a_word_does_not_match(self):
+        """The failure this exists to stop: "we" is inside "Web", and a
+        substring hit routed the whole retrieval context to that one note."""
+        assert not contains_reference("we", "notes/DSO Web Hosting.md")
+        assert not contains_reference("port", "Airport Signage.md")
+
+    def test_short_reference_never_matches(self):
+        """Under three characters a reference is a common word as often as a
+        name, so it cannot route even when the stem is exactly it."""
+        assert not contains_reference("we", "we.md")
+        assert contains_reference("web", "web.md")
+
+    def test_reference_tokens_must_be_contiguous(self):
+        assert not contains_reference("harbor 2010", "harbor-survey-2010.pdf")
+
+    def test_reference_with_no_alphanumeric_tokens_does_not_match(self):
+        assert not contains_reference("--", "a-b.md")
 
 
 class TestParseAggregate:

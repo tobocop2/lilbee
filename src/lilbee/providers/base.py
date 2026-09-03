@@ -99,6 +99,19 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     return LLMOptions(**options).to_dict()
 
 
+def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
+    """Options for an auxiliary call: a token cap with thinking off.
+
+    The pipeline's internal calls (query expansion, HyDE, condensation,
+    classification, chunk enrichment, entity induction and extraction) each run
+    on a cap sized for their answer alone. A thinking model spends that whole
+    cap inside <think>, which llama.cpp force-closes at the limit and
+    ``strip_reasoning`` then deletes whole, so the call returns nothing at full
+    cost.
+    """
+    return {"num_predict": num_predict, "think": False, **extra}
+
+
 def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, Any]:
     """Validate options and map them to the per-call set an OpenAI/llama-server body takes.
 

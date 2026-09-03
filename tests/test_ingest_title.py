@@ -162,6 +162,23 @@ class TestContextualEnrichment:
             cfg.contextual_enrichment = False
         assert out == ["This chunk covers the budget section of the annual report.\nchunk text"]
 
+    def test_turns_thinking_off(self):
+        """One situating sentence on a small cap: a thinking model spends the
+        cap deliberating and every chunk embeds bare."""
+        from unittest.mock import patch
+
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.document import _enrich_texts
+
+        svc = self._services()
+        cfg.contextual_enrichment = True
+        try:
+            with patch("lilbee.data.extract.document.get_services", return_value=svc):
+                _enrich_texts(["chunk text"], "doc head", "a.pdf")
+        finally:
+            cfg.contextual_enrichment = False
+        assert svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_failure_keeps_the_bare_chunk(self):
         from unittest.mock import patch
 
