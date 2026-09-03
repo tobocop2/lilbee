@@ -117,6 +117,11 @@ CHILD_MODULE_FLAGS=(
     --include-module=lilbee.providers.fleet.vulkan_probe
 )
 
+# One cache directory per build: two builds of one version sharing {VERSION}
+# rewrite each other's files, which fails on Windows while the other build runs.
+ONEFILE_BUILD_KEY=${ASSET_NAME#lilbee-}
+ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
+
 # litellm.proxy is not trimmable, despite nothing in lilbee importing it:
 # litellm/__init__.py pulls in 9 of its modules on a bare import, so
 # --nofollow-import-to=litellm.proxy is an ImportError at startup.
@@ -124,12 +129,6 @@ CHILD_MODULE_FLAGS=(
 # hf_xet is included explicitly so the package configuration's hf_xet metadata
 # is emitted: Nuitka only ships metadata for a distribution whose top-level
 # module it actually compiled.
-
-# One cache directory per build: two builds of one version sharing {VERSION}
-# rewrite each other's files, which fails on Windows while the other build runs.
-ONEFILE_BUILD_KEY=${ASSET_NAME#lilbee-}
-ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
-
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
