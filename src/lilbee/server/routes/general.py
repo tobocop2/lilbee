@@ -7,7 +7,6 @@ probe reads the token from server.json like every other local client.
 
 from __future__ import annotations
 
-import errno
 import signal
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,7 @@ from litestar.response import Stream
 from litestar.status_codes import HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
 from pydantic import ValidationError
 
-from lilbee.core.config import CONFIG_FILE_NAME
+from lilbee.app.settings import config_write_failure_message
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
@@ -87,16 +86,8 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
         raise ValidationException(str(exc)) from exc
     except OSError as exc:
         raise HTTPException(
-            status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=_config_write_failure(exc)
+            status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
         ) from exc
-
-
-def _config_write_failure(exc: OSError) -> str:
-    """User-facing detail for a failed config write; names the fix when the file is locked."""
-    detail = f"Could not write {CONFIG_FILE_NAME}: {exc}."
-    if exc.errno in (errno.EACCES, errno.EPERM):
-        detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
-    return detail
 
 
 @get("/api/source")

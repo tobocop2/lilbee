@@ -1154,9 +1154,9 @@ class TestConfigUpdateRoute:
 
     def test_a_disk_error_names_no_program_to_close(self):
 
-        from lilbee.server.routes.general import _config_write_failure
+        from lilbee.app.settings import config_write_failure_message
 
-        detail = _config_write_failure(OSError(28, "No space left on device"))
+        detail = config_write_failure_message(OSError(28, "No space left on device"))
 
         assert detail == "Could not write config.toml: [Errno 28] No space left on device."
 
