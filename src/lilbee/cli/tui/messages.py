@@ -166,7 +166,6 @@ CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
 # cold engine, and the failure that wait can end in.
 ENGINE_READING_WEIGHTS = "Reading {name} weights"
 ENGINE_WARMING = "Warming up the model"
-SEARCHING_FOR = "Searching for: {query}"
 # Names the phase, like its siblings above; "almost ready" promised a finish
 # time the engine had not committed to (same rename as TASKBAR_WARM_LOADING).
 ENGINE_ALMOST_READY = "Loading the engine"
@@ -175,6 +174,8 @@ ENGINE_FAILED_HINT = "Open the Catalog to install a model, or pick a different o
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
 # Shown once when a prompt first waits on a cold engine and keep_engine_warm is off.
 ENGINE_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
+# Status painted into the pending answer when retrieval ran on a rewritten follow-up.
+SEARCHING_FOR = "Searching for: {query}"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

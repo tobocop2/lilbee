@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.table import Table
 
 from lilbee.app.ingest import RegisterResult, register_sources
@@ -69,11 +70,7 @@ def announce_ready(err: Console | None, role: object) -> None:
 
 def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
-    from rich.markup import escape
-
-    from lilbee.cli.tui import messages as msg
-
-    line = msg.SEARCHING_FOR.format(query=escape(query))
+    line = SEARCHING_FOR.format(query=escape(query))
     Console(stderr=True).print(f"[{theme.MUTED}]{line}[/{theme.MUTED}]")
 
 
@@ -150,6 +147,8 @@ The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``)
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
 fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
+SEARCHING_FOR = "Searching for: {query}"
+"""The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
 
 def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:

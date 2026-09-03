@@ -238,7 +238,7 @@ class RagContext(NamedTuple):
     be shed), so a tighter fit drops expansion before it drops an original chunk.
 
     ``retrieval_query`` is the standalone rewrite retrieval ran on, set only when
-    it replaced the question as typed, so no surface has to compare strings.
+    it replaced the question as typed.
     """
 
     results: list[SearchChunk]

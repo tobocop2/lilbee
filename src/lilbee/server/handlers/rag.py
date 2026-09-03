@@ -866,7 +866,6 @@ def _resolve_stream_context(
     if rag is None:
         return _StreamResolution([], None, [sse_error("No relevant documents found.")])
     results, messages = rag.results, rag.messages
-    # Both streams announce the rewrite from here, so the two cannot drift.
     announce = (
         [sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query})]
         if rag.retrieval_query

@@ -398,6 +398,21 @@ class TestAsk:
         assert "Searching for" not in result.stdout
         assert "In 1910." in result.stdout
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_prints_a_rewrite_with_markup_characters_verbatim(self, mock_sync, mock_svc):
+        """The rewrite is model text; Rich must not read its brackets as markup."""
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                RetrievalNotice(query="[bold]journal[/bold] entries"),
+                StreamToken(content="In 1910.", is_reasoning=False),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "and the entries?"])
+        assert result.exit_code == 0
+        assert "Searching for: [bold]journal[/bold] entries" in result.stderr
+
     def test_the_rewrite_notice_is_not_a_first_token(self):
         """The ready line keys on the first model token; the notice arrives before
         the model has produced anything."""
