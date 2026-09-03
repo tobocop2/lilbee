@@ -25,7 +25,7 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
-    _engine_build_id,
+    engine_build_id,
     llama_server_runtime_env,
     resolve_llama_server,
 )
@@ -67,12 +67,10 @@ _NO_DEVICES = "none"
 
 
 def log_engine_launch(launch: InstanceLaunch, *, owner_pid: int | None = None) -> None:
-    """Record which engine serves *launch*, one line per instance.
+    """Log the binary, build, backend and devices serving *launch*.
 
-    Pass *owner_pid* when this process adopted a running engine rather than
-    spawning its own. Nothing else in the fleet writes down the binary, its
-    build, the backend and the devices together, and that is what tells an
-    operator their engine is running Vulkan on a CUDA card.
+    *owner_pid* is the engine's owner when this process adopted it rather than
+    spawned it.
     """
     if owner_pid is None:
         log.info("Launched %s serving %s on %s", launch.model_id, launch.model, _engine_id(launch))
@@ -91,7 +89,7 @@ def _engine_id(launch: InstanceLaunch) -> str:
     devices = probed_devices()
     backend = next((device.backend for device in devices), _UNKNOWN_BACKEND)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
-    return f"{launch.binary} (build {_engine_build_id()}, backend {backend}, devices: {names})"
+    return f"{launch.binary} (build {engine_build_id()}, backend {backend}, devices: {names})"
 
 
 def warn_when_chat_downsized(launch: InstanceLaunch) -> None:

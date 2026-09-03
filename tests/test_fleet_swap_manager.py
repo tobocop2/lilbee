@@ -121,17 +121,13 @@ class TestStart:
     def test_logs_the_engine_each_role_was_launched_on(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
     ) -> None:
-        """A fresh launch names its binary, build, backend and cards.
-
-        Without it nothing on the box records that the engine picked, say,
-        Vulkan on an NVIDIA card, and the fleet runs that way unremarked.
-        """
+        """A fresh launch names its binary, build, backend and cards."""
         from lilbee.providers.fleet import planning as planning_mod
         from lilbee.providers.fleet.devices import FleetDevice
 
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        monkeypatch.setattr(planning_mod, "_engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
         monkeypatch.setattr(
             planning_mod,
             "probed_devices",

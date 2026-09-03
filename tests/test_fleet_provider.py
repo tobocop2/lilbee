@@ -4203,7 +4203,7 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
 ) -> None:
     """Adoption names the engine it joined, so a wrong backend is traceable."""
     swap, _machine = _bindable_machine(monkeypatch, tmp_path)
-    monkeypatch.setattr(planning_mod, "_engine_build_id", lambda: "wheel:0.6.91")
+    monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
     monkeypatch.setattr(planning_mod, "probed_devices", lambda: ())
 
     p = FleetProvider()

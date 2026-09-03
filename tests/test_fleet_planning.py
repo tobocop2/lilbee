@@ -3841,7 +3841,7 @@ class TestLogEngineLaunch:
 
     @pytest.fixture(autouse=True)
     def _known_engine(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "_engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
         monkeypatch.setattr(
             planning_mod,
             "probed_devices",
@@ -3851,8 +3851,6 @@ class TestLogEngineLaunch:
         )
 
     def test_a_fresh_launch_names_the_engine_it_started(self, caplog) -> None:
-        # The Vulkan-on-an-NVIDIA-card report: without this line nothing on disk
-        # says which build and backend actually served the models.
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch())
         message = caplog.records[0].message
@@ -3874,8 +3872,7 @@ class TestLogEngineLaunch:
         assert "backend Vulkan" in message
 
     def test_an_unreadable_host_still_logs(self, caplog, monkeypatch) -> None:
-        # A host whose devices could not be enumerated is exactly the host whose
-        # log is being read, so the line must still name the binary and build.
+        # An unreadable host still names its binary and build.
         monkeypatch.setattr(planning_mod, "probed_devices", lambda: ())
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch())
