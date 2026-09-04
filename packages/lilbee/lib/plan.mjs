@@ -2,7 +2,7 @@
  * Pure planning: turn argv + env into the command this launcher runs.
  *
  * Routing:
- *  - `prepare`            download/verify the binary, then exit (launcher-only)
+ *  - `prepare [<tag>]`    download/verify the binary, then exit (launcher-only)
  *  - `mcp [...]`          run the MCP server; with LILBEE_URL set, bridge
  *                         stdio <-> streamable-http via mcp-remote instead
  *  - anything else        resolve the binary and exec argv verbatim
@@ -13,7 +13,7 @@
 /** Classify argv into a launcher route. */
 export function routeArgv(argv) {
   const [head, ...rest] = argv;
-  if (head === "prepare") return { kind: "prepare" };
+  if (head === "prepare") return { kind: "prepare", tag: rest[0] ?? null };
   if (head === "unprepare") return { kind: "unprepare" };
   if (head === "mcp") return { kind: "mcp", args: parseMcpArgs(rest) };
   return { kind: "exec", argv };
@@ -84,18 +84,20 @@ export const HELP = `lilbee (npm launcher) — run lilbee anywhere
 Usage:
   lilbee <any lilbee command>     bootstrap the binary if needed, then run it
   lilbee mcp [--data-dir <dir>]   start the MCP server (stdio)
-  lilbee prepare                  download (or upgrade to) the latest lilbee binary and exit
+  lilbee prepare [<tag>]          download (or upgrade to) the latest lilbee binary and exit;
+                                  with a release tag, install exactly that release
   lilbee unprepare                delete every downloaded binary (run before npm uninstall)
   lilbee-mcp [...]                same as \`lilbee mcp [...]\`
 
 Environment:
-  LILBEE_URL       remote lilbee server; \`mcp\` bridges to <url> instead of a local binary
-  LILBEE_TOKEN     bearer session token for LILBEE_URL
-  LILBEE_BIN       explicit path to a lilbee binary
-  LILBEE_DATA_DIR  library location for \`mcp\` (same as --data-dir)
-  LILBEE_VARIANT   download variant override: default | cu121 | cu124 | cu125 |
-                   rocm | compat | compat-cu124 | compat-rocm (unset =
-                   auto-detect; default = the plain build on any host)
-  LILBEE_RELEASE   run an exact lilbee release tag instead of the latest
-  LILBEE_DEBUG     =1 prints binary resolution detail on every run
+  LILBEE_URL         remote lilbee server; \`mcp\` bridges to <url> instead of a local binary
+  LILBEE_TOKEN       bearer session token for LILBEE_URL
+  LILBEE_BIN         explicit path to a lilbee binary
+  LILBEE_DATA_DIR    library location for \`mcp\` (same as --data-dir)
+  LILBEE_VARIANT     download variant override: default | cu121 | cu124 | cu125 |
+                     rocm | compat | compat-cu124 | compat-rocm (unset =
+                     auto-detect; default = the plain build on any host)
+  LILBEE_RELEASE     run an exact lilbee release tag instead of the latest
+  LILBEE_DEV_BUILDS  =1 lets "latest" pick in-development (.dev) builds
+  LILBEE_DEBUG       =1 prints binary resolution detail on every run
 `;

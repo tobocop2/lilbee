@@ -22,7 +22,8 @@ export interface Host {
 
 /**
  * Probe the host: NVIDIA driver CUDA level, AMD KFD topology, AVX2 baseline.
- * Never throws; detection failures fall back to the default build.
+ * A non-empty LILBEE_VARIANT in `env` replaces the detected variant; an unknown
+ * value throws. Detection failures fall back to the default build.
  */
 export function detectHost(env?: NodeJS.ProcessEnv): Promise<Host>;
 

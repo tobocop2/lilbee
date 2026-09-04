@@ -12,7 +12,7 @@ import {
 } from "../lib/plan.mjs";
 
 test("routeArgv: prepare, mcp, and passthrough", () => {
-  assert.deepEqual(routeArgv(["prepare"]), { kind: "prepare" });
+  assert.deepEqual(routeArgv(["prepare"]), { kind: "prepare", tag: null });
   assert.deepEqual(routeArgv(["unprepare"]), { kind: "unprepare" });
   assert.equal(routeArgv(["mcp"]).kind, "mcp");
   assert.equal(routeArgv(["mcp", "--data-dir", "/x"]).args.dataDir, "/x");
@@ -77,4 +77,9 @@ test("exitCodeForSignal maps known signals and defaults to 128", () => {
   assert.equal(exitCodeForSignal("SIGINT"), 130);
   assert.equal(exitCodeForSignal("SIGTERM"), 143);
   assert.equal(exitCodeForSignal("SIGWEIRD"), 128);
+});
+
+test("routeArgv: prepare takes an optional release tag", () => {
+  assert.deepEqual(routeArgv(["prepare", "v0.6.90b432"]), { kind: "prepare", tag: "v0.6.90b432" });
+  assert.deepEqual(routeArgv(["prepare"]), { kind: "prepare", tag: null });
 });
