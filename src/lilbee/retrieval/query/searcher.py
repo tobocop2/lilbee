@@ -780,7 +780,7 @@ class Searcher:
             summary = strip_reasoning(response.text).strip()
             if summary:
                 return summary
-            # Only the native llama-server path honors think=False; elsewhere a
+            # The llama-server and Ollama paths honor think=False; elsewhere a
             # reasoning model can leave nothing after the strip. Its reasoning
             # is itself a summary of these turns, so recover it rather than
             # strand them. Non-reasoning models never reach here.
