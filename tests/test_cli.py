@@ -5783,6 +5783,31 @@ class TestDownloadSelfCheckModel:
 
         assert opened.call_count == 3
 
+    def test_verifies_against_the_certifi_bundle(self, tmp_path: Path) -> None:
+        """A fresh Windows root store lacks the CDN's root; the bundled one always has it."""
+        import certifi
+
+        from lilbee.cli.commands import setup as cmds
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("ssl.create_default_context") as ctx,
+            mock.patch("urllib.request.urlopen", return_value=_Resp()) as opened,
+        ):
+            cmds._download_self_check_model("repo/x", "tiny.gguf")
+        ctx.assert_called_once_with(cafile=certifi.where())
+        assert opened.call_args.kwargs["context"] is ctx.return_value
+
     def test_retry_then_succeed(self, tmp_path: Path) -> None:
         import urllib.error
 
