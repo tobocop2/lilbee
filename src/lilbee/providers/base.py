@@ -83,7 +83,7 @@ class LLMOptions(BaseModel):
     # Thinking-template control for structured internal calls (schema
     # induction and similar): a small thinking model can burn its whole
     # token budget inside <think> and emit nothing. llama-server maps this
-    # to chat_template_kwargs; hosted-API translators drop it.
+    # to chat_template_kwargs and Ollama to its think field; hosted-API translators drop it.
     think: bool | None = None
     # Structured-output request for the internal calls that want a bare JSON
     # value back. Must be listed here or the allowlist above silently drops it.
@@ -97,6 +97,15 @@ class LLMOptions(BaseModel):
 def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     """Validate and filter generation options through LLMOptions model."""
     return LLMOptions(**options).to_dict()
+
+
+def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
+    """Options for an internal call: a cap sized for its answer, with thinking off.
+
+    A thinking model spends a small cap inside <think>, which ``strip_reasoning``
+    then deletes whole, so the call returns nothing.
+    """
+    return {"num_predict": num_predict, "think": False, **extra}
 
 
 def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, Any]:

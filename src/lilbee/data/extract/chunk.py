@@ -135,3 +135,24 @@ def chunk_text(
     if doc.chunks:
         return [c.content for c in doc.chunks]
     return []
+
+
+class ChunkLimitError(Exception):
+    """One file produced more chunks than ``cfg.max_chunks_per_file`` allows."""
+
+    def __init__(self, count: int, limit: int, member: str | None = None) -> None:
+        prefix = f"{member}: " if member else ""
+        super().__init__(
+            f"{prefix}{count} chunks exceed the per-file limit of {limit}; "
+            f"raise max_chunks_per_file (0 = no limit), then retry skipped files"
+        )
+        self.count = count
+        self.member = member
+        self.limit = limit
+
+
+def enforce_chunk_limit(count: int) -> None:
+    """Refuse a file whose *count* chunks exceed the per-file limit; a limit of 0 accepts any."""
+    limit = active_config().max_chunks_per_file
+    if limit and count > limit:
+        raise ChunkLimitError(count, limit)

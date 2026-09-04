@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import regex
 
 from lilbee.core.llm_json import first_json_object, json_reply_format
+from lilbee.providers.base import aux_options
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     EntityType,
@@ -129,16 +130,11 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
         response = provider.chat(
             [{"role": "user", "content": prompt}],
             stream=False,
-            # think=False: a small thinking model can loop inside <think>
-            # until the budget is gone and emit no JSON at all. temperature 0:
-            # induction wants one deterministic, well-formed schema, not a
+            # Induction wants one deterministic, well-formed schema, not a
             # creative sample that parses only some of the time.
-            options={
-                "num_predict": INDUCTION_MAX_TOKENS,
-                "think": False,
-                "temperature": 0,
-                "response_format": json_reply_format(),
-            },
+            options=aux_options(
+                INDUCTION_MAX_TOKENS, temperature=0, response_format=json_reply_format()
+            ),
         )
     except Exception:
         log.warning("Entity schema induction failed at the provider", exc_info=True)
@@ -257,7 +253,7 @@ def _extract_llm_batch(
         response = provider.chat(
             [{"role": "user", "content": prompt}],
             stream=False,
-            options={"num_predict": LLM_EXTRACTION_MAX_TOKENS},
+            options=aux_options(LLM_EXTRACTION_MAX_TOKENS),
         )
     except Exception:
         log.warning("LLM entity extraction failed for a batch", exc_info=True)

@@ -24,7 +24,11 @@ from lilbee.providers.fleet.adapters import (
     rerank_spec,
     resolve_rerank_mode,
 )
-from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
+from lilbee.providers.fleet.binary import (
+    engine_build_id,
+    llama_server_runtime_env,
+    resolve_llama_server,
+)
 from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
     FleetDevice,
@@ -57,6 +61,35 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
+# Stand-ins in the launch log for a host whose devices could not be read.
+_UNKNOWN_BACKEND = "unknown"
+_NO_DEVICES = "none"
+
+
+def log_engine_launch(launch: InstanceLaunch, *, owner_pid: int | None = None) -> None:
+    """Log the binary, build, backend and devices serving *launch*.
+
+    *owner_pid* is the engine's owner when this process adopted it rather than
+    spawned it.
+    """
+    if owner_pid is None:
+        log.info("Launched %s serving %s on %s", launch.model_id, launch.model, _engine_id(launch))
+        return
+    log.info(
+        "Adopted %s serving %s from engine pid %d on %s",
+        launch.model_id,
+        launch.model,
+        owner_pid,
+        _engine_id(launch),
+    )
+
+
+def _engine_id(launch: InstanceLaunch) -> str:
+    """*launch*'s binary with the engine build, backend, and probed devices."""
+    devices = probed_devices()
+    backend = next((device.backend for device in devices), _UNKNOWN_BACKEND)
+    names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
+    return f"{launch.binary} (build {engine_build_id()}, backend {backend}, devices: {names})"
 
 
 def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
@@ -649,20 +682,24 @@ def _flash_enabled() -> bool:
     return cfg.flash_attention is not False
 
 
-def _fleet_backend() -> str | None:
-    """The engine backend this host plans onto, or ``None`` when unknown.
+def probed_devices() -> tuple[FleetDevice, ...]:
+    """Devices the engine enumerated, empty when they could not be read.
 
     Prefers the plan snapshot so a whole planning pass answers consistently, and
     falls back to the short-TTL read cache rather than a fresh probe.
     """
     probe = _plan_probe_store.get()
     if probe is not None:
-        return probe.devices[0].backend if probe.devices else None
+        return probe.devices
     try:
-        devices = _read_device_cache.get(resolve_llama_server())
+        return tuple(_read_device_cache.get(resolve_llama_server()))
     except (ProviderError, OSError):
-        return None
-    return devices[0].backend if devices else None
+        return ()
+
+
+def _fleet_backend() -> str | None:
+    """The engine backend this host plans onto, or ``None`` when unknown."""
+    return next((device.backend for device in probed_devices()), None)
 
 
 def _flash_attention_is_trusted() -> bool:
@@ -1709,6 +1746,9 @@ def _launch_for(
         ctx=ctx,
         built_ctx_target=(
             (cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target) if is_chat else 0
+        ),
+        built_slots_target=(
+            max(1, cfg.vision_ocr_concurrency) if plan.role is WorkerRole.VISION else 0
         ),
         replica=plan.replica,
         rerank_mode=rerank_mode,

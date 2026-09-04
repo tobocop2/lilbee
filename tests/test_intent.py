@@ -5,10 +5,12 @@ import pytest
 from lilbee.retrieval.query.intent import (
     AggregateKind,
     AggregateQuery,
+    contains_reference,
     document_references,
     matches_reference,
     parse_aggregate,
     parse_llm_aggregate,
+    refers_to_history,
 )
 
 
@@ -186,6 +188,23 @@ class TestMatchesReference:
         assert not matches_reference("482", "ARC-REC-483.pdf")
 
 
+class TestContainsReference:
+    @pytest.mark.parametrize(
+        ("ref", "filename", "expected"),
+        [
+            pytest.param("harbor survey 2010", "harbor-survey-2010.pdf", True, id="whole-stem"),
+            pytest.param("harbor survey", "2010-harbor-survey-final.pdf", True, id="inner-run"),
+            pytest.param("we", "we.md", True, id="single-token"),
+            pytest.param("we", "notes/DSO Web Hosting.md", False, id="inside-a-word"),
+            pytest.param("port", "Airport Signage.md", False, id="suffix-of-a-word"),
+            pytest.param("harbor 2010", "harbor-survey-2010.pdf", False, id="not-contiguous"),
+            pytest.param("--", "a-b.md", False, id="no-alphanumerics"),
+        ],
+    )
+    def test_matches_whole_token_runs(self, ref, filename, expected):
+        assert contains_reference(ref, filename) is expected
+
+
 class TestParseAggregate:
     def test_non_count_question_is_none(self):
         assert parse_aggregate("what did the keeper record?") is None
@@ -287,3 +306,29 @@ class TestCountTermMentions:
 
     def test_count_chunks(self, store):
         assert store.count_chunks() == 4
+
+
+class TestRefersToHistory:
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "and when was it written?",
+            "How much oil does it take?",
+            "what about the brother?",
+            "Why?",
+            "Who wrote the same report for 2019?",
+        ],
+    )
+    def test_follow_up_shapes_refer_to_history(self, question):
+        assert refers_to_history(question)
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What engine does the Crown Victoria have?",
+            "Which fuse protects the fuel pump?",
+            "summarize survey_report.pdf",
+        ],
+    )
+    def test_standalone_questions_do_not(self, question):
+        assert not refers_to_history(question)

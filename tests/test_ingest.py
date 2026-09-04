@@ -160,6 +160,23 @@ def _real_ingest_result(name, *, file_hash, page_text="page one of a.pdf", stat=
     )
 
 
+def _member(path, mime_type, result):
+    """One archive child as xberg reports it: path, MIME type, full result."""
+    return mock.MagicMock(path=path, mime_type=mime_type, result=result)
+
+
+def _make_archive_result(children):
+    """An archive's extraction result: a listing the index ignores, plus its members."""
+    result = mock.MagicMock()
+    result.chunks = []
+    result.content = "ZIP Archive"
+    result.tables = []
+    result.pages = []
+    result.metadata = Metadata()
+    result.children = children
+    return result
+
+
 def _make_xberg_result(
     text="Some extracted text. " * 20,
     num_chunks=1,
@@ -196,6 +213,7 @@ def _make_xberg_result(
         if has_pages
         else []
     )
+    result.children = None
     return result
 
 
@@ -226,8 +244,22 @@ def test_reconcile_missing_flags_only_silent_drops():
 
     disk = {n: Path(n) for n in ("a.pdf", "b.pdf", "c.pdf", "d.pdf")}
     # a indexed, b failed, c skipped, d dropped with no signal.
-    missing = _reconcile_missing(disk, [{"filename": "a.pdf"}], failed=["b.pdf"], skipped=["c.pdf"])
+    missing = _reconcile_missing(
+        disk, [{"filename": "a.pdf"}], failed=["b.pdf"], skipped=["c.pdf"], held=[]
+    )
     assert missing == ["d.pdf"]
+
+
+def test_reconcile_missing_accounts_for_persisted_skip_markers():
+    """A file an earlier run marked is in neither this run's failed nor skipped
+    lists, so without the marker set it reads as a silent drop every sync."""
+    from pathlib import Path
+
+    from lilbee.data.ingest.pipeline import _reconcile_missing
+
+    disk = {n: Path(n) for n in ("held.md", "dropped.md")}
+    missing = _reconcile_missing(disk, [], failed=[], skipped=[], held={"held.md": "deadbeef"})
+    assert missing == ["dropped.md"]
 
 
 @mock.patch(
@@ -348,6 +380,104 @@ class TestSync:
         )
         result = await sync(quiet=True)
         assert "adaptive.txt" in result.added
+
+    async def test_archive_members_are_indexed_as_their_own_sources(
+        self, mock_extract_file, isolated_env, caplog
+    ):
+        """Each member is a source named archive/member; the archive itself has no chunks."""
+        import logging
+
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import sync
+
+        mock_extract_file.return_value = _make_archive_result(
+            [
+                _member(
+                    "report.pdf",
+                    "application/pdf",
+                    _make_xberg_result(num_chunks=2, has_pages=True),
+                ),
+                _member("notes.txt", "text/plain", _make_xberg_result(num_chunks=1)),
+            ]
+        )
+        (isolated_env / "docs.zip").write_bytes(b"PK\x03\x04")
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            result = await sync(quiet=True)
+
+        assert result.added == ["docs.zip"]
+        assert result.skipped == []
+        rows = {s["filename"]: s["chunk_count"] for s in get_services().store.get_sources()}
+        assert rows == {"docs.zip": 0, "docs.zip/report.pdf": 2, "docs.zip/notes.txt": 1}
+        assert not any("reconciliation" in r.getMessage().lower() for r in caplog.records)
+
+    async def test_member_past_the_chunk_cap_holds_the_archive_out_and_names_it(
+        self, mock_extract_file, isolated_env, monkeypatch, mock_svc
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_reasons
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
+        mock_extract_file.return_value = _make_archive_result(
+            [_member("runs.csv", "text/csv", _make_xberg_result(num_chunks=5))]
+        )
+        (isolated_env / "runs.gz").write_bytes(b"\x1f\x8b")
+
+        result = await sync(quiet=True)
+
+        assert result.skipped == ["runs.gz"]
+        assert result.added == []
+        mock_svc.embedder.embed_batch.assert_not_called()
+        reason = load_skip_reasons(cfg.data_root)["runs.gz"]
+        assert reason.startswith("runs.gz/runs.csv: 5 chunks exceed the per-file limit of 2")
+
+    async def test_chunk_explosion_is_skipped_before_it_is_embedded(
+        self, mock_extract_file, isolated_env, monkeypatch, mock_svc
+    ):
+        """A file past the cap is refused with its count, and never reaches the embedder."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_reasons
+        from lilbee.runtime.progress import BatchStatus, EventType
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
+        mock_extract_file.return_value = _make_xberg_result(num_chunks=5)
+        (isolated_env / "huge.txt").write_text(
+            "A document that chunks far past the cap.", encoding="utf-8"
+        )
+
+        events: list = []
+        result = await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
+
+        assert result.skipped == ["huge.txt"]
+        assert result.added == []
+        mock_svc.embedder.embed_batch.assert_not_called()
+        assert any(
+            t is EventType.BATCH_PROGRESS and d.status is BatchStatus.SKIPPED for t, d in events
+        )
+        reason = load_skip_reasons(cfg.data_root)["huge.txt"]
+        assert "5 chunks exceed the per-file limit of 2" in reason
+
+    async def test_raising_the_chunk_cap_lets_the_file_in(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """The cap is a setting: lift it, retry the skipped file, and it indexes."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
+        mock_extract_file.return_value = _make_xberg_result(num_chunks=5)
+        (isolated_env / "huge.txt").write_text(
+            "A document that chunks far past the cap.", encoding="utf-8"
+        )
+        assert (await sync(quiet=True)).skipped == ["huge.txt"]
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 0)
+        second = await sync(quiet=True, retry_skipped=True)
+
+        assert second.added == ["huge.txt"]
+        assert second.skipped == []
 
     async def test_spaced_filename_ingests_without_silent_drop(
         self, mock_extract_file, isolated_env, caplog
@@ -1097,6 +1227,27 @@ class TestSyncDropsNewlyIgnored:
         assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}
         store.remove_documents.assert_not_called()
 
+    async def test_a_refused_format_already_indexed_is_removed(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """A drawing an earlier version indexed leaves the index on the next sync."""
+        from lilbee.data.ingest import discovery, sync
+
+        (isolated_env / "keep.txt").write_text("a document worth keeping", encoding="utf-8")
+        (isolated_env / "logo.svg").write_text("<svg/>", encoding="utf-8")
+        discovery.supported_extension_map.cache_clear()
+        monkeypatch.setattr(discovery, "excluded_extension_reasons", lambda: {})
+        first = await sync()
+        monkeypatch.undo()
+        discovery.supported_extension_map.cache_clear()
+        assert sorted(first.added) == ["keep.txt", "logo.svg"]
+
+        result = await sync()
+        assert result.removed == ["logo.svg"]
+        assert result.skipped == ["logo.svg"]
+        store = svc_mod.get_services().store
+        assert {s["filename"] for s in store.get_sources()} == {"keep.txt"}
+
     async def test_prune_ignored_drops_the_source_on_request(self, mock_extract_file, isolated_env):
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
@@ -1490,6 +1641,81 @@ class TestSkipMarkerLifecycle:
             assert "scanned.pdf" not in second.skipped
             assert "scanned.pdf" not in second.added
 
+    async def test_held_out_file_is_reported_apart_from_unchanged(self, isolated_env, mock_svc):
+        """A marker-held file must not be tallied as unchanged: it is not indexed,
+        and 'Unchanged: N' would present it as a file the index already holds."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.pipeline import produce_records as orig
+
+        async def _zero_for_the_scan(path, name, content_type, **kwargs):
+            if name == "scanned.pdf":
+                return self._zero_chunks()
+            return await orig(path, name, content_type, **kwargs)
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "readable.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=_zero_for_the_scan
+        ):
+            first = await sync(quiet=True)
+            assert "readable.txt" in first.added
+            second = await sync(quiet=True)
+
+        assert [held.filename for held in second.held_out] == ["scanned.pdf"]
+        assert second.held_out[0].reason == "no text extracted (0 chunks)"
+        assert second.unchanged == 1  # readable.txt only; the held file is not counted here
+        assert "Held out: 1" in str(second)
+        assert "no text extracted (0 chunks)" in str(second)
+
+    async def test_held_out_file_does_not_trip_the_reconciliation_guard(
+        self, isolated_env, mock_svc, caplog
+    ):
+        """The marker accounts for the file, so the data-loss warning must stay
+        silent rather than naming the same file on every sync."""
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            await sync(quiet=True)
+            with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+                await sync(quiet=True)
+
+        assert "possible silent drop" not in caplog.text
+
+    async def test_stale_marker_does_not_hide_a_silent_drop(self, isolated_env, mock_svc, caplog):
+        """A marker for an older hash accounts for nothing once the file changes.
+        Only the files this run held out are subtracted, so an edited file that
+        then vanishes without a failure is still reported."""
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        scan = isolated_env / "scanned.pdf"
+        scan.write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            await sync(quiet=True)
+
+        async def _drop_everything(plan_batches, *_args, **_kwargs):
+            async for _batch in plan_batches:
+                pass
+
+        scan.write_bytes(b"%PDF-1.4 edited since it was marked")
+        with (
+            mock.patch("lilbee.data.ingest.pipeline.ingest_stream", side_effect=_drop_everything),
+            caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
+        ):
+            result = await sync(quiet=True)
+
+        assert result.held_out == []
+        assert "possible silent drop" in caplog.text
+        assert "scanned.pdf" in caplog.text
+
     async def test_retry_skipped_clears_markers(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 
@@ -1512,6 +1738,50 @@ class TestSkipMarkerLifecycle:
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
+
+
+class TestStatusReportsHeldOutFiles:
+    """/api/status and `lilbee status --json` read the skip sidecars, so a client
+    can show which files are held out of the index and why."""
+
+    def test_status_lists_held_out_files_with_reasons(self):
+        from lilbee.app.status import gather_status
+        from lilbee.data.ingest.skip_marker import (
+            DEFAULT_SKIP_REASON,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        write_skip_markers(cfg.data_root, {"scan.pdf": "deadbeef", "blank.md": "cafef00d"})
+        write_skip_reasons(cfg.data_root, {"scan.pdf": "OCR timed out after 300s"})
+
+        status = gather_status()
+
+        assert [(s.filename, s.reason) for s in status.skipped] == [
+            ("blank.md", DEFAULT_SKIP_REASON),
+            ("scan.pdf", "OCR timed out after 300s"),
+        ]
+        assert status.skipped_total == 2
+
+    def test_status_caps_the_list_but_reports_the_real_total(self, monkeypatch):
+        from lilbee.app import status as status_mod
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        monkeypatch.setattr(status_mod, "STATUS_SKIPPED_LIMIT", 2)
+        write_skip_markers(cfg.data_root, {f"scan{i}.pdf": "hash" for i in range(5)})
+
+        status = status_mod.gather_status()
+
+        assert [s.filename for s in status.skipped] == ["scan0.pdf", "scan1.pdf"]
+        assert status.skipped_total == 5
+
+    def test_status_is_empty_when_nothing_is_held_out(self):
+        from lilbee.app.status import gather_status
+
+        status = gather_status()
+
+        assert status.skipped == []
+        assert status.skipped_total == 0
 
 
 class TestZeroChunkPageTextPersistence:
@@ -2106,6 +2376,138 @@ class TestClassifyFile:
         from lilbee.data.ingest import classify_file
 
         assert classify_file(Path(filename)) == expected
+
+
+class TestExcludedFormats:
+    """Archives are containers whose members ingest; drawings are refused and say so."""
+
+    @pytest.mark.parametrize("name", ["runs.gz", "corpus.tgz", "docs.zip", "b.tar", "a.7z"])
+    def test_archives_are_containers_not_refusals(self, name):
+        from lilbee.data.ingest.discovery import (
+            archive_content_types,
+            excluded_extension_reasons,
+            supported_extension_map,
+        )
+
+        suffix = Path(name).suffix
+        assert suffix not in excluded_extension_reasons()
+        assert supported_extension_map()[suffix] == suffix.lstrip(".")
+        assert suffix.lstrip(".") in archive_content_types()
+
+    @pytest.mark.parametrize("suffix", [".md", ".pdf", ".epub", ".docx", ".txt"])
+    def test_documents_are_not_refused(self, suffix):
+        """epub is application/epub+zip: packaged as a zip, but a book."""
+        from lilbee.data.ingest.discovery import archive_content_types, supported_extension_map
+
+        assert suffix in supported_extension_map()
+        assert supported_extension_map()[suffix] not in archive_content_types()
+
+    def test_svg_is_refused_as_a_drawing(self):
+        from lilbee.data.ingest.discovery import ExclusionReason, excluded_extension_reasons
+
+        assert excluded_extension_reasons() == {".svg": ExclusionReason.VECTOR_GRAPHIC}
+        from lilbee.data.ingest.discovery import supported_extension_map
+
+        assert ".svg" not in supported_extension_map()
+
+    @pytest.mark.parametrize(
+        ("path", "mime", "expected"),
+        [
+            ("folder/report.pdf", "application/pdf", "pdf"),
+            ("scan.PNG", "image/png", "image"),
+            ("notes.txt", "text/plain", "txt"),
+            ("README", "text/plain", "plain"),
+        ],
+    )
+    def test_member_content_type_follows_mime_then_extension(self, path, mime, expected):
+        from lilbee.data.ingest.discovery import member_content_type
+
+        assert member_content_type(path, mime) == expected
+
+    def test_scan_keeps_archives_and_refuses_drawings(self, isolated_env):
+        from lilbee.data.ingest.discovery import ExclusionReason, discover_corpus
+
+        (isolated_env / "note.md").write_text("# Note", encoding="utf-8")
+        (isolated_env / "runs.gz").write_bytes(b"\x1f\x8b")
+        (isolated_env / "docs.zip").write_bytes(b"PK\x03\x04")
+        (isolated_env / "logo.svg").write_text("<svg/>", encoding="utf-8")
+
+        scan = discover_corpus()
+        assert set(scan.files) == {"note.md", "runs.gz", "docs.zip"}
+        assert scan.excluded == {"logo.svg": ExclusionReason.VECTOR_GRAPHIC}
+
+    def test_discover_files_hides_the_refused_ones(self, isolated_env):
+        from lilbee.data.ingest import discover_files
+
+        (isolated_env / "note.md").write_text("# Note", encoding="utf-8")
+        (isolated_env / "logo.svg").write_text("<svg/>", encoding="utf-8")
+
+        assert set(discover_files()) == {"note.md"}
+
+    def test_registered_drawing_root_is_refused(self, isolated_env, tmp_path):
+        """A single-file root pointing at a refused format is refused like any other file."""
+        from lilbee.data.ingest.discovery import ExclusionReason, discover_corpus
+
+        drawing = tmp_path / "linked.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+        cfg.linked_roots = {"linked.svg": str(drawing)}
+
+        scan = discover_corpus()
+        assert scan.files == {}
+        assert scan.excluded == {"linked.svg": ExclusionReason.VECTOR_GRAPHIC}
+
+    def test_shard_owns_refused_files_too(self, isolated_env):
+        """Every key a shard owns is reported by that shard, refusals included."""
+        from lilbee.data.ingest.discovery import discover_corpus
+        from lilbee.data.types import ShardId
+
+        for i in range(12):
+            (isolated_env / f"a{i}.md").write_text("# Note", encoding="utf-8")
+            (isolated_env / f"a{i}.svg").write_text("<svg/>", encoding="utf-8")
+
+        slices = [discover_corpus(ShardId(index=i, count=3)) for i in range(3)]
+        assert sum(len(s.files) for s in slices) == 12
+        assert sum(len(s.excluded) for s in slices) == 12
+
+    def test_refused_files_do_not_count_toward_the_fanout_threshold(self, isolated_env):
+        from lilbee.data.ingest.discovery import corpus_has_at_least
+
+        for i in range(5):
+            (isolated_env / f"a{i}.svg").write_text("<svg/>", encoding="utf-8")
+        (isolated_env / "note.md").write_text("# Note", encoding="utf-8")
+
+        assert corpus_has_at_least(1)
+        assert not corpus_has_at_least(2)
+
+
+class TestArchiveMimeRule:
+    @pytest.mark.parametrize(
+        "mime",
+        [
+            "application/gzip",
+            "application/zip",
+            "application/x-tar",
+            "application/x-7z-compressed",
+        ],
+    )
+    def test_container_mime_types_are_archives(self, mime):
+        from lilbee.data.ingest.discovery import _is_archive_mime
+
+        assert _is_archive_mime(mime)
+
+    @pytest.mark.parametrize(
+        "mime",
+        [
+            "application/epub+zip",
+            "application/pdf",
+            "text/markdown",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ],
+    )
+    def test_document_mime_types_are_not_archives(self, mime):
+        from lilbee.data.ingest.discovery import _is_archive_mime
+
+        assert not _is_archive_mime(mime)
 
 
 class TestFileHash:
@@ -2860,6 +3262,16 @@ class TestDiscoverRegisteredRoots:
         found = discover_files()
         assert found["linked.md"] == outside_file
 
+    def test_registering_a_refused_file_reports_the_reason(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+        result = register_sources([drawing])
+        assert result.refused == ["logo.svg: vector graphic, not a document"]
+        assert result.registered == []
+        assert cfg.linked_roots == {}
+
     def test_owned_files_and_roots_coexist(self, isolated_env, tmp_path):
         """documents_dir files and a registered root are both discovered."""
         from lilbee.data.ingest import discover_files
@@ -3334,7 +3746,7 @@ class TestClassifyXbergParityFormats:
             ("mail.eml", "eml"),
             ("mail.msg", "msg"),
             ("table.dbf", "dbf"),
-            # Containers are supported too (xberg extracts their combined text).
+            # A mail store is a document set xberg reads; an archive is refused.
             ("archive.pst", "pst"),
             ("archive.7z", "7z"),
         ],
@@ -3544,6 +3956,86 @@ class TestPhaseProgressCallback:
         cb(EventType.FILE_START, start)
         progress.update.assert_not_called()  # description only changes for EXTRACT/EMBED
         assert seen == [EventType.FILE_START]  # still forwarded to the chain
+
+
+class TestExcludedLogLine:
+    def test_a_long_list_is_summarized(self, caplog):
+        """A vault of logos must not bury the sync output in one line per file."""
+        import logging
+
+        from lilbee.data.ingest.discovery import ExclusionReason
+        from lilbee.data.ingest.pipeline import _log_excluded
+
+        excluded = {f"logo{i}.svg": ExclusionReason.VECTOR_GRAPHIC for i in range(8)}
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            _log_excluded(excluded)
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "Skipped 8 file(s), vector graphic, not a document" in message
+        assert "and 3 more" in message
+
+
+class TestChunkLimit:
+    """The per-file chunk cap, and the three ingest paths that honour it."""
+
+    def test_a_count_under_the_limit_passes(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import enforce_chunk_limit
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 10)
+        enforce_chunk_limit(10)
+
+    def test_a_count_over_the_limit_raises_with_both_numbers(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import ChunkLimitError, enforce_chunk_limit
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 10)
+        with pytest.raises(ChunkLimitError) as excinfo:
+            enforce_chunk_limit(11)
+        assert excinfo.value.count == 11
+        assert excinfo.value.limit == 10
+        assert "11 chunks exceed the per-file limit of 10" in str(excinfo.value)
+
+    def test_zero_lifts_the_limit(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import enforce_chunk_limit
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 0)
+        enforce_chunk_limit(1_000_000)
+
+    async def test_markdown_over_the_limit_is_refused(self, isolated_env, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import ChunkLimitError
+        from lilbee.data.ingest import ingest_markdown
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
+        md = isolated_env / "huge.md"
+        md.write_text("# Heading\n\nbody", encoding="utf-8")
+        with (
+            mock.patch("lilbee.data.extract.document.chunk_text", return_value=["a", "b", "c"]),
+            pytest.raises(ChunkLimitError),
+        ):
+            await ingest_markdown(md, "huge.md")
+
+    def test_code_over_the_limit_is_refused(self, isolated_env, monkeypatch, mock_svc):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import ChunkLimitError
+        from lilbee.data.extract.code_chunker import CodeChunk
+        from lilbee.data.ingest import ingest_code_sync
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 1)
+        f = isolated_env / "huge.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        chunks = [
+            CodeChunk(chunk=f"c{i}", chunk_index=i, line_start=i, line_end=i) for i in range(2)
+        ]
+        with (
+            mock.patch("lilbee.data.ingest.code.chunk_code", return_value=chunks),
+            pytest.raises(ChunkLimitError),
+        ):
+            ingest_code_sync(f, "huge.py")
+        mock_svc.embedder.embed_batch.assert_not_called()
 
 
 class TestIngestMarkdownEdgeCases:
@@ -3852,11 +4344,13 @@ class TestUnsupportedFileInSync:
         mystery = isolated_env / "mystery.bin"
         mystery.write_bytes(b"\x00\x01\x02")
 
-        # discover_files includes the file, but classify_file returns None
+        # the scan includes the file, but classify_file returns None
+        from lilbee.data.ingest.discovery import CorpusScan
+
         with (
             mock.patch(
-                "lilbee.data.ingest.pipeline.discover_files",
-                return_value={"mystery.bin": mystery},
+                "lilbee.data.ingest.pipeline.discover_corpus",
+                return_value=CorpusScan({"mystery.bin": mystery}, {}),
             ),
             mock.patch("lilbee.data.ingest.pipeline.classify_file", return_value=None),
         ):
@@ -4944,3 +5438,132 @@ def test_every_add_surface_funnels_through_register_sources():
     ]
     for name in surfaces:
         assert "register_sources" in (package / name).read_text(encoding="utf-8"), name
+
+
+class TestIngestArchive:
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_members_are_named_under_the_archive_and_nested_archives_recurse(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        from lilbee.data.extract.document import ingest_archive
+
+        inner = _make_archive_result(
+            [_member("notes.txt", "text/plain", _make_xberg_result(num_chunks=1))]
+        )
+        mock_kf.return_value = _make_archive_result(
+            [
+                _member("inner.zip", "application/zip", inner),
+                _member(
+                    "report.pdf",
+                    "application/pdf",
+                    _make_xberg_result(num_chunks=2, has_pages=True),
+                ),
+            ]
+        )
+        f = isolated_env / "docs.zip"
+        f.write_bytes(b"PK\x03\x04")
+
+        members = await ingest_archive(f, "docs.zip", "zip")
+
+        assert [m.name for m in members] == ["docs.zip/inner.zip/notes.txt", "docs.zip/report.pdf"]
+        assert [m.content_type for m in members] == ["txt", "pdf"]
+        assert all(r["source"] == m.name for m in members for r in m.records)
+        assert [len(m.records) for m in members] == [1, 2]
+        assert {p["source"] for p in members[1].page_texts} == {"docs.zip/report.pdf"}
+        mock_kf.assert_awaited_once()
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_member_over_the_cap_names_the_member(
+        self, mock_kf, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.data.extract.chunk import ChunkLimitError
+        from lilbee.data.extract.document import ingest_archive
+
+        monkeypatch.setattr(cfg, "max_chunks_per_file", 1)
+        mock_kf.return_value = _make_archive_result(
+            [_member("big.txt", "text/plain", _make_xberg_result(num_chunks=3))]
+        )
+        f = isolated_env / "docs.zip"
+        f.write_bytes(b"PK\x03\x04")
+
+        with pytest.raises(ChunkLimitError, match=r"^docs.zip/big.txt: 3 chunks exceed"):
+            await ingest_archive(f, "docs.zip", "zip")
+
+
+class TestFlushArchiveMembers:
+    def test_members_write_as_their_own_sources_and_stale_members_go(self, mock_svc):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, _IngestResult
+
+        store = mock_svc.store
+        store.member_sources.return_value = ["docs.zip/old.pdf", "docs.zip/report.pdf"]
+        member = MemberRecords(
+            name="docs.zip/report.pdf",
+            content_type="pdf",
+            records=[{"source": "docs.zip/report.pdf", "text": "x"}],
+            page_texts=[{"source": "docs.zip/report.pdf", "page": 1}],
+            meta=SourceMeta(title="Report"),
+        )
+        result = _IngestResult(
+            name="docs.zip",
+            path=Path("docs.zip"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[],
+            needs_cleanup=True,
+            members=[member],
+            meta=SourceMeta(title="docs"),
+        )
+
+        pipeline._flush_batch([result])
+
+        store.remove_documents.assert_called_once_with(["docs.zip/old.pdf"])
+        items = store.write_chunks_batch.call_args[0][0]
+        assert [it.source for it in items] == ["docs.zip", "docs.zip/report.pdf"]
+        assert [it.file_hash for it in items] == ["h", "h"]
+        assert items[1].needs_cleanup is True
+        assert items[1].page_texts == member.page_texts
+        assert items[1].meta == member.meta
+        assert items[0].records == []
+
+
+class TestArchiveResult:
+    async def test_members_feed_concepts_entities_and_the_chunk_total(self, mock_svc, monkeypatch):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import ConceptRecords, SourceMeta
+        from lilbee.data.types import FileToProcess, MemberRecords
+
+        members = [
+            MemberRecords(
+                "docs.zip/a.txt", "txt", [{"source": "docs.zip/a.txt"}], [], SourceMeta()
+            ),
+            MemberRecords(
+                "docs.zip/b.txt", "txt", [{"source": "docs.zip/b.txt"}] * 2, [], SourceMeta()
+            ),
+        ]
+        monkeypatch.setattr(pipeline, "ingest_archive", mock.AsyncMock(return_value=members))
+        concepts = ConceptRecords(nodes=[{"id": "n"}], edges=[], chunk_concepts=[])
+        monkeypatch.setattr(
+            pipeline, "build_concept_records", mock.AsyncMock(side_effect=[concepts, None])
+        )
+        monkeypatch.setattr(
+            pipeline, "build_entity_records", mock.AsyncMock(side_effect=[[{"e": 1}], None])
+        )
+        entry = FileToProcess("docs.zip", Path("docs.zip"), "zip", "h", True)
+        events: list = []
+        pages_done = [0]
+
+        result = await pipeline._archive_result(
+            entry, lambda t, d: events.append((t, d)), pages_done
+        )
+
+        assert result.chunk_count == 3
+        assert result.records == []
+        assert result.members == members
+        assert result.concept_records == concepts
+        assert result.entity_rows == [{"e": 1}]
+        assert result.meta.title == "docs"
+        assert pages_done == [1]
+        assert events[-1][1].chunks == 3

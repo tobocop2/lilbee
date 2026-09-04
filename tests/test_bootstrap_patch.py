@@ -12,6 +12,7 @@ from lilbee.runtime.bee_logo import (
     ROSE_DIM_XTERM,
     ROSE_MID_XTERM,
 )
+from lilbee.runtime.onefile_cache import BOOTSTRAP_MANIFEST_NAME
 
 _PATCH = (
     pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/onefile-bootstrap-lilbee.patch"
@@ -72,6 +73,12 @@ def test_progress_is_suppressed_off_a_terminal(added_lines):
     """A piped or redirected launch must not emit escape codes."""
     body = "\n".join(added_lines)
     assert "isatty(STDERR_FILENO)" in body
+
+
+def test_manifest_name_matches_the_startup_sweep(added_lines):
+    """The sweep only deletes a directory that holds the manifest this patch writes."""
+    body = "\n".join(added_lines)
+    assert f'#define LILBEE_MANIFEST_NAME "{BOOTSTRAP_MANIFEST_NAME}"' in body
 
 
 def test_stamp_fast_path_is_guarded_by_payload_size(added_lines):

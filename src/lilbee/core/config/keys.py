@@ -36,15 +36,18 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "vision_model",
         "reranker_model",
         "reranker_type",
+        # The embed/rerank window and the chat floor are sized from the chunk budget.
+        "chunk_size",
     }
 )
 
 # Writes here require reconstructing the services singleton.
 PROVIDER_SWITCHING_KEYS: frozenset[str] = frozenset({"llm_provider"})
 
-# Settings that change which physical devices an engine launches on. Part of the
-# cross-process engine pin, so a process with a different placement binds its own
-# engine rather than silently adopting the incumbent's GPUs. Kept out of
-# LOAD_AFFECTING_KEYS so they do not change the settings reload path (gpu_devices
-# takes effect on restart), only which engines are shareable.
-PLACEMENT_PIN_KEYS: frozenset[str] = frozenset({"placement", "gpu_devices"})
+# Settings that change which physical devices an engine launches on, or which of
+# them holds the model (--main-gpu). Part of the cross-process engine pin, so a
+# process with a different placement binds its own engine rather than silently
+# adopting the incumbent's GPUs. Kept out of LOAD_AFFECTING_KEYS so they do not
+# change the settings reload path (they take effect on restart), only which
+# engines are shareable.
+PLACEMENT_PIN_KEYS: frozenset[str] = frozenset({"placement", "gpu_devices", "main_gpu"})

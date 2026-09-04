@@ -22,6 +22,7 @@ uv pip uninstall python-multipart >/dev/null 2>&1 || true
 # The patch adds a stamp fast path and renders the lilbee wordmark plus a real
 # progress bar while unpacking. --forward under `set -e` fails the build if a
 # Nuitka upgrade moves the source, rather than silently shipping a slow binary.
+# TODO(upstream): once Nuitka/Nuitka#4028 lands, drop the fast path and keep only the splash.
 NUITKA_ROOT=$(uv run --no-sync python -c "import nuitka, pathlib; print(pathlib.Path(nuitka.__file__).parent.parent)")
 BOOTSTRAP_PATCH="$PWD/tools/wheel-build/onefile-bootstrap-lilbee.patch"
 if ! patch --forward --dry-run -p1 -d "$NUITKA_ROOT" <"$BOOTSTRAP_PATCH" >/dev/null 2>&1; then
@@ -117,6 +118,11 @@ CHILD_MODULE_FLAGS=(
     --include-module=lilbee.providers.fleet.vulkan_probe
 )
 
+# One cache directory per build: two builds of one version sharing {VERSION}
+# rewrite each other's files, which fails on Windows while the other build runs.
+ONEFILE_BUILD_KEY=${ASSET_NAME#lilbee-}
+ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
+
 # litellm.proxy is not trimmable, despite nothing in lilbee importing it:
 # litellm/__init__.py pulls in 9 of its modules on a bare import, so
 # --nofollow-import-to=litellm.proxy is an ImportError at startup.
@@ -131,7 +137,7 @@ uv run --no-sync python -m nuitka \
     --no-deployment-flag=self-execution \
     --onefile-as-archive \
     --onefile-cache-mode=cached \
-    --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
+    --onefile-tempdir-spec="{CACHE_DIR}/lilbee/{VERSION}-${ONEFILE_BUILD_KEY}" \
     --product-name=lilbee \
     --product-version="$PRODUCT_VERSION" \
     --output-filename="$ASSET_NAME" \

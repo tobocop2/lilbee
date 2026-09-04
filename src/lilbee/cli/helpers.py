@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.table import Table
 
 from lilbee.app.ingest import RegisterResult, register_sources
@@ -67,6 +68,12 @@ def announce_ready(err: Console | None, role: object) -> None:
     err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
 
 
+def announce_retrieval_query(query: str) -> None:
+    """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
+    line = SEARCHING_FOR.format(query=escape(query))
+    Console(stderr=True).print(f"[{theme.MUTED}]{line}[/{theme.MUTED}]")
+
+
 def _chat_warm_error(role: object) -> str | None:
     """The chat warm-up's recorded failure, or None when it did not fail.
 
@@ -107,6 +114,22 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
     yield ""
 
+    if status.skipped:
+        held = Table(title="Held out of the index")
+        held.add_column("File", style=theme.ACCENT)
+        held.add_column("Reason", style=theme.MUTED)
+        for skipped in status.skipped:
+            held.add_row(escape(skipped.filename), escape(skipped.reason))
+        yield held
+        b = theme.LABEL
+        hidden = status.skipped_total - len(status.skipped)
+        more = f" ({hidden} more not shown)" if hidden > 0 else ""
+        yield (
+            f"[{b}]{status.skipped_total}[/{b}] held out{more}; "
+            "run 'lilbee sync --retry-skipped' to try them again"
+        )
+        yield ""
+
     if not status.sources:
         yield (
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
@@ -140,6 +163,8 @@ The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``)
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
 fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
+SEARCHING_FOR = "Searching for: {query}"
+"""The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
 
 def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:

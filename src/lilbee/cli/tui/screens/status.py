@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -22,11 +22,13 @@ from textual.widgets import Collapsible, DataTable, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
+from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.data.store import SourceRecord
+from lilbee.data.types import SkippedSource
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
@@ -48,6 +50,8 @@ class _DocsResult:
 
     sources: list[SourceRecord]
     load_failed: bool
+    held_out: list[SkippedSource] = field(default_factory=list)
+    held_out_total: int = 0
 
 
 def _model_pill(name: str) -> Content:
@@ -241,6 +245,12 @@ class StatusScreen(Screen[None]):
                     collapsed=False,
                 ),
                 Collapsible(
+                    DataTable(id="held-out-table"),
+                    title=msg.STATUS_HELD_OUT_TITLE,
+                    id="held-out-section",
+                    collapsed=True,
+                ),
+                Collapsible(
                     Static(id="arch-info"),
                     title="Model Architecture",
                     id="arch-section",
@@ -302,7 +312,13 @@ class StatusScreen(Screen[None]):
         in bounded batches via :meth:`_render_doc_batch`.
         """
         try:
-            return _DocsResult(sources=get_services().store.get_sources(), load_failed=False)
+            held_out, held_out_total = held_out_sources()
+            return _DocsResult(
+                sources=get_services().store.get_sources(),
+                load_failed=False,
+                held_out=held_out,
+                held_out_total=held_out_total,
+            )
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
             return _DocsResult(sources=[], load_failed=True)
@@ -336,7 +352,26 @@ class StatusScreen(Screen[None]):
     def _apply_docs(self, docs: _DocsResult) -> None:
         """Render *docs* into the Documents table (batched) + storage section."""
         self._load_documents(docs)
+        self._load_held_out(docs)
         self._load_storage(len(docs.sources))
+
+    def _load_held_out(self, docs: _DocsResult) -> None:
+        """Fill the held-out table; the section opens only when something is held out."""
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#held-out-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("File", "Reason")
+            if not docs.held_out:
+                table.add_row(msg.STATUS_HELD_OUT_EMPTY, "")
+                return
+            for held in docs.held_out:
+                table.add_row(held.filename, held.reason)
+            hidden = docs.held_out_total - len(docs.held_out)
+            if hidden > 0:
+                table.add_row(msg.STATUS_HELD_OUT_MORE.format(count=hidden), "")
+            self.query_one("#held-out-section", Collapsible).collapsed = False
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""

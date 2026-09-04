@@ -1714,6 +1714,18 @@ class TestRemoveDocuments:
             assert result.not_found == []
             mock_del.assert_called_once_with(["a.md"])
 
+    def test_removes_an_archive_with_its_members(self, store):
+        rows = [{"filename": n} for n in ("docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")]
+        with (
+            mock.patch.object(store, "get_sources", return_value=rows),
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
+        ):
+            assert store.member_sources("docs.zip") == ["docs.zip/a.pdf"]
+            result = store.remove_documents(["docs.zip"])
+            assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
+            assert result.not_found == []
+            mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"])
+
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):
             result = store.remove_documents(["missing.md"])

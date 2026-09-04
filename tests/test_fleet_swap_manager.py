@@ -118,6 +118,35 @@ class TestStart:
         assert len(set(member_ports.values())) == 2
         assert proxy_port not in member_ports.values()
 
+    def test_logs_the_engine_each_role_was_launched_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """A fresh launch names its binary, build, backend and cards."""
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.fleet.devices import FleetDevice
+
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(
+            planning_mod,
+            "probed_devices",
+            lambda: (FleetDevice("Vulkan", 0, "NVIDIA GeForce RTX 3090", 1, 1),),
+        )
+
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)]
+            )
+
+        launched = [r.message for r in caplog.records if r.message.startswith("Launched")]
+        assert launched == [
+            "Launched chat-0 serving chat-model on /bin/llama-server "
+            "(build wheel:0.6.91, backend Vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+            "Launched embed-0 serving embed-model on /bin/llama-server "
+            "(build wheel:0.6.91, backend Vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+        ]
+
     def test_redirects_llama_swap_stdio_to_a_log_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

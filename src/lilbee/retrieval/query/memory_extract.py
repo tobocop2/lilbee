@@ -22,6 +22,7 @@ ChatFn = Callable[..., str]
 
 # Bounds mirror the prior-art auto-capture filter: too-short strings carry no
 # durable signal, too-long ones are usually the model restating the answer.
+MEMORY_EXTRACT_MAX_TOKENS = 800
 _MIN_MEMORY_CHARS = 10
 _MAX_MEMORY_CHARS = 500
 

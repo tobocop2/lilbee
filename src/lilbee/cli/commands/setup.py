@@ -8,6 +8,7 @@ import importlib
 import json
 import shutil
 import signal
+import ssl
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -42,6 +43,13 @@ _SELF_CHECK_EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _SELF_CHECK_EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 
+def _download_tls_context() -> ssl.SSLContext:
+    """Verify against the certifi bundle: a fresh Windows root store lacks the CDN's root."""
+    import certifi
+
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def _download_self_check_model(repo: str, filename: str) -> Path:
     """Fetch a GGUF from the HuggingFace CDN via urllib (stdlib only).
 
@@ -54,6 +62,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     import urllib.request
 
     url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    context = _download_tls_context()
     dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     dest = dest_dir / filename
     console.print(f"Downloading {url}")
@@ -63,7 +72,9 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     try:
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310  literal https url
+                with urllib.request.urlopen(  # noqa: S310  literal https url
+                    url, timeout=120, context=context
+                ) as response:
                     dest.write_bytes(response.read())
                 return dest
             except (OSError, urllib.error.URLError) as exc:

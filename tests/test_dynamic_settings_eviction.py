@@ -128,6 +128,17 @@ def test_kv_cache_type_change_drops_fleet():
         _restore_services()
 
 
+def test_chunk_size_change_drops_fleet():
+    """chunk_size sizes the embed window and owns no role, so it takes the whole-fleet drop."""
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"chunk_size": 1024})
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
+    finally:
+        _restore_services()
+
+
 def test_embed_and_rerank_model_change_reloads_only_those_roles():
     """Switching embedding_model / reranker_model reloads just that role's server
     off-thread; the whole fleet is never dropped (other roles keep serving)."""

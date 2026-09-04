@@ -515,6 +515,7 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
             "copied": reg_result.registered,
             "skipped": reg_result.skipped,
             "tracked": reg_result.tracked,
+            "refused": reg_result.refused,
             "crawled": len(crawled_paths),
             "sync": sync_result_to_json(result),
         }
