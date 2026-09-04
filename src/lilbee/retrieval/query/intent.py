@@ -139,6 +139,28 @@ def _same_number(token: str, ref_token: str) -> bool:
     return token.lstrip("0") == ref_token.lstrip("0")
 
 
+# Shortest reference the loose arm accepts, counted over its alphanumerics.
+# Below this a reference is a common word as often as a document name.
+def _tokens(text: str) -> list[str]:
+    """Lowercased alphanumeric tokens of *text*."""
+    return [t for t in _TOKEN_SPLIT_RE.split(text.lower()) if t]
+
+
+def contains_reference(ref: str, filename: str) -> bool:
+    """Whether *filename*'s stem carries *ref* as a run of whole tokens.
+
+    A quoted title never token-matches a hyphenated filename, so "harbor survey
+    2010" still names harbor-survey-2010.pdf. Whole tokens keep "we" out of
+    "Web".
+    """
+    ref_tokens = _tokens(ref)
+    if not ref_tokens:
+        return False
+    stem_tokens = _tokens(Path(filename).stem)
+    span = len(ref_tokens)
+    return any(stem_tokens[i : i + span] == ref_tokens for i in range(len(stem_tokens) - span + 1))
+
+
 def title_candidates(question: str, lang: QueryLanguage | None = None) -> list[str]:
     """Document-title candidates from known-item question shapes.
 
@@ -159,8 +181,7 @@ def title_candidates(question: str, lang: QueryLanguage | None = None) -> list[s
 
 def _title_tokens(text: str, lang: QueryLanguage) -> list[str]:
     """Lowercased comparison tokens with the leading article stripped."""
-    stripped = lang.leading_article_pattern.sub("", text.strip())
-    return [t for t in _TOKEN_SPLIT_RE.split(stripped.lower()) if t]
+    return _tokens(lang.leading_article_pattern.sub("", text.strip()))
 
 
 def matches_title(title: str, filename: str, lang: QueryLanguage | None = None) -> bool:

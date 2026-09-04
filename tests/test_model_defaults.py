@@ -106,13 +106,13 @@ class TestGenerationOptions3LayerMerge:
     def test_max_tokens_from_config(self):
         cfg.max_tokens = 2048
         result = cfg.generation_options()
-        assert result["max_tokens"] == 2048
+        assert result["num_predict"] == 2048
 
     def test_max_tokens_from_model_defaults(self):
         cfg.max_tokens = None
         cfg.apply_model_defaults(ModelDefaults(max_tokens=1024))
         result = cfg.generation_options()
-        assert result["max_tokens"] == 1024
+        assert result["num_predict"] == 1024
 
     def test_all_three_layers(self):
         """Full 3-layer merge: model default -> user config -> per-call."""

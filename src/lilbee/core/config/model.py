@@ -1422,6 +1422,9 @@ class Config(BaseSettings):
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Merge model defaults, user config, and per-call overrides, dropping None."""
         result = _model_defaults_dict(self._model_defaults)
+        # One name for the output cap inside lilbee; the provider translators rename it.
+        if "max_tokens" in result:
+            result["num_predict"] = result.pop("max_tokens")
         user_fields: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -1429,7 +1432,7 @@ class Config(BaseSettings):
             "repeat_penalty": self.repeat_penalty,
             "num_ctx": self.num_ctx,
             "seed": self.seed,
-            "max_tokens": self.max_tokens,
+            "num_predict": self.max_tokens,
         }
         for k, v in user_fields.items():
             if v is not None:

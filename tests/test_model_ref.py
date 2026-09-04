@@ -326,11 +326,26 @@ class TestTranslateOptions:
         result = translate_options({"temperature": 0.5, "think": False}, ref)
         assert result == {"temperature": 0.5}
 
-    def test_local_ref_through_sdk_drops_think(self) -> None:
-        """litellm has no chat_template_kwargs passthrough either."""
-        ref = parse_model_ref(_LOCAL_REF)
+    @pytest.mark.parametrize(
+        ("raw", "reasoning_effort"),
+        [
+            pytest.param("ollama/llama3.2:1b", "none", id="ollama-turns-thinking-off"),
+            pytest.param("lm_studio/qwen3-8b", None, id="lm-studio-has-no-switch"),
+            pytest.param(_LOCAL_REF, None, id="native-ref-through-the-sdk"),
+        ],
+    )
+    def test_local_ref_through_sdk_translates_think(
+        self, raw: str, reasoning_effort: str | None
+    ) -> None:
+        """Ollama honors think through reasoning_effort; the other SDK paths have no switch."""
+        ref = parse_model_ref(raw)
         result = translate_options({"temperature": 0.5, "think": False}, ref)
         assert "think" not in result
+        assert result.get("reasoning_effort") == reasoning_effort
+
+    def test_think_left_on_sends_no_reasoning_effort(self) -> None:
+        ref = parse_model_ref("ollama/llama3.2:1b")
+        assert "reasoning_effort" not in translate_options({"think": True}, ref)
 
 
 class TestChatOptionsThink:

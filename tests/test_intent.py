@@ -5,6 +5,7 @@ import pytest
 from lilbee.retrieval.query.intent import (
     AggregateKind,
     AggregateQuery,
+    contains_reference,
     document_references,
     matches_reference,
     parse_aggregate,
@@ -184,6 +185,23 @@ class TestMatchesReference:
         assert matches_reference("0482", "ARC-REC-482.pdf")
         assert matches_reference("482", "ARC-REC-00482.pdf")
         assert not matches_reference("482", "ARC-REC-483.pdf")
+
+
+class TestContainsReference:
+    @pytest.mark.parametrize(
+        ("ref", "filename", "expected"),
+        [
+            pytest.param("harbor survey 2010", "harbor-survey-2010.pdf", True, id="whole-stem"),
+            pytest.param("harbor survey", "2010-harbor-survey-final.pdf", True, id="inner-run"),
+            pytest.param("we", "we.md", True, id="single-token"),
+            pytest.param("we", "notes/DSO Web Hosting.md", False, id="inside-a-word"),
+            pytest.param("port", "Airport Signage.md", False, id="suffix-of-a-word"),
+            pytest.param("harbor 2010", "harbor-survey-2010.pdf", False, id="not-contiguous"),
+            pytest.param("--", "a-b.md", False, id="no-alphanumerics"),
+        ],
+    )
+    def test_matches_whole_token_runs(self, ref, filename, expected):
+        assert contains_reference(ref, filename) is expected
 
 
 class TestParseAggregate:
