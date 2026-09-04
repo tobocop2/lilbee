@@ -22,8 +22,10 @@ from lilbee.data.types import (
     PDF_CONTENT_TYPE,
     ChunkRecord,
     ExtractMode,
+    MemberRecords,
     OcrBackendName,
 )
+from lilbee.providers.base import aux_options
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -33,7 +35,7 @@ from lilbee.runtime.progress import (
 
 from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
-from .chunk import build_chunking_config, chunk_text
+from .chunk import ChunkLimitError, build_chunking_config, chunk_text, enforce_chunk_limit
 from .trace import ExtractionTrace, trace_extraction, trace_log
 
 if TYPE_CHECKING:
@@ -144,7 +146,7 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
             response = provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": _ENRICH_MAX_TOKENS},
+                options=aux_options(_ENRICH_MAX_TOKENS),
             )
             lines = strip_reasoning(response.text).strip().splitlines()
             sentence = lines[0].strip() if lines else ""
@@ -463,6 +465,67 @@ async def ingest_document(
     extraction title/authors/date and is derived even when extraction yields nothing.
     """
     del quiet
+    doc = await _extract_document(
+        path, source_name, content_type, content_type_to_mode(content_type), on_progress
+    )
+    return await _records_from_document(
+        doc, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
+    )
+
+
+async def ingest_archive(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[MemberRecords]:
+    """Extract an archive once and build records for every member, nested archives included.
+
+    The archive itself contributes no chunks. Each member is its own source named
+    ``<archive>/<member path>``. xberg unpacks to ``max_archive_depth`` under its
+    zip-bomb limits, so depth and size are enforced before this runs.
+    """
+    doc = await _extract_document(
+        path, source_name, content_type, ExtractMode.PAGINATED, on_progress
+    )
+    members: list[MemberRecords] = []
+    await _collect_members(doc, source_name, members, on_progress)
+    return members
+
+
+async def _collect_members(
+    doc: ExtractedDocument,
+    prefix: str,
+    members: list[MemberRecords],
+    on_progress: DetailedProgressCallback,
+) -> None:
+    from lilbee.data.ingest.discovery import archive_content_types, member_content_type
+
+    for entry in doc.children or []:
+        name = f"{prefix}/{entry.path}"
+        content_type = member_content_type(entry.path, entry.mime_type)
+        if content_type in archive_content_types():
+            await _collect_members(entry.result, name, members, on_progress)
+            continue
+        page_texts: list[PageTextRecord] = []
+        try:
+            records, meta = await _records_from_document(
+                entry.result, name, content_type, on_progress=on_progress, page_texts_out=page_texts
+            )
+        except ChunkLimitError as exc:
+            raise ChunkLimitError(exc.count, exc.limit, member=name) from None
+        members.append(MemberRecords(name, content_type, records, page_texts, meta))
+
+
+async def _extract_document(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    mode: ExtractMode,
+    on_progress: DetailedProgressCallback,
+) -> ExtractedDocument:
+    """Run one xberg pass over *path*, with per-page OCR progress and the extraction trace."""
     from .xberg import aextract_document
 
     page_seen = 0
@@ -478,7 +541,6 @@ async def ingest_document(
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
     started = time.perf_counter()
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
-        mode = content_type_to_mode(content_type)
         batcher = active_extract_batcher()
         if batcher is not None:
             doc = await batcher.submit(mode, path.read_bytes(), path.name, token)
@@ -503,6 +565,18 @@ async def ingest_document(
         )
     )
 
+    return doc
+
+
+async def _records_from_document(
+    doc: ExtractedDocument,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+    page_texts_out: list[PageTextRecord] | None,
+) -> tuple[list[ChunkRecord], SourceMeta]:
+    """Chunk-cap, page-capture, and embed one extracted document into its records."""
     # Derived before the empty-result return so a scan's title/authors survive zero chunks.
     meta = source_meta_from_extraction(doc.metadata, source_name)
 
@@ -512,6 +586,7 @@ async def ingest_document(
             _warn_empty_ocr(source_name, "scanned documents")
         return [], meta
 
+    enforce_chunk_limit(len(doc.chunks or []) + len(tables))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
@@ -614,6 +689,7 @@ async def ingest_markdown(
     if not texts:
         return [], meta
 
+    enforce_chunk_limit(len(texts))
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 

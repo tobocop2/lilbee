@@ -6,11 +6,12 @@
  #endif
 +
 +// lilbee: cold-start feedback and a warm-start fast path.
++// TODO(upstream): proposed as a --onefile-cache-mode value in Nuitka/Nuitka#4028.
 +//
-+// The onefile cache is keyed on {VERSION}, so a populated payload directory whose
-+// stamp records this payload's size was written by this exact binary. Trusting it
-+// skips the per-file CRC32 of the whole payload, which otherwise costs seconds of
-+// pure CPU on every launch. Cold starts still verify normally.
++// The cache directory is keyed on version and build, so a populated payload
++// directory whose stamp records this payload's size was written by this binary.
++// Trusting it skips the per-file CRC32 of the whole payload, which otherwise
++// costs seconds of pure CPU on every launch. Cold starts still verify normally.
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +#include <sys/ioctl.h>
 +#include <unistd.h>
@@ -57,14 +58,13 @@
 +// The manifest lists every payload entry ("<size>\t<path>" per line, -1 for
 +// symlinks). The warm-start path stats each entry before trusting the cache:
 +// without this, a damaged cached tree (a file deleted by a cache cleanup, or
-+// a re-extraction over the shared {VERSION} dir interrupted mid-write when
-+// switching binary variants) is reused on every later launch, because the
-+// stamp alone only proves the payload size. Stock Nuitka re-verifies the CRC32
-+// of every file on every launch and self-heals; the stat sweep restores that
-+// self-healing for missing and resized files at microseconds instead of
-+// seconds. A same-size content change still slips through until a cold pass
-+// runs; only the full CRC path can catch that, and paying it per launch is
-+// what this fast path exists to avoid.
++// an extraction interrupted mid-write) is reused on every later launch,
++// because the stamp alone only proves the payload size. Stock Nuitka
++// re-verifies the CRC32 of every file on every launch and self-heals; the
++// stat sweep restores that self-healing for missing and resized files at
++// microseconds instead of seconds. A same-size content change still slips
++// through until a cold pass runs; only the full CRC path can catch that,
++// and paying it per launch is what this fast path exists to avoid.
 +#define LILBEE_MANIFEST_NAME ".lilbee-bootstrap-manifest"
 +
 +// Defined further down; needed on the first-ever run before any file lands.

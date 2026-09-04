@@ -32,6 +32,7 @@ from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
     announce_cold_start,
     announce_ready,
+    announce_retrieval_query,
     auto_sync,
     json_output,
 )
@@ -134,9 +135,8 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     emits no OSC 8 on the legacy path, which would drop it). The marker can span
     tokens, so a marker-sized tail is held back until it can be classified.
     """
-    from rich.markup import escape
-
     from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
+    from lilbee.retrieval.reasoning import RetrievalNotice
 
     buf = ""
     hold = len(SOURCES_BLOCK_MARKER)
@@ -144,6 +144,9 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     flushed = False
     try:
         for token in stream:
+            if isinstance(token, RetrievalNotice):
+                announce_retrieval_query(token.query)
+                continue
             on_first_token()
             if token.is_reasoning:
                 # Reasoning is not filtered by StreamingCitationFilter, so a
@@ -171,16 +174,23 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
         console.print(buf, markup=False)
         return
     console.print(SOURCES_BLOCK_MARKER, end="", markup=False)
+    _print_sources_block(buf)
+
+
+def _print_sources_block(block: str) -> None:
+    """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
+    from rich.markup import escape
+
     if not console.is_terminal or console.legacy_windows:
-        console.print(buf, markup=False, highlight=False)
+        console.print(block, markup=False, highlight=False)
         return
     parts: list[str] = []
     last = 0
-    for m in _MD_FILE_LINK_RE.finditer(buf):
-        parts.append(escape(buf[last : m.start()]))
+    for m in _MD_FILE_LINK_RE.finditer(block):
+        parts.append(escape(block[last : m.start()]))
         parts.append(f"[link={m.group(2)}]{escape(m.group(1))}[/link]")
         last = m.end()
-    parts.append(escape(buf[last:]))
+    parts.append(escape(block[last:]))
     console.print("".join(parts), highlight=False)
 
 
@@ -319,6 +329,7 @@ def ask(
                     "answer": result.answer,
                     "sources": [clean_result(s) for s in result.sources],
                     "cited_sources": [clean_result(s) for s in result.cited_sources],
+                    "retrieval_query": result.retrieval_query,
                 }
             )
             return

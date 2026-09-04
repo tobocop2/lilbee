@@ -31,7 +31,7 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
-from lilbee.providers.fleet.planning import clear_ctx_downshift
+from lilbee.providers.fleet.planning import clear_ctx_downshift, log_engine_launch
 from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
     check_launch,
@@ -300,6 +300,8 @@ class SwapManager:
         )
         self._write_state()
         self._await_health()
+        for launch in launches:
+            log_engine_launch(launch)
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""

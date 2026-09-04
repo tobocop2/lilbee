@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from lilbee.config_meta import (
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core import settings as persistent_settings
-from lilbee.core.config import Config, cfg
+from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_API_KEYS,
@@ -310,6 +311,14 @@ def provider_reset_refused_message(action: str) -> str:
         f"{action} the model provider is unavailable on the HTTP server: it rebuilds "
         "the shared engine for every connected client. Change it from the CLI."
     )
+
+
+def config_write_failure_message(exc: OSError) -> str:
+    """User-facing text for a failed config write; names the fix when the file is locked."""
+    detail = f"Could not write {CONFIG_FILE_NAME}: {exc}."
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
+    return detail
 
 
 def _invalidate_caches(changed_keys: set[str]) -> None:

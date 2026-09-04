@@ -26,6 +26,7 @@ from lilbee.data.store import (
     human_recall_predicate,
     local_owner_predicate,
 )
+from lilbee.providers.base import aux_options
 
 
 def make_memory_row(
@@ -154,7 +155,7 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     in ``/memories``. A no-op (returns ``[]``) unless both the master gate and
     ``memory_auto_extract`` are on.
     """
-    from lilbee.retrieval.query.memory_extract import extract_memories
+    from lilbee.retrieval.query.memory_extract import MEMORY_EXTRACT_MAX_TOKENS, extract_memories
 
     if not auto_extract_enabled():
         return []
@@ -162,7 +163,9 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
 
     def _chat_text(messages: list[dict[str, str]], **_kwargs: object) -> str:
         return services.provider.chat(
-            messages, stream=False, options={"response_format": json_reply_format()}
+            messages,
+            stream=False,
+            options=aux_options(MEMORY_EXTRACT_MAX_TOKENS, response_format=json_reply_format()),
         ).text
 
     extracted = extract_memories(question, answer, _chat_text)

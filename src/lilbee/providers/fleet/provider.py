@@ -50,6 +50,7 @@ from lilbee.providers.fleet.contract import (
     contract_matches,
     decoded_launches,
     served_pairs,
+    vision_slots_cover,
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
@@ -256,6 +257,15 @@ def _bindable_group(
         return None
     pairs = {(launch.role, launch.model) for launch in launches} & wanted
     return (state, launches, pairs) if pairs else None
+
+
+def _log_adopted_launches(
+    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]],
+) -> None:
+    """Name the engine every bound instance now runs on, and the pid that owns it."""
+    for _group, state, launches in candidates:
+        for launch in launches:
+            planning.log_engine_launch(launch, owner_pid=state.pid)
 
 
 class _PrimedStream:
@@ -716,6 +726,8 @@ class _EngineDemand(NamedTuple):
     # Launches the demand plan refused for an unusable window (role -> reason);
     # recorded even when the ladder binds an engine or never builds one.
     skipped_unusable_ctx: dict[WorkerRole, str]
+    # Vision slots this process needs at once; 0 demands nothing.
+    vision_slots: int = 0
 
 
 def _placeable_demand() -> _EngineDemand:
@@ -755,7 +767,15 @@ def _placeable_demand() -> _EngineDemand:
         _demanded_chat_ctx(plan.launches, pairs),
         dict(plan.skipped_not_installed),
         dict(plan.skipped_unusable_ctx),
+        _demanded_vision_slots(pairs),
     )
+
+
+def _demanded_vision_slots(pairs: set[tuple[WorkerRole, str]]) -> int:
+    """Vision slots this process needs an engine to serve at once; 0 for none."""
+    if not any(role is WorkerRole.VISION for role, _ in pairs):
+        return 0
+    return max(1, cfg.vision_ocr_concurrency)
 
 
 def _demanded_chat_ctx(
@@ -1073,8 +1093,10 @@ class FleetProvider:
             if found is None:
                 continue
             bindable, launches, pairs = found
-            if not chat_ctx_covers(launches, demand.chat_ctx):
-                # The live chat window is smaller than this process needs.
+            if not chat_ctx_covers(launches, demand.chat_ctx) or not vision_slots_cover(
+                launches, demand.vision_slots
+            ):
+                # The live chat window or vision slots are below this process's need.
                 return False
             candidates.append((group, bindable, launches))
             covered |= pairs
@@ -1093,6 +1115,7 @@ class FleetProvider:
                 self._adopt_group(group, swap, launches)
                 self._group_dirs[group] = engine_dir
         log.info("Bound to the running engine at %s", engine_dir)
+        _log_adopted_launches(candidates)
         return True
 
     def _reload_dir(self) -> Path:

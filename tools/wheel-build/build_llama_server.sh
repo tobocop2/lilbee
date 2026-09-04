@@ -185,6 +185,29 @@ fi
 # goal: an AMD user should need a driver and nothing else, exactly as an NVIDIA one
 # does. It is done separately because the closure has to be discovered rather than
 # listed -- see the rocm block after this one.
+# Every Windows build links the MSVC runtime dynamically, and the toolset's
+# msvcp140 is newer than the copy a fresh Windows image ships in System32. The
+# engine then faults inside the old DLL before it lists a device (Server 2025
+# ships 14.22; the toolset is 14.4x). Ship the CRT beside the binary, as the
+# llama.cpp release zips do, so a user needs a driver and nothing else.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    if [ -n "${VCToolsRedistDir:-}" ]; then
+      crt_dir="$(cygpath -u "${VCToolsRedistDir}")/x64/Microsoft.VC143.CRT"
+    else
+      shopt -s nullglob
+      crt_candidates=(/c/Program\ Files/Microsoft\ Visual\ Studio/*/*/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT)
+      shopt -u nullglob
+      crt_dir="${crt_candidates[${#crt_candidates[@]}-1]:-}"
+    fi
+    [ -d "${crt_dir}" ] || { echo "no MSVC CRT redistributable dir found (VCToolsRedistDir unset, no VC143 CRT under Program Files)" >&2; exit 1; }
+    for crt in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+      [ -f "${crt_dir}/${crt}" ] || { echo "no ${crt} under ${crt_dir}: the Windows bundle is incomplete" >&2; exit 1; }
+      cp -L "${crt_dir}/${crt}" "${pkg_bin_dir}/"
+    done
+    ;;
+esac
+
 case "${backend}_$(uname -s)" in
   cu12*_MINGW* | cu12*_MSYS* | cu12*_CYGWIN*) cuda_platform="windows" ;;
   cu12*_Linux)                                cuda_platform="linux" ;;

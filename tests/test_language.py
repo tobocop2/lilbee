@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 
 from lilbee.retrieval.language import ENGLISH, QueryLanguage, noun_variants, query_language
-from lilbee.retrieval.query.intent import AggregateKind, document_references, parse_aggregate
+from lilbee.retrieval.query.intent import (
+    AggregateKind,
+    document_references,
+    parse_aggregate,
+    refers_to_history,
+)
 
 # A miniature non-English pack: Spanish-shaped count questions. Proves the
 # parser routes by pack data, not by anything hardcoded in the logic.
@@ -27,6 +32,7 @@ SPANISH_LIKE = QueryLanguage(
     ),
     leading_article_pattern=re.compile(r"^(?:el|la|los|las)\s+", re.IGNORECASE),
     known_item_patterns=(re.compile(r"^\s*resume\s+(.+?)[?\s]*$", re.IGNORECASE),),
+    follow_up_pattern=re.compile(r"^\s*y\b|\b(?:eso|esa|ese|lo)\b", re.IGNORECASE),
     noun_variants=lambda noun: {noun.strip().lower()},
 )
 
@@ -72,6 +78,12 @@ class TestPackDrivenParsing:
         assert parsed.kind is AggregateKind.TYPE_ASSOCIATION
         assert parsed.noun == "vuelos"
         assert parsed.group_noun == "persona"
+
+
+class TestPackDrivenFollowUps:
+    def test_follow_up_shape_comes_from_the_pack(self):
+        assert refers_to_history("y cuándo se escribió eso?", lang=SPANISH_LIKE)
+        assert not refers_to_history("cuántos documentos hay?", lang=SPANISH_LIKE)
 
 
 class TestEnglishMorphology:

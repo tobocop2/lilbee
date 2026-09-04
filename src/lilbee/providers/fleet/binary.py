@@ -65,10 +65,10 @@ def engine_pin() -> str:
     overflows to its own engine rather than silently running on the incumbent's
     flags. Total: never raises, because it runs on every state write.
     """
-    return f"{_engine_build_id()}|{_load_config_signature()}"
+    return f"{engine_build_id()}|{_load_config_signature()}"
 
 
-def _engine_build_id() -> str:
+def engine_build_id() -> str:
     """The engine build's identity: configured path, wheel pin, PATH, or unpinned.
 
     A BYO (``custom:``) or PATH-resolved (``path:``) binary is identified by its

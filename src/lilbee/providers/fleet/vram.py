@@ -191,9 +191,9 @@ def engine_build_identity() -> str:
     arguments without a trace of that, so swapping the engine kept the previous
     engine's answers.
     """
-    from lilbee.providers.fleet.binary import _engine_build_id
+    from lilbee.providers.fleet.binary import engine_build_id
 
-    return _engine_build_id()
+    return engine_build_id()
 
 
 @lru_cache(maxsize=_CACHE_SIZE)

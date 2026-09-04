@@ -403,7 +403,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Primary GPU index for llama.cpp when multiple devices are visible. "
             "Empty = let llama.cpp pick (index 0). Set this together with "
-            "gpu_devices to pin inference to a specific card."
+            "gpu_devices to pin inference to a specific card. Requires a restart "
+            "to take effect."
         ),
     ),
     "seed": SettingDef(
@@ -940,6 +941,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Tokens of overlap between adjacent chunks (preserves context across boundaries)",
     ),
+    "max_chunks_per_file": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Most chunks one file can add to the index; a file over the limit is skipped, "
+            "not embedded (0 = no limit). Raise it for a long document such as a "
+            "thousand-page manual at a small chunk_size, then retry skipped files"
+        ),
+    ),
     "tesseract_timeout": SettingDef(
         float,
         nullable=False,
@@ -1108,7 +1119,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Rewrite follow-ups into standalone retrieval queries using chat history",
+        help_text=(
+            "Rewrite a follow-up that refers to earlier turns into a standalone "
+            "retrieval query (one extra chat-model call on those turns)"
+        ),
     ),
     "intent_routing": SettingDef(
         bool,

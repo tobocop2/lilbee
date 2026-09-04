@@ -662,6 +662,14 @@ class TestExpandQuery:
         variants = get_services().searcher._llm_expand("anything at all", 3)
         assert variants == ["first phrasing", "second phrasing", "third phrasing"]
 
+    def test_expansion_turns_thinking_off(self, mock_svc):
+        """The user's log: 9 of 18 completions in a day were expansion calls
+        that produced zero variants. A reasoning model spends the whole cap
+        inside <think>, and stripping it leaves nothing to split into lines."""
+        mock_svc.provider.chat.return_value = _text_result("A\nB")
+        get_services().searcher._llm_expand("explain pod scheduling", 2)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
         assert (
@@ -1801,6 +1809,14 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         assert mock_svc.provider.chat.call_args.kwargs["options"]["num_predict"] == HYDE_MAX_TOKENS
 
+    def test_turns_thinking_off(self, mock_svc):
+        """The passage is the whole point of the call; a reasoning model given
+        this cap spends it deliberating and hands back nothing to embed."""
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
         assert get_services().searcher._hyde_search("test", top_k=5) == []
@@ -2081,6 +2097,18 @@ class TestLlmIntentRouting:
             assert "count" in answer.lower()
         finally:
             cfg.intent_llm = False
+
+    def test_classification_turns_thinking_off(self, mock_svc):
+        """One short JSON verdict on a small cap: a thinking template burns the
+        cap before the JSON, and every question degrades to the pattern result."""
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.return_value = _text_result(self._CLASSIFY_JSON)
+            mock_svc.store.count_term_mentions.return_value = (12, 5)
+            get_services().searcher.route_direct_answer("how many tomes mention blood?")
+        finally:
+            cfg.intent_llm = False
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
 
 class TestSearchStructured:
@@ -2583,6 +2611,27 @@ class TestKnownItemRoute:
         mock_svc.store.get_chunks_by_source.assert_not_called()
         mock_svc.store.search.assert_called_once()
 
+    @pytest.mark.parametrize(
+        ("question", "filename"),
+        [
+            pytest.param("summarize the file we discussed", "notes/DSO Web Hosting.md", id="we"),
+            pytest.param("summarize document port", "Airport Signage.md", id="port"),
+        ],
+    )
+    def test_reference_inside_a_word_stays_topical(self, mock_svc, question, filename):
+        """A unique substring candidate routes only when the reference lands on
+        whole tokens of the stem: "we" inside "Web" once replaced the whole
+        retrieval context with that one note."""
+        mock_svc.store.get_sources.return_value = [self._source(filename)]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(question)
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
     def test_ambiguous_reference_falls_back_to_topical(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
             self._source("report_12a.pdf"),
@@ -2774,6 +2823,23 @@ class TestHistoryCondensation:
         {"role": "assistant", "content": "It was kept by E. Larsen [1]."},
     ]
 
+    @pytest.fixture(autouse=True)
+    def _rewrite_on(self, monkeypatch):
+        monkeypatch.setattr(cfg, "history_rewrite", True)
+
+    def test_standalone_question_with_history_is_searched_as_typed(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(
+                "who designed the Split Rock lighthouse?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.provider.chat.assert_not_called()
+        query = mock_svc.store.search.call_args[1]["query_text"]
+        assert query == "who designed the Split Rock lighthouse?"
+
     def test_follow_up_is_rewritten_for_retrieval(self, mock_svc):
         """Retrieval must see the standalone rewrite, not the pronouns; the
         answering prompt keeps the user's original wording."""
@@ -2824,7 +2890,6 @@ class TestHistoryCondensation:
                 "and when was it written?", history=list(self._HISTORY)
             )
         finally:
-            cfg.history_rewrite = True
             cfg.query_expansion_count = 3
         mock_svc.provider.chat.assert_not_called()
         assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"
@@ -2843,6 +2908,135 @@ class TestHistoryCondensation:
             cfg.query_expansion_count = 3
         expected = "when was the Split Rock journal written"
         assert mock_svc.store.search.call_args[1]["query_text"] == expected
+
+    def test_context_carries_the_rewrite(self, mock_svc):
+        """The query retrieval actually ran is on the context, so a client can
+        show why an answer went off-topic."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == rewritten
+
+    def test_context_carries_no_rewrite_when_the_question_stands(self, mock_svc):
+        """No history means no rewrite, so nothing to surface."""
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query is None
+
+    def test_memory_grounded_turn_carries_the_rewrite(self, mock_svc):
+        """Retrieval found nothing and memory answers instead; the rewrite that
+        was searched still reaches the caller."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = []
+        mock_svc.store.bm25_probe.return_value = []
+        mock_svc.store.get_memories.return_value = []
+        mock_svc.store.search_memories.return_value = [_memory_fact("the journal is the user's")]
+        cfg.memory_enabled = True
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.memory_enabled = False
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert rag.retrieval_query == rewritten
+
+    def test_ask_raw_carries_the_rewrite(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.side_effect = [_text_result(rewritten), _text_result("In 1910 [1].")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.retrieval_query == rewritten
+
+    def test_ask_raw_carries_no_rewrite_without_history(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("In 1910 [1].")
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.retrieval_query is None
+
+    def test_ask_stream_announces_the_rewrite_before_the_first_token(self, mock_svc):
+        """The CLI and TUI stream path learns the rewrite the same way the SSE
+        clients do: one notice ahead of the answer."""
+        from lilbee.retrieval.reasoning import RetrievalNotice
+
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.side_effect = [_text_result(rewritten), iter(["In 1910 [1]."])]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            events = list(
+                get_services().searcher.ask_stream(
+                    "and when was it written?", history=list(self._HISTORY)
+                )
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert events[0] == RetrievalNotice(query=rewritten)
+        assert not any(isinstance(e, RetrievalNotice) for e in events[1:])
+        assert "In 1910 [1]." in "".join(e.content for e in events[1:])
+
+    def test_ask_stream_announces_nothing_without_a_rewrite(self, mock_svc):
+        from lilbee.retrieval.reasoning import RetrievalNotice
+
+        mock_svc.provider.chat.return_value = iter(["In 1910 [1]."])
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            events = list(get_services().searcher.ask_stream("standalone question"))
+        finally:
+            cfg.query_expansion_count = 3
+        assert not any(isinstance(e, RetrievalNotice) for e in events)
+
+    def test_accepted_rewrite_logs_at_info(self, mock_svc, caplog):
+        """The rewrite sits beside the other routing decisions in the log."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            with caplog.at_level("INFO"):
+                get_services().searcher.build_rag_context(
+                    "and when was it written?", history=list(self._HISTORY)
+                )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rewritten in caplog.text
+
+    def test_turns_thinking_off(self, mock_svc):
+        """A rewrite that comes back empty silently sends the pronouns to
+        retrieval, which is the failure the rewrite exists to prevent."""
+        mock_svc.provider.chat.return_value = _text_result("standalone question")
+        rewritten = get_services().searcher._condense_question(
+            "and when was it written?", list(self._HISTORY)
+        )
+        assert rewritten == "standalone question"
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
 
 class TestAskRawWithReranker:

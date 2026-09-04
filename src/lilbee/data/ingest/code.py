@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lilbee.app.services import get_services
+from lilbee.data.extract.chunk import enforce_chunk_limit
 from lilbee.data.extract.code_chunker import CodeChunk, chunk_code
 from lilbee.data.store import ChunkType
 from lilbee.data.types import ChunkRecord
@@ -21,6 +22,7 @@ def ingest_code_sync(
     if not code_chunks:
         return []
 
+    enforce_chunk_limit(len(code_chunks))
     texts = [cc.chunk for cc in code_chunks]
     embedder = get_services().embedder
     vectors = embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
