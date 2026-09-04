@@ -7,8 +7,10 @@ import logging
 import os
 import time
 from collections.abc import Iterator
+from enum import StrEnum
 from functools import cache
 from pathlib import Path
+from typing import NamedTuple
 
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
@@ -20,6 +22,40 @@ log = logging.getLogger(__name__)
 
 _PDF_MIME = "application/pdf"
 
+# Base MIME subtypes that name a container of other files.
+_ARCHIVE_SUBTYPES = frozenset(
+    {
+        "7z-compressed",
+        "bzip",
+        "bzip2",
+        "compress",
+        "gtar",
+        "gzip",
+        "lzip",
+        "lzma",
+        "rar",
+        "rar-compressed",
+        "tar",
+        "xz",
+        "zip",
+        "zip-compressed",
+        "zstd",
+    }
+)
+# Prefixes that mark a subtype as unregistered or vendor-specific, not part of its name.
+_SUBTYPE_PREFIXES = ("x-", "vnd.", "prs.")
+
+
+class ExclusionReason(StrEnum):
+    """Why discovery refuses a file whose extension xberg could otherwise extract."""
+
+    ARCHIVE = "archive, not a document"
+    VECTOR_GRAPHIC = "vector graphic, not a document"
+
+
+# Refusals the MIME type cannot express: image/svg+xml is a drawing, not a scan.
+_DENIED_EXTENSIONS: dict[str, ExclusionReason] = {".svg": ExclusionReason.VECTOR_GRAPHIC}
+
 
 def _content_type_for(ext: str, mime: str) -> str:
     """content_type for a xberg format: PDFs and images grouped, others keyed by extension."""
@@ -30,20 +66,56 @@ def _content_type_for(ext: str, mime: str) -> str:
     return ext.lstrip(".")
 
 
-@cache
-def supported_extension_map() -> dict[str, str]:
-    """Extension -> content_type for every format xberg can extract.
+def _normalized_ext(extension: str) -> str:
+    """A xberg format's extension as a lowercase suffix with its leading dot."""
+    ext = extension.lower()
+    return ext if ext.startswith(".") else f".{ext}"
 
-    Built from ``xberg.list_supported_formats()`` so lilbee covers the full set
-    without a hand-maintained list. Source-code files are routed separately (their
-    extensions are absent here), so ``classify_file`` falls through to the code path.
+
+def _is_archive_mime(mime: str) -> bool:
+    """Whether the base subtype of *mime* names an archive.
+
+    ``application/epub+zip`` reads as ``epub``; ``application/x-tar`` reads as ``tar``.
+    """
+    subtype = mime.partition("/")[2].partition("+")[0].strip().lower()
+    for prefix in _SUBTYPE_PREFIXES:
+        subtype = subtype.removeprefix(prefix)
+    return subtype in _ARCHIVE_SUBTYPES
+
+
+@cache
+def excluded_extension_reasons() -> dict[str, ExclusionReason]:
+    """Extension -> why discovery refuses it, for xberg formats lilbee will not ingest.
+
+    Archives are found by the MIME type xberg reports; ``_DENIED_EXTENSIONS`` adds
+    the refusals a MIME type cannot express.
     """
     from xberg import list_supported_formats
 
+    return {
+        _normalized_ext(fmt.extension): ExclusionReason.ARCHIVE
+        for fmt in list_supported_formats()
+        if _is_archive_mime(fmt.mime_type)
+    } | _DENIED_EXTENSIONS
+
+
+@cache
+def supported_extension_map() -> dict[str, str]:
+    """Extension -> content_type for every format lilbee ingests.
+
+    Built from ``xberg.list_supported_formats()`` so lilbee covers the full set
+    without a hand-maintained list, minus the containers ``excluded_extension_reasons``
+    refuses. Source-code files are routed separately (their extensions are absent
+    here), so ``classify_file`` falls through to the code path.
+    """
+    from xberg import list_supported_formats
+
+    excluded = excluded_extension_reasons()
     out: dict[str, str] = {}
     for fmt in list_supported_formats():
-        ext = (fmt.extension if fmt.extension.startswith(".") else f".{fmt.extension}").lower()
-        out[ext] = _content_type_for(ext, fmt.mime_type)
+        ext = _normalized_ext(fmt.extension)
+        if ext not in excluded:
+            out[ext] = _content_type_for(ext, fmt.mime_type)
     return out
 
 
@@ -98,8 +170,8 @@ def file_hash(path: Path) -> str:
 def classify_file(path: Path) -> str | None:
     """Classify a file by extension: a xberg content_type, "code", or None.
 
-    xberg-extractable formats win; source code (not in xberg's set) routes
-    to the code chunker; anything else is unsupported.
+    Ingestable xberg formats win; source code (not in xberg's set) routes to the
+    code chunker; a refused container and anything else is unsupported.
     """
     doc_type = supported_extension_map().get(path.suffix.lower())
     if doc_type is not None:
@@ -175,14 +247,44 @@ def resolve_source_path_checked(filename: str) -> Path | None:
     return None
 
 
+class ScannedFile(NamedTuple):
+    """One file the corpus walk kept: its source key, its path, and why it is refused.
+
+    ``excluded`` is None for a file that will be ingested.
+    """
+
+    key: str
+    path: Path
+    excluded: ExclusionReason | None = None
+
+
+class CorpusScan(NamedTuple):
+    """One walk's outcome: the files to ingest, and the refused ones keyed to their reason."""
+
+    files: dict[str, Path]
+    excluded: dict[str, ExclusionReason]
+
+
+def _scan_entry(path: Path, key: str) -> ScannedFile | None:
+    """The walk's verdict for one file, or None when nothing here can be ingested."""
+    reason = excluded_extension_reasons().get(path.suffix.lower())
+    if reason is not None:
+        return ScannedFile(key, path, reason)
+    if classify_file(path) is None:
+        return None
+    return ScannedFile(key, path)
+
+
 def _walk_root(
     base: Path,
     label: str | None,
     ignore_dirs: frozenset[str],
     progress: _ScanProgress,
     rules: IgnoreRules,
-) -> Iterator[tuple[str, Path]]:
-    """Yield supported files under *base*, keyed relative to it (prefixed by *label*).
+) -> Iterator[ScannedFile]:
+    """Yield the files under *base* lilbee knows, keyed relative to it (prefixed by *label*).
+
+    A refused format is yielded with its reason; an unknown format is left out.
 
     Symlinks are not followed (``followlinks=False``): each root is walked as the
     real tree it names, so there is no traversal loop and no path can escape the
@@ -207,18 +309,17 @@ def _walk_root(
             if rules.excludes_entry(path, base=base, is_dir=False):
                 progress.tick(matched=False)
                 continue
-            content_type = classify_file(path)
+            rel = path.relative_to(base).as_posix()
+            entry = _scan_entry(path, f"{label}/{rel}" if label else rel)
             # tick per file visited, not per match: a skip-heavy tree still walks
             # slowly and must still show a heartbeat.
-            progress.tick(matched=content_type is not None)
-            if content_type is None:
-                continue
-            rel = path.relative_to(base).as_posix()
-            yield f"{label}/{rel}" if label else rel, path
+            progress.tick(matched=entry is not None and entry.excluded is None)
+            if entry is not None:
+                yield entry
 
 
-def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[tuple[str, Path]]:
-    """Yield every supported file in the owned tree and in each registered root.
+def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
+    """Yield every file lilbee knows in the owned tree and in each registered root.
 
     A single-file root is the file the user named at ``add`` time, so no ignore
     pattern is consulted for it: naming a file is a stronger statement than a
@@ -233,8 +334,25 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[tuple[str, Path]]
         root_path = Path(root)
         if root_path.is_dir():
             yield from _walk_root(root_path, label, config.ignore_dirs, progress, rules)
-        elif root_path.is_file() and classify_file(root_path) is not None:
-            yield label, root_path
+        elif root_path.is_file() and (entry := _scan_entry(root_path, label)) is not None:
+            yield entry
+
+
+def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = None) -> CorpusScan:
+    """Scan the owned documents dir and every registered root into a :class:`CorpusScan`.
+
+    A refused file (see ``excluded_extension_reasons``) lands in ``excluded``, not ``files``.
+    """
+    files: dict[str, Path] = {}
+    excluded: dict[str, ExclusionReason] = {}
+    for entry in _walk_corpus(rules):
+        if shard is not None and not shard.owns(entry.key):
+            continue
+        if entry.excluded is not None:
+            excluded[entry.key] = entry.excluded
+        else:
+            files[entry.key] = entry.path
+    return CorpusScan(files, excluded)
 
 
 def discover_files(
@@ -255,14 +373,15 @@ def discover_files(
     A caller that also reconciles the index passes the *rules* it will reconcile
     with, so the walk and that pass read one set of compiled patterns.
     """
-    return {key: path for key, path in _walk_corpus(rules) if shard is None or shard.owns(key)}
+    return discover_corpus(shard, rules).files
 
 
 def corpus_has_at_least(count: int) -> bool:
-    """Whether the corpus holds at least *count* supported files.
+    """Whether the corpus holds at least *count* ingestable files.
 
     Stops at the threshold. The answer gates the multi-GPU ingest fan-out, and
     walking a million-file tree to learn "yes, more than a few thousand" would
     cost minutes before any work starts.
     """
-    return any(seen >= count for seen, _ in enumerate(_walk_corpus(), start=1))
+    ingestable = (entry for entry in _walk_corpus() if entry.excluded is None)
+    return any(seen >= count for seen, _ in enumerate(ingestable, start=1))

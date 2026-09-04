@@ -14,6 +14,7 @@ from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_event
@@ -105,6 +106,7 @@ async def _run_add(
 
         reg_result = register_sources(valid, force=force)
 
+        errors.extend(reg_result.refused)
         if sse.cancel.is_set():
             return AddSummary(
                 copied=reg_result.registered,
@@ -255,6 +257,9 @@ def _clean_upload_name(name: str) -> str:
     if ".." in parts:
         raise ValueError(f"upload filename may not contain '..': {name!r}")
     relative = "/".join(parts)
+    reason = excluded_extension_reasons().get(Path(relative).suffix.lower())
+    if reason is not None:
+        raise ValueError(f"{name!r}: {reason}")
     validate_path_within(cfg.documents_dir / relative, cfg.documents_dir)
     return relative
 

@@ -159,6 +159,8 @@ class Config(BaseSettings):
     )
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # A file over this many chunks is skipped before embedding; 0 lifts the ceiling.
+    max_chunks_per_file: int = ConfigField(default=3_000, ge=0, writable=True)
     # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
     # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,

@@ -33,7 +33,7 @@ from lilbee.runtime.progress import (
 
 from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
-from .chunk import build_chunking_config, chunk_text
+from .chunk import build_chunking_config, chunk_text, enforce_chunk_limit
 from .trace import ExtractionTrace, trace_extraction, trace_log
 
 if TYPE_CHECKING:
@@ -512,6 +512,7 @@ async def ingest_document(
             _warn_empty_ocr(source_name, "scanned documents")
         return [], meta
 
+    enforce_chunk_limit(len(doc.chunks or []) + len(tables))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
@@ -614,6 +615,7 @@ async def ingest_markdown(
     if not texts:
         return [], meta
 
+    enforce_chunk_limit(len(texts))
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 

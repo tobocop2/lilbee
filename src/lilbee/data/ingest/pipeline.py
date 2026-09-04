@@ -27,6 +27,7 @@ from rich.progress import (
 
 from lilbee.app.services import get_services
 from lilbee.core.config import Config, active_config
+from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_document,
@@ -44,7 +45,9 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import (
+    ExclusionReason,
     classify_file,
+    discover_corpus,
     discover_files,
     file_hash,
     resolve_source_root,
@@ -813,6 +816,21 @@ def detect_pending() -> int:
     return len(plan.files_to_process)
 
 
+# Refused files named in the log line before it falls back to a count.
+_EXCLUDED_LOG_SAMPLE = 5
+
+
+def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
+    """Warn once per exclusion reason, naming at most ``_EXCLUDED_LOG_SAMPLE`` files."""
+    by_reason: dict[ExclusionReason, list[str]] = {}
+    for name, why in excluded.items():
+        by_reason.setdefault(why, []).append(name)
+    for why, names in by_reason.items():
+        shown = sorted(names)[:_EXCLUDED_LOG_SAMPLE]
+        more = f" and {len(names) - len(shown)} more" if len(names) > len(shown) else ""
+        log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
+
+
 def _load_sync_skip_markers(*, clear_first: bool) -> dict[str, str]:
     """Read the skip-marker file, optionally clearing it first.
 
@@ -923,6 +941,20 @@ def _forget_ignored(sources: list[SourceRecord], rules: IgnoreRules) -> list[str
     source back on the next sync.
     """
     names = _ignored_sources(sources, rules)
+    if not names:
+        return []
+    from lilbee.app.ingest import forget_removed_from_wiki_index
+
+    removed = list(get_services().store.remove_documents(names).removed)
+    forget_removed_from_wiki_index(removed)
+    return removed
+
+
+def _forget_refused(
+    excluded: Mapping[str, ExclusionReason], existing: Mapping[str, SourceRecord]
+) -> list[str]:
+    """Drop indexed sources that discovery now refuses. Returns what went."""
+    names = [name for name in excluded if name in existing]
     if not names:
         return []
     from lilbee.app.ingest import forget_removed_from_wiki_index
@@ -1128,26 +1160,32 @@ async def sync(
         )
 
     rules = IgnoreRules.for_corpus()
-    disk_files = discover_files(shard, rules)
+    scan = discover_corpus(shard, rules)
+    disk_files = scan.files
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
 
     failed: dict[str, None] = {}
-    skipped: dict[str, None] = {}
-    reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
+    # Refused formats start the run skipped; they get no skip marker (no planned hash).
+    skipped: dict[str, None] = dict.fromkeys(scan.excluded)
+    # filename → why it was skipped/failed (for reporting)
+    reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
     flush_failed: set[str] = set()
+    _log_excluded(scan.excluded)
 
     # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
     # table, so it leaves this pass to the parent rather than racing its siblings.
     ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
+    # Shard-safe: a worker removes only keys from its own slice.
+    refused = _forget_refused(scan.excluded, existing_sources)
 
     # Sources whose backing file is not on disk this pass. A vanished file is NOT
     # removed: it stays indexed and searchable, a dead path-link the user
     # discovers only when they try to open it, and the set pairs a reappeared
     # identical file to its old key below. What was just removed leaves the set,
     # where it could otherwise capture a real move.
-    gone = set(ignored)
+    gone = set(ignored) | set(refused)
     absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
@@ -1235,7 +1273,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=ignored,
+        removed=ignored + refused,
         unchanged=state.unchanged,
         relocated=relocated,
         failed=list(failed),
@@ -1343,6 +1381,29 @@ def _failed_result(
         on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="error", chunks=0))
     pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
     return _IngestResult(entry.name, entry.path, 0, error=exc)
+
+
+def _over_limit_result(
+    exc: ChunkLimitError,
+    entry: FileToProcess,
+    *,
+    pages_done: list[int],
+    on_progress: DetailedProgressCallback,
+) -> _IngestResult:
+    """A file over the per-file chunk limit, recorded as skipped and skip-marked at its hash."""
+    log.warning("Skipped %s: %s", entry.name, exc)
+    with contextlib.suppress(TaskCancelledError):
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
+    pages_done[0] += 1
+    return _IngestResult(
+        entry.name,
+        entry.path,
+        0,
+        error=None,
+        file_hash=entry.file_hash,
+        skip_reason=str(exc),
+        needs_cleanup=entry.needs_cleanup,
+    )
 
 
 async def _stream_tasks(
@@ -1454,6 +1515,10 @@ async def ingest_stream(
                     concept_records=concept_records,
                     entity_rows=entity_rows,
                     meta=meta,
+                )
+            except ChunkLimitError as exc:
+                return _over_limit_result(
+                    exc, entry, pages_done=pages_done, on_progress=on_progress
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -1829,11 +1894,18 @@ def _classify_result(
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
 
-    Failures and zero-chunk files are tracked here; a successful file is reported
-    as ``INGESTED`` and its chunks are persisted by the batched flush, so it stays
-    in ``added`` / ``updated`` until then. When *reasons* is given, the
+    Failures, refusals and zero-chunk files are tracked here; a successful file is
+    reported as ``INGESTED`` and its chunks are persisted by the batched flush, so
+    it stays in ``added`` / ``updated`` until then. When *reasons* is given, the
     human-readable cause is recorded there (filename → reason) for reporting.
     """
+    if result.skip_reason is not None:
+        added.pop(result.name, None)
+        updated.pop(result.name, None)
+        skipped[result.name] = None
+        if reasons is not None:
+            reasons[result.name] = result.skip_reason
+        return BatchStatus.SKIPPED
     if result.error is not None:
         # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
         log.warning("Failed to ingest %s: %s", result.name, result.error)

@@ -435,6 +435,7 @@ async def add(
     reg_result = await anyio.to_thread.run_sync(
         functools.partial(register_sources, valid, force=force)
     )
+    errors.extend(reg_result.refused)
 
     from lilbee.app.ingest import temporary_ocr_config
 
