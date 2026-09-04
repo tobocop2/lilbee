@@ -259,6 +259,34 @@ test("a rival process that lands the file first is adopted instead of retried", 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("a landed download leaves a live rival's in-progress temp file alone", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "lilbee-macos-arm64");
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const rival = `${dest}.download.${process.ppid}`;
+  fs.writeFileSync(rival, "partial");
+  fs.writeFileSync(path.join(dir, "v9", "lilbee-macos-x86_64"), "old build");
+  await download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch });
+  assert.deepEqual(fs.readdirSync(path.join(dir, "v9")).sort(), ["lilbee-macos-arm64", `lilbee-macos-arm64.download.${process.ppid}`]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a download whose temp file vanished adopts the binary a rival landed", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "bin");
+  const logs = [];
+  const body = () => { const r = webBody(chunks(PAYLOAD)); fs.mkdirSync(path.dirname(dest), { recursive: true }); return r; };
+  const { fetch } = fetchWith([body]);
+  // The rival lands dest and removes our temp file while our stream is still open.
+  const tmp = `${dest}.download.${process.pid}`;
+  const timer = setInterval(() => { if (fs.existsSync(tmp)) { fs.writeFileSync(dest, PAYLOAD); fs.rmSync(tmp, { force: true }); clearInterval(timer); } }, 1);
+  await download({ release: release(), dest, fetch, log: (m) => logs.push(m) });
+  clearInterval(timer);
+  assert.ok(fs.existsSync(dest));
+  assert.ok(logs.some((l) => /another process finished/.test(l)));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("a landed download removes the other builds of the same release", async () => {
   const dir = tmpDir();
   const releaseDir = path.join(dir, "v9");

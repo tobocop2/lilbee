@@ -159,12 +159,26 @@ function toReadable(body) {
   return typeof body.pipe === "function" ? body : Readable.fromWeb(body);
 }
 
-/** Remove every entry of the release dir but the landed binary. */
+const TEMP_INFIX = ".download.";
+
+/** True while the process that owns a `.download.<pid>` temp file is still running. */
+function tempOwnerAlive(name) {
+  const pid = Number(name.slice(name.lastIndexOf(TEMP_INFIX) + TEMP_INFIX.length));
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+/** Remove every other build in the release dir; a live rival's in-progress temp file stays. */
 function removeSiblings(dest) {
   const dir = path.dirname(dest);
   const keep = path.basename(dest);
   for (const entry of fs.readdirSync(dir)) {
-    if (entry === keep) continue;
+    if (entry === keep || (entry.includes(TEMP_INFIX) && tempOwnerAlive(entry))) continue;
     try {
       fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
     } catch {
@@ -257,7 +271,7 @@ export async function download({
     log(`lilbee: release asset ${release.assetName} has no published digest; skipping sha256 verification.`);
   }
   // Per-process temp file: concurrent first runs must not interleave writes into one path.
-  const tmp = `${dest}.download.${process.pid}`;
+  const tmp = `${dest}${TEMP_INFIX}${process.pid}`;
 
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -278,8 +292,16 @@ export async function download({
     }
   }
 
-  fs.chmodSync(tmp, 0o755);
-  fs.renameSync(tmp, dest);
+  try {
+    fs.chmodSync(tmp, 0o755);
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    if (err.code === "ENOENT" && fs.existsSync(dest)) {
+      log("lilbee: another process finished this download first; using it.");
+      return;
+    }
+    throw err;
+  }
   removeSiblings(dest);
   log(`lilbee: installed ${dest}`);
 }
