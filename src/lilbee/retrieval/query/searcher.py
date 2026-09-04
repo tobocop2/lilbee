@@ -29,6 +29,7 @@ from lilbee.providers.base import (
     LLMProvider,
     ProviderError,
     ProviderErrorKind,
+    aux_options,
     estimate_budget_tokens,
     prompt_token_budget,
 )
@@ -71,12 +72,14 @@ from lilbee.retrieval.query.intent import (
     INTENT_CLASSIFY_PROMPT,
     AggregateKind,
     AggregateQuery,
+    contains_reference,
     document_references,
     matches_reference,
     matches_stored_title,
     matches_title,
     parse_aggregate,
     parse_llm_aggregate,
+    refers_to_history,
     title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
@@ -84,6 +87,7 @@ from lilbee.retrieval.query.neighbors import expand_neighbors
 from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
+    RetrievalNotice,
     StreamToken,
     cap_events_as_stream_tokens,
     effective_reasoning_cap,
@@ -212,11 +216,14 @@ class AskResult(BaseModel):
     ``sources`` is the full retrieved/reranked set; ``cited_sources`` is the subset the
     answer actually referenced via [n] markers (empty when it cited nothing), so a JSON
     consumer can tell whether the answer was grounded without re-parsing the text.
+    ``retrieval_query`` carries the follow-up rewrite retrieval ran on, or ``None``
+    when the question as typed was searched.
     """
 
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
+    retrieval_query: str | None = None
 
 
 class StructuredQuery(NamedTuple):
@@ -232,11 +239,15 @@ class RagContext(NamedTuple):
     ``base_results`` is the pre-widen selected set. An overflow retry refits from
     it, not from ``results`` (whose neighbor text is baked in and can no longer
     be shed), so a tighter fit drops expansion before it drops an original chunk.
+
+    ``retrieval_query`` is the standalone rewrite retrieval ran on, set only when
+    it replaced the question as typed.
     """
 
     results: list[SearchChunk]
     messages: list[ChatMessage]
     base_results: list[SearchChunk] | None = None
+    retrieval_query: str | None = None
 
 
 class Searcher:
@@ -321,7 +332,7 @@ class Searcher:
         prompt = EXPANSION_PROMPT.format(count=count, question=question)
         messages = [{"role": "user", "content": prompt}]
         response = self._provider.chat(
-            messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
+            messages, stream=False, options=aux_options(EXPANSION_MAX_TOKENS)
         )
         text = strip_reasoning(response.text).strip()
         variants = [_strip_list_marker(line.strip()) for line in text.split("\n") if line.strip()]
@@ -429,7 +440,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options={"num_predict": HYDE_MAX_TOKENS},
+                options=aux_options(HYDE_MAX_TOKENS),
             )
             # Reasoning models front-load deliberation; embedding it instead
             # of the passage would search for the model's thought process.
@@ -686,12 +697,12 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={"num_predict": CONDENSE_MAX_TOKENS},
+                options=aux_options(CONDENSE_MAX_TOKENS),
             )
             rewritten = strip_reasoning(response.text).strip().splitlines()
             first_line = rewritten[0].strip() if rewritten else ""
             if first_line:
-                log.debug("Condensed follow-up %r -> %r", question, first_line)
+                log.info("Condensed follow-up %r -> %r", question, first_line)
                 return first_line
         except Exception:
             log.debug("History condensation failed; using the raw question", exc_info=True)
@@ -769,20 +780,16 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={
-                    "num_predict": summary_cap(self._config.chat_n_ctx_target),
-                    # A thinking model spends the whole budget in a <think>
-                    # block that llama.cpp force-closes and strip_reasoning
-                    # deletes whole, leaving "" and stranding the batch.
-                    "think": False,
+                options=aux_options(
+                    summary_cap(self._config.chat_n_ctx_target),
                     # Deterministic: the same conversation folds the same way.
-                    "temperature": 0,
-                },
+                    temperature=0,
+                ),
             )
             summary = strip_reasoning(response.text).strip()
             if summary:
                 return summary
-            # Only the native llama-server path honors think=False; elsewhere a
+            # The llama-server and Ollama paths honor think=False; elsewhere a
             # reasoning model can leave nothing after the strip. Its reasoning
             # is itself a summary of these turns, so recover it rather than
             # strand them. Non-reasoning models never reach here.
@@ -881,9 +888,9 @@ class Searcher:
         Filename resolution first: substring search over-matches (a bare
         "482" hits every zero-padded id containing it), so token-exact
         matching disambiguates and only a unique winner routes. A unique
-        substring hit still routes for word refs (quoted titles never
-        token-match hyphenated filenames) but not numeric ones: "12" inside
-        "notes-2012" is the false match token comparison exists to reject.
+        candidate still routes when it carries the reference as whole tokens
+        (quoted titles never token-match hyphenated filenames), which is what
+        rejects "12" inside "notes-2012" and "we" inside "DSO Web Hosting".
 
         When no filename knows the reference, it may be a docket-style number
         living in the document's own text; a BM25 probe resolves it when the
@@ -893,8 +900,10 @@ class Searcher:
         matches = [s for s in candidates if matches_reference(ref, s["filename"])]
         if len(matches) == 1:
             return str(matches[0]["filename"])
-        if not matches and len(candidates) == 1 and not ref.strip().isdigit():
-            return str(candidates[0]["filename"])
+        if not matches and len(candidates) == 1:
+            unique = str(candidates[0]["filename"])
+            if contains_reference(ref, unique):
+                return unique
         if matches:
             return None  # several sources genuinely carry the reference
         return self._resolve_reference_by_content(ref, chunk_type)
@@ -929,8 +938,9 @@ class Searcher:
         mixed pool, or document chunks alone while the wiki is disabled.
         """
         retrieval_query = question
-        if history and self._config.history_rewrite:
+        if history and self._config.history_rewrite and refers_to_history(question):
             retrieval_query = self._condense_question(question, history)
+        rewrite = retrieval_query if retrieval_query != question else None
         # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
         # it names reaches the known-item route and the wiki-disabled guard. Left
         # in the query, the prefix sits in front of a document name and
@@ -968,12 +978,14 @@ class Searcher:
                 # prompt instead of a refusal. Facts only -- always-injected
                 # preferences say nothing about answerability.
                 if self._memory_facts(question):
-                    return RagContext([], self.direct_messages(question, history))
+                    return RagContext(
+                        [], self.direct_messages(question, history), retrieval_query=rewrite
+                    )
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
-        return self._finalize_context(results, question, history)
+        return self._finalize_context(results, question, history, retrieval_query=rewrite)
 
     def _finalize_context(
         self,
@@ -981,6 +993,8 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
+        *,
+        retrieval_query: str | None = None,
     ) -> RagContext:
         """Fit *results* to the context budget and assemble the prompt.
 
@@ -998,7 +1012,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages, base_results)
+        return RagContext(results, messages, base_results, retrieval_query)
 
     def _context_budget(
         self,
@@ -1255,10 +1269,9 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options={
-                    "num_predict": INTENT_CLASSIFY_MAX_TOKENS,
-                    "response_format": json_reply_format(),
-                },
+                options=aux_options(
+                    INTENT_CLASSIFY_MAX_TOKENS, response_format=json_reply_format()
+                ),
             )
         except Exception:
             log.debug("LLM intent classification failed; using pattern result", exc_info=True)
@@ -1391,6 +1404,7 @@ class Searcher:
             answer=clean,
             sources=results,
             cited_sources=cited_subset(strip_llm_citations(clean), results),
+            retrieval_query=rag.retrieval_query,
         )
 
     def ask(
@@ -1442,8 +1456,12 @@ class Searcher:
         options: dict[str, Any] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> Generator[StreamToken, None, None]:
-        """Stream answer tokens with citations appended at the end."""
+    ) -> Generator[StreamToken | RetrievalNotice, None, None]:
+        """Stream answer tokens with citations appended at the end.
+
+        When retrieval ran on a rewrite of the question, a ``RetrievalNotice``
+        carrying that rewrite precedes the first token.
+        """
         if self.search_unavailable():
             yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
             return
@@ -1459,6 +1477,8 @@ class Searcher:
         if rag is None:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
+        if rag.retrieval_query:
+            yield RetrievalNotice(query=rag.retrieval_query)
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
         # been yielded, so the conservative budget the context fit already

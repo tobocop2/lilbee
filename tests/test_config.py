@@ -1137,10 +1137,24 @@ class TestGenerationOptions:
         opts = c.generation_options()
         assert opts == {"temperature": 0.3, "seed": 42}
 
-    def test_includes_max_tokens(self):
+    def test_max_tokens_reaches_the_providers_as_num_predict(self):
+        from lilbee.providers.base import filter_options, normalize_generation_options
+
         c = Config()
         opts = c.generation_options()
-        assert opts["max_tokens"] == 4096
+        assert opts["num_predict"] == 4096
+        assert "max_tokens" not in opts
+        assert filter_options(opts)["num_predict"] == 4096
+        assert normalize_generation_options(opts)["max_tokens"] == 4096
+
+    def test_model_default_cap_uses_the_same_name(self):
+        from lilbee.providers.model_defaults import ModelDefaults
+
+        c = Config()
+        c.apply_model_defaults(ModelDefaults(max_tokens=512))
+        assert c.generation_options()["num_predict"] == 4096
+        c.max_tokens = None
+        assert c.generation_options()["num_predict"] == 512
 
     def test_remaps_top_k_sampling(self):
         c = Config()

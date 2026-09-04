@@ -31,6 +31,7 @@ class SseEvent(StrEnum):
     TOKEN = "token"  # noqa: S105 -- SSE event name, not a credential
     REASONING = "reasoning"
     SOURCES = "sources"
+    RETRIEVAL_QUERY = "retrieval_query"
     ERROR = "error"
     DONE = "done"
     PROGRESS = "progress"

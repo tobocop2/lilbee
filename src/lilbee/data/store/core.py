@@ -1832,6 +1832,11 @@ class Store:
             return _KEEP_TITLE
         return derive(new) or None
 
+    def member_sources(self, name: str) -> list[str]:
+        """Sources ingested out of the archive *name*: every filename under ``name/``."""
+        prefix = f"{name}/"
+        return [s["filename"] for s in self.get_sources() if s["filename"].startswith(prefix)]
+
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
 
@@ -1843,7 +1848,8 @@ class Store:
         Returns a RemoveResult with removed and not_found lists.
         """
         known = {s["filename"] for s in self.get_sources()}
-        removed = [name for name in names if name in known]
+        targets = [*names, *(m for name in names for m in self.member_sources(name))]
+        removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
 
         if removed:
