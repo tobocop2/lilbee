@@ -3011,6 +3011,7 @@ class TestHistoryCondensation:
         finally:
             cfg.query_expansion_count = 3
         assert rewritten in caplog.text
+
     def test_turns_thinking_off(self, mock_svc):
         """A rewrite that comes back empty silently sends the pronouns to
         retrieval, which is the failure the rewrite exists to prevent."""
