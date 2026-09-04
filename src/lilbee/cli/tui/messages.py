@@ -69,6 +69,12 @@ SYNC_SKIPPED_NO_VISION = (
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
+SYNC_HELD_OUT = (
+    '{count} file(s) stay held out of the index. Run "Retry skipped documents" to index them again.'
+)
+STATUS_HELD_OUT_TITLE = "Held out of the index"
+STATUS_HELD_OUT_EMPTY = "No files are held out."
+STATUS_HELD_OUT_MORE = "{count} more held out"
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
 CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."

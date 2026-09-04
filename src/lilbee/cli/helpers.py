@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.table import Table
 
 from lilbee.app.ingest import RegisterResult, register_sources
@@ -106,6 +107,22 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
             f"{status.entities.rows} entities extracted ({names})"
         )
     yield ""
+
+    if status.skipped:
+        held = Table(title="Held out of the index")
+        held.add_column("File", style=theme.ACCENT)
+        held.add_column("Reason", style=theme.MUTED)
+        for skipped in status.skipped:
+            held.add_row(escape(skipped.filename), escape(skipped.reason))
+        yield held
+        b = theme.LABEL
+        hidden = status.skipped_total - len(status.skipped)
+        more = f" ({hidden} more not shown)" if hidden > 0 else ""
+        yield (
+            f"[{b}]{status.skipped_total}[/{b}] held out{more}; "
+            "run 'lilbee sync --retry-skipped' to try them again"
+        )
+        yield ""
 
     if not status.sources:
         yield (

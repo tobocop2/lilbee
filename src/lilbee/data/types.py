@@ -58,6 +58,13 @@ class FileToProcess(NamedTuple):
     stat: SourceStat | None = None
 
 
+class SkippedSource(BaseModel):
+    """One file a skip marker holds out of the index, and why."""
+
+    filename: str
+    reason: str
+
+
 class FileChangePlan(NamedTuple):
     """Outcome of diffing disk files against the tracked sources."""
 
@@ -66,6 +73,8 @@ class FileChangePlan(NamedTuple):
     updated: dict[str, None]
     unchanged: int
     stat_backfills: list[SourceStatBackfill]
+    # Files a skip marker holds out; not in the index, so never counted as unchanged.
+    held_out: list[str]
 
 
 class OcrBackendName(StrEnum):
@@ -129,6 +138,8 @@ class SyncResult(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    # Files an earlier sync skip-marked, so this run did not attempt them.
+    held_out: list[SkippedSource] = []
     # Chunks whose text exceeded the embedder's char budget and were truncated
     # before embedding. Non-zero means some tail content did not reach the index.
     truncated: int = 0
@@ -143,10 +154,13 @@ class SyncResult(BaseModel):
         if self.relocated:
             lines.append(f"Relocated: {len(self.relocated)}")
         lines += [
+            f"Held out: {len(self.held_out)}",
             f"Skipped: {len(self.skipped)}",
             f"Failed: {len(self.failed)}",
             f"Truncated: {self.truncated}",
         ]
+        for held in self.held_out:
+            lines.append(f"  [yellow]{held.filename}[/yellow]: {held.reason}")
         for f in self.skipped:
             lines.append(f"  [yellow]{f}[/yellow]")
         for f in self.failed:
@@ -157,8 +171,8 @@ class SyncResult(BaseModel):
         return (
             f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
             f"removed={len(self.removed)}, unchanged={self.unchanged}, "
-            f"skipped={len(self.skipped)}, failed={len(self.failed)}, "
-            f"truncated={self.truncated})"
+            f"held_out={len(self.held_out)}, skipped={len(self.skipped)}, "
+            f"failed={len(self.failed)}, truncated={self.truncated})"
         )
 
     def __rich__(self) -> str:

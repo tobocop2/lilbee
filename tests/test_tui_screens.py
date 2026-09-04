@@ -2064,7 +2064,7 @@ async def test_status_screen_has_collapsible_sections(mock_svc):
         from textual.widgets import Collapsible
 
         sections = app.screen.query(Collapsible)
-        assert len(sections) == 4
+        assert len(sections) == 5
 
 
 async def test_status_screen_sections_start_expanded(mock_svc):
@@ -2075,8 +2075,9 @@ async def test_status_screen_sections_start_expanded(mock_svc):
 
         await pilot.pause()
         sections = list(app.screen.query(Collapsible))
-        assert len(sections) == 4
-        assert all(not section.collapsed for section in sections)
+        assert len(sections) == 5
+        # The held-out section opens only when the store holds something out.
+        assert all(section.collapsed is (section.id == "held-out-section") for section in sections)
 
 
 async def test_status_screen_config_shows_models(mock_svc):
@@ -2148,6 +2149,37 @@ async def test_status_screen_streams_documents_in_batches(mock_svc):
         table = app.screen.query_one("#docs-table", DataTable)
         # Every row arrives within a bounded number of refreshes.
         await _wait_for_row_count(pilot, table, total)
+
+
+async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
+    """Held-out files show with their reason, the overflow count, and an open section."""
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui.screens import status as status_screen
+    from lilbee.data.types import SkippedSource
+
+    mock_svc.store.get_sources.return_value = []
+    held = [SkippedSource(filename="scan.pdf", reason="no text extracted")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 3))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#held-out-table", DataTable)
+        await _wait_for_row_count(pilot, table, 2)
+        assert app.screen.query_one("#held-out-section", Collapsible).collapsed is False
+
+
+async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_svc, monkeypatch):
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui.screens import status as status_screen
+
+    mock_svc.store.get_sources.return_value = []
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#held-out-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
+        assert app.screen.query_one("#held-out-section", Collapsible).collapsed is True
 
 
 async def test_status_screen_storage_section(mock_svc):
@@ -8099,6 +8131,36 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
         rendered = " | ".join(str(c) for c in update_calls)
         assert msg.SYNC_FILE_PROGRESS.format(current=12, total=12, file="scan.pdf") in rendered
         assert msg.SYNC_EMBEDDING.format(file="scan.pdf") in rendered
+
+
+async def test_do_sync_reports_held_out_files():
+    """A sync that held files out on their skip markers says so and names the retry command."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+    from lilbee.data.types import SkippedSource
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        held = [SkippedSource(filename="scan.pdf", reason="no text extracted")]
+
+        async def fake_sync(**_kw):
+            return SyncResult(unchanged=1, held_out=held)
+
+        app.screen.notify = MagicMock()
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
+            thread = threading.Thread(
+                target=lambda: app.screen._do_sync(MagicMock(spec=ProgressReporter))
+            )
+            thread.start()
+            thread.join(timeout=5)
+            await _pilot.pause()
+
+        messages = [c.args[0] for c in app.screen.notify.call_args_list]
+        assert msg.SYNC_HELD_OUT.format(count=1) in messages
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
@@ -14594,6 +14656,7 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     loaded_arch: list[ModelArchInfo] = []
     screen._load_documents = loaded_docs.append
     screen._load_storage = loaded_storage.append
+    screen._load_held_out = lambda _docs: None
     screen._load_arch = loaded_arch.append
 
     docs_result = _DocsResult(sources=[{"a": 1}, {"b": 2}], load_failed=False)

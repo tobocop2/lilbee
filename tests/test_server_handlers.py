@@ -281,6 +281,7 @@ class TestStatus:
         from lilbee.app.status import StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -301,6 +302,7 @@ class TestStatus:
         from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -316,6 +318,32 @@ class TestStatus:
         assert result.entities is not None
         assert result.entities.types == ["part_number"]
         assert result.entities.rows == 3
+
+    async def test_status_carries_the_skipped_sources(self):
+        """The held-out list must survive the StatusResponse mapping; a missing
+        field there drops it from the HTTP surface without any error."""
+        from lilbee.app.status import StatusConfig, StatusResult
+        from lilbee.data.types import SkippedSource
+
+        mock_status = StatusResult(
+            document_count=0,
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+            skipped=[SkippedSource(filename="scan.pdf", reason="OCR timed out after 300s")],
+            skipped_total=7,
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert [(s.filename, s.reason) for s in result.skipped] == [
+            ("scan.pdf", "OCR timed out after 300s")
+        ]
+        assert result.skipped_total == 7
 
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
@@ -1480,6 +1508,27 @@ class TestAddFiles:
             async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
             assert any("done" in e for e in events)
+
+    async def test_done_frame_carries_the_held_out_files(self, isolated_env):
+        """SyncSummary mirrors SyncResult; a field missing there drops the held-out
+        list from the add response with no error to notice."""
+        from lilbee.data.types import SkippedSource
+
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content", encoding="utf-8")
+
+        async def fake_sync(**kwargs):
+            return SyncResult(
+                held_out=[SkippedSource(filename="scan.pdf", reason="OCR timed out after 300s")]
+            )
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            events = [e async for e in handlers.add_files_stream([str(test_file)])]
+
+        done = json.loads([e for e in events if e.startswith("event: done")][-1].split("data: ")[1])
+        assert done["sync"]["held_out"] == [
+            {"filename": "scan.pdf", "reason": "OCR timed out after 300s"}
+        ]
 
     async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
         """Sync failure emits one error frame and closes the stream without a done frame."""

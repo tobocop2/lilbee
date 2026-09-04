@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import os
 import re
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
@@ -303,7 +305,8 @@ async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSumm
         for name, content in files:
             dest = cfg.documents_dir / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
+            if not _move_same_content(name, content, dest):
+                dest.write_bytes(content)
             written.append(name)
         with temporary_ocr_config(None):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
@@ -315,6 +318,24 @@ async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSumm
         )
     finally:
         sse.queue.put_nowait(None)
+
+
+def _move_same_content(name: str, content: bytes, dest: Path) -> bool:
+    """Move the one indexed file holding *content* to *dest*, so sync repoints its key."""
+    digest = hashlib.sha256(content).hexdigest()
+    matches = [
+        s["filename"]
+        for s in get_services().store.get_sources()
+        if s["file_hash"] == digest and s["filename"] != name
+    ]
+    if len(matches) != 1:
+        return False
+    old_path = cfg.documents_dir / matches[0]
+    if not old_path.is_file():
+        return False
+    os.replace(old_path, dest)
+    log.info("Moved %s to %s: the same content arrived under a new name", matches[0], name)
+    return True
 
 
 async def add_uploads_stream(files: list[tuple[str, bytes]]) -> AsyncGenerator[str, None]:
