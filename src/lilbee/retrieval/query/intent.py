@@ -290,7 +290,8 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
     return AggregateQuery(kind, term=term, noun=noun, group_noun=group_noun)
 
 
-# Fewer tokens than this cannot stand alone ("Why?", "how much?").
+# Fewer tokens than this cannot stand alone ("Why?", "how much?"). A script the
+# ASCII splitter yields no tokens for lands here too and keeps the rewrite.
 _STANDALONE_MIN_TOKENS = 3
 
 
