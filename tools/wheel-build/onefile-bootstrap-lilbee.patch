@@ -6,7 +6,7 @@
  #endif
 +
 +// lilbee: cold-start feedback and a warm-start fast path.
-+// TODO(upstream): propose the stamp fast path to Nuitka as a --onefile-cache-mode value.
++// TODO(upstream): proposed as a --onefile-cache-mode value in Nuitka/Nuitka#4028.
 +//
 +// The cache directory is keyed on version and build, so a populated payload
 +// directory whose stamp records this payload's size was written by this binary.

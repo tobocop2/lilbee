@@ -22,7 +22,7 @@ uv pip uninstall python-multipart >/dev/null 2>&1 || true
 # The patch adds a stamp fast path and renders the lilbee wordmark plus a real
 # progress bar while unpacking. --forward under `set -e` fails the build if a
 # Nuitka upgrade moves the source, rather than silently shipping a slow binary.
-# TODO(upstream): file the fast path with Nuitka so the patch shrinks to the splash.
+# TODO(upstream): once Nuitka/Nuitka#4028 lands, drop the fast path and keep only the splash.
 NUITKA_ROOT=$(uv run --no-sync python -c "import nuitka, pathlib; print(pathlib.Path(nuitka.__file__).parent.parent)")
 BOOTSTRAP_PATCH="$PWD/tools/wheel-build/onefile-bootstrap-lilbee.patch"
 if ! patch --forward --dry-run -p1 -d "$NUITKA_ROOT" <"$BOOTSTRAP_PATCH" >/dev/null 2>&1; then
