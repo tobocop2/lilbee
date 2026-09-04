@@ -1720,6 +1720,48 @@ class TestSettingsMcp:
         assert cfg.top_k == 5, "first field must roll back when second fails pydantic"
         assert cfg.temperature == 0.6
 
+    @pytest.mark.parametrize(
+        ("exc", "hint_expected"),
+        [
+            (PermissionError(13, "The process cannot access the file"), True),
+            (OSError(28, "No space left on device"), False),
+        ],
+        ids=["locked-file", "disk-full"],
+    )
+    def test_settings_set_answers_a_failed_write_with_the_cause(
+        self, isolated_env, monkeypatch, exc, hint_expected
+    ):
+        """The rename fails, cfg rolls back, and the tool names the file and the fix."""
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+
+        def refuse(_src, _dst):
+            raise exc
+
+        monkeypatch.setattr(os, "replace", refuse)
+
+        result = settings_set({"top_k": 9})
+
+        assert "Could not write config.toml" in result["error"]
+        assert str(exc) in result["error"]
+        hint = "Close the program that holds config.toml open and try again."
+        assert (hint in result["error"]) is hint_expected
+        assert cfg.top_k == 5
+
+    def test_settings_reset_answers_a_failed_write_with_the_cause(self, isolated_env, monkeypatch):
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+
+        def refuse(_src, _dst):
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(os, "replace", refuse)
+
+        result = settings_reset(["top_k"])
+
+        assert "Close the program that holds config.toml open" in result["error"]
+        assert cfg.top_k == 99
+
     def test_settings_set_rejects_unknown_key(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_set({"not_a_real_field": 1})

@@ -45,6 +45,7 @@ from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
+    config_write_failure_message,
     get_setting,
     list_settings,
     provider_reset_refused_message,
@@ -1063,6 +1064,8 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         result = apply_settings_update(updates)
     except (ValueError, TypeError) as exc:
         return _error(str(exc))
+    except OSError as exc:
+        return _error(config_write_failure_message(exc))
     return {
         "command": "settings_set",
         "updated": result.updated,
@@ -1079,6 +1082,8 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
         result = reset_settings(keys)
     except (ValueError, TypeError) as exc:
         return _error(str(exc))
+    except OSError as exc:
+        return _error(config_write_failure_message(exc))
     return {
         "command": "settings_reset",
         "updated": result.updated,
