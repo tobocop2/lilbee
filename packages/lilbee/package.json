@@ -6,6 +6,15 @@
   "homepage": "https://lilbee.sh",
   "bugs": "https://github.com/tobocop2/lilbee/issues",
   "type": "module",
+  "main": "./lib/api.mjs",
+  "types": "./lib/api.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/api.d.ts",
+      "default": "./lib/api.mjs"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "lilbee": "bin/lilbee.mjs",
     "lilbee-mcp": "bin/lilbee-mcp.mjs"
