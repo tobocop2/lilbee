@@ -1108,7 +1108,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Rewrite follow-ups into standalone retrieval queries using chat history",
+        help_text=(
+            "Rewrite a follow-up that refers to earlier turns into a standalone "
+            "retrieval query (one extra chat-model call on those turns)"
+        ),
     ),
     "intent_routing": SettingDef(
         bool,

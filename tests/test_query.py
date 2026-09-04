@@ -2774,6 +2774,23 @@ class TestHistoryCondensation:
         {"role": "assistant", "content": "It was kept by E. Larsen [1]."},
     ]
 
+    @pytest.fixture(autouse=True)
+    def _rewrite_on(self, monkeypatch):
+        monkeypatch.setattr(cfg, "history_rewrite", True)
+
+    def test_standalone_question_with_history_is_searched_as_typed(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(
+                "who designed the Split Rock lighthouse?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.provider.chat.assert_not_called()
+        query = mock_svc.store.search.call_args[1]["query_text"]
+        assert query == "who designed the Split Rock lighthouse?"
+
     def test_follow_up_is_rewritten_for_retrieval(self, mock_svc):
         """Retrieval must see the standalone rewrite, not the pronouns; the
         answering prompt keeps the user's original wording."""
@@ -2824,7 +2841,6 @@ class TestHistoryCondensation:
                 "and when was it written?", history=list(self._HISTORY)
             )
         finally:
-            cfg.history_rewrite = True
             cfg.query_expansion_count = 3
         mock_svc.provider.chat.assert_not_called()
         assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"

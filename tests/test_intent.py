@@ -9,6 +9,7 @@ from lilbee.retrieval.query.intent import (
     matches_reference,
     parse_aggregate,
     parse_llm_aggregate,
+    refers_to_history,
 )
 
 
@@ -287,3 +288,29 @@ class TestCountTermMentions:
 
     def test_count_chunks(self, store):
         assert store.count_chunks() == 4
+
+
+class TestRefersToHistory:
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "and when was it written?",
+            "How much oil does it take?",
+            "what about the brother?",
+            "Why?",
+            "Who wrote the same report for 2019?",
+        ],
+    )
+    def test_follow_up_shapes_refer_to_history(self, question):
+        assert refers_to_history(question)
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What engine does the Crown Victoria have?",
+            "Which fuse protects the fuel pump?",
+            "summarize survey_report.pdf",
+        ],
+    )
+    def test_standalone_questions_do_not(self, question):
+        assert not refers_to_history(question)

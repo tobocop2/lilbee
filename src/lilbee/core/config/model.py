@@ -433,7 +433,7 @@ class Config(BaseSettings):
     # the chat history (one LLM call; skipped when there is no history).
     # Without it, "what about his brother?" is embedded and BM25-matched
     # with its pronouns.
-    history_rewrite: bool = ConfigField(default=True, writable=True)
+    history_rewrite: bool = ConfigField(default=False, writable=True)
 
     # Route questions by shape before top-k retrieval: a question naming a
     # document resolves to that document's chunks; a count-shaped question

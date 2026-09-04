@@ -288,3 +288,16 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
     if not required_ok:
         return None
     return AggregateQuery(kind, term=term, noun=noun, group_noun=group_noun)
+
+
+# Fewer tokens than this cannot stand alone ("Why?", "how much?").
+_STANDALONE_MIN_TOKENS = 3
+
+
+def refers_to_history(question: str, lang: QueryLanguage | None = None) -> bool:
+    """Whether *question* needs earlier turns to be searchable on its own."""
+    lang = lang or query_language()
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(question) if t]
+    if len(tokens) < _STANDALONE_MIN_TOKENS:
+        return True
+    return lang.follow_up_pattern.search(question) is not None

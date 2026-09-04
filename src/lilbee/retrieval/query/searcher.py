@@ -77,6 +77,7 @@ from lilbee.retrieval.query.intent import (
     matches_title,
     parse_aggregate,
     parse_llm_aggregate,
+    refers_to_history,
     title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
@@ -929,7 +930,7 @@ class Searcher:
         mixed pool, or document chunks alone while the wiki is disabled.
         """
         retrieval_query = question
-        if history and self._config.history_rewrite:
+        if history and self._config.history_rewrite and refers_to_history(question):
             retrieval_query = self._condense_question(question, history)
         # Resolve a wiki:/raw: scope prefix the way search() does, so the scope
         # it names reaches the known-item route and the wiki-disabled guard. Left
