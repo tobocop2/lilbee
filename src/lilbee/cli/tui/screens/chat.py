@@ -2281,6 +2281,13 @@ class ChatScreen(Screen[None]):
                 msg.sync_skipped_message(", ".join(result.skipped)),
                 severity="warning",
             )
+        if result.held_out:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_HELD_OUT.format(count=len(result.held_out)),
+                severity="warning",
+            )
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

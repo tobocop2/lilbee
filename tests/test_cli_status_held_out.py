@@ -11,6 +11,7 @@ from lilbee.data.types import SkippedSource
 
 def _status(skipped: list[SkippedSource] | None = None, skipped_total: int = 0) -> StatusResult:
     return StatusResult(
+        document_count=0,
         config=StatusConfig(
             documents_dir="docs",
             data_dir="data",

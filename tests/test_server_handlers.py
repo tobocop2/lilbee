@@ -281,6 +281,7 @@ class TestStatus:
         from lilbee.app.status import StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -301,6 +302,7 @@ class TestStatus:
         from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -324,6 +326,7 @@ class TestStatus:
         from lilbee.data.types import SkippedSource
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",

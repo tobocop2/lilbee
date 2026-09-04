@@ -115,6 +115,7 @@ class StatusResult(BaseModel):
     command: str = "status"
     config: StatusConfig
     sources: list[SourceInfo]
+    document_count: int
     total_chunks: int
     entities: EntityStatus | None = None
     skipped: list[SkippedSource] = []
@@ -127,7 +128,7 @@ def gather_status() -> StatusResult:
     sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
-    held_out = sorted(load_skip_markers(cfg.data_root))
+    skipped, skipped_total = held_out_sources()
     return StatusResult(
         config=StatusConfig(
             documents_dir=str(cfg.documents_dir),
@@ -147,11 +148,18 @@ def gather_status() -> StatusResult:
             )
             for s in sorted_sources
         ],
+        document_count=len(sources),
         total_chunks=total_chunks,
         entities=entity_status(),
-        skipped=describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]),
-        skipped_total=len(held_out),
+        skipped=skipped,
+        skipped_total=skipped_total,
     )
+
+
+def held_out_sources() -> tuple[list[SkippedSource], int]:
+    """Held-out files with reasons, capped at ``STATUS_SKIPPED_LIMIT``, and the real count."""
+    held_out = sorted(load_skip_markers(cfg.data_root))
+    return describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]), len(held_out)
 
 
 def entity_status() -> EntityStatus | None:

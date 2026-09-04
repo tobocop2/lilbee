@@ -189,6 +189,7 @@ class StatusResponse(BaseModel):
     command: str = "status"
     config: StatusConfigInfo
     sources: list[StatusSourceInfo]
+    document_count: int
     total_chunks: int
     entities: StatusEntityInfo | None = None
     skipped: list[SkippedSource] = []

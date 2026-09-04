@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock
@@ -144,6 +145,78 @@ class TestAddEndpoint:
         assert "done" in event_types
         # The client's bytes landed in the corpus even though no server path existed.
         assert (isolated_env / "notes.txt").read_bytes() == content
+
+    @pytest.mark.parametrize(
+        ("indexed", "moved"),
+        [
+            pytest.param(["index.md"], True, id="one-match-moves"),
+            pytest.param(["index.md", "old/index.md"], False, id="two-matches-write-plainly"),
+        ],
+    )
+    async def test_add_upload_moves_the_one_file_with_the_same_content(
+        self, mock_extract_file, isolated_env, mock_svc, indexed, moved
+    ):
+        """The same bytes under a new name move the indexed file, so sync repoints its key."""
+        from lilbee.server.app import create_app
+
+        content = b"The same note, uploaded once by basename and once by path."
+        digest = hashlib.sha256(content).hexdigest()
+        for name in indexed:
+            (isolated_env / name).parent.mkdir(parents=True, exist_ok=True)
+            (isolated_env / name).write_bytes(content)
+        mock_svc.store.get_sources.return_value = [
+            {"filename": name, "file_hash": digest, "chunk_count": 1} for name in indexed
+        ]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("notes/alpha/index.md", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert (isolated_env / "notes/alpha/index.md").read_bytes() == content
+        assert (isolated_env / "index.md").exists() is not moved
+
+    async def test_add_upload_writes_plainly_when_the_matching_file_is_gone(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A source row whose file left the disk cannot be moved; the upload is written as is."""
+        from lilbee.server.app import create_app
+
+        content = b"Indexed once, then its file was deleted by hand."
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "gone.md", "file_hash": hashlib.sha256(content).hexdigest()}
+        ]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("notes/gone.md", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert (isolated_env / "notes/gone.md").read_bytes() == content
+
+    async def test_add_upload_leaves_a_file_with_other_content_alone(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        from lilbee.server.app import create_app
+
+        (isolated_env / "index.md").write_bytes(b"different bytes")
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "index.md", "file_hash": hashlib.sha256(b"different bytes").hexdigest()}
+        ]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("notes/index.md", b"new bytes", "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert (isolated_env / "index.md").read_bytes() == b"different bytes"
+        assert (isolated_env / "notes/index.md").read_bytes() == b"new bytes"
 
     async def test_add_upload_rejects_path_traversal_filename(
         self, mock_extract_file, isolated_env, tmp_path
