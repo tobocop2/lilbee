@@ -7,6 +7,7 @@
 import { assetNameFor } from "./assets.mjs";
 import { detectHost } from "./detect.mjs";
 import { launcherFetch } from "./fetch.mjs";
+import { LauncherError } from "./errors.mjs";
 
 export const DEFAULT_REPO = "tobocop2/lilbee";
 export const USER_AGENT = "lilbee-npm-launcher";
@@ -45,7 +46,7 @@ function githubHeaders(env) {
 
 async function fetchGitHub(fetchImpl, url, env) {
   const res = await fetchImpl(url, { headers: githubHeaders(env) });
-  if (RATE_LIMIT_STATUSES.has(res.status)) throw new Error(GITHUB_RATE_LIMITED);
+  if (RATE_LIMIT_STATUSES.has(res.status)) throw new LauncherError("rate-limited", GITHUB_RATE_LIMITED, { status: res.status });
   return res;
 }
 
@@ -137,7 +138,7 @@ async function collectInstallable(q, limit) {
   for (let page = 1; page <= RELEASE_PAGE_BUDGET; page += 1) {
     const url = `${GITHUB_API}/repos/${q.repo}/releases?per_page=${RELEASE_PAGE_SIZE}&page=${page}`;
     const res = await fetchGitHub(q.fetchImpl, url, q.env);
-    if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
+    if (!res.ok) throw new LauncherError("http", `GET ${url} -> HTTP ${res.status}`, { status: res.status });
     const releases = await res.json();
     for (const data of releases) {
       if (data.draft || data.prerelease) continue;
@@ -170,7 +171,7 @@ export async function listReleases(query = {}) {
 /** The newest installable release on the chosen channel. Throws when none exists. */
 export async function latestRelease(query = {}) {
   const [newest] = await listReleases({ ...query, limit: 1 });
-  if (!newest) throw new Error("No installable lilbee release was found.");
+  if (!newest) throw new LauncherError("no-release", "No installable lilbee release was found.");
   return newest;
 }
 
@@ -179,10 +180,10 @@ export async function releaseByTag(tag, query = {}) {
   const q = await resolveQuery(query);
   const url = `${GITHUB_API}/repos/${q.repo}/releases/tags/${tag}`;
   const res = await fetchGitHub(q.fetchImpl, url, q.env);
-  if (res.status === 404) throw new Error(`Release ${tag} was not found in ${q.repo}.`);
-  if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
+  if (res.status === 404) throw new LauncherError("no-release", `Release ${tag} was not found in ${q.repo}.`, { status: res.status });
+  if (!res.ok) throw new LauncherError("http", `GET ${url} -> HTTP ${res.status}`, { status: res.status });
   const data = await res.json();
   const fallback = baselineAsset(data, q.host);
-  if (!fallback) throw new Error(`Release ${tag} has no build for ${q.host.platform}/${q.host.arch}.`);
+  if (!fallback) throw new LauncherError("no-release", `Release ${tag} has no build for ${q.host.platform}/${q.host.arch}.`);
   return resolveBuild(data, fallback, q.host, q.fetchImpl);
 }

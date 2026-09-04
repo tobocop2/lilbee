@@ -135,6 +135,5 @@ test("detectHost honors LILBEE_VARIANT and rejects an unknown value", async () =
 test("detectHost logs what it picked through the given logger", async () => {
   const lines = [];
   await detectHost({}, (m) => lines.push(m), io({ smi: "CUDA Version: 12.6" }), "linux", "x64");
-  assert.match(lines.join("\n"), /cu125 build/);
-  assert.doesNotMatch(lines.join("\n"), /\u2014/);
+  assert.deepEqual(lines, ["lilbee: detected NVIDIA driver (CUDA 12.6) — using the cu125 build (override with LILBEE_VARIANT)."]);
 });

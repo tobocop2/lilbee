@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { cacheDir, installRelease } from "./cache.mjs";
 import { detectHost } from "./detect.mjs";
 import { progressReporter } from "./download.mjs";
-import { exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
+import { channelIncludesDev, exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
 import { resolveBinary } from "./resolve.mjs";
 
 const log = (msg) => console.error(msg);
@@ -157,7 +157,7 @@ async function resolveLocalBinary(env, { refresh = false, tag = null } = {}) {
     pinned,
     tag,
     refresh,
-    includeDev: env.LILBEE_DEV_BUILDS === "1",
+    includeDev: channelIncludesDev(env),
     repo: env.LILBEE_REPO || repo,
     log: say,
   });
@@ -166,7 +166,7 @@ async function resolveLocalBinary(env, { refresh = false, tag = null } = {}) {
     assertGlibcFloor();
     const report = progressReporter(log);
     try {
-      await installRelease(plan.download, { cacheDir: dir, env, onProgress: report, log });
+      await installRelease(plan.download, { cacheDir: dir, repo: env.LILBEE_REPO || repo, env, onProgress: report, log });
     } finally {
       report.finish();
     }

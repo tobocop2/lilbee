@@ -52,7 +52,7 @@ function hostBinaries(cacheDir, release, host) {
  * The newest cached binary for this host, or null when none is cached. Within a
  * release, a binary matching `host.variant` wins over any other build of the host's platform.
  */
-export function installedBinary({ cacheDir, host }) {
+export function installedBinary({ cacheDir, host = { platform: process.platform, arch: process.arch, variant: null } }) {
   for (const release of entriesOf(cacheDir).sort(compareReleaseTags)) {
     const [best] = hostBinaries(cacheDir, release, host);
     if (best) return best;

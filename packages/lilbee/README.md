@@ -106,7 +106,7 @@ Remote:
 | `LILBEE_DATA_DIR` | Library location for `mcp`; same as `--data-dir`. |
 | `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
 | `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. `lilbee prepare <tag>` does the same for one install. |
-| `LILBEE_DEV_BUILDS` | `=1` lets "latest" pick in-development (`.dev`) builds. Off by default, so a dev build never lands unasked. |
+| `LILBEE_CHANNEL` | `stable` (default) or `dev`: whether "latest" may pick an in-development (`.dev`) build. |
 | `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 

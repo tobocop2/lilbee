@@ -9,13 +9,15 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { createHash } from "node:crypto";
 
+import { LauncherError } from "./errors.mjs";
 import { launcherFetch } from "./fetch.mjs";
-import { USER_AGENT } from "./releases.mjs";
+import { DEFAULT_REPO, USER_AGENT } from "./releases.mjs";
 
 const DOWNLOAD_ATTEMPTS = 2;
 const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
 const DISK_SPACE_FACTOR = 1.1;
 const DOWNLOAD_STALLED = "The lilbee download stalled: no data arrived for 60 seconds. Check your connection and try again.";
+const NO_DIGEST = (assetName) => `Release asset ${assetName} has no published digest, so the download cannot be verified.`;
 const DOWNLOAD_CANCELED = "The lilbee download was cancelled.";
 
 const MB = 1048576;
@@ -69,7 +71,7 @@ function barGlyphs(frac, width, color) {
  * Pure; rate and eta are omitted when unknown.
  */
 export function progressLine({ done, total, bytesPerSec, barWidth = BAR_WIDTH, color = false }) {
-  if (!total) return `lilbee: downloading... ${formatMB(done)}`;
+  if (!total) return `lilbee: downloading… ${formatMB(done)}`;
   const frac = Math.min(done / total, 1);
   const pct = `${Math.floor(frac * 100)}%`.padStart(5);
   const line = `lilbee │${barGlyphs(frac, barWidth, color)}│${pct} ${mbCount(done)}/${formatMB(total)}`;
@@ -112,7 +114,7 @@ function lineProgress(log) {
     if (pct < lastPct) lastPct = -LOG_STEP_PCT;
     if (pct >= lastPct + LOG_STEP_PCT) {
       lastPct = pct;
-      log(`lilbee: downloading... ${pct}% (${formatMB(done)})`);
+      log(`lilbee: downloading… ${pct}% (${formatMB(done)})`);
     }
   };
   report.finish = () => {};
@@ -136,9 +138,11 @@ async function assertFreeSpace(dir, size) {
   const free = Number(stats.bavail) * Number(stats.bsize);
   const needed = Math.ceil(size * DISK_SPACE_FACTOR);
   if (free < needed) {
-    throw new Error(
+    throw new LauncherError(
+      "no-space",
       `Not enough disk space for the lilbee binary: it needs about ${formatSize(needed)} free in ${dir}, ` +
-        `and ${formatSize(free)} is available.`
+        `and ${formatSize(free)} is available.`,
+      { neededBytes: needed, freeBytes: free }
     );
   }
 }
@@ -187,7 +191,7 @@ async function transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeo
   };
   const restartClock = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => fail(new Error(DOWNLOAD_STALLED)), idleTimeoutMs);
+    timer = setTimeout(() => fail(new LauncherError("stalled", DOWNLOAD_STALLED)), idleTimeoutMs);
   };
   const onAbort = () => fail(new DownloadCanceledError());
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -196,7 +200,7 @@ async function transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeo
     if (signal?.aborted) throw new DownloadCanceledError();
     restartClock();
     const res = await fetchImpl(release.url, { headers: { "user-agent": USER_AGENT }, signal: controller.signal });
-    if (!res.ok || !res.body) throw new Error(`GET ${release.url} -> HTTP ${res.status}`);
+    if (!res.ok || !res.body) throw new LauncherError("http", `GET ${release.url} -> HTTP ${res.status}`, { status: res.status });
     const total = totalBytes(res, release);
     const hash = createHash("sha256");
     let done = 0;
@@ -228,20 +232,26 @@ async function transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeo
 export async function download({
   release,
   dest,
+  repo = DEFAULT_REPO,
   fetch,
   env = process.env,
   onProgress,
   signal,
   log = () => {},
+  requireDigest = false,
   idleTimeoutMs = DOWNLOAD_IDLE_TIMEOUT_MS,
 }) {
   if (signal?.aborted) throw new DownloadCanceledError();
+  if (!release.digest && requireDigest) throw new LauncherError("no-digest", NO_DIGEST(release.assetName));
   const dir = path.dirname(dest);
   fs.mkdirSync(dir, { recursive: true });
   await assertFreeSpace(dir, release.size);
   const fetchImpl = fetch ?? (await launcherFetch(env, log));
 
-  log(`lilbee: downloading ${release.assetName} (${formatMB(release.size)}) for release ${release.tag}. One-time per release; cached after that.`);
+  log(
+    `lilbee: downloading ${release.assetName} (${formatMB(release.size)}) ` +
+      `from ${repo}@${release.tag}. One-time per release; cached after that.`
+  );
   if (!release.digest) {
     log(`lilbee: release asset ${release.assetName} has no published digest; skipping sha256 verification.`);
   }
@@ -252,7 +262,7 @@ export async function download({
     try {
       const got = await transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeoutMs });
       if (release.digest && got !== release.digest) {
-        throw new Error(`sha256 mismatch for ${release.assetName}: expected ${release.digest}, got ${got}`);
+        throw new LauncherError("digest-mismatch", `sha256 mismatch for ${release.assetName}: expected ${release.digest}, got ${got}`);
       }
       break;
     } catch (err) {
@@ -263,7 +273,7 @@ export async function download({
         return;
       }
       if (attempt >= DOWNLOAD_ATTEMPTS) throw err;
-      log(`lilbee: download failed (${err.message}), retrying once...`);
+      log(`lilbee: download failed (${err.message}), retrying once…`);
     }
   }
 

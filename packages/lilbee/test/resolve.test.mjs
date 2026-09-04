@@ -75,7 +75,7 @@ test("when the latest lookup fails, the pinned release is the fallback", async (
   const r = await resolve(cache, flaky, { pinned: "v0.6.90b423", log: (m) => logs.push(m) });
   assert.equal(r.release, "v0.6.90b423");
   assert.equal(r.source, "download");
-  assert.match(logs.join("\n"), /network down.*tested v0\.6\.90b423/);
+  assert.ok(logs.includes("lilbee: could not look up the latest release; using the tested v0.6.90b423."));
   fs.rmSync(cache, { recursive: true, force: true });
 });
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { DownloadCanceledError, download, isDownloadCanceled, progressLine, progressReporter } from "../lib/download.mjs";
+import { LauncherError } from "../lib/errors.mjs";
 
 const MB = 1048576;
 const PAYLOAD = Buffer.from("lilbee binary bytes ".repeat(64));
@@ -104,7 +105,10 @@ test("a digest mismatch is retried once, then rejected with nothing left on disk
   const dest = path.join(dir, "v9", "bin");
   const logs = [];
   const { fetch, calls } = fetchWith([() => webBody(chunks(PAYLOAD))]);
-  await assert.rejects(download({ release: release({ digest: "0".repeat(64) }), dest, fetch, log: (m) => logs.push(m) }), /sha256 mismatch/);
+  await assert.rejects(
+    download({ release: release({ digest: "0".repeat(64) }), dest, fetch, log: (m) => logs.push(m) }),
+    (err) => err instanceof LauncherError && err.code === "digest-mismatch" && /sha256 mismatch/.test(err.message)
+  );
   assert.equal(calls.length, 2);
   assert.deepEqual(fs.readdirSync(path.join(dir, "v9")), []);
   assert.ok(logs.some((l) => /retrying once/.test(l)));
@@ -118,6 +122,29 @@ test("a release without a digest lands unverified and says so", async () => {
   await download({ release: release({ digest: null }), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch, log: (m) => logs.push(m) });
   assert.ok(fs.existsSync(dest));
   assert.ok(logs.some((l) => /no published digest/.test(l)));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("requireDigest refuses a release without a digest before any request", async () => {
+  const dir = tmpDir();
+  const { fetch, calls } = fetchWith([webBody(chunks(PAYLOAD))]);
+  await assert.rejects(
+    download({ release: release({ digest: null }), dest: path.join(dir, "v9", "bin"), fetch, requireDigest: true }),
+    (err) => err instanceof LauncherError && err.code === "no-digest"
+  );
+  assert.equal(calls.length, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the download banner and the non-TTY progress lines read as they did in 0.6.96", async () => {
+  const dir = tmpDir();
+  const logs = [];
+  await download({ release: release(), dest: path.join(dir, "v9", "bin"), fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch, log: (m) => logs.push(m) });
+  assert.equal(logs[0], "lilbee: downloading lilbee-macos-arm64 (0MB) from tobocop2/lilbee@v9. One-time per release; cached after that.");
+  assert.equal(progressLine({ done: 3 * MB, total: 0, bytesPerSec: 0 }), "lilbee: downloading… 3MB");
+  const lines = [];
+  progressReporter((m) => lines.push(m), { isTTY: false })({ done: 5 * MB, total: 10 * MB });
+  assert.deepEqual(lines, ["lilbee: downloading… 50% (5MB)"]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -332,4 +359,16 @@ test("off a TTY the reporter logs a line per 10% and starts over when a retry re
   assert.match(lines.at(-1), /10% \(1MB\)/);
   report.finish();
   assert.equal(lines.length, 11);
+});
+
+test("stall, HTTP, and disk-space failures carry their LauncherError codes", async () => {
+  const dir = tmpDir();
+  const stalled = download({ release: release(), dest: path.join(dir, "v9", "a"), fetch: fetchWith([() => hangingBody([])]).fetch, idleTimeoutMs: 5 });
+  await assert.rejects(stalled, (err) => err instanceof LauncherError && err.code === "stalled");
+  const http = download({ release: release(), dest: path.join(dir, "v9", "b"), fetch: fetchWith([null], { status: 502 }).fetch });
+  await assert.rejects(http, (err) => err instanceof LauncherError && err.code === "http" && err.status === 502);
+  const space = new LauncherError("no-space", "full", { neededBytes: 10, freeBytes: 1 });
+  assert.equal(space.name, "LauncherError");
+  assert.deepEqual([space.code, space.neededBytes, space.freeBytes], ["no-space", 10, 1]);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

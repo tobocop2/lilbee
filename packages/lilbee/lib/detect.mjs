@@ -12,7 +12,6 @@ import { assetNameFor } from "./assets.mjs";
 
 const KFD_NODES = "/sys/class/kfd/kfd/topology/nodes";
 const PROBE_TIMEOUT_MS = 5000;
-const VARIANT_HINT = "(override with LILBEE_VARIANT)";
 
 const execFileAsync = promisify(execFile);
 
@@ -103,7 +102,7 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {})
     if (arch !== "x64") return host("default");
     const avx2 = await tryExec("sysctl", ["-n", "hw.optional.avx2_0"]);
     if (avx2 !== null && avx2.trim() === "0") {
-      log(`lilbee: this CPU has no AVX2; using the compat build ${VARIANT_HINT}.`);
+      log("lilbee: this CPU has no AVX2 — using the -compat build (override with LILBEE_VARIANT).");
       return host("compat");
     }
     return host("default");
@@ -114,10 +113,10 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {})
   if (smi) {
     const v = parseCudaVersion(smi);
     cuda = v ? cudaVariantFor(v.major, v.minor) : "cu121";
-    if (cuda) log(`lilbee: detected an NVIDIA driver (CUDA ${v ? `${v.major}.${v.minor}` : "unknown"}); using the ${cuda} build ${VARIANT_HINT}.`);
+    if (cuda) log(`lilbee: detected NVIDIA driver (CUDA ${v ? `${v.major}.${v.minor}` : "unknown"}) — using the ${cuda} build (override with LILBEE_VARIANT).`);
   } else if (platform === "linux" && (exists("/dev/nvidia0") || exists("/proc/driver/nvidia/version"))) {
     cuda = "cu121";
-    log(`lilbee: an NVIDIA device is present but nvidia-smi does not run; using the cu121 build ${VARIANT_HINT}.`);
+    log("lilbee: NVIDIA device present but nvidia-smi is not runnable — using the cu121 build (override with LILBEE_VARIANT).");
   }
 
   let rocm = false;
@@ -126,10 +125,10 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {})
     amdGfxTargets = kfdGfxTargets(io);
     if (amdGfxTargets.length) {
       rocm = true;
-      log(`lilbee: detected an AMD GPU (${amdGfxTargets.join(", ")}); using the rocm build when the release supports it ${VARIANT_HINT}.`);
+      log(`lilbee: detected an AMD GPU (${amdGfxTargets.join(", ")}) — using the rocm build (override with LILBEE_VARIANT).`);
     } else {
       rocm = exists("/opt/rocm") || (await tryExec("rocminfo", [])) !== null;
-      if (rocm) log(`lilbee: detected a ROCm userland; using the rocm build ${VARIANT_HINT}.`);
+      if (rocm) log("lilbee: detected a ROCm userland — using the rocm build (override with LILBEE_VARIANT).");
     }
   }
 
@@ -142,7 +141,7 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {})
     } catch {
       noAvx2 = false;
     }
-    if (noAvx2) log(`lilbee: this CPU has no AVX2; using the compat build family ${VARIANT_HINT}.`);
+    if (noAvx2) log("lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).");
   }
 
   if (platform === "linux") {
@@ -160,7 +159,7 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {})
   if (platform === "win32") {
     // Windows ships cu124 and cu125 only
     if (cuda === "cu121") {
-      log(`lilbee: this NVIDIA driver predates CUDA 12.4; using the default Windows build ${VARIANT_HINT}.`);
+      log("lilbee: this NVIDIA driver predates CUDA 12.4 — using the universal Windows build (override with LILBEE_VARIANT).");
       return host("default");
     }
     return host(cuda ?? "default");

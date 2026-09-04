@@ -10,6 +10,7 @@ import { compareReleaseTags, isDevBuild, latestRelease, listReleases, releaseByT
 
 export { assetNameFor, parseAssetName } from "./assets.mjs";
 export { DownloadCanceledError, isDownloadCanceled } from "./download.mjs";
+export { LauncherError } from "./errors.mjs";
 export { cacheDir, cachedBinaryPath, compareReleaseTags, detectHost, installedBinary, isDevBuild, latestRelease, listReleases, releaseByTag };
 
 /**
@@ -17,7 +18,7 @@ export { cacheDir, cachedBinaryPath, compareReleaseTags, detectHost, installedBi
  * the cached binary is used as is; `refresh` re-resolves the latest release and
  * `force` downloads again even when the resolved release is cached.
  */
-export async function ensureBinary({ cacheDir, release, refresh = false, force = false, onProgress, signal, log = () => {}, ...query }) {
+export async function ensureBinary({ cacheDir, release, refresh = false, force = false, onProgress, signal, log = () => {}, requireDigest = false, ...query }) {
   const env = query.env ?? process.env;
   const host = query.host ?? (await detectHost(env));
   const q = { ...query, env, host };
@@ -29,5 +30,5 @@ export async function ensureBinary({ cacheDir, release, refresh = false, force =
     if (installed && !force) return { ...installed, source: "cache" };
     resolved = installed ? await releaseByTag(installed.release, q) : await latestRelease(q);
   }
-  return installRelease(resolved, { cacheDir, force, fetch: q.fetch, env, onProgress, signal, log });
+  return installRelease(resolved, { cacheDir, force, repo: q.repo, fetch: q.fetch, env, onProgress, signal, log, requireDigest });
 }

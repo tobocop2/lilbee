@@ -71,3 +71,12 @@ test("pruneOtherReleases keeps one release dir and removes the rest", () => {
   pruneOtherReleases(path.join(dir, "missing"), "v2");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("installedBinary without a host uses the running platform and takes any build of the newest release", () => {
+  const cuda = process.platform === "linux" ? "lilbee-linux-x86_64-cu125" : process.platform === "win32" ? "lilbee-windows-x86_64-cu125.exe" : null;
+  const plain = { darwin: process.arch === "arm64" ? "lilbee-macos-arm64" : "lilbee-macos-x86_64", linux: "lilbee-linux-x86_64", win32: "lilbee-windows-x86_64.exe" }[process.platform];
+  const dir = cacheWith([`v1/${plain}`, ...(cuda ? [`v2/${cuda}`] : [])]);
+  const found = installedBinary({ cacheDir: dir });
+  assert.equal(found.release, cuda ? "v2" : "v1");
+  fs.rmSync(dir, { recursive: true, force: true });
+});

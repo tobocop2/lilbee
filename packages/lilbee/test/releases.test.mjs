@@ -187,3 +187,15 @@ test("the repo is configurable", async () => {
   await listReleases({ host: LINUX, fetch: gh.fetch, repo: "acme/fork" });
   assert.match(gh.calls[0].url, /\/repos\/acme\/fork\/releases\?per_page=100&page=1$/);
 });
+
+import { LauncherError } from "../lib/errors.mjs";
+
+test("release query failures carry LauncherError codes: rate-limited, http, no-release", async () => {
+  const limited = github({ status: 403 });
+  await assert.rejects(listReleases({ host: LINUX, fetch: limited.fetch }), (err) => err instanceof LauncherError && err.code === "rate-limited" && err.status === 403);
+  const broken = github({ status: 500 });
+  await assert.rejects(listReleases({ host: LINUX, fetch: broken.fetch }), (err) => err instanceof LauncherError && err.code === "http" && err.status === 500);
+  const empty = github({ pages: [[]] });
+  await assert.rejects(latestRelease({ host: LINUX, fetch: empty.fetch }), (err) => err instanceof LauncherError && err.code === "no-release");
+  await assert.rejects(releaseByTag("v404", { host: LINUX, fetch: empty.fetch }), (err) => err instanceof LauncherError && err.code === "no-release" && err.status === 404);
+});

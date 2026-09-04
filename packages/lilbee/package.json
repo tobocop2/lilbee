@@ -15,6 +15,7 @@
     },
     "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "bin": {
     "lilbee": "bin/lilbee.mjs",
     "lilbee-mcp": "bin/lilbee-mcp.mjs"

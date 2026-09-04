@@ -33,7 +33,7 @@ export async function resolveBinary({ env, cacheDir, host, pinned, tag = null, r
     try {
       resolved = await latestRelease(query);
     } catch (err) {
-      log(`lilbee: could not look up the latest release (${err.message}); using the tested ${pinned}.`);
+      log(`lilbee: could not look up the latest release; using the tested ${pinned}.`);
       resolved = await releaseByTag(pinned, query);
     }
   }

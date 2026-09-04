@@ -58,7 +58,7 @@ export interface FetchResponseLike {
 export interface ReleaseQuery {
     /** GitHub "owner/repo"; defaults to tobocop2/lilbee. */
     repo?: string;
-    /** Offer `.dev` builds as well as stable releases. Default false. */
+    /** Offer `.dev` builds as well as stable releases. Default false (what LILBEE_CHANNEL=stable means on the CLI). */
     includeDev?: boolean;
     /** The host to resolve builds for; defaults to detectHost(). */
     host?: Host;
@@ -109,10 +109,11 @@ export interface InstalledBinary {
 }
 
 /**
- * The newest cached binary for this host, or null when none is cached. Within a release,
- * a binary matching `host.variant` wins over any other build of the host's platform.
+ * The newest cached binary for this machine, or null when none is cached. Within a release,
+ * a binary matching `host.variant` wins over any other build of the platform; without `host`
+ * the platform and arch come from `process` and any build of the release qualifies.
  */
-export function installedBinary(options: { cacheDir: string; host: Host }): InstalledBinary | null;
+export function installedBinary(options: { cacheDir: string; host?: Host }): InstalledBinary | null;
 
 export interface DownloadProgress {
     /** Bytes received so far. */
@@ -134,6 +135,8 @@ export interface EnsureOptions extends ReleaseQuery {
     signal?: AbortSignal;
     /** Human-readable download lifecycle lines; silent by default. */
     log?: (message: string) => void;
+    /** Refuse an asset GitHub publishes no sha256 digest for, instead of installing it unverified. Default false. */
+    requireDigest?: boolean;
 }
 
 export interface EnsureResult extends InstalledBinary {
@@ -148,6 +151,27 @@ export interface EnsureResult extends InstalledBinary {
  * is retried once, then rejected.
  */
 export function ensureBinary(options: EnsureOptions): Promise<EnsureResult>;
+
+/** Why a release query or download failed, for callers that word their own messages. */
+export type LauncherErrorCode =
+    | "rate-limited"
+    | "http"
+    | "no-release"
+    | "no-space"
+    | "stalled"
+    | "no-digest"
+    | "digest-mismatch";
+
+/** A failure the launcher can name. `message` is the CLI's wording; `code` lets an embedder word its own. */
+export class LauncherError extends Error {
+    readonly name: "LauncherError";
+    readonly code: LauncherErrorCode;
+    /** The HTTP status for "http" and "rate-limited". */
+    readonly status?: number;
+    /** Bytes for "no-space": what the download needs and what the filesystem has. */
+    readonly neededBytes?: number;
+    readonly freeBytes?: number;
+}
 
 /** Thrown when `signal` aborts an ensureBinary download. `name` is "AbortError". */
 export class DownloadCanceledError extends Error {
