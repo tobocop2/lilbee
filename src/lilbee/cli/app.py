@@ -14,6 +14,7 @@ from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.core.config import cfg, config_load_error
 from lilbee.core.settings import overlay_persisted_settings
+from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
 
 app = typer.Typer(help="lilbee: Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -196,6 +197,8 @@ def _default(
     )
     # basicConfig is a no-op when handlers already exist, so always set level explicitly
     logging.getLogger().setLevel(level)
+
+    cleanup_stale_onefile_caches()
 
     # Swallow lancedb's shutdown-time thread noise: opt-in side effect, not
     # imposed on library consumers of lilbee.

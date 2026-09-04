@@ -117,6 +117,11 @@ CHILD_MODULE_FLAGS=(
     --include-module=lilbee.providers.fleet.vulkan_probe
 )
 
+# One cache directory per build: two builds of one version sharing {VERSION}
+# rewrite each other's files, which fails on Windows while the other build runs.
+ONEFILE_BUILD_KEY=${ASSET_NAME#lilbee-}
+ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
+
 # litellm.proxy is not trimmable, despite nothing in lilbee importing it:
 # litellm/__init__.py pulls in 9 of its modules on a bare import, so
 # --nofollow-import-to=litellm.proxy is an ImportError at startup.
@@ -131,7 +136,7 @@ uv run --no-sync python -m nuitka \
     --no-deployment-flag=self-execution \
     --onefile-as-archive \
     --onefile-cache-mode=cached \
-    --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
+    --onefile-tempdir-spec="{CACHE_DIR}/lilbee/{VERSION}-${ONEFILE_BUILD_KEY}" \
     --product-name=lilbee \
     --product-version="$PRODUCT_VERSION" \
     --output-filename="$ASSET_NAME" \

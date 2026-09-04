@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -1637,6 +1638,13 @@ class TestConfigLoadWarning:
         stderr = self._invoke_default(json_output=False, monkeypatch=monkeypatch)
         assert "Warning: persisted config" in stderr
         assert "stale-ref-xyz" in stderr
+
+    def test_callback_sweeps_stale_onefile_caches(self, monkeypatch):
+        """Every CLI, server and MCP launch passes the callback."""
+        sweep = mock.Mock()
+        monkeypatch.setattr(sys.modules["lilbee.cli.app"], "cleanup_stale_onefile_caches", sweep)
+        self._invoke_default(json_output=False, monkeypatch=monkeypatch)
+        sweep.assert_called_once_with()
 
     def test_warning_suppressed_in_json_mode(self, monkeypatch):
         stderr = self._invoke_default(json_output=True, monkeypatch=monkeypatch)
