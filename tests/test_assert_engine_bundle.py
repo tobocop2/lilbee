@@ -25,6 +25,7 @@ acb = _load()
 
 _LINUX_RUNTIME = ("libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12")
 _WINDOWS_RUNTIME = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+_WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 # What a rocm wheel must carry beside libggml-hip.so.
 _ROCM_RUNTIME = (
     "libamdhip64.so.7",
@@ -71,7 +72,7 @@ def test_windows_cuda_wheel_without_runtime_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.cu125-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-cuda.dll"),
+        ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_CRT),
     )
     assert len(acb.check(wheel)) == 3
 
@@ -80,7 +81,7 @@ def test_windows_cuda_wheel_with_runtime_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.cu125-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME),
+        ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT),
     )
     assert acb.check(wheel) == []
 
@@ -91,7 +92,7 @@ def test_cuda_detected_from_payload_not_filename(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-cuda.dll"),
+        ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_CRT),
     )
     assert len(acb.check(wheel)) == 3
 
@@ -110,11 +111,23 @@ def test_non_cuda_wheel_carrying_cuda_runtime_is_rejected(tmp_path: Path) -> Non
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-vulkan.dll", "cudart64_12.dll"),
+        ("llama-server.exe", "ggml-vulkan.dll", "cudart64_12.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(wheel)
     assert len(problems) == 1
     assert "non-CUDA wheel ships CUDA runtime" in problems[0]
+
+
+def test_windows_wheel_without_the_msvc_runtime_is_rejected(tmp_path: Path) -> None:
+    wheel = _wheel(
+        tmp_path,
+        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        ("llama-server.exe", "ggml-vulkan.dll", "msvcp140.dll"),
+    )
+    problems = acb.check(wheel)
+    assert [p for p in problems if "vcruntime140.dll" in p]
+    assert [p for p in problems if "vcruntime140_1.dll" in p]
+    assert not [p for p in problems if "msvcp140.dll" in p]
 
 
 def test_empty_bin_dir_is_rejected(tmp_path: Path) -> None:
@@ -194,7 +207,7 @@ def test_windows_vulkan_wheel_without_its_backend_is_rejected(tmp_path: Path) ->
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-cpu.dll"),
+        ("llama-server.exe", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(wheel)
     assert len(problems) == 1
@@ -320,7 +333,7 @@ def test_cpu_windows_wheel_needs_variant_modules(tmp_path: Path) -> None:
     single = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.cpu-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-cpu.dll"),
+        ("llama-server.exe", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(single)
     assert len(problems) == 1
@@ -329,7 +342,7 @@ def test_cpu_windows_wheel_needs_variant_modules(tmp_path: Path) -> None:
     dispatched = _wheel(
         tmp_path,
         "ok-1.0-1.cpu-py3-none-win_amd64.whl",
-        ("llama-server.exe", *_WINDOWS_VARIANTS),
+        ("llama-server.exe", *_WINDOWS_VARIANTS, *_WINDOWS_CRT),
     )
     assert acb.check(dispatched) == []
 
@@ -363,7 +376,7 @@ def test_vulkan_windows_wheel_is_not_asked_for_variants_or_loader(tmp_path: Path
     wheel = _wheel(
         tmp_path,
         "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-vulkan.dll", "ggml-cpu.dll"),
+        ("llama-server.exe", "ggml-vulkan.dll", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     assert acb.check(wheel) == []
 

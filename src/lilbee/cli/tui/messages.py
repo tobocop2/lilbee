@@ -69,6 +69,12 @@ SYNC_SKIPPED_NO_VISION = (
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
+SYNC_HELD_OUT = (
+    '{count} file(s) stay held out of the index. Run "Retry skipped documents" to index them again.'
+)
+STATUS_HELD_OUT_TITLE = "Held out of the index"
+STATUS_HELD_OUT_EMPTY = "No files are held out."
+STATUS_HELD_OUT_MORE = "{count} more held out"
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
 CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
@@ -174,6 +180,8 @@ ENGINE_FAILED_HINT = "Open the Catalog to install a model, or pick a different o
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
 # Shown once when a prompt first waits on a cold engine and keep_engine_warm is off.
 ENGINE_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
+# Status painted into the pending answer when retrieval ran on a rewritten follow-up.
+SEARCHING_FOR = "Searching for: {query}"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

@@ -42,6 +42,9 @@ REQUIRED = {
         ("libcublasLt.so.<major>", r"libcublasLt\.so\.\d+"),
     ),
 }
+# The MSVC runtime every Windows build links. A fresh Windows image ships an older
+# msvcp140 in System32, and the engine faults inside it before listing a device.
+WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 # What a ROCm wheel carries beside its backend. Matched on the library, not its
 # SONAME version, which moves every release. The kernels are the easy one to miss:
 # rocBLAS loads them as data, so without them the engine dies on the first matmul.
@@ -202,6 +205,14 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
             f"(libggml-hip links it, and only the kernel driver comes from the host)"
             for display, pattern in ROCM_RUNTIME
             if not any(re.fullmatch(pattern, entry) for entry in entries)
+        )
+
+    if platform == "win_amd64":
+        problems.extend(
+            f"{name}: windows wheel is missing {crt} from {BIN_DIR} "
+            "(the engine links the MSVC runtime; a fresh Windows image ships an older copy)"
+            for crt in WINDOWS_CRT
+            if crt not in entries
         )
 
     # A declared flavor is the better answer, since the whole point of the check

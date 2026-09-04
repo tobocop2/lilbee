@@ -125,7 +125,7 @@ flowchart TD
     H --> HC{"hash matches<br/>the stored row?"}
     HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
     HC -->|no| SK{"hash matches a<br/>failed-file skip marker?"}
-    SK -->|yes| SKIP["skip — failed here last sync"]
+    SK -->|yes| SKIP["held out: failed here last sync;<br/>counted apart from unchanged,<br/>reported with its reason"]
     SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
 ```
 
@@ -769,10 +769,10 @@ touching the running fleet.
   get raw, un-normalized vectors (the server would L2-normalize pooled output by
   default, which would also collapse a rank score to +-1). Context and GPU-layer
   counts come from the shared `engine_params` helpers, never a hardcoded budget.
-  `main_gpu` is the one
-  setting deliberately not forwarded: it selects a single card by global index, which
-  is meaningless once a server is pinned to a subset, and placement owns card choice
-  in fleet mode.
+  `main_gpu` is forwarded
+  as `--main-gpu` only to a server placed on more than one card, as an index into
+  that server's own device list; it is part of the engine pin, so a process with a
+  different index binds its own engine.
 - **Lifecycle** (`swap_manager.py` / `provider.py`): each swap group runs behind its own
   llama-swap process with its own config file, so restarting one group (a placement or
   per-role model change) never touches another group's loaded servers. A reload
@@ -926,7 +926,7 @@ This is the core of lilbee's retrieval quality. Questions are routed by shape be
 
 ```mermaid
 flowchart TD
-    Q[User Query] --> HR{Chat history?}
+    Q[User Query] --> HR{Rewrite on and question refers to earlier turns?}
     HR -->|Yes| COND[Condense follow-up into standalone query]
     HR -->|No| ROUTE
     COND --> ROUTE{Intent}
@@ -973,7 +973,7 @@ flowchart TD
 - Every answering surface consults the same router (`Searcher.route_direct_answer`): CLI and TUI via ask, and each HTTP handler directly. Known-item resolution also runs on bare retrieval (`Searcher.search`, so HTTP `/api/search` and MCP search), where a document-naming query returns that document's head in document order instead of similarity neighbors of its wording.
 
 #### History Condensation
-**On by default** (`LILBEE_HISTORY_REWRITE`). A follow-up question is condensed into a standalone retrieval query using the recent chat history (one small LLM call, skipped when there is no history). Retrieval sees only the query text: without this, "what about his brother?" is embedded and BM25-matched with its pronouns. The user's original wording still reaches the answering prompt.
+**Off by default** (`LILBEE_HISTORY_REWRITE`). When on, a follow-up that refers to earlier turns is condensed into a standalone retrieval query using the recent chat history (one small LLM call). A question that stands alone is searched as typed: the gate is a deterministic language-pack pattern (a follow-up opener such as "and" or "what about", a pronoun or reference word, or fewer than three tokens). Retrieval sees only the query text: without the rewrite, "what about his brother?" is embedded and BM25-matched with its pronouns. The rewrite is model output and varies between calls, which is why it is opt-in. The user's original wording still reaches the answering prompt. The rewrite travels with the answer. `/api/ask` and `/api/chat` return it as `retrieval_query`, and both SSE streams emit a `retrieval_query` event before the first token. `Searcher.ask_stream` yields a `RetrievalNotice` before the first token, which the CLI prints as a "Searching for" line on stderr and the TUI shows in the answer bubble's status row.
 
 #### Hybrid Search (Weighted Reciprocal-Rank Fusion)
 **Always on.** Retrieves a vector arm and a BM25 chunk arm (LanceDB FTS) independently, each fetched exactly `top_k` deep, then fuses by weighted reciprocal rank into one [0, 1] score. An optional third BM25 arm over document titles joins when `LILBEE_TITLE_SEARCH` is on:

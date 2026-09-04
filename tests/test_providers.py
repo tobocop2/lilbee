@@ -2566,6 +2566,28 @@ class TestFilterOptions:
         assert "top_p" not in result
 
 
+class TestAuxOptions:
+    def test_caps_tokens_and_turns_thinking_off(self) -> None:
+        from lilbee.providers.base import aux_options
+
+        assert aux_options(64) == {"num_predict": 64, "think": False}
+
+    def test_extra_options_are_carried_through(self) -> None:
+        from lilbee.providers.base import aux_options
+
+        opts = aux_options(64, temperature=0, response_format={"type": "json_object"})
+        assert opts["temperature"] == 0
+        assert opts["response_format"] == {"type": "json_object"}
+        assert opts["think"] is False
+
+    def test_result_survives_the_provider_allowlist(self) -> None:
+        """Options the allowlist drops never reach the provider, so the flag
+        must be a declared LLMOptions field, not a silently discarded key."""
+        from lilbee.providers.base import aux_options, filter_options
+
+        assert filter_options(aux_options(64))["think"] is False
+
+
 class TestTrainCtxFromMeta:
     """``train_ctx_from_meta`` is the single guard against ``context_length=0``.
 

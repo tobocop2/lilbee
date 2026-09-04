@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -381,6 +382,55 @@ class TestAsk:
         mock_svc.searcher.ask_stream.return_value = _mock_stream("Hello", " world")
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_prints_the_rewrite_on_stderr_and_the_answer_on_stdout(self, mock_sync, mock_svc):
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                RetrievalNotice(query="when was the journal written"),
+                StreamToken(content="In 1910.", is_reasoning=False),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "and when was it written?"])
+        assert result.exit_code == 0
+        assert "Searching for: when was the journal written" in result.stderr
+        assert "Searching for" not in result.stdout
+        assert "In 1910." in result.stdout
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_prints_a_rewrite_with_markup_characters_verbatim(self, mock_sync, mock_svc):
+        """The rewrite is model text; Rich must not read its brackets as markup."""
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        mock_svc.searcher.ask_stream.return_value = iter(
+            [
+                RetrievalNotice(query="[bold]journal[/bold] entries"),
+                StreamToken(content="In 1910.", is_reasoning=False),
+            ]
+        )
+        result = runner.invoke(app, ["ask", "and the entries?"])
+        assert result.exit_code == 0
+        assert "Searching for: [bold]journal[/bold] entries" in result.stderr
+
+    def test_the_rewrite_notice_is_not_a_first_token(self):
+        """The ready line keys on the first model token; the notice arrives before
+        the model has produced anything."""
+        from lilbee.cli.commands.search_chat import _print_answer_stream
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+        firsts: list[int] = []
+        stream = iter(
+            [
+                RetrievalNotice(query="rewrite"),
+                StreamToken(content="answer", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.cli.commands.search_chat.announce_retrieval_query") as announce:
+            _print_answer_stream(stream, on_first_token=lambda: firsts.append(1))
+        announce.assert_called_once_with("rewrite")
+        assert len(firsts) == 1
 
     def test_ask_rejects_empty_question(self, mock_svc):
         result = runner.invoke(app, ["ask", "   "])
@@ -1638,6 +1688,13 @@ class TestConfigLoadWarning:
         assert "Warning: persisted config" in stderr
         assert "stale-ref-xyz" in stderr
 
+    def test_callback_sweeps_stale_onefile_caches(self, monkeypatch):
+        """Every CLI, server and MCP launch passes the callback."""
+        sweep = mock.Mock()
+        monkeypatch.setattr(sys.modules["lilbee.cli.app"], "cleanup_stale_onefile_caches", sweep)
+        self._invoke_default(json_output=False, monkeypatch=monkeypatch)
+        sweep.assert_called_once_with()
+
     def test_warning_suppressed_in_json_mode(self, monkeypatch):
         stderr = self._invoke_default(json_output=True, monkeypatch=monkeypatch)
         assert "Warning: persisted config" not in stderr
@@ -2309,6 +2366,19 @@ class TestAskJson:
         # bb-ky3: cited_sources is present and empty when the answer cited nothing,
         # so a JSON consumer can tell a grounded answer from an off-corpus one.
         assert data["cited_sources"] == []
+        assert data["retrieval_query"] is None
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_carries_the_rewrite(self, mock_sync, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="In 1910.", sources=[], retrieval_query="when was the journal written"
+        )
+        result = runner.invoke(app, ["--json", "ask", "and when was it written?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["retrieval_query"] == "when was the journal written"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
@@ -5712,6 +5782,31 @@ class TestDownloadSelfCheckModel:
             cmds._download_self_check_model("repo/x", "tiny.gguf")
 
         assert opened.call_count == 3
+
+    def test_verifies_against_the_certifi_bundle(self, tmp_path: Path) -> None:
+        """A fresh Windows root store lacks the CDN's root; the bundled one always has it."""
+        import certifi
+
+        from lilbee.cli.commands import setup as cmds
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("ssl.create_default_context") as ctx,
+            mock.patch("urllib.request.urlopen", return_value=_Resp()) as opened,
+        ):
+            cmds._download_self_check_model("repo/x", "tiny.gguf")
+        ctx.assert_called_once_with(cafile=certifi.where())
+        assert opened.call_args.kwargs["context"] is ctx.return_value
 
     def test_retry_then_succeed(self, tmp_path: Path) -> None:
         import urllib.error

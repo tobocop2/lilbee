@@ -43,6 +43,10 @@ class QueryLanguage:
     # source names by the caller. Shapes, not vocabulary: a wrong candidate
     # costs one lookup, never a wrong route.
     known_item_patterns: tuple[re.Pattern[str], ...]
+    # A question that leans on earlier turns: a follow-up opener at the start
+    # or a pronoun/reference word anywhere. A false positive costs one rewrite
+    # call; a miss searches the question as typed.
+    follow_up_pattern: re.Pattern[str]
     # Spelling variants of a noun phrase (singular/plural) for entity-type
     # matching; morphology is the most language-specific piece of all.
     noun_variants: Callable[[str], set[str]]
@@ -151,6 +155,13 @@ ENGLISH = QueryLanguage(
             r"^\s*(?:give\s+me\s+)?(?:a\s+|an\s+)?(?:summary|overview)\s+of\s+(.+?)[?.!\s]*$",
             re.IGNORECASE,
         ),
+    ),
+    follow_up_pattern=re.compile(
+        r"^\s*(?:and|but|so|or|also|then|what about|how about)\b"
+        r"|\b(?:it|its|they|them|their|theirs|he|him|his|she|her|hers|this|that"
+        r"|these|those|one|ones|same|there|again|above|earlier|previous|former"
+        r"|latter|else|another|other)\b",
+        re.IGNORECASE,
     ),
     noun_variants=_english_noun_variants,
 )

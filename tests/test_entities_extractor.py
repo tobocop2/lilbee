@@ -447,6 +447,14 @@ class TestExtractEntities:
         assert stats.llm_batches == 1
         assert stats.llm_batches_failed == 0
 
+    def test_extraction_turns_thinking_off(self):
+        """The call wants one JSON object on a fixed cap. A thinking model
+        spends the cap inside <think> and every batch parses to nothing."""
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(json.dumps({"0": []}))
+        extract_entities([_chunk("no ships here")], EntitySchema(types=[VESSEL]), provider=provider)
+        assert provider.chat.call_args.kwargs["options"]["think"] is False
+
     def test_poisoned_chunk_is_isolated_by_single_retry(self):
         """One chunk that deterministically fails the batch call must not fail
         the batch: the single-chunk retry keeps the other chunks' entities and

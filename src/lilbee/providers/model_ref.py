@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
+from lilbee.catalog.types import ModelSource
 from lilbee.providers.base import filter_options, normalize_generation_options
 from lilbee.providers.local_servers import (
     LOCAL_SERVER_KEYS,
@@ -35,6 +36,7 @@ PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS
 
 # Provider value for refs served from the local registry (native GGUF).
 LOCAL_PROVIDER = "local"
+OLLAMA_NO_THINKING = "none"
 
 
 def is_native_gguf_ref(raw: str) -> bool:
@@ -172,9 +174,11 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     """
     if not ref.is_api:
         filtered = filter_options(options)
-        # litellm has no chat_template_kwargs passthrough; thinking control
-        # only exists on the native llama-server path.
-        filtered.pop("think", None)
+        think = filtered.pop("think", None)
+        if think is False and ref.provider == ModelSource.OLLAMA:
+            # litellm maps reasoning_effort onto Ollama's think field; any value
+            # outside low/medium/high turns thinking off.
+            filtered["reasoning_effort"] = OLLAMA_NO_THINKING
         return filtered
     api_options = normalize_generation_options(options)
     api_options.pop("top_k", None)

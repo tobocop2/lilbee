@@ -281,6 +281,7 @@ class TestStatus:
         from lilbee.app.status import StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -301,6 +302,7 @@ class TestStatus:
         from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
 
         mock_status = StatusResult(
+            document_count=0,
             config=StatusConfig(
                 documents_dir="docs",
                 data_dir="data",
@@ -316,6 +318,32 @@ class TestStatus:
         assert result.entities is not None
         assert result.entities.types == ["part_number"]
         assert result.entities.rows == 3
+
+    async def test_status_carries_the_skipped_sources(self):
+        """The held-out list must survive the StatusResponse mapping; a missing
+        field there drops it from the HTTP surface without any error."""
+        from lilbee.app.status import StatusConfig, StatusResult
+        from lilbee.data.types import SkippedSource
+
+        mock_status = StatusResult(
+            document_count=0,
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+            skipped=[SkippedSource(filename="scan.pdf", reason="OCR timed out after 300s")],
+            skipped_total=7,
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert [(s.filename, s.reason) for s in result.skipped] == [
+            ("scan.pdf", "OCR timed out after 300s")
+        ]
+        assert result.skipped_total == 7
 
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
@@ -407,6 +435,24 @@ class TestAsk:
         result = await handlers.ask("what?")
         assert result.answer == "No docs found."
         assert result.sources == []
+
+    async def test_rewritten_retrieval_query_reaches_the_response(self, mock_svc):
+        """A follow-up rewritten for retrieval is visible, so a client can show
+        the query the answer was actually grounded in."""
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="42 [1]", sources=[], retrieval_query="what did the lighthouse keeper record"
+        )
+        result = await handlers.ask("and what did he record?")
+        assert result.retrieval_query == "what did the lighthouse keeper record"
+
+    async def test_unrewritten_question_carries_no_retrieval_query(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="42", sources=[])
+        result = await handlers.ask("what?")
+        assert result.retrieval_query is None
 
     async def test_empty_question_raises(self):
         with pytest.raises(ValueError, match="question must not be empty"):
@@ -528,6 +574,28 @@ class TestAskStream:
         assert event_types[-1] == "done"
         token_event = next(e for e in non_empty if e.startswith("event: token"))
         assert json.loads(token_event.split("data: ")[1].strip())["token"] == SEARCH_NEEDS_EMBEDDER
+
+    async def test_rewritten_query_is_announced_before_the_answer(self, mock_svc):
+        """The rewrite reaches the client ahead of any token, so a UI can show
+        what was searched while the answer streams."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = RagContext(
+            [cited], [], retrieval_query="what did the lighthouse keeper record"
+        )
+        mock_svc.provider.chat.return_value = iter(["answer [1]"])
+        events = [e async for e in handlers.ask_stream("and what did he record?")]
+        names = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert names.index("retrieval_query") < names.index("token")
+        frame = next(e for e in events if e and e.startswith("event: retrieval_query"))
+        payload = json.loads(frame.split("data: ")[1].strip())
+        assert payload == {"query": "what did the lighthouse keeper record"}
+
+    async def test_no_rewrite_emits_no_retrieval_query_event(self, mock_svc):
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited], [])
+        mock_svc.provider.chat.return_value = iter(["answer [1]"])
+        events = [e async for e in handlers.ask_stream("question")]
+        assert not any(e.startswith("event: retrieval_query") for e in events if e)
 
     async def test_sources_event_falls_back_to_full_set_when_uncited(self, mock_svc):
         """When the answer carries no inline citations, SOURCES emits the full
@@ -854,6 +922,57 @@ class TestChat:
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("history") == history
         assert len(captured) == 1
 
+    async def test_rewritten_retrieval_query_reaches_the_response(self, mock_svc, monkeypatch):
+        """A grounded chat turn reports the rewrite retrieval ran on."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        rag = _rag_return()
+        mock_svc.searcher.build_rag_context.return_value = rag._replace(
+            retrieval_query="what did the lighthouse keeper record"
+        )
+        result = await handlers.chat("and what did he record?", [])
+        assert result.retrieval_query == "what did the lighthouse keeper record"
+
+    async def test_ungrounded_turn_carries_no_retrieval_query(self, mock_svc, monkeypatch):
+        """A pure-LLM turn runs no retrieval, so there is no query to report."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        result = await handlers.chat("q", [], top_k=0)
+        assert result.retrieval_query is None
+
     async def test_forwards_chunk_type(self, mock_svc, monkeypatch):
         from lilbee.server.chat_dispatch.canonical import (
             CanonicalResponse,
@@ -1072,6 +1191,23 @@ class TestChatStream:
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["cited.md"]
+
+    async def test_rewritten_query_is_announced_before_the_answer(self, mock_svc, monkeypatch):
+        """The chat stream announces the rewrite through the same shared helper
+        the ask stream uses, so the two cannot drift."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = RagContext(
+            [cited], [], retrieval_query="what did the lighthouse keeper record"
+        )
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["answer [1]"])
+        )
+        events = [e async for e in handlers.chat_stream("and what did he record?", [])]
+        names = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert names.index("retrieval_query") < names.index("token")
+        frame = next(e for e in events if e and e.startswith("event: retrieval_query"))
+        payload = json.loads(frame.split("data: ")[1].strip())
+        assert payload == {"query": "what did the lighthouse keeper record"}
 
     async def test_sources_event_falls_back_to_full_set_when_uncited(self, mock_svc, monkeypatch):
         """When the chat answer carries no inline citations, SOURCES emits the full
@@ -1480,6 +1616,27 @@ class TestAddFiles:
             async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
             assert any("done" in e for e in events)
+
+    async def test_done_frame_carries_the_held_out_files(self, isolated_env):
+        """SyncSummary mirrors SyncResult; a field missing there drops the held-out
+        list from the add response with no error to notice."""
+        from lilbee.data.types import SkippedSource
+
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content", encoding="utf-8")
+
+        async def fake_sync(**kwargs):
+            return SyncResult(
+                held_out=[SkippedSource(filename="scan.pdf", reason="OCR timed out after 300s")]
+            )
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            events = [e async for e in handlers.add_files_stream([str(test_file)])]
+
+        done = json.loads([e for e in events if e.startswith("event: done")][-1].split("data: ")[1])
+        assert done["sync"]["held_out"] == [
+            {"filename": "scan.pdf", "reason": "OCR timed out after 300s"}
+        ]
 
     async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
         """Sync failure emits one error frame and closes the stream without a done frame."""

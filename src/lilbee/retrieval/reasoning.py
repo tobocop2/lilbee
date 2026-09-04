@@ -78,6 +78,13 @@ class CapNotice:
 
 
 @dataclass
+class RetrievalNotice:
+    """Emitted once before the first token when retrieval ran on a rewrite of the question."""
+
+    query: str
+
+
+@dataclass
 class TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 

@@ -14,7 +14,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet.binary import (
     EngineTool,
-    _engine_build_id,
+    engine_build_id,
     engine_pin,
     llama_server_runtime_env,
     resolve_engine_tool,
@@ -184,7 +184,7 @@ class TestEnginePin:
         original = cfg.llama_server_path
         cfg.llama_server_path = str(exe)
         try:
-            assert _engine_build_id().startswith(f"custom:{exe}@")  # path + build fingerprint
+            assert engine_build_id().startswith(f"custom:{exe}@")  # path + build fingerprint
         finally:
             cfg.llama_server_path = original
 
@@ -204,11 +204,11 @@ class TestEnginePin:
         original = cfg.llama_server_path
         cfg.llama_server_path = str(exe)
         try:
-            pin_a = _engine_build_id()
+            pin_a = engine_build_id()
             time.sleep(0.01)
             exe.write_text("#!/bin/sh\n# build B is larger than A\n")
             os.utime(exe, ns=(time.time_ns(), time.time_ns()))  # a real replace bumps mtime
-            assert _engine_build_id() != pin_a
+            assert engine_build_id() != pin_a
         finally:
             cfg.llama_server_path = original
 
@@ -244,6 +244,43 @@ class TestEnginePin:
             for key, value in originals.items():
                 setattr(cfg, key, value)
 
+    def test_chunk_size_is_part_of_the_load_signature(self) -> None:
+        # The embed window is sized from chunk_size, so a peer under another
+        # budget must not adopt this engine's token cap.
+        original = cfg.chunk_size
+        try:
+            cfg.chunk_size = 512
+            base = binary_mod._load_config_signature()
+            cfg.chunk_size = 126
+            assert binary_mod._load_config_signature() != base
+        finally:
+            cfg.chunk_size = original
+
+    def test_load_signature_keys_are_pinned(self) -> None:
+        # Every key here bakes into the launch argv or the embed window; a key
+        # that only changes request-time behavior must not split peers.
+        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS, PLACEMENT_PIN_KEYS
+
+        signed = (LOAD_AFFECTING_KEYS - binary_mod._CTX_SIZING_KEYS) | PLACEMENT_PIN_KEYS
+        assert signed == frozenset(
+            {
+                "chat_model",
+                "chunk_size",
+                "cpu_moe",
+                "embedding_model",
+                "flash_attention",
+                "gpu_devices",
+                "kv_cache_type",
+                "main_gpu",
+                "n_cpu_moe",
+                "n_gpu_layers",
+                "placement",
+                "reranker_model",
+                "reranker_type",
+                "vision_model",
+            }
+        )
+
     def test_gpu_devices_is_part_of_the_load_signature(self) -> None:
         original = cfg.gpu_devices
         try:
@@ -254,13 +291,25 @@ class TestEnginePin:
         finally:
             cfg.gpu_devices = original
 
+    def test_main_gpu_is_part_of_the_load_signature(self) -> None:
+        # --main-gpu picks the card that holds the model on a multi-device
+        # launch, so a peer with another index must not adopt this engine.
+        original = cfg.main_gpu
+        try:
+            cfg.main_gpu = None
+            base = binary_mod._load_config_signature()
+            cfg.main_gpu = 1
+            assert binary_mod._load_config_signature() != base
+        finally:
+            cfg.main_gpu = original
+
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = _fake_engine(tmp_path, make_files=True)
         fake.get_engine_pin = lambda: "llama-cpp-9.9.9+swap-v999+gguf-v9.9.9"
         monkeypatch.setitem(sys.modules, "lilbee_engine", fake)
-        assert _engine_build_id() == "llama-cpp-9.9.9+swap-v999+gguf-v9.9.9"
+        assert engine_build_id() == "llama-cpp-9.9.9+swap-v999+gguf-v9.9.9"
 
     def test_path_fallback_identity_when_wheel_absent(
         self, monkeypatch: pytest.MonkeyPatch
@@ -268,12 +317,12 @@ class TestEnginePin:
         monkeypatch.setitem(sys.modules, "lilbee_engine", None)
         monkeypatch.setattr(_WHICH, lambda name: f"/opt/homebrew/bin/{name}")
         # path + build fingerprint; the fake path is unstatable so it degrades safely.
-        assert _engine_build_id().startswith("path:/opt/homebrew/bin/llama-server@")
+        assert engine_build_id().startswith("path:/opt/homebrew/bin/llama-server@")
 
     def test_unpinned_when_nothing_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "lilbee_engine", None)
         monkeypatch.setattr(_WHICH, lambda name: None)
-        assert _engine_build_id() == "unpinned"
+        assert engine_build_id() == "unpinned"
 
     def test_wheel_without_pin_accessor_reports_its_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -281,12 +330,12 @@ class TestEnginePin:
         fake = _fake_engine(tmp_path, make_files=True)  # no get_engine_pin attribute
         monkeypatch.setitem(sys.modules, "lilbee_engine", fake)
         monkeypatch.setattr("lilbee.providers.fleet.binary._pkg_version", lambda name: "0.6.91")
-        assert _engine_build_id() == "wheel:0.6.91"
+        assert engine_build_id() == "wheel:0.6.91"
 
     def test_pin_folds_in_load_affecting_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Same build, different expert-offload config: the pins must differ so two
         # processes with conflicting load flags never share one engine.
-        monkeypatch.setattr(binary_mod, "_engine_build_id", lambda: "build-x")
+        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
         monkeypatch.setattr(cfg, "cpu_moe", False)
         pin_off = engine_pin()
         monkeypatch.setattr(cfg, "cpu_moe", True)
@@ -297,7 +346,7 @@ class TestEnginePin:
     def test_pin_is_stable_for_identical_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The load signature is deterministic: identical config yields the same pin
         # (a jittering pin would make same-setup peers overflow instead of share).
-        monkeypatch.setattr(binary_mod, "_engine_build_id", lambda: "build-x")
+        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
         assert engine_pin() == engine_pin()
 
     def test_checked_in_pins_match_engine_versions_env(self) -> None:
@@ -343,7 +392,7 @@ class TestEngineResolutionSeal:
         monkeypatch.setitem(sys.modules, "lilbee_engine", None)
         _plant_host_binary(tmp_path, EngineTool.LLAMA_SERVER)
         monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
-        assert _engine_build_id() == "unpinned"
+        assert engine_build_id() == "unpinned"
 
     @pytest.mark.real_engine_resolution
     def test_marker_restores_host_resolution(
@@ -378,7 +427,7 @@ def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> No
         raise PackageNotFoundError("lilbee-engine")
 
     monkeypatch.setattr(binary_mod, "_pkg_version", _no_metadata)
-    assert binary_mod._engine_build_id() == "wheel:unknown"
+    assert binary_mod.engine_build_id() == "wheel:unknown"
     assert binary_mod.engine_pin()  # total: a pin is still produced
 
 

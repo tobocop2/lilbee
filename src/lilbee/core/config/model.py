@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from lilbee.core.system import scaled_chat_ctx_target_default
 
 from .defaults import (
+    CONFIG_FILE_NAME,
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
@@ -158,6 +159,8 @@ class Config(BaseSettings):
     )
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # A file over this many chunks is skipped before embedding; 0 lifts the ceiling.
+    max_chunks_per_file: int = ConfigField(default=3_000, ge=0, writable=True)
     # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
     # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
@@ -433,7 +436,7 @@ class Config(BaseSettings):
     # the chat history (one LLM call; skipped when there is no history).
     # Without it, "what about his brother?" is embedded and BM25-matched
     # with its pronouns.
-    history_rewrite: bool = ConfigField(default=True, writable=True)
+    history_rewrite: bool = ConfigField(default=False, writable=True)
 
     # Route questions by shape before top-k retrieval: a question naming a
     # document resolves to that document's chunks; a count-shaped question
@@ -1395,7 +1398,7 @@ class Config(BaseSettings):
             toml_dir = local if local else default_data_dir()
         # Same call as the root itself, so this looks where the root resolves to;
         # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / "config.toml"
+        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
@@ -1419,6 +1422,9 @@ class Config(BaseSettings):
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Merge model defaults, user config, and per-call overrides, dropping None."""
         result = _model_defaults_dict(self._model_defaults)
+        # One name for the output cap inside lilbee; the provider translators rename it.
+        if "max_tokens" in result:
+            result["num_predict"] = result.pop("max_tokens")
         user_fields: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -1426,7 +1432,7 @@ class Config(BaseSettings):
             "repeat_penalty": self.repeat_penalty,
             "num_ctx": self.num_ctx,
             "seed": self.seed,
-            "max_tokens": self.max_tokens,
+            "num_predict": self.max_tokens,
         }
         for k, v in user_fields.items():
             if v is not None:

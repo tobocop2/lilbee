@@ -12,6 +12,7 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
+from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.data.store.types import RemoveResult
 
 
@@ -21,6 +22,8 @@ class RegisterResult:
 
     registered: list[str] = field(default_factory=list)  # labels newly registered
     skipped: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+    """Files whose format lilbee does not index, as ``name: reason``."""
     tracked: list[str] = field(default_factory=list)
     """Named sources the knowledge base already tracks, so nothing was registered.
 
@@ -118,8 +121,13 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         # cannot lose each other's entry.
         roots = dict(persisted or {})
         by_target = {target: label for label, target in roots.items()}
+        refused = excluded_extension_reasons()
         for p in paths:
             src = p.resolve()
+            reason = refused.get(src.suffix.lower()) if src.is_file() else None
+            if reason is not None:
+                result.refused.append(f"{p.name}: {reason}")
+                continue
             if src == docs_resolved or docs_resolved in src.parents:
                 result.tracked.append(p.name)  # already owned by the knowledge base
                 continue
