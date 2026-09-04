@@ -49,7 +49,6 @@ _SUBTYPE_PREFIXES = ("x-", "vnd.", "prs.")
 class ExclusionReason(StrEnum):
     """Why discovery refuses a file whose extension xberg could otherwise extract."""
 
-    ARCHIVE = "archive, not a document"
     VECTOR_GRAPHIC = "vector graphic, not a document"
 
 
@@ -83,20 +82,29 @@ def _is_archive_mime(mime: str) -> bool:
     return subtype in _ARCHIVE_SUBTYPES
 
 
-@cache
 def excluded_extension_reasons() -> dict[str, ExclusionReason]:
-    """Extension -> why discovery refuses it, for xberg formats lilbee will not ingest.
+    """Extension -> why discovery refuses it, for xberg formats lilbee will not ingest."""
+    return dict(_DENIED_EXTENSIONS)
 
-    Archives are found by the MIME type xberg reports; ``_DENIED_EXTENSIONS`` adds
-    the refusals a MIME type cannot express.
+
+@cache
+def archive_content_types() -> frozenset[str]:
+    """content_types of the containers whose members ingest as their own sources.
+
+    Found by the MIME type xberg reports, so ``application/epub+zip`` stays a book.
     """
     from xberg import list_supported_formats
 
-    return {
-        _normalized_ext(fmt.extension): ExclusionReason.ARCHIVE
+    return frozenset(
+        _content_type_for(_normalized_ext(fmt.extension), fmt.mime_type)
         for fmt in list_supported_formats()
         if _is_archive_mime(fmt.mime_type)
-    } | _DENIED_EXTENSIONS
+    )
+
+
+def member_content_type(path: str, mime: str) -> str:
+    """content_type of an archive member: by MIME type, then extension, then MIME subtype."""
+    return _content_type_for(Path(path).suffix.lower(), mime) or mime.partition("/")[2]
 
 
 @cache
@@ -104,7 +112,7 @@ def supported_extension_map() -> dict[str, str]:
     """Extension -> content_type for every format lilbee ingests.
 
     Built from ``xberg.list_supported_formats()`` so lilbee covers the full set
-    without a hand-maintained list, minus the containers ``excluded_extension_reasons``
+    without a hand-maintained list, minus the formats ``excluded_extension_reasons``
     refuses. Source-code files are routed separately (their extensions are absent
     here), so ``classify_file`` falls through to the code path.
     """
