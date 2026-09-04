@@ -68,6 +68,12 @@ def announce_ready(err: Console | None, role: object) -> None:
     err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
 
 
+def announce_retrieval_query(query: str) -> None:
+    """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
+    line = SEARCHING_FOR.format(query=escape(query))
+    Console(stderr=True).print(f"[{theme.MUTED}]{line}[/{theme.MUTED}]")
+
+
 def _chat_warm_error(role: object) -> str | None:
     """The chat warm-up's recorded failure, or None when it did not fail.
 
@@ -157,6 +163,8 @@ The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``)
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
 fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
+SEARCHING_FOR = "Searching for: {query}"
+"""The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
 
 def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:

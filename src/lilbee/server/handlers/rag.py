@@ -163,6 +163,7 @@ async def ask(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
         cited_sources=[CleanedChunk(**clean_result(s)) for s in result.cited_sources],
+        retrieval_query=result.retrieval_query,
     )
 
 
@@ -505,6 +506,7 @@ async def chat(
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
     history, compaction = await asyncio.to_thread(_manage_history, history, summary)
     _persist_summary(session_id, compaction)
+    retrieval_query: str | None = None
     if _retrieval_off(searcher, top_k):
         # Chat-only mode or an explicit top_k:0 pure-LLM call.
         sources: list[SearchChunk] = []
@@ -527,6 +529,7 @@ async def chat(
                 answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
             )
         sources, messages = rag.results, rag.messages
+        retrieval_query = rag.retrieval_query
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -548,6 +551,7 @@ async def chat(
             for s in cited_subset(strip_llm_citations(answer), sources)
         ],
         compaction=compaction,
+        retrieval_query=retrieval_query,
     )
 
 
@@ -577,7 +581,7 @@ class _StreamResolution(NamedTuple):
 
     ``preempt_frames`` are emitted verbatim before anything else; ``messages``
     of ``None`` means the stream ends after them (a direct exact-scan answer
-    or a clean refusal/error).
+    or a clean refusal/error), otherwise they lead the answer.
     """
 
     sources: list[SearchChunk]
@@ -862,7 +866,12 @@ def _resolve_stream_context(
     if rag is None:
         return _StreamResolution([], None, [sse_error("No relevant documents found.")])
     results, messages = rag.results, rag.messages
-    return _StreamResolution(results, messages, [])
+    announce = (
+        [sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query})]
+        if rag.retrieval_query
+        else []
+    )
+    return _StreamResolution(results, messages, announce)
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

@@ -264,6 +264,8 @@ class AskResponse(BaseModel):
     cited_sources: list[CleanedChunk] = Field(default_factory=list)
     compaction: CompactionInfo | None = None
     """Set when a /api/chat turn compacted its history before answering."""
+    retrieval_query: str | None = None
+    """The standalone rewrite retrieval ran on, when a follow-up was rewritten."""
 
 
 class SetModelResponse(BaseModel):

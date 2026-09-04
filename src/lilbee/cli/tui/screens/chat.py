@@ -93,6 +93,7 @@ from lilbee.retrieval.query.compaction import (
     summary_messages,
 )
 from lilbee.retrieval.query.history_window import estimate_tokens
+from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
     EventType,
@@ -1808,6 +1809,10 @@ class ChatScreen(Screen[None]):
             if worker.is_cancelled:
                 break
             try:
+                if isinstance(token, RetrievalNotice):
+                    status = msg.SEARCHING_FOR.format(query=token.query)
+                    call_from_thread(self, widget.set_thinking_status, status)
+                    continue
                 self._buffer_token(token, reason_buf, content_buf, response_parts)
                 self._maybe_flush(flush, timings)
             except Exception:
