@@ -140,12 +140,14 @@ def chunk_text(
 class ChunkLimitError(Exception):
     """One file produced more chunks than ``cfg.max_chunks_per_file`` allows."""
 
-    def __init__(self, count: int, limit: int) -> None:
+    def __init__(self, count: int, limit: int, member: str | None = None) -> None:
+        prefix = f"{member}: " if member else ""
         super().__init__(
-            f"{count} chunks exceed the per-file limit of {limit}; "
+            f"{prefix}{count} chunks exceed the per-file limit of {limit}; "
             f"raise max_chunks_per_file (0 = no limit), then retry skipped files"
         )
         self.count = count
+        self.member = member
         self.limit = limit
 
 

@@ -280,8 +280,8 @@ class TestAddEndpoint:
             validate_upload_names(["C:\\dir\\file.txt"])
         with pytest.raises(ValueError, match="may not contain"):
             validate_upload_names(["../../a/b.txt"])
-        with pytest.raises(ValueError, match="archive, not a document"):
-            validate_upload_names(["runs.tar.gz"])
+        with pytest.raises(ValueError, match="vector graphic, not a document"):
+            validate_upload_names(["logo.svg"])
         # Relative paths survive so an uploaded tree keeps its layout.
         assert validate_upload_names(["src/pkg/__init__.py"]) == ["src/pkg/__init__.py"]
         # Backslash separators and ./ prefixes normalize to POSIX relative form.
@@ -308,17 +308,17 @@ class TestAddEndpoint:
         """A file whose format lilbee does not index is refused at add time, with the reason."""
         from lilbee.server.app import create_app
 
-        archive = tmp_path / "runs.gz"
-        archive.write_bytes(b"\x1f\x8b")
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post(
-                "/api/add", json={"paths": [str(archive)]}, headers=_auth_headers()
+                "/api/add", json={"paths": [str(drawing)]}, headers=_auth_headers()
             )
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
-        assert summary["errors"] == ["runs.gz: archive, not a document"]
+        assert summary["errors"] == ["logo.svg: vector graphic, not a document"]
         assert summary["copied"] == []
 
     async def test_add_where_nothing_reaches_the_corpus_skips_the_sync(

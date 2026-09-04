@@ -58,6 +58,16 @@ class FileToProcess(NamedTuple):
     stat: SourceStat | None = None
 
 
+class MemberRecords(NamedTuple):
+    """One archive member's records, written as its own source."""
+
+    name: str
+    content_type: str
+    records: list[ChunkRecord]
+    page_texts: list[PageTextRecord]
+    meta: SourceMeta
+
+
 class SkippedSource(BaseModel):
     """One file a skip marker holds out of the index, and why."""
 
@@ -207,3 +217,4 @@ class _IngestResult:
     concept_records: ConceptRecords | None = None
     entity_rows: list[dict] | None = None
     meta: SourceMeta | None = None
+    members: list[MemberRecords] | None = None

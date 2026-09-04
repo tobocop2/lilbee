@@ -30,6 +30,7 @@ from lilbee.core.config import Config, active_config
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
     extract_batching,
+    ingest_archive,
     ingest_document,
     ingest_markdown,
     warn_if_table_model_ignored,
@@ -46,6 +47,7 @@ from lilbee.data.ingest.adaptive import (
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import (
     ExclusionReason,
+    archive_content_types,
     classify_file,
     discover_corpus,
     discover_files,
@@ -95,6 +97,7 @@ from lilbee.data.types import (
     ChunkRecord,
     FileChangePlan,
     FileToProcess,
+    MemberRecords,
     ShardId,
     SyncResult,
     _IngestResult,
@@ -1402,6 +1405,40 @@ def _failed_result(
     return _IngestResult(entry.name, entry.path, 0, error=exc)
 
 
+async def _archive_result(
+    entry: FileToProcess, on_progress: DetailedProgressCallback, pages_done: list[int]
+) -> _IngestResult:
+    """Ingest an archive: its members become sources, the archive row keeps the disk stat."""
+    members = await ingest_archive(
+        entry.path, entry.name, entry.content_type, on_progress=on_progress
+    )
+    concept_batches = [await build_concept_records(m.records, m.name) for m in members]
+    entity_rows = [
+        row for m in members for row in (await build_entity_records(m.records, m.name) or [])
+    ]
+    chunk_total = sum(len(m.records) for m in members)
+    on_progress(
+        EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="ok", chunks=chunk_total)
+    )
+    pages_done[0] += max(1, sum(len(m.page_texts) for m in members))
+    found = [batch for batch in concept_batches if batch is not None]
+    return _IngestResult(
+        entry.name,
+        entry.path,
+        chunk_total,
+        error=None,
+        file_hash=entry.file_hash,
+        records=[],
+        needs_cleanup=entry.needs_cleanup,
+        page_texts=[],
+        stat=entry.stat,
+        concept_records=ConceptRecords.merged(found) if found else None,
+        entity_rows=entity_rows or None,
+        meta=SourceMeta(title=derive_title(entry.name)),
+        members=members,
+    )
+
+
 def _over_limit_result(
     exc: ChunkLimitError,
     entry: FileToProcess,
@@ -1505,6 +1542,8 @@ async def ingest_stream(
                 # The source's old chunks are deleted in the same locked
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
+                if entry.content_type in archive_content_types():
+                    return await _archive_result(entry, on_progress, pages_done)
                 page_texts: list[PageTextRecord] = []
                 records, meta = await produce_records(
                     entry.path,
@@ -1980,21 +2019,44 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
     short-circuit. The write retries once on a lock timeout.
     """
     store = get_services().store
-    items = [
-        ChunkWrite(
-            source=r.name,
-            file_hash=r.file_hash or file_hash(r.path),
-            records=cast(list[dict], r.records or []),
-            needs_cleanup=r.needs_cleanup,
-            stat=r.stat,
-            page_texts=cast(list[dict], r.page_texts or []),
-            meta=r.meta,
+    items: list[ChunkWrite] = []
+    stale: list[str] = []
+    for r in buffer:
+        digest = r.file_hash or file_hash(r.path)
+        items.append(
+            ChunkWrite(
+                source=r.name,
+                file_hash=digest,
+                records=cast(list[dict], r.records or []),
+                needs_cleanup=r.needs_cleanup,
+                stat=r.stat,
+                page_texts=cast(list[dict], r.page_texts or []),
+                meta=r.meta,
+            )
         )
-        for r in buffer
-    ]
+        if r.members is None:
+            continue
+        items.extend(_member_write(m, digest, r.stat) for m in r.members)
+        current = {m.name for m in r.members}
+        stale.extend(n for n in store.member_sources(r.name) if n not in current)
+    if stale:
+        store.remove_documents(stale)
     _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
     _flush_concept_records(buffer)
     _flush_entity_rows(buffer)
+
+
+def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -> ChunkWrite:
+    """A member's write item: its own source row, keyed to the archive's hash and stat."""
+    return ChunkWrite(
+        source=member.name,
+        file_hash=digest,
+        records=cast(list[dict], member.records),
+        needs_cleanup=True,
+        stat=stat,
+        page_texts=cast(list[dict], member.page_texts),
+        meta=member.meta,
+    )
 
 
 def _flush_concept_records(buffer: list[_IngestResult]) -> None:
