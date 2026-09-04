@@ -4,7 +4,8 @@ The contract is the per-role models plus the engine build pin. Planner-derived
 values (ctx, slots) are accepted from the running engine, never recomputed:
 they vary legitimately with GPU occupancy at plan time. The one exception is
 ``chat_ctx_covers``: a live chat window smaller than what this process needs
-cannot be adopted, since no prompt fit can grow it.
+cannot be adopted, since no prompt fit can grow it. ``vision_slots_cover``
+applies the same rule to the vision role's slot ceiling.
 """
 
 from __future__ import annotations
@@ -57,6 +58,23 @@ def chat_ctx_covers(launches: Iterable[InstanceLaunch], demanded_ctx: int) -> bo
         return True
     built_target = min((launch.built_ctx_target for launch in chat), default=0)
     return built_target > 0 and demanded_ctx <= built_target
+
+
+def vision_slots_cover(launches: Iterable[InstanceLaunch], demanded_slots: int) -> bool:
+    """Whether the engine's vision slot ceiling serves *demanded_slots* at once.
+
+    A fitted count below the demand still covers when the builder's
+    ``built_slots_target`` reached it: the same ceiling produced this fit, so a
+    replacement would fit the same count in a loop.
+    """
+    vision = [
+        launch for launch in launches if launch.role is WorkerRole.VISION and launch.slots > 0
+    ]
+    live = min((launch.slots for launch in vision), default=0)
+    if demanded_slots <= 0 or live <= 0 or demanded_slots <= live:
+        return True
+    built_target = min((launch.built_slots_target for launch in vision), default=0)
+    return built_target > 0 and demanded_slots <= built_target
 
 
 def contract_matches(state: SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:

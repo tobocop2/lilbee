@@ -3798,3 +3798,84 @@ class TestWarnWhenChatDownsized:
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             planning_mod.warn_when_chat_downsized(self._launch(slots=4, ctx=131072, target=65536))
         assert not caplog.records
+
+
+class TestProbedDevices:
+    """The read-only device view the launch log and the flash decision share."""
+
+    def test_prefers_the_plan_snapshot(self, monkeypatch) -> None:
+        card = _card(8 * _GB)
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store, "get", lambda: SimpleNamespace(devices=(card,))
+        )
+        assert planning_mod.probed_devices() == (card,)
+
+    def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:
+        card = _card(8 * _GB)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _binary: [card])
+        assert planning_mod.probed_devices() == (card,)
+
+    def test_empty_when_the_devices_cannot_be_read(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _boom() -> Path:
+            raise ProviderError("no engine binary", provider="llama-server")
+
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
+        assert planning_mod.probed_devices() == ()
+
+
+class TestLogEngineLaunch:
+    """Every launch says which engine binary, build, backend and cards serve it."""
+
+    def _launch(self) -> InstanceLaunch:
+        return InstanceLaunch(
+            role=WorkerRole.EMBED,
+            argv=["/opt/lilbee/llama-server", "--model", "/models/embed.gguf"],
+            env_overrides={},
+            model="org/repo/embed.gguf",
+        )
+
+    @pytest.fixture(autouse=True)
+    def _known_engine(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(
+            planning_mod,
+            "probed_devices",
+            lambda: (
+                FleetDevice(VULKAN_BACKEND, 0, "NVIDIA GeForce RTX 3090", 24 * _GB, 24 * _GB),
+            ),
+        )
+
+    def test_a_fresh_launch_names_the_engine_it_started(self, caplog) -> None:
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            planning_mod.log_engine_launch(self._launch())
+        message = caplog.records[0].message
+        assert message.startswith("Launched embed-0 serving org/repo/embed.gguf")
+        assert "/opt/lilbee/llama-server" in message
+        assert "build wheel:0.6.91" in message
+        assert "backend Vulkan" in message
+        assert "Vulkan0: NVIDIA GeForce RTX 3090" in message
+
+    def test_an_adopted_launch_names_the_engine_owner(self, caplog) -> None:
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            planning_mod.log_engine_launch(self._launch(), owner_pid=4242)
+        message = caplog.records[0].message
+        assert message.startswith(
+            "Adopted embed-0 serving org/repo/embed.gguf from engine pid 4242"
+        )
+        assert "/opt/lilbee/llama-server" in message
+        assert "build wheel:0.6.91" in message
+        assert "backend Vulkan" in message
+
+    def test_an_unreadable_host_still_logs(self, caplog, monkeypatch) -> None:
+        # An unreadable host still names its binary and build.
+        monkeypatch.setattr(planning_mod, "probed_devices", lambda: ())
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            planning_mod.log_engine_launch(self._launch())
+        message = caplog.records[0].message
+        assert "backend unknown" in message
+        assert "devices: none" in message

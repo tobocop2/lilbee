@@ -1,13 +1,21 @@
 """The bind contract: models + engine pin decide sharing; derived values do not."""
 
-from lilbee.providers.fleet.contract import chat_ctx_covers, contract_matches
+import pytest
+
+from lilbee.providers.fleet.contract import chat_ctx_covers, contract_matches, vision_slots_cover
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import WorkerRole
 
 
 def _launch(
-    role: WorkerRole, model: str, *, ctx: int = 0, built_ctx_target: int = 0
+    role: WorkerRole,
+    model: str,
+    *,
+    ctx: int = 0,
+    built_ctx_target: int = 0,
+    slots: int = 1,
+    built_slots_target: int = 0,
 ) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -16,6 +24,8 @@ def _launch(
         model=model,
         ctx=ctx,
         built_ctx_target=built_ctx_target,
+        slots=slots,
+        built_slots_target=built_slots_target,
     )
 
 
@@ -141,3 +151,36 @@ def test_empty_wanted_binds_a_pin_equal_nonempty_engine() -> None:
     assert contract_matches(state, (), "pin-a") is True
     assert contract_matches(state, (), "pin-b") is False  # pin still gates
     assert contract_matches(_state(pin="pin-a"), (), "pin-a") is False  # empty served refused
+
+
+@pytest.mark.parametrize(
+    ("slots", "built_slots_target", "demanded", "expected"),
+    [
+        pytest.param(4, 4, 2, True, id="larger-live-count"),
+        pytest.param(4, 4, 4, True, id="equal-live-count"),
+        pytest.param(4, 4, 8, False, id="ceiling-below-demand"),
+        pytest.param(2, 8, 8, True, id="memory-capped-fit-under-a-covering-ceiling"),
+        pytest.param(2, 0, 8, False, id="pre-field-record-below-demand"),
+        pytest.param(2, 0, 0, True, id="no-demand"),
+    ],
+)
+def test_vision_slots_cover(
+    slots: int, built_slots_target: int, demanded: int, expected: bool
+) -> None:
+    launches = [
+        _launch(WorkerRole.VISION, "m-vision", slots=slots, built_slots_target=built_slots_target)
+    ]
+    assert vision_slots_cover(launches, demanded) is expected
+
+
+def test_vision_slots_cover_ignores_non_vision_launches() -> None:
+    launches = [_launch(WorkerRole.CHAT, "m-chat", slots=1)]
+    assert vision_slots_cover(launches, 8) is True
+
+
+def test_built_slots_target_round_trips_through_the_state_file() -> None:
+    launch = _launch(WorkerRole.VISION, "m-vision", slots=2, built_slots_target=8)
+    assert InstanceLaunch.from_state(launch.to_state()).built_slots_target == 8
+    legacy = launch.to_state()
+    del legacy["built_slots_target"]
+    assert InstanceLaunch.from_state(legacy).built_slots_target == 0
