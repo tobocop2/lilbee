@@ -63,7 +63,7 @@ def test_keeps_a_sibling_that_is_not_a_stale_extraction(
 
 def test_keeps_a_plain_file_beside_the_extractions(running: Path) -> None:
     config = running.parent / "config.toml"
-    config.write_text("")
+    config.write_text("", encoding="utf-8")
 
     assert remove_stale_extractions(running) == []
     assert config.is_file()
