@@ -204,6 +204,7 @@ async function transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeo
     const total = totalBytes(res, release);
     const hash = createHash("sha256");
     let done = 0;
+    onProgress?.({ done, total });
     const meter = new Transform({
       transform(chunk, _enc, cb) {
         restartClock();

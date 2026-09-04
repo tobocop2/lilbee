@@ -115,6 +115,7 @@ export interface InstalledBinary {
  */
 export function installedBinary(options: { cacheDir: string; host?: Host }): InstalledBinary | null;
 
+/** Reported once with `done` 0 when the transfer opens, then after every chunk. */
 export interface DownloadProgress {
     /** Bytes received so far. */
     done: number;

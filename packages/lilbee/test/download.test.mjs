@@ -72,11 +72,22 @@ test("download streams to the destination, verifies sha256, and reports done/tot
   assert.equal(fs.statSync(dest).mode & 0o111, 0o111);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://dl/lilbee-macos-arm64");
-  assert.equal(progress.length, 4);
+  assert.equal(progress.length, 5);
+  assert.deepEqual(progress[0], { done: 0, total: PAYLOAD.length });
   assert.deepEqual(progress.at(-1), { done: PAYLOAD.length, total: PAYLOAD.length });
   assert.ok(progress.every((p) => p.total === PAYLOAD.length));
   assert.ok(logs.some((l) => /downloading lilbee-macos-arm64/.test(l)));
   assert.ok(fs.readdirSync(path.join(dir, "v9")).every((f) => !f.includes(".download.")));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("progress starts with a zero-byte event when the transfer opens", async () => {
+  const dir = tmpDir();
+  const events = [];
+  await download({ release: release(), dest: path.join(dir, "v9", "bin"), fetch: fetchWith([webBody(chunks(PAYLOAD, 2))]).fetch, onProgress: (p) => events.push(p) });
+  assert.deepEqual(events[0], { done: 0, total: PAYLOAD.length });
+  assert.equal(events.length, 3);
+  assert.equal(events.at(-1).done, PAYLOAD.length);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
