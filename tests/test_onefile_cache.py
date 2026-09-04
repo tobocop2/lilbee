@@ -22,7 +22,7 @@ def _extraction(root: Path, name: str, *, manifest: bool = True) -> Path:
     path = root / name
     (path / "lilbee").mkdir(parents=True)
     if manifest:
-        (path / BOOTSTRAP_MANIFEST_NAME).write_text("1\tlilbee/__init__.py\n")
+        (path / BOOTSTRAP_MANIFEST_NAME).write_text("1\tlilbee/__init__.py\n", encoding="utf-8")
     return path
 
 
