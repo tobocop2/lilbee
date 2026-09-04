@@ -271,6 +271,7 @@ class TestEnginePin:
                 "flash_attention",
                 "gpu_devices",
                 "kv_cache_type",
+                "main_gpu",
                 "n_cpu_moe",
                 "n_gpu_layers",
                 "placement",
@@ -289,6 +290,18 @@ class TestEnginePin:
             assert binary_mod._load_config_signature() != base
         finally:
             cfg.gpu_devices = original
+
+    def test_main_gpu_is_part_of_the_load_signature(self) -> None:
+        # --main-gpu picks the card that holds the model on a multi-device
+        # launch, so a peer with another index must not adopt this engine.
+        original = cfg.main_gpu
+        try:
+            cfg.main_gpu = None
+            base = binary_mod._load_config_signature()
+            cfg.main_gpu = 1
+            assert binary_mod._load_config_signature() != base
+        finally:
+            cfg.main_gpu = original
 
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

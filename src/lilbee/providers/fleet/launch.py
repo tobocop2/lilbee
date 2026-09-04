@@ -35,6 +35,9 @@ class InstanceLaunch:
     # served window is smaller: the same planner aiming at least as high
     # already achieved this window, so a rebuild cannot beat it.
     built_ctx_target: int = 0
+    # The vision slot ceiling the builder fitted against (vision_ocr_concurrency);
+    # 0 for other roles and pre-field records.
+    built_slots_target: int = 0
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
     # GPU bytes placement charged this instance. Carried so the engine's own
@@ -71,6 +74,7 @@ class InstanceLaunch:
             "slots": self.slots,
             "ctx": self.ctx,
             "built_ctx_target": self.built_ctx_target,
+            "built_slots_target": self.built_slots_target,
             "replica": self.replica,
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
             "est_vram_bytes": self.est_vram_bytes,
@@ -97,6 +101,7 @@ class InstanceLaunch:
             },
             ctx=int(payload.get("ctx") or 0),
             built_ctx_target=int(payload.get("built_ctx_target") or 0),
+            built_slots_target=int(payload.get("built_slots_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
         )

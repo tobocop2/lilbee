@@ -4932,3 +4932,21 @@ class TestChatPrefillProgress:
         p._ensure_fleet()
         assert captured[WorkerRole.CHAT] == p._record_chat_prefill
         assert captured[WorkerRole.EMBED] is None
+
+
+@pytest.mark.parametrize(
+    ("pairs", "expected"),
+    [
+        pytest.param(
+            {(WorkerRole.VISION, "m-vision"), (WorkerRole.CHAT, "m-chat")}, 4, id="vision-wanted"
+        ),
+        pytest.param({(WorkerRole.CHAT, "m-chat")}, 0, id="no-vision"),
+    ],
+)
+def test_demanded_vision_slots_follows_the_configured_concurrency(
+    monkeypatch, pairs, expected
+) -> None:
+    from lilbee.providers.fleet.provider import _demanded_vision_slots
+
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    assert _demanded_vision_slots(pairs) == expected

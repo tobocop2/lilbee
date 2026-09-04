@@ -403,7 +403,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Primary GPU index for llama.cpp when multiple devices are visible. "
             "Empty = let llama.cpp pick (index 0). Set this together with "
-            "gpu_devices to pin inference to a specific card."
+            "gpu_devices to pin inference to a specific card. Requires a restart "
+            "to take effect."
         ),
     ),
     "seed": SettingDef(
