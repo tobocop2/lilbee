@@ -86,12 +86,7 @@ dependencies = [
 # specifier names a pre-release, to let plain `pip` resolve the beta-versioned
 # wheels without `--pre`.
 engine = ["lilbee-engine>=0.6.90b1"]
-# 1.92 moved litellm to a maturin build, and PyPI carries no macOS wheel for any
-# release since, so a mac install compiles the Rust crate out of the sdist or
-# fails outright without a toolchain. 1.93.1 added win_amd64 but no macOS, and
-# the beta channel's --prerelease=allow reaches the same line. Raise the cap
-# when macOS wheels land.
-litellm = ["litellm>=1.84.0,<1.92"]
+litellm = ["litellm>=1.84.0,<1.99"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
