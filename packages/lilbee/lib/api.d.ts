@@ -10,6 +10,53 @@ export type Arch = "arm64" | "x64";
 /** A release build. "default" is the plain build every host can run. */
 export type Variant = "default" | "cu121" | "cu124" | "cu125" | "rocm" | "compat" | "compat-cu124" | "compat-rocm";
 
+/** How the `nvidia-smi` probe ended. */
+export type NvidiaProbe =
+    /** macOS: one build ships there, so nothing is probed. */
+    | { status: "skipped" }
+    /** `nvidia-smi` is absent or exited non-zero at every location tried; `error` is the first failure, one line. */
+    | { status: "missing"; error: string }
+    /** Linux: the kernel module is loaded but no `nvidia-smi` is reachable (Flatpak, Snap). */
+    | { status: "sandboxed" }
+    /** `nvidia-smi` ran but its output names no CUDA version. */
+    | { status: "unreadable" }
+    /** The driver's newest supported CUDA version as major*100+minor (12.4 is 1204). */
+    | { status: "detected"; cudaCeiling: number };
+
+/** Why a release's ROCm build cannot serve the host's GPUs. */
+export type RocmRefusal = "no-asset" | "no-manifest" | "missing-kernels";
+
+/** How the AMD probe ended. "unsupported" is set per release, once the manifest has been read. */
+export type AmdProbe =
+    /** lilbee ships a ROCm build for Linux only, so other platforms probe nothing. */
+    | { status: "skipped" }
+    /** No amdgpu module and no compute device. */
+    | { status: "missing" }
+    /** The amdgpu module is loaded but `/dev/kfd` is not visible (Flatpak, Snap). */
+    | { status: "sandboxed" }
+    /** `/dev/kfd` is present but its topology could not be read. */
+    | { status: "unreadable" }
+    /** The driver named the gfx targets. */
+    | { status: "detected"; gfxTargets: string[] }
+    /** The driver named the gfx targets but the release's ROCm build cannot serve them. */
+    | { status: "unsupported"; gfxTargets: string[]; reason: RocmRefusal };
+
+/** How the CPU baseline probe ended. Only x86-64 hosts are probed; a missing AVX2 selects the compat builds. */
+export type CpuProbe =
+    | { status: "skipped" }
+    /** The probe could not run; the default build is assumed. */
+    | { status: "unreadable" }
+    | { status: "detected"; avx2: boolean };
+
+/** Why detection chose the build it did. */
+export interface GpuDetection {
+    nvidia: NvidiaProbe;
+    amd: AmdProbe;
+    cpu: CpuProbe;
+    /** When the probes ran, ISO 8601. */
+    detectedAt: string;
+}
+
 /** What this machine can run, resolved once and passed to every release query. */
 export interface Host {
     platform: Platform;
@@ -18,12 +65,14 @@ export interface Host {
     variant: Variant;
     /** The gfx targets of the host's AMD GPUs; empty when there are none. */
     amdGfxTargets: string[];
+    /** Why detection picked `variant`. */
+    detection: GpuDetection;
 }
 
 /**
- * Probe the host: NVIDIA driver CUDA level, AMD KFD topology, AVX2 baseline.
- * A non-empty LILBEE_VARIANT in `env` replaces the detected variant; an unknown
- * value throws. Detection failures fall back to the default build.
+ * Probe the host: NVIDIA driver CUDA level (`nvidia-smi` on PATH, then the Windows install
+ * locations, with a 10 s timeout), AMD KFD topology, AVX2 baseline (Linux, Intel macOS, Windows).
+ * Detection failures fall back to the default build; an unknown LILBEE_VARIANT in `env` throws.
  */
 export function detectHost(env?: NodeJS.ProcessEnv): Promise<Host>;
 
@@ -74,6 +123,8 @@ export interface ResolvedRelease {
     dev: boolean;
     assetName: string;
     variant: Variant;
+    /** The host's detection with `amd` refined for this release: "unsupported" carries why ROCm was refused. */
+    detection: GpuDetection;
     /** Asset size in bytes as GitHub reports it. */
     size: number;
     /** GitHub's sha256 hex digest of the asset, or null on releases that carry none. */
@@ -142,6 +193,8 @@ export interface EnsureOptions extends ReleaseQuery {
 
 export interface EnsureResult extends InstalledBinary {
     source: "cache" | "download";
+    /** Present when a release was resolved for this call (a download or a forced reinstall); absent on a cache hit. */
+    detection?: GpuDetection;
 }
 
 /**
