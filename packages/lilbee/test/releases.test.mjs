@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isDevBuild, latestRelease, listReleases, releaseByTag } from "../lib/releases.mjs";
 
-const LINUX = { platform: "linux", arch: "x64", variant: "default", amdGfxTargets: [] };
-const CUDA = { ...LINUX, variant: "cu125" };
-const ROCM = { ...LINUX, variant: "rocm", amdGfxTargets: ["gfx942", "gfx1100"] };
+const DETECTED_AT = "2026-09-04T12:00:00.000Z";
+const DETECTION = { nvidia: { status: "missing", error: "spawn nvidia-smi ENOENT" }, amd: { status: "missing" }, cpu: { status: "detected", avx2: true }, detectedAt: DETECTED_AT };
+const LINUX = { platform: "linux", arch: "x64", variant: "default", amdGfxTargets: [], detection: DETECTION };
+const CUDA = { ...LINUX, variant: "cu125", detection: { ...DETECTION, nvidia: { status: "detected", cudaCeiling: 1206 } } };
+const AMD_DETECTED = { status: "detected", gfxTargets: ["gfx942", "gfx1100"] };
+const ROCM = { ...LINUX, variant: "rocm", amdGfxTargets: AMD_DETECTED.gfxTargets, detection: { ...DETECTION, amd: AMD_DETECTED } };
 
 const asset = (name, extra = {}) => ({
   name,
@@ -96,6 +99,7 @@ test("a CUDA host takes the matching CUDA build and falls back to the default bu
     dev: false,
     assetName: "lilbee-linux-x86_64-cu125",
     variant: "cu125",
+    detection: CUDA.detection,
     size: 100,
     digest: "lilbee-linux-x86_64-cu125",
     url: "https://dl/lilbee-linux-x86_64-cu125",
@@ -198,4 +202,54 @@ test("release query failures carry LauncherError codes: rate-limited, http, no-r
   const empty = github({ pages: [[]] });
   await assert.rejects(latestRelease({ host: LINUX, fetch: empty.fetch }), (err) => err instanceof LauncherError && err.code === "no-release");
   await assert.rejects(releaseByTag("v404", { host: LINUX, fetch: empty.fetch }), (err) => err instanceof LauncherError && err.code === "no-release" && err.status === 404);
+});
+
+test("a release refines the AMD probe: unsupported names why its ROCm build was refused", async () => {
+  const manifest = "lilbee-linux-x86_64-rocm.gfx.txt";
+  const withManifest = [...LINUX_ASSETS, manifest];
+  const resolve = (assets, manifests = {}) => listReleases({ host: ROCM, fetch: github({ pages: [[release("v3", assets)]], manifests }).fetch });
+  const unsupported = (reason) => ({ status: "unsupported", gfxTargets: ["gfx942", "gfx1100"], reason });
+
+  const [taken] = await resolve(withManifest, { [manifest]: "gfx942\ngfx1100\n" });
+  assert.equal(taken.variant, "rocm");
+  assert.deepEqual(taken.detection, ROCM.detection);
+
+  const [noAsset] = await resolve(["lilbee-linux-x86_64"]);
+  assert.equal(noAsset.variant, "default");
+  assert.deepEqual(noAsset.detection, { ...ROCM.detection, amd: unsupported("no-asset") });
+
+  const [noManifest] = await resolve(LINUX_ASSETS);
+  assert.deepEqual(noManifest.detection.amd, unsupported("no-manifest"));
+  const [emptyManifest] = await resolve(withManifest, { [manifest]: "\n" });
+  assert.deepEqual(emptyManifest.detection.amd, unsupported("no-manifest"));
+  const unreachable = github({ pages: [[release("v3", withManifest)]] });
+  const fetchDown = async (url, init) => (url.endsWith(manifest) ? Promise.reject(new Error("offline")) : unreachable.fetch(url, init));
+  const [downManifest] = await listReleases({ host: ROCM, fetch: fetchDown });
+  assert.deepEqual(downManifest.detection.amd, unsupported("no-manifest"));
+
+  const [partial] = await resolve(withManifest, { [manifest]: "gfx942\n" });
+  assert.equal(partial.variant, "default");
+  assert.deepEqual(partial.detection.amd, unsupported("missing-kernels"));
+  assert.deepEqual(ROCM.detection.amd, AMD_DETECTED);
+  assert.deepEqual(ROCM.amdGfxTargets, ["gfx942", "gfx1100"]);
+});
+
+test("refinement leaves every other probe alone and applies per release", async () => {
+  const compatRocm = { ...ROCM, variant: "compat-rocm" };
+  const covered = ["lilbee-compat-linux-x86_64", "lilbee-compat-linux-x86_64-rocm", "lilbee-compat-linux-x86_64-rocm.gfx.txt"];
+  const manifests = { "lilbee-compat-linux-x86_64-rocm.gfx.txt": "gfx942\ngfx1100\n" };
+  const gh = github({ pages: [[release("v2", covered), release("v1", ["lilbee-compat-linux-x86_64"])]], manifests });
+  const [v2, v1] = await listReleases({ host: compatRocm, fetch: gh.fetch });
+  assert.deepEqual([v2.variant, v2.detection.amd], ["compat-rocm", AMD_DETECTED]);
+  assert.deepEqual([v1.variant, v1.detection.amd], ["compat", { status: "unsupported", gfxTargets: ["gfx942", "gfx1100"], reason: "no-asset" }]);
+
+  const blind = { ...ROCM, amdGfxTargets: [], detection: { ...ROCM.detection, amd: { status: "unreadable" } } };
+  const [noRocm] = await listReleases({ host: blind, fetch: github({ pages: [[release("v1", ["lilbee-linux-x86_64"])]] }).fetch });
+  assert.deepEqual([noRocm.variant, noRocm.detection.amd], ["default", { status: "unreadable" }]);
+
+  const [cuda] = await listReleases({ host: CUDA, fetch: github({ pages: [[release("v1", ["lilbee-linux-x86_64"])]] }).fetch });
+  assert.deepEqual([cuda.variant, cuda.detection], ["default", CUDA.detection]);
+
+  const byTag = await releaseByTag("v1", { host: ROCM, fetch: github({ tags: { v1: release("v1", LINUX_ASSETS) } }).fetch });
+  assert.deepEqual(byTag.detection.amd, { status: "unsupported", gfxTargets: ["gfx942", "gfx1100"], reason: "no-manifest" });
 });

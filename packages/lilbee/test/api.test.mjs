@@ -9,7 +9,8 @@ import * as api from "../lib/api.mjs";
 
 const PAYLOAD = Buffer.from("binary ".repeat(32));
 const DIGEST = createHash("sha256").update(PAYLOAD).digest("hex");
-const HOST = { platform: "linux", arch: "x64", variant: "cu125", amdGfxTargets: [] };
+const DETECTION = { nvidia: { status: "detected", cudaCeiling: 1206 }, amd: { status: "missing" }, cpu: { status: "detected", avx2: true }, detectedAt: "2026-09-04T12:00:00.000Z" };
+const HOST = { platform: "linux", arch: "x64", variant: "cu125", amdGfxTargets: [], detection: DETECTION };
 const ASSETS = ["lilbee-linux-x86_64", "lilbee-linux-x86_64-cu125"];
 
 const tmpCache = () => fs.mkdtempSync(path.join(os.tmpdir(), "lilbee-api-"));
@@ -69,6 +70,7 @@ test("a fresh cache downloads the latest release for the host", async () => {
     assetName: "lilbee-linux-x86_64-cu125",
     variant: "cu125",
     source: "download",
+    detection: DETECTION,
   });
   assert.ok(Buffer.from(fs.readFileSync(got.path)).equals(PAYLOAD));
   assert.ok(progress.length > 0);
@@ -154,5 +156,24 @@ test("a cancelled download rejects and leaves the previously cached release in p
   assert.deepEqual(fs.readdirSync(cache).sort(), ["v1", "v2"]);
   assert.deepEqual(fs.readdirSync(path.join(cache, "v2")), []);
   assert.equal(fs.readFileSync(path.join(cache, "v1", "lilbee-linux-x86_64-cu125"), "utf8"), "cached");
+  fs.rmSync(cache, { recursive: true, force: true });
+});
+
+test("the result carries the release's detection on a download or a forced reinstall, not on a cache hit", async () => {
+  const cache = tmpCache();
+  const gh = stub(["v2"]);
+  const fresh = await api.ensureBinary({ cacheDir: cache, host: HOST, fetch: gh.fetch });
+  assert.deepEqual(fresh.detection, DETECTION);
+  const hit = await api.ensureBinary({ cacheDir: cache, host: HOST, fetch: gh.fetch });
+  assert.equal(hit.source, "cache");
+  assert.equal("detection" in hit, false);
+  const refreshed = await api.ensureBinary({ cacheDir: cache, host: HOST, fetch: gh.fetch, refresh: true });
+  assert.equal(refreshed.source, "cache");
+  assert.equal("detection" in refreshed, false);
+  const pinned = await api.ensureBinary({ cacheDir: cache, host: HOST, fetch: gh.fetch, release: "v2" });
+  assert.equal("detection" in pinned, false);
+  const forced = await api.ensureBinary({ cacheDir: cache, host: HOST, fetch: gh.fetch, force: true });
+  assert.equal(forced.source, "download");
+  assert.deepEqual(forced.detection, DETECTION);
   fs.rmSync(cache, { recursive: true, force: true });
 });

@@ -94,29 +94,36 @@ async function resolveBuild(data, fallback, host, fetchImpl) {
   const { baseline, gpu } = buildsFor(host);
   const find = (name) => (data.assets ?? []).find((a) => a.name === name);
   let pick = { variant: baseline, asset: fallback };
+  let amd = host.detection.amd;
   if (gpu) {
-    const gpuName = assetNameFor(host.platform, host.arch, gpu);
-    const gpuAsset = find(gpuName);
-    if (gpuAsset && (await hostCanRun(gpu, host, find(gpuName + GFX_MANIFEST_SUFFIX), fetchImpl))) {
-      pick = { variant: gpu, asset: gpuAsset };
-    }
+    const gpuAsset = find(assetNameFor(host.platform, host.arch, gpu));
+    const refusal = await gpuRefusal(gpu, gpuAsset, host, find, fetchImpl);
+    if (refusal === null) pick = { variant: gpu, asset: gpuAsset };
+    else if (isRocm(gpu) && amd.status === "detected") amd = { status: "unsupported", gfxTargets: amd.gfxTargets, reason: refusal };
   }
   return {
     tag: data.tag_name,
     dev: isDevBuild(data.tag_name),
     assetName: pick.asset.name,
     variant: pick.variant,
+    detection: { ...host.detection, amd },
     size: pick.asset.size,
     digest: digestOf(pick.asset),
     url: pick.asset.browser_download_url,
   };
 }
 
-/** A ROCm build must ship kernels for every host GPU it is known to have; other builds always qualify. */
-async function hostCanRun(variant, host, manifest, fetchImpl) {
-  if (!variant.endsWith("rocm") || host.amdGfxTargets.length === 0) return true;
-  const shipped = await shippedGfxTargets(fetchImpl, manifest);
-  return shipped !== null && host.amdGfxTargets.every((target) => shipped.has(target));
+function isRocm(variant) {
+  return variant.endsWith("rocm");
+}
+
+/** Why the release's GPU build cannot serve the host, or null when it can. */
+async function gpuRefusal(gpu, gpuAsset, host, find, fetchImpl) {
+  if (!gpuAsset) return "no-asset";
+  if (!isRocm(gpu) || host.amdGfxTargets.length === 0) return null;
+  const shipped = await shippedGfxTargets(fetchImpl, find(gpuAsset.name + GFX_MANIFEST_SUFFIX));
+  if (shipped === null) return "no-manifest";
+  return host.amdGfxTargets.every((target) => shipped.has(target)) ? null : "missing-kernels";
 }
 
 async function resolveQuery(query) {

@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { resolveBinary } from "../lib/resolve.mjs";
 
-const HOST = { platform: "darwin", arch: "arm64", variant: "default", amdGfxTargets: [] };
+const DETECTION = { nvidia: { status: "skipped" }, amd: { status: "skipped" }, cpu: { status: "skipped" }, detectedAt: "2026-09-04T12:00:00.000Z" };
+const HOST = { platform: "darwin", arch: "arm64", variant: "default", amdGfxTargets: [], detection: DETECTION };
 const ASSET = "lilbee-macos-arm64";
 
 const tmpCache = () => fs.mkdtempSync(path.join(os.tmpdir(), "lilbee-resolve-"));

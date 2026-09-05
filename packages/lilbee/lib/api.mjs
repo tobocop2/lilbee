@@ -30,5 +30,6 @@ export async function ensureBinary({ cacheDir, release, refresh = false, force =
     if (installed && !force) return { ...installed, source: "cache" };
     resolved = installed ? await releaseByTag(installed.release, q) : await latestRelease(q);
   }
-  return installRelease(resolved, { cacheDir, force, repo: q.repo, fetch: q.fetch, env, onProgress, signal, log, requireDigest });
+  const installed = await installRelease(resolved, { cacheDir, force, repo: q.repo, fetch: q.fetch, env, onProgress, signal, log, requireDigest });
+  return installed.source === "download" ? { ...installed, detection: resolved.detection } : installed;
 }

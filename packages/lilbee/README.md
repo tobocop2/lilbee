@@ -128,6 +128,8 @@ const binary = await ensureBinary({
 console.log(binary.path, binary.release, binary.variant);
 ```
 
+Every host and every resolved release carries a detection report that says why the launcher chose the build it did. `detectHost()` returns it as `host.detection`: how the `nvidia-smi` probe ended (skipped, missing with the error text, sandboxed, unreadable, or detected with the driver's CUDA ceiling), how the AMD probe ended (with the gfx targets it found), whether the CPU has AVX2, and when the probes ran. A resolved release refines the AMD entry to `unsupported` with the reason its ROCm build was refused: no ROCm asset, no readable kernel manifest, or a host GPU the manifest does not list. `ensureBinary()` returns the report as `detection` on every download or forced reinstall, so an embedder can show it or write it to a diagnostics bundle.
+
 ## Uninstall
 
 `npm uninstall -g lilbee` removes only the launcher — the npm package is a small shim, and the lilbee binary it downloaded stays in the cache (up to ~1.2GB). npm runs no uninstall scripts, so no package can clean its own cache on uninstall. Delete the binaries first, then the package:
