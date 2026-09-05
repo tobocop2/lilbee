@@ -274,16 +274,22 @@ test("a landed download leaves a live rival's in-progress temp file alone", asyn
 test("a download whose temp file vanished adopts the binary a rival landed", async () => {
   const dir = tmpDir();
   const dest = path.join(dir, "v9", "bin");
-  const logs = [];
-  const body = () => { const r = webBody(chunks(PAYLOAD)); fs.mkdirSync(path.dirname(dest), { recursive: true }); return r; };
-  const { fetch } = fetchWith([body]);
-  // The rival lands dest and removes our temp file while our stream is still open.
   const tmp = `${dest}.download.${process.pid}`;
-  const timer = setInterval(() => { if (fs.existsSync(tmp)) { fs.writeFileSync(dest, PAYLOAD); fs.rmSync(tmp, { force: true }); clearInterval(timer); } }, 1);
-  await download({ release: release(), dest, fetch, log: (m) => logs.push(m) });
-  clearInterval(timer);
-  assert.ok(fs.existsSync(dest));
+  const logs = [];
+  // The rival lands dest and removes our temp file from inside our own stream, just before it ends.
+  const parts = chunks(PAYLOAD);
+  const body = new Readable({
+    read() {
+      if (parts.length) return this.push(parts.shift());
+      fs.writeFileSync(dest, PAYLOAD);
+      fs.rmSync(tmp, { force: true });
+      this.push(null);
+    },
+  });
+  await download({ release: release(), dest, fetch: fetchWith([body]).fetch, log: (m) => logs.push(m) });
+  assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
   assert.ok(logs.some((l) => /another process finished/.test(l)));
+  assert.ok(!fs.existsSync(tmp));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
