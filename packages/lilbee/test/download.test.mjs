@@ -276,17 +276,20 @@ test("a download whose temp file vanished adopts the binary a rival landed", asy
   const dest = path.join(dir, "v9", "bin");
   const tmp = `${dest}.download.${process.pid}`;
   const logs = [];
-  // The rival lands dest and removes our temp file from inside our own stream, just before it ends.
-  const parts = chunks(PAYLOAD);
-  const body = new Readable({
-    read() {
-      if (parts.length) return this.push(parts.shift());
-      fs.writeFileSync(dest, PAYLOAD);
-      fs.rmSync(tmp, { force: true });
-      this.push(null);
-    },
-  });
-  await download({ release: release(), dest, fetch: fetchWith([body]).fetch, log: (m) => logs.push(m) });
+  // The rival lands dest and removes our temp file at the moment we go to chmod it.
+  const realChmod = fs.chmodSync;
+  fs.chmodSync = (target, mode) => {
+    if (target !== tmp) return realChmod(target, mode);
+    fs.chmodSync = realChmod;
+    fs.writeFileSync(dest, PAYLOAD);
+    fs.rmSync(tmp, { force: true });
+    return realChmod(target, mode);
+  };
+  try {
+    await download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch, log: (m) => logs.push(m) });
+  } finally {
+    fs.chmodSync = realChmod;
+  }
   assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
   assert.ok(logs.some((l) => /another process finished/.test(l)));
   assert.ok(!fs.existsSync(tmp));
