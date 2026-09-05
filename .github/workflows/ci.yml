@@ -16,6 +16,7 @@ on:
       - 'engine-versions.env'
       - 'scripts/check_style_rules.py'
       - 'tools/qa/**'
+      - 'packages/lilbee/**'
       - 'tools/wheel-build/**'
       - 'packaging/tools/**'
       - 'scripts/qa/**'
