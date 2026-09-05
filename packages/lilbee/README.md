@@ -116,7 +116,7 @@ The launcher always runs its own sha256-verified download; it ignores lilbee ins
 
 ## Embedding
 
-The launcher is also a library. `import { ensureBinary, listReleases, detectHost } from "lilbee"` gives a Node program the same host detection, release selection, verified download, and cache layout the CLI uses, with progress and cancel callbacks and no console output. The [Obsidian plugin](https://obsidian.lilbee.sh/) installs its server this way. Inside an Electron renderer, pass your own `fetch` so the download goes through the transport the renderer allows. The full contract is in `lib/api.d.ts`.
+The launcher is also a library. `import { ensureBinary, listReleases, detectHost } from "lilbee"` gives a Node program the same host detection, release selection, verified download, and cache layout the CLI uses, with progress and cancel callbacks and no console output. The [Obsidian plugin](https://obsidian.lilbee.sh/) installs its server this way. Inside an Electron renderer the launcher uses Node's own HTTP client, because the renderer's `fetch` refuses GitHub's asset redirect under CORS; pass `fetch` only to substitute a transport of your own. The full contract is in `lib/api.d.ts`.
 
 ```js
 import { ensureBinary, cacheDir } from "lilbee";

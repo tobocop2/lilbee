@@ -112,7 +112,10 @@ export interface ReleaseQuery {
     includeDev?: boolean;
     /** The host to resolve builds for; defaults to detectHost(). */
     host?: Host;
-    /** Transport for the GitHub API and the asset manifests; defaults to global fetch. */
+    /**
+     * Transport for the GitHub API, the asset manifests, and the download. Defaults to global
+     * fetch, or to Node's own HTTP client inside a browser runtime such as an Electron renderer.
+     */
     fetch?: FetchLike;
     /** Read for GITHUB_TOKEN / GH_TOKEN (sent as a bearer to the GitHub API). Defaults to process.env. */
     env?: NodeJS.ProcessEnv;
