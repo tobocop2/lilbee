@@ -29,20 +29,21 @@ def _extra_requirement(extra: str, name: str) -> Requirement:
     return next(r for r in reqs if r.name == name)
 
 
-def test_litellm_extra_stops_below_the_compiled_line() -> None:
-    # litellm 1.92 moved to a maturin build. PyPI publishes no macOS wheel for
-    # any release since, so a mac install compiles the Rust crate out of the
-    # sdist or fails without a toolchain. 1.93.1 added win_amd64 but no macOS,
-    # so the whole line stays out, prereleases included.
+def test_litellm_extra_stops_before_the_next_major() -> None:
+    # 1.98.0 ships cp310-abi3 wheels for macOS (x86_64/arm64), Windows, and
+    # manylinux, so the maturin-build wheel gap that capped the line at <1.92
+    # is closed. The <1.99 cap only keeps the next line's prereleases off the
+    # --prerelease=allow channel.
     req = _extra_requirement("litellm", "litellm")
-    for version in ("1.92.0rc1", "1.92.0", "1.93.0", "1.93.1", "1.94.1"):
-        assert not req.specifier.contains(version, prereleases=True), version
+    assert not req.specifier.contains("1.99.0rc1", prereleases=True)
+    assert not req.specifier.contains("1.99.0")
 
 
 def test_litellm_extra_admits_locked_stable() -> None:
     req = _extra_requirement("litellm", "litellm")
     assert req.specifier.contains("1.89.1")
     assert req.specifier.contains("1.91.0")
+    assert req.specifier.contains("1.98.0")
 
 
 def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:
