@@ -22,12 +22,15 @@ audits reject), no wasted download in CI paths that never run the binary.
 
 - Platform/arch mapping at run time, like every shim above.
 - **Hardware detection on top** (new): NVIDIA driver's CUDA level →
-  `cu121/cu124/cu125`, ROCm userland → `rocm`, missing AVX2 → `-compat`
+  `cu121/cu124/cu125`, an AMD GPU in the amdgpu KFD topology → `rocm`, missing AVX2 → `-compat`
   builds, composed (`compat-cu124`). No mainstream npm shim does this —
   they don't need to; lilbee's builds differ by GPU stack the way
   distro packages do, so the launcher behaves like `brew`/`flatpak`
   and picks for you. `LILBEE_VARIANT` remains the explicit override,
   and detection failing means the universal build, which runs anywhere.
+- ROCm is confirmed per release: the launcher reads the gfx manifest
+  published beside the build and takes it only when every host GPU is
+  listed, so a card the build has no kernels for gets the default build.
 
 ## Integrity
 
