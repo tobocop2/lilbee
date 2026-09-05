@@ -2,7 +2,7 @@
  * Pure planning: turn argv + env into the command this launcher runs.
  *
  * Routing:
- *  - `prepare`            download/verify the binary, then exit (launcher-only)
+ *  - `prepare [<tag>]`    download/verify the binary, then exit (launcher-only)
  *  - `mcp [...]`          run the MCP server; with LILBEE_URL set, bridge
  *                         stdio <-> streamable-http via mcp-remote instead
  *  - anything else        resolve the binary and exec argv verbatim
@@ -13,7 +13,7 @@
 /** Classify argv into a launcher route. */
 export function routeArgv(argv) {
   const [head, ...rest] = argv;
-  if (head === "prepare") return { kind: "prepare" };
+  if (head === "prepare") return { kind: "prepare", tag: rest[0] ?? null };
   if (head === "unprepare") return { kind: "unprepare" };
   if (head === "mcp") return { kind: "mcp", args: parseMcpArgs(rest) };
   return { kind: "exec", argv };
@@ -36,6 +36,11 @@ const EXIT_CODE_SIGNAL_DEFAULT = 128;
 /** Conventional 128+signum exit code for a child killed by *signal*. */
 export function exitCodeForSignal(signal) {
   return EXIT_CODE_BY_SIGNAL[signal] ?? EXIT_CODE_SIGNAL_DEFAULT;
+}
+
+/** True when LILBEE_CHANNEL asks for the dev channel, so "latest" may be a .dev build. */
+export function channelIncludesDev(env) {
+  return env.LILBEE_CHANNEL === "dev";
 }
 
 /** "remote" when LILBEE_URL is set (non-empty), else "local". */
@@ -84,7 +89,8 @@ export const HELP = `lilbee (npm launcher) — run lilbee anywhere
 Usage:
   lilbee <any lilbee command>     bootstrap the binary if needed, then run it
   lilbee mcp [--data-dir <dir>]   start the MCP server (stdio)
-  lilbee prepare                  download (or upgrade to) the latest lilbee binary and exit
+  lilbee prepare [<tag>]          download (or upgrade to) the latest lilbee binary and exit
+                                  (with a release tag: install exactly that release)
   lilbee unprepare                delete every downloaded binary (run before npm uninstall)
   lilbee-mcp [...]                same as \`lilbee mcp [...]\`
 
@@ -97,5 +103,6 @@ Environment:
                    rocm | compat | compat-cu124 | compat-rocm (unset =
                    auto-detect; default = the plain build on any host)
   LILBEE_RELEASE   run an exact lilbee release tag instead of the latest
+  LILBEE_CHANNEL   stable (default) | dev: whether "latest" may pick a .dev build
   LILBEE_DEBUG     =1 prints binary resolution detail on every run
 `;
