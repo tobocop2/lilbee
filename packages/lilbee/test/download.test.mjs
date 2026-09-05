@@ -292,7 +292,8 @@ test("a landed download removes the other builds of the same release", async () 
   const releaseDir = path.join(dir, "v9");
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.writeFileSync(path.join(releaseDir, "lilbee-linux-x86_64"), "old default build");
-  fs.writeFileSync(path.join(releaseDir, "lilbee-linux-x86_64.download.999"), "stale temp");
+  // 4194305 is above Linux's pid_max, so no runner can have a process with this pid
+  fs.writeFileSync(path.join(releaseDir, "lilbee-linux-x86_64.download.4194305"), "stale temp");
   const dest = path.join(releaseDir, "lilbee-linux-x86_64-cu125");
   await download({ release: release({ assetName: "lilbee-linux-x86_64-cu125" }), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch });
   assert.deepEqual(fs.readdirSync(releaseDir), ["lilbee-linux-x86_64-cu125"]);
