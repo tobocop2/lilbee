@@ -48,7 +48,7 @@ The [usage guide](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md) co
 
 ## How the package works
 
-The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of the **latest lilbee release** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. Every later run execs the cached binary directly, with no network.
+The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of the **latest lilbee release** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. A CUDA build is chosen only when `nvidia-smi` reports the driver's CUDA version; on any other NVIDIA host the default build's Vulkan engine drives the card. Every later run execs the cached binary directly, with no network.
 
 The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time; run it again any time to upgrade to the newest release (the old binary is removed). `lilbee prepare <tag>` installs one exact release instead. If the latest-release lookup is unreachable, the launcher falls back to the release pinned in `package.json`, the one this launcher version was tested against.
 
