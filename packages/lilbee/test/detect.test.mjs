@@ -66,8 +66,14 @@ test("linux NVIDIA hosts get the matching CUDA build", async () => {
   assert.equal(await variant("linux", "x64", { smi: "CUDA Version: 12.4" }), "cu124");
 });
 
-test("visible NVIDIA device without runnable nvidia-smi falls back to cu121", async () => {
-  assert.equal(await variant("linux", "x64", { files: ["/dev/nvidia0"] }), "cu121");
+test("visible NVIDIA device without runnable nvidia-smi keeps the default build", async () => {
+  assert.equal(await variant("linux", "x64", { files: ["/dev/nvidia0"] }), "default");
+  assert.equal(await variant("linux", "x64", { files: ["/proc/driver/nvidia/version"] }), "default");
+});
+
+test("nvidia-smi output without a CUDA version keeps the default build", async () => {
+  assert.equal(await variant("linux", "x64", { smi: "no version here" }), "default");
+  assert.equal(await variant("win32", "x64", { smi: "no version here" }), "default");
 });
 
 test("gfx_target_version maps to gfx names", () => {
@@ -178,7 +184,7 @@ test("a failing nvidia-smi is missing, not sandboxed, and its first error is one
 test("a timed-out nvidia-smi records the timeout", async () => {
   const hung = Object.assign(new Error("spawn nvidia-smi ETIMEDOUT"), { killed: true, signal: "SIGTERM" });
   assert.deepEqual((await report("linux", "x64", { smi: hung })).nvidia, { status: "missing", error: "nvidia-smi did not answer within 10 s" });
-  assert.equal(await variant("linux", "x64", { smi: hung, files: ["/dev/nvidia0"] }), "cu121");
+  assert.equal(await variant("linux", "x64", { smi: hung, files: ["/dev/nvidia0"] }), "default");
 });
 
 test("Windows looks for nvidia-smi on PATH, then in System32, then in the NVSMI directory", async () => {
@@ -296,8 +302,8 @@ test("the log lines the CLI prints are unchanged by the report", async () => {
     "lilbee: detected NVIDIA driver (CUDA 12.6) — using the cu125 build (override with LILBEE_VARIANT).",
     "lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).",
   ]);
-  assert.deepEqual(await lines("linux", { smi: "no version here" }), ["lilbee: detected NVIDIA driver (CUDA unknown) — using the cu121 build (override with LILBEE_VARIANT)."]);
-  assert.deepEqual(await lines("linux", { files: [NVIDIA_MODULE] }), ["lilbee: NVIDIA device present but nvidia-smi is not runnable — using the cu121 build (override with LILBEE_VARIANT)."]);
+  assert.deepEqual(await lines("linux", { smi: "no version here" }), ["lilbee: nvidia-smi names no CUDA version — using the default build (override with LILBEE_VARIANT)."]);
+  assert.deepEqual(await lines("linux", { files: [NVIDIA_MODULE] }), ["lilbee: NVIDIA device present but nvidia-smi is not runnable — using the default build (override with LILBEE_VARIANT)."]);
   assert.deepEqual(await lines("linux", { files: KFD, kfdNodes: { 1: 90402 } }), ["lilbee: detected an AMD GPU (gfx942) — using the rocm build (override with LILBEE_VARIANT)."]);
   assert.deepEqual(await lines("linux", { files: [...KFD, "/opt/rocm"] }), ["lilbee: detected a ROCm userland — using the rocm build (override with LILBEE_VARIANT)."]);
   assert.deepEqual(await lines("linux", {}), []);
