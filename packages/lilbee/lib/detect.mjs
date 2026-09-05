@@ -190,18 +190,23 @@ function skippedDetection() {
   return { nvidia: { status: "skipped" }, amd: { status: "skipped" }, cpu: { status: "skipped" }, detectedAt: new Date().toISOString() };
 }
 
-/** The CUDA build the NVIDIA probe calls for, or null; logs the CLI's line for the choice. */
+/**
+ * The CUDA build the NVIDIA probe calls for, or null; logs the CLI's line for the choice.
+ * Only a driver that names its CUDA version gets a CUDA build: without one the default
+ * build's Vulkan engine still uses the card, where a CUDA runtime that fails to
+ * initialise would fall back to the CPU.
+ */
 function cudaBuild(nvidia, platform, exists, log) {
-  if (nvidia.status === "detected" || nvidia.status === "unreadable") {
-    const ceiling = nvidia.status === "detected" ? nvidia.cudaCeiling : null;
-    const cuda = ceiling === null ? "cu121" : cudaVariantForCeiling(ceiling);
-    const label = ceiling === null ? "unknown" : `${Math.floor(ceiling / 100)}.${ceiling % 100}`;
+  if (nvidia.status === "detected") {
+    const cuda = cudaVariantForCeiling(nvidia.cudaCeiling);
+    const label = `${Math.floor(nvidia.cudaCeiling / 100)}.${nvidia.cudaCeiling % 100}`;
     if (cuda) log(`lilbee: detected NVIDIA driver (CUDA ${label}) — using the ${cuda} build (override with LILBEE_VARIANT).`);
     return cuda;
   }
-  if (platform === "linux" && (exists(NVIDIA_DEVICE) || exists(NVIDIA_DRIVER_VERSION))) {
-    log("lilbee: NVIDIA device present but nvidia-smi is not runnable — using the cu121 build (override with LILBEE_VARIANT).");
-    return "cu121";
+  if (nvidia.status === "unreadable") {
+    log("lilbee: nvidia-smi names no CUDA version — using the default build (override with LILBEE_VARIANT).");
+  } else if (platform === "linux" && (exists(NVIDIA_DEVICE) || exists(NVIDIA_DRIVER_VERSION))) {
+    log("lilbee: NVIDIA device present but nvidia-smi is not runnable — using the default build (override with LILBEE_VARIANT).");
   }
   return null;
 }
