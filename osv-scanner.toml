@@ -65,3 +65,7 @@ reason = "Path traversal in nltk.data.load() via URL-encoded path separators (CV
 [[IgnoredVulns]]
 id = "PYSEC-2026-597"
 reason = "nltk path traversal, second advisory for the incomplete #3504 fix (percent-encoded ..%2f bypass of _UNSAFE_NO_PROTOCOL_RE; alias CVE-2026-12243). Same triage as GHSA-p4gq-832x-fm9v: no fixed nltk release exists (3.9.4 is latest), nltk arrives transitively via crawl4ai under the crawler extra, lilbee never imports nltk, and crawl4ai only loads hardcoded resource names while crawled text flows in as tokenizer data, never as a resource path, so the attacker-controlled-path vector is unreachable. bb-m851 tracks the bump once nltk >= 3.10 ships."
+
+[[IgnoredVulns]]
+id = "GHSA-8mgp-746c-j5xp"
+reason = "nltk model-artifact APIs bypass the pathsec sandbox (CVE-2026-81726, PYSEC-2026-3740). Every nltk release up to and including 3.10.3 is affected and upstream has published no fix. The advisory covers TransitionParser.train/parse, AveragedPerceptron.save/load, PerceptronTagger.save_to_json and save_maxent_params, and it only bites an application that sets pathsec.ENFORCE and then lets untrusted input choose a model path. nltk arrives transitively via crawl4ai under the `crawler` extra; lilbee never imports nltk, never enables pathsec, and crawl4ai touches none of the affected APIs (it uses nltk.data.find, nltk.download, sent_tokenize, word_tokenize, stopwords and WordNetLemmatizer only), so no model path is caller-controlled. Remove this entry once nltk ships a fixed release."
