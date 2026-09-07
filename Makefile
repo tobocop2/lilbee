@@ -14,8 +14,7 @@ lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
 	  shellcheck -s bash scripts/*.sh tests/shell/stubs/*; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
-	# actionlint also runs shellcheck over every inline `run:` block, which is
-	# where most of the shell in .github still lives.
+	# actionlint also shellchecks every inline `run:` block.
 	@if command -v actionlint >/dev/null; then actionlint; \
 	else echo "lint-shell: actionlint is not installed, skipping"; fi
 

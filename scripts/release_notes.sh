@@ -33,9 +33,8 @@ gh api "repos/${repo}/releases/generate-notes" "${args[@]}" --jq .body | awk '
 if [ -n "$prev" ]; then
   old_archs=$(mktemp)
   new_archs=$(mktemp)
-  # The body is already on stdout by now. If the table generator exits non-zero,
-  # set -e ends the script here, so the cleanup has to be a trap rather than the
-  # rm below, or the caller gets a complete-looking body and two leaked files.
+  # set -e can end the script inside the table generator, after the body is
+  # already on stdout. Cleanup must be a trap.
   trap 'rm -f "$old_archs" "$new_archs"' EXIT
   archs_path="src/lilbee/_generated/engine_archs.py"
   root=$(cd "$(dirname "$0")/.." && pwd)

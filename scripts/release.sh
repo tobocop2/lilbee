@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 # Cut a beta release: bump the trailing counter (the .devNNN when the version has
 # one, else the bNNN), commit, tag, and push from main.
-# Everything after the push is automatic. release-candidate.yml builds the
-# artifacts, publishes to PyPI and fans out to every channel; release-selfheal.yml
-# retries a failed build cell; release-watch.yml retries a failed publish leg; and
-# verify-release.yml promotes the tag once the assets pass a real-inference smoke.
-# `make release-promote` stays as the manual path for rewriting notes by hand.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -18,9 +13,8 @@ git fetch -q origin main
   || { echo "release: main is not in sync with origin/main" >&2; exit 1; }
 
 cur=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
-# The counter must END the version, not merely appear in it: 0.7.0b1.post1
-# would pass a "contains bN" test and then abort inside the arithmetic below
-# with a raw bash error, after the branch and sync checks have already run.
+# The counter must END the version: 0.7.0b1.post1 passes a "contains bN" test
+# and then fails inside the arithmetic below, after the branch and sync checks.
 case "$cur" in
   *.dev[0-9]|*.dev[0-9][0-9]*|*b[0-9]|*b[0-9][0-9]*) ;;
   *) echo "release: version '$cur' does not end in a bNNN or .devNNN counter to bump" >&2; exit 1;;

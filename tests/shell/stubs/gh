@@ -13,9 +13,6 @@ case "${sub}" in
     [ -f "${FIXTURE}/fail_api" ] && { echo "stub gh: simulated API failure" >&2; exit 1; }
     # --paginate applies the -q filter per page, so a count comes back as
     # "0\n0" and the caller's numeric test errors. Fail loudly if it returns.
-    # --paginate applies the -q filter per page. That is correct when the
-    # filter emits one line per job and wrong when it emits a count, so gate on
-    # the filter rather than banning the flag.
     paginate=no
     for arg in "$@"; do
       [ "${arg}" = "--paginate" ] && paginate=yes
@@ -62,9 +59,8 @@ case "${sub}" in
         done
         f="${FIXTURE}/runs/${wf}.json"
         [ -f "${f}" ] || f="${FIXTURE}/empty.json"
-        # Real gh emits the whole JSON array when --jq is absent; the caller
-        # pipes it into jq itself. Modelling that matters: the script relies on
-        # gh's exit status to tell an API error from an empty result.
+        # Real gh emits the whole array when --jq is absent. The script relies on
+        # its exit status to tell an API error from an empty result.
         if [ -n "${jqexpr}" ]; then jq -c "${jqexpr}" < "${f}"; else cat "${f}"; fi
         ;;
       rerun)
@@ -74,7 +70,6 @@ case "${sub}" in
         # A rerun heals the run unless the fixture says this failure is a defect.
         if [ ! -f "${FIXTURE}/no_heal_${run_id}" ]; then
           # An unmatched glob stays literal, so guard on the file existing.
-          # release_selfheal.bats has no per-leg run fixtures at all.
           for f in "${FIXTURE}"/runs/*.json; do
             [ -f "${f}" ] || continue
             jq -c --argjson id "${run_id}" \

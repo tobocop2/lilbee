@@ -7,9 +7,6 @@ run-name: Self-heal ${{ github.event.workflow_run.head_branch || inputs.run_id }
 # strands the release short of promotion until a human notices. This reruns the
 # cells that failed, so the candidate corrects itself.
 #
-# The mechanism, and why the retry is blind, are documented in
-# scripts/release_selfheal.sh.
-
 on:
   workflow_run:
     workflows: ["Release candidate"]
@@ -40,9 +37,8 @@ jobs:
        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     steps:
-      # The default branch, never the tag: heal the candidate with the newest
-      # logic, and a bare checkout resolves against the run's pinned sha, which
-      # hard-fails once a tag is force-moved.
+      # The default branch, never the tag: a bare checkout resolves the run's
+      # pinned sha, which hard-fails once a tag is force-moved.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}

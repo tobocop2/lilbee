@@ -63,9 +63,6 @@ jobs:
       - name: Check imports resolve
         run: make imports-check
 
-  # Shell is a first-class part of the release path: scripts/release_watch.sh
-  # heals the publish fan-out, and actionlint runs shellcheck over every inline
-  # `run:` block in .github as well.
   shell:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -79,8 +76,7 @@ jobs:
       - name: Install actionlint and bats
         env:
           ACTIONLINT_VERSION: "1.7.12"
-          # npm's `bats` package trails the GitHub releases; 1.13.0 is the
-          # newest there. Every helper used in tests/shell predates it.
+          # npm's `bats` package trails the GitHub releases; this is the newest npm has.
           BATS_VERSION: "1.13.0"
         run: |
           set -euo pipefail
@@ -88,8 +84,8 @@ jobs:
             | sudo tar xz -C /usr/local/bin actionlint
           npm install -g "bats@${BATS_VERSION}"
 
-      # make lint-shell skips a missing tool so it stays usable on a laptop.
-      # Assert them here so a runner image that drops one fails loudly instead.
+      # make lint-shell skips a missing tool. Assert them here so a runner image
+      # that drops one fails loudly.
       - name: Every tool the shell gate needs is present
         run: shellcheck --version && actionlint --version && bats --version
 

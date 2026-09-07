@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
 # Watch the workflows a release candidate dispatches, and heal the ones that flake.
 #
-# release-selfheal.yml owns the candidate's own build cells. This owns the seven
-# workflows the candidate dispatches, plus verify-release, which fires on its
-# completion. Without it, a flake in a publish leg (an apt 403 on a runner
-# image, an AUR maintenance window, a nix job racing a push to main) leaves that
-# channel unpublished until a person presses rerun.
-#
-# It waits for all eight legs, reruns a failed one under the same attempt
-# bound release-selfheal uses, re-issues a dispatch that never landed, and exits
-# non-zero when a leg burns both attempts.
+# release-selfheal.yml owns the candidate's build cells; this owns the workflows
+# it dispatches, plus verify-release.
 #
 # Run it by hand against a finished release:
 #   TAG=v0.6.90b434 DRY_RUN=true bash scripts/release_watch.sh
@@ -32,9 +25,7 @@ TAG="${TAG:?TAG is required, e.g. TAG=v0.6.90b434}"
 REPO="${REPO:-tobocop2/lilbee}"
 RC_RUN_ID="${RC_RUN_ID:-}"
 DRY_RUN="${DRY_RUN:-false}"
-# One retry, matching release-selfheal.yml. A second failure on the same leg is
-# a defect until proven otherwise, and the bound is the only thing between a
-# real defect and an unbounded rerun loop.
+# One retry, matching release_selfheal.sh.
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-2}"
 APPEAR_MINUTES="${APPEAR_MINUTES:-20}"
 WATCH_MINUTES="${WATCH_MINUTES:-290}"
@@ -44,9 +35,8 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
 # file | run-name prefix | may this leg be re-dispatched?
 #
-# verify-release must not be: its promote job is gated on
-# github.event_name == 'workflow_run', so a dispatched copy verifies the tag but
-# never marks it latest.
+# verify-release must not be re-dispatched: its promote job is gated on
+# github.event_name == 'workflow_run', so a dispatched copy never marks latest.
 LEGS='publish.yml|Publish to PyPI|yes
 publish-packages.yml|Publish Packages|yes
 publish-cuda-packages.yml|Publish CUDA Packages|yes
@@ -68,22 +58,14 @@ settle() {  # leg-file  state  reason
   note "${1}: ${2} (${3})"
 }
 
-# Defer to release-selfheal while the candidate is still healing.
-#
-# A soft build cell that drops its artifact leaves the candidate GREEN with an
-# asset missing. verify-release fires on the same completion and fails on the
-# gap, while release-selfheal reruns the dropped cell. Rerunning verify-release
-# now would fail it again on the same missing asset and spend both its attempts
-# before the healed cell re-attaches anything. Self-heal's rerun emits a fresh
-# candidate completion, which starts a fresh watch, so nothing is lost by
-# leaving.
+# Defer to release-selfheal while the candidate is still healing: a dropped
+# build cell leaves the candidate green with an asset missing, and retrying
+# verify-release now spends both its attempts before the cell re-attaches it.
+# Self-heal's rerun starts a fresh watch, so nothing is lost by leaving.
 defer_to_selfheal() {
   [ -n "${RC_RUN_ID}" ] || return 1
 
   local rc rc_attempt rc_conclusion rc_failed
-  # An unreadable candidate is not evidence that it is healing. Deferring on an
-  # API error would end the watch having watched nothing, and self-heal only
-  # fires on a candidate that actually failed, so nothing would follow.
   rc=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" \
          -q '"\(.run_attempt) \(.conclusion)"') || {
     note "could not read candidate ${RC_RUN_ID}; watching the legs rather than assuming a heal"
@@ -91,9 +73,8 @@ defer_to_selfheal() {
   }
   rc_attempt="${rc%% *}"
   rc_conclusion="${rc#* }"
-  # No --paginate: the jq runs per page, so a second page makes this "0\n0" and
-  # the numeric test below errors instead of comparing. per_page=100 covers the
-  # candidate's job count, and release-selfheal.yml queries the same way.
+  # No --paginate: the -q count runs per page and returns "0\n0". per_page=100
+  # covers the candidate's job count.
   rc_failed=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}/jobs?per_page=100" \
                 -q '[.jobs[] | select(.conclusion == "failure")] | length') || {
     note "could not read candidate ${RC_RUN_ID} jobs; watching the legs"
@@ -118,17 +99,15 @@ defer_to_selfheal() {
 }
 
 find_run() {  # workflow-file  run-title -> the newest matching run as JSON, or empty
-  # Exit status matters: an API error must not read as "this leg never ran",
-  # because that path issues a real dispatch and would publish a duplicate.
-  # --arg rather than string interpolation so the title cannot alter the filter.
+  # An API error must not read as "this leg never ran": that path issues a real
+  # dispatch and would publish a duplicate. --arg, so the title cannot alter the filter.
   gh run list --workflow="$1" --repo "${REPO}" --limit 30 \
     --json databaseId,status,conclusion,displayTitle \
     | jq -c --arg title "$2" '[.[] | select(.displayTitle == $title)] | first'
 }
 
-# publish.yml's guard refuses when the version is already live on PyPI, which is
-# the documented benign failure. The goal is the wheel being on PyPI, not the run
-# being green, so check the goal before spending a retry on it.
+# publish.yml refuses when the version is already live on PyPI. That is the goal
+# met, not a flake, so it must not spend a retry.
 version_is_on_pypi() {
   curl -fsS -o /dev/null "https://pypi.org/pypi/${PACKAGE}/${TAG#v}/json"
 }
@@ -187,11 +166,8 @@ handle_completed_leg() {  # file  run-json
   gh run rerun "${run_id}" --repo "${REPO}" --failed || true
 }
 
-# `gh run watch <id> --exit-status` owns "block on one run, exit non-zero if it
-# failed", and if this ever waited on a single known run it should call that.
-# It cannot own this: a leg that never appeared has no run id to watch, and the
-# fan-in needs one deadline and one attempt bound across all eight rather than
-# eight blocking calls and a wait.
+# Not `gh run watch <id> --exit-status`: a leg that never appeared has no run id,
+# and the fan-in needs one deadline and one attempt bound across all eight.
 watch_legs() {
   local watch_deadline pending file label redispatchable title run status
   watch_deadline=$(( $(now) + WATCH_MINUTES * 60 ))
@@ -249,9 +225,8 @@ report() {  # -> 0 when everything shipped
     echo "| ${file} | ${state} | ${reason} |" >> "${SUMMARY}"
   done <<< "${LEGS}"
 
-  # verify-release going green means its promote job marked the release latest.
-  # Asserting it directly costs one call and states the actual definition of a
-  # shipped release rather than inferring it.
+  # isPrerelease=false is the definition of a shipped release. verify-release
+  # going green only implies it.
   prerelease=$(gh release view "${TAG}" --repo "${REPO}" --json isPrerelease -q .isPrerelease 2>/dev/null) || prerelease="unknown"
   if [ "${prerelease}" = "false" ]; then
     echo "| (release) | green | ${TAG} is promoted to latest |" >> "${SUMMARY}"

@@ -200,8 +200,6 @@ summary() { cat "${FIXTURE}/summary.md"; }
 }
 
 @test "two legs whose dispatch was lost are re-dispatched in the same pass" {
-  # A shared appear deadline made one re-dispatch push every other missing leg
-  # out by another APPEAR_MINUTES, so seven lost dispatches healed in series.
   rm "${FIXTURE}/runs/publish-docker.yml.json" "${FIXTURE}/runs/publish-cuda-packages.yml.json"
   APPEAR_MINUTES=20 WATCH_MINUTES=60 run watch
   [ "$status" -eq 1 ]
@@ -210,8 +208,6 @@ summary() { cat "${FIXTURE}/summary.md"; }
 }
 
 @test "a failing run list leaves the leg pending and dispatches nothing" {
-  # An API error must not read as "this leg never ran": that path issues a real
-  # dispatch and would publish a duplicate.
   rm "${FIXTURE}/runs/publish-docker.yml.json"
   touch "${FIXTURE}/fail_run_list"
   run watch
@@ -222,9 +218,6 @@ summary() { cat "${FIXTURE}/summary.md"; }
 }
 
 @test "an unreadable candidate is watched, not mistaken for one that is healing" {
-  # Deferring on an API error would end the watch having watched nothing, and
-  # self-heal only fires on a candidate that actually failed, so nothing would
-  # follow. Every leg here is green, so watching correctly ends green too.
   touch "${FIXTURE}/fail_api"
   run watch
   [ "$status" -eq 0 ]
