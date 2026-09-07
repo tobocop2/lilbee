@@ -1,6 +1,7 @@
 """Tests for the document sync engine (mocked: no live server needed)."""
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from unittest import mock
@@ -2403,12 +2404,26 @@ class TestExcludedFormats:
         assert supported_extension_map()[suffix] not in archive_content_types()
 
     def test_svg_is_refused_as_a_drawing(self):
-        from lilbee.data.ingest.discovery import ExclusionReason, excluded_extension_reasons
+        from lilbee.data.ingest.discovery import (
+            ExclusionReason,
+            excluded_extension_reasons,
+            supported_extension_map,
+        )
 
-        assert excluded_extension_reasons() == {".svg": ExclusionReason.VECTOR_GRAPHIC}
-        from lilbee.data.ingest.discovery import supported_extension_map
-
+        assert excluded_extension_reasons()[".svg"] == ExclusionReason.VECTOR_GRAPHIC
         assert ".svg" not in supported_extension_map()
+
+    @pytest.mark.parametrize("suffix", [".mp3", ".wav", ".m4a", ".mp4", ".mpeg", ".webm"])
+    def test_audio_and_video_are_refused_without_transcription(self, suffix):
+        """xberg errors on audio and video unless a transcription model is configured."""
+        from lilbee.data.ingest.discovery import (
+            ExclusionReason,
+            excluded_extension_reasons,
+            supported_extension_map,
+        )
+
+        assert excluded_extension_reasons()[suffix] == ExclusionReason.NEEDS_TRANSCRIPTION
+        assert suffix not in supported_extension_map()
 
     @pytest.mark.parametrize(
         ("path", "mime", "expected"),
@@ -3334,7 +3349,7 @@ class TestExtractionConfig:
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config.get("pages") is not None
+        assert config.pages is not None
 
     def test_paginated_no_markdown_output(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -3346,31 +3361,38 @@ class TestExtractionConfig:
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         config = extraction_config(ExtractMode.MARKDOWN)
-        assert config.get("pages") is None
+        assert config.pages is None
 
     def test_markdown_has_chunking(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         config = extraction_config(ExtractMode.MARKDOWN)
-        assert config.get("chunking") is not None
+        assert config.chunking is not None
 
     def test_markdown_sets_output_format(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         config = extraction_config(ExtractMode.MARKDOWN)
-        assert config["output_format"] == "markdown"
+        assert config.output_format == "markdown"
 
     def test_paginated_has_tesseract_ocr_backend(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config.get("pages") is not None
-        assert config.get("ocr") is not None
+        assert config.pages is not None
+        assert config.ocr is not None
         # No vision model configured -> xberg's tesseract backend OCRs scanned pages.
-        assert config["ocr"].backend == "tesseract"
+        assert config.ocr.backend == "tesseract"
         # xberg 5.x errors on image OCR with an empty language list; lilbee must
         # set an explicit default to preserve 4.x behavior (regression guard).
-        assert config["ocr"].language == ["eng"]
+        assert config.ocr.language == ["eng"]
+
+    def test_tesseract_ocr_emits_plain_page_text(self):
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        config = extraction_config(ExtractMode.PAGINATED)
+        # Tesseract's markdown renderer guesses tables from column gaps.
+        assert config.ocr.output_format == "plain"
 
     def test_tesseract_ocr_language_from_config(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -3378,7 +3400,7 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "ocr_language", ["deu", "fra"])
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["ocr"].language == ["deu", "fra"]
+        assert config.ocr.language == ["deu", "fra"]
 
     @pytest.mark.parametrize(
         "content_type, expected_mode_name",
@@ -3407,8 +3429,8 @@ class TestExtractionConfig:
         monkeypatch.setattr(cfg, "topic_threshold", 0.42)
         for mode in ExtractMode:
             config = extraction_config(mode)
-            assert config["chunking"].chunker_type == "semantic"
-            assert config["chunking"].topic_threshold == pytest.approx(0.42, abs=1e-5)
+            assert config.chunking.chunker_type == "semantic"
+            assert config.chunking.topic_threshold == pytest.approx(0.42, abs=1e-5)
 
     def test_table_extraction_off_sets_no_pdf_options(self, monkeypatch):
         """Table and layout both off leave pdf_options unset."""
@@ -3417,7 +3439,7 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "layout_detection", False)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config.get("pdf_options") is None
+        assert config.pdf_options is None
 
     def test_table_extraction_sets_pdf_options_and_table_chunking(self, monkeypatch):
         """The flag turns on xberg table recognition and header-repeating splits."""
@@ -3428,8 +3450,8 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "table_extraction", True)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["pdf_options"].extract_tables is True
-        assert config["chunking"].table_chunking == TableChunkingMode.REPEAT_HEADER
+        assert config.pdf_options.extract_tables is True
+        assert config.chunking.table_chunking == TableChunkingMode.REPEAT_HEADER
 
     def test_table_extraction_markdown_mode_skips_pdf_options(self, monkeypatch):
         """Non-paginated formats have no PdfConfig but still chunk tables with headers."""
@@ -3440,8 +3462,8 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "table_extraction", True)
         config = extraction_config(ExtractMode.MARKDOWN)
-        assert config.get("pdf_options") is None
-        assert config["chunking"].table_chunking == TableChunkingMode.REPEAT_HEADER
+        assert config.pdf_options is None
+        assert config.chunking.table_chunking == TableChunkingMode.REPEAT_HEADER
 
     def test_layout_detection_off_sets_no_layout(self, monkeypatch):
         """With layout detection off, no layout config or pdf_options."""
@@ -3450,8 +3472,8 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "layout_detection", False)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config.get("layout") is None
-        assert config.get("pdf_options") is None
+        assert config.layout is None
+        assert config.pdf_options is None
 
     def test_layout_detection_sets_layout_and_reading_order(self, monkeypatch):
         """The flag enables layout detection, reading order, and margin stripping."""
@@ -3460,9 +3482,9 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "layout_detection", True)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["layout"] is not None
-        assert config["use_layout_for_markdown"] is True
-        pdf = config["pdf_options"]
+        assert config.layout is not None
+        assert config.use_layout_for_markdown is True
+        pdf = config.pdf_options
         assert pdf.reading_order is True
         assert pdf.top_margin_fraction == pytest.approx(0.05)
         assert pdf.bottom_margin_fraction == pytest.approx(0.05)
@@ -3477,7 +3499,7 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "layout_detection", True)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["layout"].table_model == "slanet_auto"
+        assert config.layout.table_model == "slanet_auto"
 
     def test_table_model_override(self, monkeypatch):
         """A different table model flows through to the layout config."""
@@ -3488,7 +3510,7 @@ class TestExtractionConfig:
         monkeypatch.setattr(cfg, "layout_detection", True)
         monkeypatch.setattr(cfg, "table_model", TableModel.TATR)
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["layout"].table_model == "tatr"
+        assert config.layout.table_model == "tatr"
 
     def test_layout_detection_markdown_mode_unchanged(self, monkeypatch):
         """Layout detection is visual-format work; non-paginated formats skip it."""
@@ -3497,8 +3519,8 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "layout_detection", True)
         config = extraction_config(ExtractMode.MARKDOWN)
-        assert config.get("layout") is None
-        assert config.get("pdf_options") is None
+        assert config.layout is None
+        assert config.pdf_options is None
 
     def test_layout_and_tables_combine_in_one_pdf_config(self, monkeypatch):
         """Both flags land in the same PdfConfig."""
@@ -3508,7 +3530,7 @@ class TestExtractionConfig:
         monkeypatch.setattr(cfg, "table_extraction", True)
         monkeypatch.setattr(cfg, "layout_detection", True)
         config = extraction_config(ExtractMode.PAGINATED)
-        pdf = config["pdf_options"]
+        pdf = config.pdf_options
         assert pdf.extract_tables is True
         assert pdf.reading_order is True
 
@@ -3735,7 +3757,7 @@ class TestClassifyXbergParityFormats:
             ("scan.jp2", "image"),
             ("scan.j2k", "image"),
             ("scan.j2c", "image"),
-            ("scan.jpx", "image"),
+            ("scan.jpc", "image"),
             ("page.htm", "htm"),
             ("memo.doc", "doc"),
             ("deck.ppt", "ppt"),
@@ -4549,7 +4571,7 @@ class TestOcrConfigSelection:
 
         cfg.enable_ocr = False
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["ocr"].enabled is False
+        assert config.ocr.enabled is False
 
     def test_vision_backend_with_token_when_model_set(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -4557,8 +4579,8 @@ class TestOcrConfigSelection:
         cfg.enable_ocr = None
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED, ocr_token="tok-123")
-        assert config["ocr"].backend == "lilbee-vision"
-        assert config["ocr"].backend_options["req"] == "tok-123"
+        assert config.ocr.backend == "lilbee-vision"
+        assert json.loads(config.ocr.backend_options)["req"] == "tok-123"
 
     def test_force_ocr_off_by_default(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -4566,7 +4588,7 @@ class TestOcrConfigSelection:
         monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config.get("force_ocr") is False
+        assert config.force_ocr is False
 
     @pytest.mark.parametrize("mode_name", ["PAGINATED", "MARKDOWN"])
     def test_force_ocr_set_when_env_and_vision_model(self, isolated_env, monkeypatch, mode_name):
@@ -4575,7 +4597,7 @@ class TestOcrConfigSelection:
         monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(getattr(ExtractMode, mode_name))
-        assert config["force_ocr"] is True
+        assert config.force_ocr is True
 
     def test_force_ocr_ignored_without_vision_model(self, isolated_env, monkeypatch):
         # Tesseract path: force is a vision/GPU re-OCR lever, so it stays off here.
@@ -4584,8 +4606,8 @@ class TestOcrConfigSelection:
         monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
         cfg.vision_model = ""
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["ocr"].backend == "tesseract"
-        assert config.get("force_ocr") is False
+        assert config.ocr.backend == "tesseract"
+        assert config.force_ocr is False
 
     def test_force_ocr_ignored_when_ocr_disabled(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -4594,8 +4616,8 @@ class TestOcrConfigSelection:
         cfg.enable_ocr = False
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
-        assert config["ocr"].enabled is False
-        assert config.get("force_ocr") is False
+        assert config.ocr.enabled is False
+        assert config.force_ocr is False
 
 
 class _CountingVisionBackend:
@@ -4732,7 +4754,7 @@ class TestIngestDocumentOcrPath:
             # Simulate xberg calling the registered backend once per scanned page.
             from lilbee.data.extract.backends.vision_ocr import ocr_requests
 
-            token = config["ocr"].backend_options["req"]
+            token = json.loads(config.ocr.backend_options)["req"]
             ctx = ocr_requests.get(token)
             ctx.on_page()
             ctx.on_page()

@@ -75,15 +75,13 @@ def ocr_request(
         ocr_requests.unregister(token)
 
 
-def backend_options_for(token: str) -> dict[str, str]:
-    """Carry a request token in OcrConfig.backend_options for process_image to read."""
-    return {_REQUEST_TOKEN_KEY: token}
+def backend_options_for(token: str) -> str:
+    """The OcrConfig.backend_options JSON that carries a request token to process_image."""
+    return json.dumps({_REQUEST_TOKEN_KEY: token})
 
 
 class _OcrConfigView:
-    """Typed reader over the xberg OcrConfig passed to process_image. The native
-    round-trip hands ``backend_options`` back as a JSON string, so ``request_token``
-    accepts both the dict and string shapes."""
+    """Typed reader over the xberg OcrConfig passed to process_image."""
 
     def __init__(self, config: OcrConfig) -> None:
         self._config = config
@@ -95,12 +93,14 @@ class _OcrConfigView:
     @property
     def request_token(self) -> str | None:
         options = self._config.backend_options
-        if isinstance(options, str):
-            try:
-                options = json.loads(options)
-            except json.JSONDecodeError:
-                return None
-        token = options.get(_REQUEST_TOKEN_KEY) if isinstance(options, dict) else None
+        if options is None:
+            return None
+        try:
+            decoded = json.loads(options)
+        except json.JSONDecodeError:
+            return None
+        # backend_options is free-form JSON; only lilbee's own object carries a token.
+        token = decoded.get(_REQUEST_TOKEN_KEY) if isinstance(decoded, dict) else None
         return token if isinstance(token, str) else None
 
 

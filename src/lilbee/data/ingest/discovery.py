@@ -6,10 +6,11 @@ import hashlib
 import logging
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 from lilbee.core.config import active_config
@@ -50,10 +51,16 @@ class ExclusionReason(StrEnum):
     """Why discovery refuses a file whose extension xberg could otherwise extract."""
 
     VECTOR_GRAPHIC = "vector graphic, not a document"
+    NEEDS_TRANSCRIPTION = "audio or video, needs a transcription model lilbee does not run"
 
 
 # Refusals the MIME type cannot express: image/svg+xml is a drawing, not a scan.
 _DENIED_EXTENSIONS: dict[str, ExclusionReason] = {".svg": ExclusionReason.VECTOR_GRAPHIC}
+# Refusals by MIME type: xberg errors on these without a transcription config.
+_DENIED_MIME_PREFIXES: dict[str, ExclusionReason] = {
+    "audio/": ExclusionReason.NEEDS_TRANSCRIPTION,
+    "video/": ExclusionReason.NEEDS_TRANSCRIPTION,
+}
 
 
 def _content_type_for(ext: str, mime: str) -> str:
@@ -82,9 +89,24 @@ def _is_archive_mime(mime: str) -> bool:
     return subtype in _ARCHIVE_SUBTYPES
 
 
-def excluded_extension_reasons() -> dict[str, ExclusionReason]:
+def _denied_mime_reason(mime: str) -> ExclusionReason | None:
+    return next(
+        (reason for prefix, reason in _DENIED_MIME_PREFIXES.items() if mime.startswith(prefix)),
+        None,
+    )
+
+
+@cache
+def excluded_extension_reasons() -> Mapping[str, ExclusionReason]:
     """Extension -> why discovery refuses it, for xberg formats lilbee will not ingest."""
-    return dict(_DENIED_EXTENSIONS)
+    from xberg import list_supported_formats
+
+    refused = dict(_DENIED_EXTENSIONS)
+    for fmt in list_supported_formats():
+        reason = _denied_mime_reason(fmt.mime_type)
+        if reason is not None:
+            refused[_normalized_ext(fmt.extension)] = reason
+    return MappingProxyType(refused)
 
 
 @cache
