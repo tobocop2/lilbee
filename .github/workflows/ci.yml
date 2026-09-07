@@ -79,7 +79,9 @@ jobs:
       - name: Install actionlint and bats
         env:
           ACTIONLINT_VERSION: "1.7.12"
-          BATS_VERSION: "1.14.0"
+          # npm's `bats` package trails the GitHub releases; 1.13.0 is the
+          # newest there. Every helper used in tests/shell predates it.
+          BATS_VERSION: "1.13.0"
         run: |
           set -euo pipefail
           curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
