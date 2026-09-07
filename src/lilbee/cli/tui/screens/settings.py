@@ -405,7 +405,7 @@ class SettingsScreen(Screen[None]):
 
     @on(Button.Pressed, ".setting-list-restore")
     def _on_list_restore(self, event: Button.Pressed) -> None:
-        """Restore defaults for a LIST_COLLAPSED setting."""
+        """Restore defaults for a list setting."""
         btn_id = event.button.id
         if btn_id is None or not btn_id.startswith(LIST_RESTORE_PREFIX):
             return

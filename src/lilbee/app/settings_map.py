@@ -28,7 +28,6 @@ class RenderStyle(StrEnum):
 
     COMPACT = "compact"
     FULL = "full"
-    LIST_COLLAPSED = "list_collapsed"
     MULTILINE = "multiline"
 
 
@@ -778,7 +777,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         list,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        render=RenderStyle.LIST_COLLAPSED,
         help_text=(
             "Browser mode: extra Chromium launch flags, one per line. "
             "Defaults trim shared-memory and GPU use."
@@ -862,7 +860,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         list,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        render=RenderStyle.LIST_COLLAPSED,
         validate_regex=True,
         help_text=(
             "Regex patterns that skip URLs at link-discovery time during "
