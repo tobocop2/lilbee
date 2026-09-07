@@ -175,7 +175,7 @@ class TestTokenSizing:
     """cfg.token_sizing routes the plain and heading chunkers through lilbee's
     registered tokenizer backend, so chunk_size is a real token budget."""
 
-    def test_size_params_off_is_char_budget_without_sizing(self, monkeypatch):
+    def test_size_params_off_is_char_budget_with_character_sizing(self, monkeypatch):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
 
@@ -184,7 +184,7 @@ class TestTokenSizing:
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         max_size, overlap, sizing = _size_params()
         assert (max_size, overlap) == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
-        assert sizing is None
+        assert sizing == "characters"
 
     def test_size_params_on_is_raw_token_budget_with_sizing(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -239,7 +239,7 @@ class TestTokenSizing:
         captured = {}
 
         def fake_extract_document(data, mime_type, *, config):
-            chunking = config["chunking"]
+            chunking = config.chunking
             captured["sizing"] = str(chunking.sizing)
             captured["chunker_type"] = chunking.chunker_type
             return SimpleNamespace(chunks=[])
@@ -697,9 +697,21 @@ class Greeter:
         assert max(c.line_end for c in chunks) == 5
 
 
-class TestHeadingContextNoDuplicate:
-    def test_heading_context_no_duplicate(self):
-        """xberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
+class TestHeadingBreadcrumb:
+    def test_breadcrumb_prefixes_each_chunk(self):
+        """Every chunk starts with its heading path in ``# A > ## B`` form."""
+        md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert chunks[0].startswith("# Title\n\n")
+        assert chunks[-1].startswith("# Title > ## Section\n\nMore ")
+
+    def test_no_breadcrumb_without_headings(self):
+        md = "Plain paragraph text. " * 60
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert chunks
+        assert all(c.startswith("Plain paragraph") for c in chunks)
+
+    def test_breadcrumb_is_not_repeated_as_body(self):
         md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
         chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
         for c in chunks:
