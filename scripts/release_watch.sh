@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Watch the workflows a release candidate dispatches, and heal the ones that flake.
 #
-# release-selfheal.yml reruns the candidate's own build cells. Nothing watched
-# the seven workflows the candidate dispatches, nor verify-release which fires
-# on its completion, so a flake in a publish leg (an
-# apt 403 on a runner image, an AUR maintenance window, a nix job racing a push
-# to main) left that channel unpublished until a person noticed and pressed
-# rerun. This script is that person.
+# release-selfheal.yml owns the candidate's own build cells. This owns the seven
+# workflows the candidate dispatches, plus verify-release, which fires on its
+# completion. Without it, a flake in a publish leg (an apt 403 on a runner
+# image, an AUR maintenance window, a nix job racing a push to main) leaves that
+# channel unpublished until a person presses rerun.
 #
 # It waits for all eight legs, reruns a failed one under the same attempt
 # bound release-selfheal uses, re-issues a dispatch that never landed, and exits
@@ -137,9 +136,7 @@ version_is_on_pypi() {
 handle_missing_leg() {  # file  title  redispatchable
   local file="$1" title="$2" redispatchable="$3" deadline_file="${state_dir}/$1.deadline"
 
-  # Per leg, not shared. A shared deadline meant one re-dispatch pushed every
-  # other missing leg out by another APPEAR_MINUTES, so healing seven lost
-  # dispatches took seven times the wait, in series, for no reason.
+  # Per leg: one leg's re-dispatch must not extend another leg's wait.
   [ -f "${deadline_file}" ] || echo "$(( $(now) + APPEAR_MINUTES * 60 ))" > "${deadline_file}"
   [ "$(now)" -lt "$(cat "${deadline_file}")" ] && return 0
 
