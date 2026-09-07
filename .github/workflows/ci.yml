@@ -204,20 +204,10 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      # Pin ollama instead of installing latest every run, so a bad release
-      # cannot land mid-run. Bump deliberately after checking a release is
-      # stable.
-      #
-      # This pin must stay at or above 0.32.2. ollama's Linux builds were
-      # compiled with GCC 11, which generated broken AMX code for the Sapphire
-      # Rapids CPU backend, so the first inference on such a host died inside
-      # libggml-cpu-sapphirerapids.so (ollama issue #17205). ollama PR #17244
-      # bumped the toolchain to GCC 13 and fixed it, first shipping in 0.32.2.
-      #
-      # The earlier pin of 0.31.2 was chosen to escape crashes seen on 0.32.x,
-      # two days after 0.32.2 had already fixed them. It therefore held CI on
-      # the one line that never received the fix, and the warm-up went on
-      # segfaulting on every Sapphire Rapids runner it drew.
+      # Pin ollama so a bad release cannot land mid-run; bump deliberately
+      # after checking a release is stable. Never below 0.32.2: earlier builds
+      # segfault in the Sapphire Rapids CPU backend on the first inference
+      # (ollama#17205).
       OLLAMA_PIN: "0.33.3"
     strategy:
       fail-fast: false
@@ -455,15 +445,12 @@ jobs:
       # generation on a loaded runner overruns the request timeout ("Couldn't
       # reach the provider ... or it timed out"). The warm-up calls pay the
       # load cost here, where nothing is timing the request.
-      # The serve log goes to a file, not /dev/null. ollama wires its
-      # llama-server subprocess's stdout and stderr to the daemon's stderr and
-      # already runs it at --log-verbosity 4, so this file carries the
-      # "load_backend: loaded CPU backend from libggml-cpu-<variant>.so" line
-      # printed at model load. That is the moment the warm-up segfaults, and
-      # discarding this log is why five previous attempts had to guess.
-      # OLLAMA_DEBUG=1 adds the launched binary path and the LD_LIBRARY_PATH
-      # ollama built for it, which settles the PATH and library-collision
-      # theories from a live run instead of from reading ollama's source.
+      # ollama wires its llama-server subprocess's stdout and stderr to the
+      # daemon's stderr and already runs it at --log-verbosity 4, so this file
+      # carries the "load_backend: loaded CPU backend from
+      # libggml-cpu-<variant>.so" line printed at model load, which is when the
+      # warm-up crashes. OLLAMA_DEBUG=1 adds the launched binary path and the
+      # LD_LIBRARY_PATH ollama built for it.
       - name: Start Ollama (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
@@ -525,11 +512,9 @@ jobs:
           exit 1
 
       # Runs on step failure, not job failure, so a later green rerun cannot
-      # discard the evidence. The kernel line is the valuable one: it names the
-      # faulting library outright ("segfault at .. ip .. in libggml-cpu-<x>.so"),
-      # which no amount of reading the workflow can tell you. The host facts are
-      # here because the only established correlate is a degraded runner, not a
-      # CPU generation, so load and disk matter as much as lscpu.
+      # discard the evidence. dmesg names the faulting library outright
+      # ("segfault at .. ip .. in libggml-cpu-<x>.so"); load and disk are here
+      # because a crash correlates with a degraded runner, not a CPU model.
       - name: Collect diagnostics for the Ollama crash
         if: failure() && runner.os != 'Windows'
         shell: bash
@@ -539,10 +524,9 @@ jobs:
           mkdir -p "${out}"
           cp "${RUNNER_TEMP}/ollama-serve.log" "${out}/" 2>/dev/null
           ollama -v > "${out}/ollama-version.txt" 2>&1
-          # uname, uptime and df exist on both; the rest differ by platform, so
-          # spell each one out rather than writing "command not found" into the
-          # bundle. Failures are Linux-only so far, but this step runs on macOS
-          # too and a useless file there would be mistaken for a captured fact.
+          # uname, uptime and df exist on both; the rest differ by platform.
+          # Spelled out per OS so the bundle never contains "command not found"
+          # where a captured fact should be.
           {
             uname -a
             uptime

@@ -42,10 +42,8 @@ def _ollama_reachable() -> bool:
 
 pytestmark = [pytest.mark.slow]
 
-# Applied per class, not to the module. TestSdkFactory asserts config-boundary
-# behaviour and opens no socket, so gating it on a running daemon meant it never
-# ran on a developer machine without ollama, and never ran in CI on a cell where
-# the ollama setup failed.
+# Per class, not per module: TestSdkFactory asserts config-boundary behaviour
+# and opens no socket, so it must run whether or not a daemon is reachable.
 requires_ollama = pytest.mark.skipif(not _ollama_reachable(), reason="Ollama not running")
 
 
