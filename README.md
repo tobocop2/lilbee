@@ -438,7 +438,7 @@ Placement reads what the engine reports about your hardware, and every backend w
 lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model built on one of the architectures below. The list comes from the bundled engine itself and grows with every engine update.
 
 <details>
-<summary><b>All 148 supported model architectures. Click to expand.</b></summary>
+<summary><b>All 150 supported model architectures. Click to expand.</b></summary>
 
 | | | | |
 |---|---|---|---|
@@ -458,27 +458,28 @@ lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model
 | `gptj` | `gptneox` | `granite` | `granite_swa` |
 | `granitehybrid` | `granitemoe` | `graniteswitch` | `grok` |
 | `grovemoe` | `hunyuan-dense` | `hunyuan-moe` | `hunyuan_vl` |
-| `hy_v3` | `internlm2` | `jais` | `jais2` |
-| `jamba` | `jina-bert-v2` | `jina-bert-v3` | `kimi-k3` |
-| `kimi-linear` | `laguna` | `lfm2` | `lfm2moe` |
-| `llada` | `llada-moe` | `llama` | `llama-embed` |
-| `llama4` | `maincoder` | `mamba` | `mamba2` |
-| `mellum` | `mimo2` | `minicpm` | `minicpm3` |
-| `minimax-01` | `minimax-m2` | `minimax-m3` | `mistral3` |
-| `mistral4` | `modern-bert` | `mpt` | `muse-glimmer` |
-| `nanbeige` | `nemotron` | `nemotron_h` | `nemotron_h_moe` |
-| `neo-bert` | `nomic-bert` | `nomic-bert-moe` | `olmo` |
-| `olmo2` | `olmoe` | `openelm` | `orion` |
-| `paddleocr` | `pangu-embedded` | `phi2` | `phi3` |
-| `phimoe` | `plamo` | `plamo2` | `plamo3` |
-| `plm` | `pockettts` | `qwen` | `qwen2` |
-| `qwen2moe` | `qwen2vl` | `qwen3` | `qwen35` |
-| `qwen35moe` | `qwen3moe` | `qwen3next` | `qwen3tts` |
-| `qwen3vl` | `qwen3vlmoe` | `qwen4exp` | `refact` |
-| `rnd1` | `rwkv6` | `rwkv6qwen2` | `rwkv7` |
-| `seed_oss` | `smallthinker` | `smollm3` | `stablelm` |
-| `starcoder` | `starcoder2` | `step35` | `t5` |
-| `t5encoder` | `talkie` | `wavtokenizer-dec` | `xverse` |
+| `hy_v3` | `hy_v4` | `internlm2` | `jais` |
+| `jais2` | `jamba` | `jina-bert-v2` | `jina-bert-v3` |
+| `kimi-k3` | `kimi-linear` | `laguna` | `lfm2` |
+| `lfm2moe` | `llada` | `llada-moe` | `llama` |
+| `llama-embed` | `llama4` | `maincoder` | `mamba` |
+| `mamba2` | `mellum` | `mimo2` | `minicpm` |
+| `minicpm3` | `minimax-01` | `minimax-m2` | `minimax-m3` |
+| `mistral3` | `mistral4` | `modern-bert` | `mpt` |
+| `muse-glimmer` | `nanbeige` | `nemotron` | `nemotron_h` |
+| `nemotron_h_moe` | `neo-bert` | `nomic-bert` | `nomic-bert-moe` |
+| `olmo` | `olmo2` | `olmoe` | `openelm` |
+| `orion` | `paddleocr` | `pangu-embedded` | `phi2` |
+| `phi3` | `phimoe` | `plamo` | `plamo2` |
+| `plamo3` | `plm` | `pockettts` | `qwen` |
+| `qwen2` | `qwen2moe` | `qwen2vl` | `qwen3` |
+| `qwen35` | `qwen35moe` | `qwen3moe` | `qwen3next` |
+| `qwen3tts` | `qwen3vl` | `qwen3vlmoe` | `qwen4exp` |
+| `refact` | `rnd1` | `rwkv6` | `rwkv6qwen2` |
+| `rwkv7` | `seed_oss` | `smallthinker` | `smollm3` |
+| `spark2_5` | `stablelm` | `starcoder` | `starcoder2` |
+| `step35` | `t5` | `t5encoder` | `talkie` |
+| `wavtokenizer-dec` | `xverse` |  |  |
 
 </details>
 <!-- supported-archs:end -->
