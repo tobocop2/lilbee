@@ -262,6 +262,16 @@ class TestOcrLanguage:
     def test_blank_entries_are_dropped(self):
         assert Config(ocr_language=["", "eng", "  "]).ocr_language == ["eng"]
 
+    @pytest.mark.parametrize("code", ["en", "eng", "chi_sim", "jpn_vert", "aze_cyrl"])
+    def test_accepts_tesseract_language_codes(self, code):
+        assert Config(ocr_language=[code]).ocr_language == [code]
+
+    @pytest.mark.parametrize("value", ["1 lines", "eng+1 lines", ["eng", "English"], "e"])
+    def test_rejects_values_that_are_not_language_codes(self, value):
+        """A settings-screen summary once landed here; xberg then refused every ingest."""
+        with pytest.raises(ValueError, match="language code"):
+            Config(ocr_language=value)
+
     def test_chat_mode_defaults_to_search_when_none_or_empty(self):
         """The validator coerces None / "" to 'search' so old configs round-trip."""
         from lilbee.core.config.model import Config as ConfigCls
