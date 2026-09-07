@@ -73,12 +73,16 @@ case "${sub}" in
         echo "$(( $(cat "${FIXTURE}/attempts/${run_id}") + 1 ))" > "${FIXTURE}/attempts/${run_id}"
         # A rerun heals the run unless the fixture says this failure is a defect.
         if [ ! -f "${FIXTURE}/no_heal_${run_id}" ]; then
+          # An unmatched glob stays literal, so guard on the file existing.
+          # release_selfheal.bats has no per-leg run fixtures at all.
           for f in "${FIXTURE}"/runs/*.json; do
+            [ -f "${f}" ] || continue
             jq -c --argjson id "${run_id}" \
               'map(if .databaseId == $id then .conclusion = "success" else . end)' \
               "${f}" > "${f}.tmp" && mv "${f}.tmp" "${f}"
           done
         fi
+        exit 0
         ;;
       *) echo "stub gh: unhandled run $1" >&2; exit 1 ;;
     esac
