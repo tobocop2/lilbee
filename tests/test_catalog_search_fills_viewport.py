@@ -199,8 +199,7 @@ async def test_search_matches_fill_the_viewport(_mock_resolve):
             container = screen._grid_container
             # The filter pass replaces the grouped sections with one flat grid
             # through the same deferred mount chain. Counting before it lands
-            # sums two grids' partial regions, which is why the observed count
-            # was 7: not a multiple of columns_per_row, so not one settled grid.
+            # sums two grids' partial regions instead of one settled grid.
             assert await pump_until(
                 pilot,
                 lambda: (
@@ -242,8 +241,8 @@ async def test_search_after_scrolling_starts_at_the_top(_mock_resolve):
             # scroll_to clamps against max_scroll_y at call time and never
             # re-applies the target when the content later grows, so scrolling
             # before the sections are tall enough parks the viewport at 0 for
-            # good. Asserting the precondition here also moves the failure off
-            # scroll_y, one step downstream of the state that was wrong.
+            # good. Asserting it here also fails on the wrong quantity rather
+            # than on scroll_y downstream.
             assert await pump_until(pilot, lambda: container.max_scroll_y > 0), (
                 "the unfiltered grid never grew taller than the viewport "
                 f"(max_scroll_y={container.max_scroll_y})"
