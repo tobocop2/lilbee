@@ -204,12 +204,21 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      # Pin ollama instead of installing latest every run. The warm-up
-      # ('ollama run qwen3:0.6b') intermittently segfaults in ollama's own
-      # runner on the unpinned latest (0.32.x); pin to the last 0.31 stable so
-      # the version stops drifting and a bad release can't land mid-run. Bump
-      # deliberately after checking a release is stable.
-      OLLAMA_PIN: "0.31.2"
+      # Pin ollama instead of installing latest every run, so a bad release
+      # cannot land mid-run. Bump deliberately after checking a release is
+      # stable.
+      #
+      # This pin must stay at or above 0.32.2. ollama's Linux builds were
+      # compiled with GCC 11, which generated broken AMX code for the Sapphire
+      # Rapids CPU backend, so the first inference on such a host died inside
+      # libggml-cpu-sapphirerapids.so (ollama issue #17205). ollama PR #17244
+      # bumped the toolchain to GCC 13 and fixed it, first shipping in 0.32.2.
+      #
+      # The earlier pin of 0.31.2 was chosen to escape crashes seen on 0.32.x,
+      # two days after 0.32.2 had already fixed them. It therefore held CI on
+      # the one line that never received the fix, and the warm-up went on
+      # segfaulting on every Sapphire Rapids runner it drew.
+      OLLAMA_PIN: "0.33.3"
     strategy:
       fail-fast: false
       matrix:
