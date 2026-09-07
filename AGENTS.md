@@ -469,8 +469,10 @@ closure. These rules exist because each one shipped a broken artifact once.
   The retry is deliberately blind: matching GitHub's error text to tell a flake
   from a defect is a list that goes stale, and a defect costs one rebuild.
 - **A failed publish leg is retried once too.** `release-watch.yml` runs
-  `scripts/release_watch.sh` after every Release candidate, waits for the eight
-  dispatched legs, reruns a failed one, and re-issues a dispatch that never landed.
+  `scripts/release_watch.sh` after every Release candidate, waits for the seven
+  dispatched legs plus `verify-release` (which fires on the candidate's
+  completion, so it is watched but never re-dispatched), reruns a failed one,
+  and re-issues a dispatch that never landed.
   It defers while the candidate still has failed cells: `release-selfheal` reruns a
   dropped build cell, and retrying `verify-release` before the healed asset is
   attached would spend both its attempts on the same missing file.
@@ -478,6 +480,14 @@ closure. These rules exist because each one shipped a broken artifact once.
   `run:` blocks cannot be run, linted or tested off a runner. `make lint-shell`
   shellchecks the scripts and runs actionlint over every workflow; `make test-shell`
   runs the bats suite in `tests/shell/` against a stubbed `gh`.
+- **The release attempt bound is two, in one place per script.** A cell or a
+  publish leg gets one retry; a second failure on the same thing is a defect
+  until proven otherwise, and the bound is all that separates a real defect from
+  an unbounded rerun loop. `scripts/release_selfheal.sh` applies it to candidate
+  cells and `scripts/release_watch.sh` to publish legs.
+- **`gh api --paginate` runs the `-q` filter once per page.** That is correct
+  when the filter emits one line per item and wrong when it emits a count: two
+  pages return `0\n0`, and a numeric test on it errors instead of comparing.
 - **A skipped job on a tag build means stranded, never "skipped by design".**
   Every dispatch job in `release-candidate.yml` shares one `if` (push +
   `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new

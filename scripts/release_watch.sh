@@ -2,12 +2,13 @@
 # Watch the workflows a release candidate dispatches, and heal the ones that flake.
 #
 # release-selfheal.yml reruns the candidate's own build cells. Nothing watched
-# the eight workflows the candidate dispatches, so a flake in a publish leg (an
+# the seven workflows the candidate dispatches, nor verify-release which fires
+# on its completion, so a flake in a publish leg (an
 # apt 403 on a runner image, an AUR maintenance window, a nix job racing a push
 # to main) left that channel unpublished until a person noticed and pressed
 # rerun. This script is that person.
 #
-# It waits for every dispatched leg, reruns a failed one under the same attempt
+# It waits for all eight legs, reruns a failed one under the same attempt
 # bound release-selfheal uses, re-issues a dispatch that never landed, and exits
 # non-zero when a leg burns both attempts.
 #
@@ -56,9 +57,6 @@ publish-docker.yml|Publish Docker Image|yes
 publish-flatpak.yml|Publish Flatpak|yes
 verify-release.yml|Verify release|no'
 
-# Shared by watch_legs and handle_missing_leg: a lost dispatch pushes it out.
-appear_deadline=0
-
 state_dir="$(mktemp -d "${TMPDIR:-/tmp}/release-watch.XXXXXX")"
 trap 'rm -rf "${state_dir}"' EXIT
 
@@ -84,12 +82,24 @@ defer_to_selfheal() {
   [ -n "${RC_RUN_ID}" ] || return 1
 
   local rc rc_attempt rc_conclusion rc_failed
+  # An unreadable candidate is not evidence that it is healing. Deferring on an
+  # API error would end the watch having watched nothing, and self-heal only
+  # fires on a candidate that actually failed, so nothing would follow.
   rc=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" \
-         -q '"\(.run_attempt) \(.conclusion)"' 2>/dev/null) || rc="1 unknown"
+         -q '"\(.run_attempt) \(.conclusion)"') || {
+    note "could not read candidate ${RC_RUN_ID}; watching the legs rather than assuming a heal"
+    return 1
+  }
   rc_attempt="${rc%% *}"
   rc_conclusion="${rc#* }"
+  # No --paginate: the jq runs per page, so a second page makes this "0\n0" and
+  # the numeric test below errors instead of comparing. per_page=100 covers the
+  # candidate's job count, and release-selfheal.yml queries the same way.
   rc_failed=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}/jobs?per_page=100" \
-                --paginate -q '[.jobs[] | select(.conclusion == "failure")] | length' 2>/dev/null) || rc_failed=0
+                -q '[.jobs[] | select(.conclusion == "failure")] | length') || {
+    note "could not read candidate ${RC_RUN_ID} jobs; watching the legs"
+    return 1
+  }
 
   if [ "${rc_conclusion}" = "success" ] && [ "${rc_failed:-0}" -eq 0 ]; then
     return 1
@@ -109,9 +119,12 @@ defer_to_selfheal() {
 }
 
 find_run() {  # workflow-file  run-title -> the newest matching run as JSON, or empty
+  # Exit status matters: an API error must not read as "this leg never ran",
+  # because that path issues a real dispatch and would publish a duplicate.
+  # --arg rather than string interpolation so the title cannot alter the filter.
   gh run list --workflow="$1" --repo "${REPO}" --limit 30 \
     --json databaseId,status,conclusion,displayTitle \
-    --jq "[.[] | select(.displayTitle == \"$2\")] | first" 2>/dev/null
+    | jq -c --arg title "$2" '[.[] | select(.displayTitle == $title)] | first'
 }
 
 # publish.yml's guard refuses when the version is already live on PyPI, which is
@@ -121,10 +134,14 @@ version_is_on_pypi() {
   curl -fsS -o /dev/null "https://pypi.org/pypi/${PACKAGE}/${TAG#v}/json"
 }
 
-handle_missing_leg() {  # file  title  redispatchable; extends the shared appear_deadline
-  local file="$1" title="$2" redispatchable="$3"
+handle_missing_leg() {  # file  title  redispatchable
+  local file="$1" title="$2" redispatchable="$3" deadline_file="${state_dir}/$1.deadline"
 
-  [ "$(now)" -lt "${appear_deadline}" ] && return 0
+  # Per leg, not shared. A shared deadline meant one re-dispatch pushed every
+  # other missing leg out by another APPEAR_MINUTES, so healing seven lost
+  # dispatches took seven times the wait, in series, for no reason.
+  [ -f "${deadline_file}" ] || echo "$(( $(now) + APPEAR_MINUTES * 60 ))" > "${deadline_file}"
+  [ "$(now)" -lt "$(cat "${deadline_file}")" ] && return 0
 
   if [ "${redispatchable}" != "yes" ] || [ -f "${state_dir}/${file}.redispatched" ]; then
     settle "${file}" red "never appeared"
@@ -139,7 +156,7 @@ handle_missing_leg() {  # file  title  redispatchable; extends the shared appear
   fi
   note "${file}: no run titled '${title}' after ${APPEAR_MINUTES}m; the dispatch was lost, issuing it again"
   gh workflow run "${file}" --repo "${REPO}" -f tag="${TAG}" || true
-  appear_deadline=$(( $(now) + APPEAR_MINUTES * 60 ))
+  echo "$(( $(now) + APPEAR_MINUTES * 60 ))" > "${deadline_file}"
 }
 
 handle_completed_leg() {  # file  run-json
@@ -173,10 +190,14 @@ handle_completed_leg() {  # file  run-json
   gh run rerun "${run_id}" --repo "${REPO}" --failed || true
 }
 
+# `gh run watch <id> --exit-status` owns "block on one run, exit non-zero if it
+# failed", and if this ever waited on a single known run it should call that.
+# It cannot own this: a leg that never appeared has no run id to watch, and the
+# fan-in needs one deadline and one attempt bound across all eight rather than
+# eight blocking calls and a wait.
 watch_legs() {
   local watch_deadline pending file label redispatchable title run status
   watch_deadline=$(( $(now) + WATCH_MINUTES * 60 ))
-  appear_deadline=$(( $(now) + APPEAR_MINUTES * 60 ))
 
   while true; do
     pending=0
@@ -186,7 +207,10 @@ watch_legs() {
       pending=1
       title="${label} ${TAG}"
 
-      run=$(find_run "${file}" "${title}")
+      if ! run=$(find_run "${file}" "${title}"); then
+        note "${file}: could not list runs; leaving it pending rather than re-dispatching"
+        continue
+      fi
       if [ -z "${run}" ] || [ "${run}" = "null" ]; then
         handle_missing_leg "${file}" "${title}" "${redispatchable}"
         continue

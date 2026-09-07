@@ -16,7 +16,7 @@ setup() {
   # The release candidate that dispatched the legs: green, nothing to heal.
   echo 1 > "${FIXTURE}/attempts/900"
   echo success > "${FIXTURE}/conclusions/900"
-  echo 0 > "${FIXTURE}/rc_failed"
+  : > "${FIXTURE}/rc_failed"          # job-name lines; empty means no failed cells
 
   cp "${BATS_TEST_DIRNAME}/stubs/gh" "${FIXTURE}/bin/gh"
   chmod +x "${FIXTURE}/bin/gh"
@@ -72,7 +72,8 @@ watch() {
   FIXTURE="${FIXTURE}" \
   GITHUB_STEP_SUMMARY="${FIXTURE}/summary.md" \
   GH_TOKEN=stub REPO=tobocop2/lilbee TAG="${TAG}" RC_RUN_ID=900 \
-  DRY_RUN="${DRY_RUN:-false}" MAX_ATTEMPTS=2 APPEAR_MINUTES=0 WATCH_MINUTES=5 POLL_SECONDS=60 \
+  DRY_RUN="${DRY_RUN:-false}" MAX_ATTEMPTS=2 POLL_SECONDS=60 \
+  APPEAR_MINUTES="${APPEAR_MINUTES:-0}" WATCH_MINUTES="${WATCH_MINUTES:-5}" \
   PATH="${FIXTURE}/bin:${PATH}" \
     bash "${SCRIPT}"
 }
@@ -137,7 +138,7 @@ summary() { cat "${FIXTURE}/summary.md"; }
 }
 
 @test "while the candidate is still healing the watcher defers and changes nothing" {
-  echo 3 > "${FIXTURE}/rc_failed"
+  printf 'cell-a\ncell-b\ncell-c\n' > "${FIXTURE}/rc_failed"
   set_conclusion publish-packages.yml failure
   run watch
   [ "$status" -eq 0 ]
@@ -148,7 +149,7 @@ summary() { cat "${FIXTURE}/summary.md"; }
 
 @test "a candidate already at the attempt bound is watched rather than deferred to" {
   echo 2 > "${FIXTURE}/attempts/900"
-  echo 1 > "${FIXTURE}/rc_failed"
+  printf 'cell-a\n' > "${FIXTURE}/rc_failed"
   run watch
   [ "$status" -eq 0 ]
 }
@@ -196,4 +197,39 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [ ! -s "${FIXTURE}/actions.log" ]
   run summary
   [[ "$output" == *"would rerun"* ]]
+}
+
+@test "two legs whose dispatch was lost are re-dispatched in the same pass" {
+  # A shared appear deadline made one re-dispatch push every other missing leg
+  # out by another APPEAR_MINUTES, so seven lost dispatches healed in series.
+  rm "${FIXTURE}/runs/publish-docker.yml.json" "${FIXTURE}/runs/publish-cuda-packages.yml.json"
+  APPEAR_MINUTES=20 WATCH_MINUTES=60 run watch
+  [ "$status" -eq 1 ]
+  [ "$(grep -c 'dispatch publish-docker.yml' "${FIXTURE}/actions.log")" -eq 1 ]
+  [ "$(grep -c 'dispatch publish-cuda-packages.yml' "${FIXTURE}/actions.log")" -eq 1 ]
+}
+
+@test "a failing run list leaves the leg pending and dispatches nothing" {
+  # An API error must not read as "this leg never ran": that path issues a real
+  # dispatch and would publish a duplicate.
+  rm "${FIXTURE}/runs/publish-docker.yml.json"
+  touch "${FIXTURE}/fail_run_list"
+  run watch
+  [ "$status" -eq 1 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  run summary
+  [[ "$output" == *"unsettled"* ]]
+}
+
+@test "an unreadable candidate is watched, not mistaken for one that is healing" {
+  # Deferring on an API error would end the watch having watched nothing, and
+  # self-heal only fires on a candidate that actually failed, so nothing would
+  # follow. Every leg here is green, so watching correctly ends green too.
+  touch "${FIXTURE}/fail_api"
+  run watch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not read candidate"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" == *"Every channel published"* ]]
 }

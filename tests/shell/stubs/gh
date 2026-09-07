@@ -10,6 +10,16 @@ sub="$1"; shift
 
 case "${sub}" in
   api)
+    [ -f "${FIXTURE}/fail_api" ] && { echo "stub gh: simulated API failure" >&2; exit 1; }
+    # --paginate applies the -q filter per page, so a count comes back as
+    # "0\n0" and the caller's numeric test errors. Fail loudly if it returns.
+    # --paginate applies the -q filter per page. That is correct when the
+    # filter emits one line per job and wrong when it emits a count, so gate on
+    # the filter rather than banning the flag.
+    paginate=no
+    for arg in "$@"; do
+      [ "${arg}" = "--paginate" ] && paginate=yes
+    done
     target="$1"; shift
     jqexpr=""
     while [ $# -gt 0 ]; do
@@ -17,7 +27,13 @@ case "${sub}" in
     done
     case "${target}" in
       */jobs*)
-        cat "${FIXTURE}/rc_failed"
+        case "${jqexpr}" in
+          *length*)
+            [ "${paginate}" = "yes" ] && { echo "stub gh: --paginate with a jq count returns one line per page" >&2; exit 1; }
+            grep -c . < "${FIXTURE}/rc_failed" || true
+            ;;
+          *) cat "${FIXTURE}/rc_failed" ;;
+        esac
         ;;
       */actions/runs/*)
         run_id="${target##*/}"
@@ -37,6 +53,7 @@ case "${sub}" in
   run)
     case "$1" in
       list)
+        [ -f "${FIXTURE}/fail_run_list" ] && { echo "stub gh: simulated list failure" >&2; exit 1; }
         wf=""; jqexpr=""; prev=""
         for arg in "$@"; do
           case "${arg}" in --workflow=*) wf="${arg#--workflow=}" ;; esac
@@ -45,7 +62,10 @@ case "${sub}" in
         done
         f="${FIXTURE}/runs/${wf}.json"
         [ -f "${f}" ] || f="${FIXTURE}/empty.json"
-        jq -c "${jqexpr}" < "${f}"
+        # Real gh emits the whole JSON array when --jq is absent; the caller
+        # pipes it into jq itself. Modelling that matters: the script relies on
+        # gh's exit status to tell an API error from an empty result.
+        if [ -n "${jqexpr}" ]; then jq -c "${jqexpr}" < "${f}"; else cat "${f}"; fi
         ;;
       rerun)
         run_id="$2"

@@ -18,9 +18,12 @@ git fetch -q origin main
   || { echo "release: main is not in sync with origin/main" >&2; exit 1; }
 
 cur=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+# The counter must END the version, not merely appear in it: 0.7.0b1.post1
+# would pass a "contains bN" test and then abort inside the arithmetic below
+# with a raw bash error, after the branch and sync checks have already run.
 case "$cur" in
-  *b[0-9]*) ;;
-  *) echo "release: version '$cur' has no beta (bNNN) segment to bump" >&2; exit 1;;
+  *.dev[0-9]|*.dev[0-9][0-9]*|*b[0-9]|*b[0-9][0-9]*) ;;
+  *) echo "release: version '$cur' does not end in a bNNN or .devNNN counter to bump" >&2; exit 1;;
 esac
 # Bump the last numeric segment: the dev counter when the version carries one
 # (0.6.90b420.dev710 -> .dev711), otherwise the beta counter (0.6.66b507 -> b508).
@@ -37,8 +40,9 @@ perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$next"'"/' pyproject.toml
 git add pyproject.toml uv.lock
 git commit -q -m "Release ${next}"
 git tag "$tag"
-git push origin main
-git push origin "$tag"
+# One push: a rejected main (someone landed between the fetch above and here)
+# must not leave the tag published against a commit that never reached main.
+git push --atomic origin main "$tag"
 
 echo "release: pushed ${tag}. The pipeline takes it from here: it builds, publishes"
 echo "release: every channel, retries a leg that flakes, and promotes the tag itself."

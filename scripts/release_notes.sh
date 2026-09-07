@@ -5,8 +5,8 @@
 # Usage: release_notes.sh <owner/repo> <tag> [previous_tag]
 set -euo pipefail
 
-repo=$1
-tag=$2
+repo=${1:?usage: release_notes.sh <owner/repo> <tag> [previous_tag]}
+tag=${2:?usage: release_notes.sh <owner/repo> <tag> [previous_tag]}
 prev=${3:-}
 
 args=(-f tag_name="$tag")
@@ -33,6 +33,10 @@ gh api "repos/${repo}/releases/generate-notes" "${args[@]}" --jq .body | awk '
 if [ -n "$prev" ]; then
   old_archs=$(mktemp)
   new_archs=$(mktemp)
+  # The body is already on stdout by now. If the table generator exits non-zero,
+  # set -e ends the script here, so the cleanup has to be a trap rather than the
+  # rm below, or the caller gets a complete-looking body and two leaked files.
+  trap 'rm -f "$old_archs" "$new_archs"' EXIT
   archs_path="src/lilbee/_generated/engine_archs.py"
   root=$(cd "$(dirname "$0")/.." && pwd)
   if git -C "$root" show "${prev}:${archs_path}" > "$old_archs" 2>/dev/null \
@@ -43,5 +47,4 @@ if [ -n "$prev" ]; then
       printf '\n%s\n' "$table"
     fi
   fi
-  rm -f "$old_archs" "$new_archs"
 fi

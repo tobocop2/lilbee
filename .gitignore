@@ -54,6 +54,7 @@ scripts/*
 !scripts/release_notes.sh
 !scripts/promote_release.sh
 !scripts/release_watch.sh
+!scripts/release_selfheal.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py
