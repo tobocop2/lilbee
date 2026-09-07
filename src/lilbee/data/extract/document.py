@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -20,6 +21,7 @@ from lilbee.data.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
     PDF_CONTENT_TYPE,
+    PLAIN_OUTPUT,
     ChunkRecord,
     ExtractMode,
     MemberRecords,
@@ -222,7 +224,12 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
         )
     # xberg requires a non-empty language list (4.x defaulted to English;
     # xberg 1.0 errors on an empty one). cfg.ocr_language is validated non-empty.
-    return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(config.ocr_language))
+    # Plain page text: Tesseract's markdown renderer turns column gaps into tables.
+    return OcrConfig(
+        backend=OcrBackendName.TESSERACT,
+        language=list(config.ocr_language),
+        output_format=PLAIN_OUTPUT,
+    )
 
 
 def _ocr_force_requested() -> bool:
@@ -298,13 +305,11 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
             force_ocr=force_ocr,
             pdf_options=_pdf_options(),
         )
-        # Set only when on: the keys are absent rather than None, leaving xberg's
-        # defaults in place when layout detection is off.
+        # The layout fields keep xberg's defaults when layout detection is off.
         layout = _layout_config()
-        if layout is not None:
-            paginated["layout"] = layout
-            paginated["use_layout_for_markdown"] = True
-        return paginated
+        if layout is None:
+            return paginated
+        return replace(paginated, layout=layout, use_layout_for_markdown=True)
     return ExtractionConfig(
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,

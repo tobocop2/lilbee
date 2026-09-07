@@ -9,13 +9,18 @@ from lilbee.core.config import active_config
 from lilbee.data.types import EmbeddingBackendName, TokenizerBackendName
 
 if TYPE_CHECKING:
-    from xberg import ChunkingConfig, ChunkSizing, EmbeddingConfig, TableChunkingMode
+    from xberg import Chunk, ChunkingConfig, ChunkSizing, EmbeddingConfig, TableChunkingMode
 
 # Char->token ratio for English.
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
+# xberg's default sizer: chunk_size counts characters.
+_CHARACTER_SIZING = "characters"
+# Markdown heading path rendered into a chunk: "# Setup > ## Install".
+_HEADING_MARK = "#"
+_BREADCRUMB_SEPARATOR = " > "
 
 
 def _char_budget() -> tuple[int, int]:
@@ -26,13 +31,13 @@ def _char_budget() -> tuple[int, int]:
     return max_chars, max_overlap
 
 
-def _size_params() -> tuple[int, int, ChunkSizing | None]:
+def _size_params() -> tuple[int, int, ChunkSizing | str]:
     """Return (max, overlap, sizing) for the plain and heading chunkers.
 
     With ``cfg.token_sizing`` on, the budget is a raw token count and ``sizing``
     routes to lilbee's registered tokenizer backend, so ``chunk_size`` is a real
-    token ceiling. Otherwise the character heuristic with no sizing (xberg's default
-    character sizer). The semantic chunker does not use this -- it sizes by
+    token ceiling. Otherwise the character heuristic with xberg's default
+    character sizer. The semantic chunker does not use this -- it sizes by
     characters and ignores ChunkSizing."""
     config = active_config()
     if config.token_sizing:
@@ -45,7 +50,7 @@ def _size_params() -> tuple[int, int, ChunkSizing | None]:
             ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE),
         )
     max_chars, max_overlap = _char_budget()
-    return max_chars, max_overlap, None
+    return max_chars, max_overlap, _CHARACTER_SIZING
 
 
 def _semantic_embedding_config() -> EmbeddingConfig:
@@ -125,16 +130,32 @@ def chunk_text(
             overlap=max_overlap,
             sizing=sizing,
             chunker_type=_MARKDOWN_CHUNKER,
-            prepend_heading_context=True,
         )
     else:
         chunking = build_chunking_config(use_semantic=use_semantic)
 
     config = ExtractionConfig(chunking=chunking)
     doc = extract_document(text.encode("utf-8"), mime_type, config=config)
-    if doc.chunks:
-        return [c.content for c in doc.chunks]
-    return []
+    if not doc.chunks:
+        return []
+    if heading_context:
+        return [_with_heading_breadcrumb(c) for c in doc.chunks]
+    return [c.content for c in doc.chunks]
+
+
+def _with_heading_breadcrumb(chunk: Chunk) -> str:
+    """Prefix a markdown chunk with its heading path, e.g. ``# Setup > ## Install``.
+
+    xberg's ``render_heading_breadcrumb`` is Rust-only; the Python binding exposes
+    the headings as ``metadata.heading_context``.
+    """
+    context = chunk.metadata.heading_context
+    if context is None or not context.headings:
+        return chunk.content
+    breadcrumb = _BREADCRUMB_SEPARATOR.join(
+        f"{_HEADING_MARK * h.level} {h.text}" for h in context.headings
+    )
+    return f"{breadcrumb}\n\n{chunk.content}"
 
 
 class ChunkLimitError(Exception):
