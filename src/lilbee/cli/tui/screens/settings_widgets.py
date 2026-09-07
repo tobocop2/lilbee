@@ -107,8 +107,6 @@ def effective_value(key: str) -> str:
     """Return the effective value for a setting, including model defaults."""
     user_value = getattr(cfg, key, None)
     if user_value is not None:
-        if isinstance(user_value, list):
-            return f"{len(user_value)} lines"
         return str(user_value)
     defaults = cfg.model_defaults
     if defaults is None:
@@ -213,7 +211,7 @@ def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
 
 def make_editor(key: str, defn: SettingDef) -> Widget:
     """Create the appropriate editor widget for a setting."""
-    # A list never reaches an Input: effective_value summarises it as "N lines".
+    # A list never reaches an Input: str(list) would be saved back as the value.
     if defn.type is list:
         return make_list_editor(key)
     value = effective_value(key)
