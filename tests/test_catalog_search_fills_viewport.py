@@ -135,11 +135,10 @@ async def _open_catalog_chat_grid(app, pilot):
     screen._active_tab_id_cache = "chat"
     screen._activation_settled = True
     await pilot.pause()
-    # _remount_grid_sections mounts only the first section and defers the rest
-    # through call_after_refresh. Pilot.pause waits only on widgets that existed
-    # when it was called, so it never covers those; a bare pause here returns
-    # while the grid is still empty. region.height is the cheap proof that both
-    # the mount chain and the layout pass ran, since an unlaid-out grid is 0.
+    # _remount_grid_sections mounts the first section and defers the rest through
+    # call_after_refresh. Pilot.pause waits only on widgets that existed when it
+    # was called, so a bare pause returns while the grid is still empty.
+    # region.height is 0 until the layout pass runs.
     assert await pump_until(
         pilot, lambda: any(g.region.height for g in screen._grid_container.query(ModelGrid))
     ), "the deferred grid sections never mounted and laid out"
@@ -240,9 +239,7 @@ async def test_search_after_scrolling_starts_at_the_top(_mock_resolve):
             container = screen._grid_container
             # scroll_to clamps against max_scroll_y at call time and never
             # re-applies the target when the content later grows, so scrolling
-            # before the sections are tall enough parks the viewport at 0 for
-            # good. Asserting it here also fails on the wrong quantity rather
-            # than on scroll_y downstream.
+            # before the sections are tall enough parks the viewport at 0 for good.
             assert await pump_until(pilot, lambda: container.max_scroll_y > 0), (
                 "the unfiltered grid never grew taller than the viewport "
                 f"(max_scroll_y={container.max_scroll_y})"
