@@ -1,17 +1,20 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
 	uv run python tools/gen_settings_reference.py --check
+	# The README formats table is generated from discovery's format map, so an
+	# xberg or tree-sitter bump that changes the set lands in the table.
+	uv run python tools/gen_formats_table.py --check
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -21,7 +24,7 @@ typecheck:
 	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
@@ -104,6 +107,9 @@ engine-archs:  ## Regenerate the supported-architecture list from the pinned eng
 
 docs-settings:  ## Regenerate the cross-surface settings reference
 	uv run python tools/gen_settings_reference.py
+
+docs-formats:  ## Regenerate the README supported-formats table
+	uv run python tools/gen_formats_table.py
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python tools/gen_openapi.py openapi.json

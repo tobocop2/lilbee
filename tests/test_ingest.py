@@ -2404,12 +2404,26 @@ class TestExcludedFormats:
         assert supported_extension_map()[suffix] not in archive_content_types()
 
     def test_svg_is_refused_as_a_drawing(self):
-        from lilbee.data.ingest.discovery import ExclusionReason, excluded_extension_reasons
+        from lilbee.data.ingest.discovery import (
+            ExclusionReason,
+            excluded_extension_reasons,
+            supported_extension_map,
+        )
 
-        assert excluded_extension_reasons() == {".svg": ExclusionReason.VECTOR_GRAPHIC}
-        from lilbee.data.ingest.discovery import supported_extension_map
-
+        assert excluded_extension_reasons()[".svg"] == ExclusionReason.VECTOR_GRAPHIC
         assert ".svg" not in supported_extension_map()
+
+    @pytest.mark.parametrize("suffix", [".mp3", ".wav", ".m4a", ".mp4", ".mpeg", ".webm"])
+    def test_audio_and_video_are_refused_without_transcription(self, suffix):
+        """xberg errors on audio and video unless a transcription model is configured."""
+        from lilbee.data.ingest.discovery import (
+            ExclusionReason,
+            excluded_extension_reasons,
+            supported_extension_map,
+        )
+
+        assert excluded_extension_reasons()[suffix] == ExclusionReason.NEEDS_TRANSCRIPTION
+        assert suffix not in supported_extension_map()
 
     @pytest.mark.parametrize(
         ("path", "mime", "expected"),
