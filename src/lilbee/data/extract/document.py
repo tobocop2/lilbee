@@ -21,7 +21,6 @@ from lilbee.data.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
     PDF_CONTENT_TYPE,
-    PLAIN_OUTPUT,
     ChunkRecord,
     ExtractMode,
     MemberRecords,
@@ -224,11 +223,9 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
         )
     # xberg requires a non-empty language list (4.x defaulted to English;
     # xberg 1.0 errors on an empty one). cfg.ocr_language is validated non-empty.
-    # Plain page text: Tesseract's markdown renderer turns column gaps into tables.
     return OcrConfig(
         backend=OcrBackendName.TESSERACT,
         language=list(config.ocr_language),
-        output_format=PLAIN_OUTPUT,
     )
 
 
