@@ -1340,6 +1340,50 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     assert parsed == ["pat-a", "pat-b"]
 
 
+async def test_settings_every_list_setting_gets_the_list_editor():
+    """A list-typed setting never lands in a plain Input.
+
+    The Input path is seeded from ``effective_value``, which summarises a list
+    as "N lines"; saving the form then wrote that summary back as the value.
+    """
+    from textual.widgets import Collapsible
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import group_settings
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    list_keys = [
+        key
+        for group in group_settings().values()
+        for key, defn in group
+        if SETTINGS_MAP[key].type is list
+    ]
+    assert "ocr_language" in list_keys
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 60)):
+        for key in list_keys:
+            app.screen.query_one(f"#collapsible-{key}", Collapsible)
+            assert isinstance(app.screen.query_one(f"#ed-{key}"), ListTextArea), key
+
+
+async def test_settings_ocr_language_round_trips_through_the_list_editor(tmp_path):
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+    from lilbee.core import settings
+
+    cfg.data_root = tmp_path
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-ocr_language", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("eng\ndeu")
+        ta.blur()
+        landed = await pump_until(pilot, lambda: "ocr_language" in settings.load(tmp_path))
+        assert landed, "the blur never reached the settings store"
+    assert cfg.ocr_language == ["eng", "deu"]
+    assert settings.load(tmp_path)["ocr_language"] == "eng\ndeu"
+
+
 async def test_list_text_area_posts_blurred():
     """ListTextArea posts its Blurred message when focus moves away."""
     from textual.widgets import Input

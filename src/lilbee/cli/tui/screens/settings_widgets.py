@@ -213,7 +213,8 @@ def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
 
 def make_editor(key: str, defn: SettingDef) -> Widget:
     """Create the appropriate editor widget for a setting."""
-    if defn.render is RenderStyle.LIST_COLLAPSED:
+    # A list never reaches an Input: effective_value summarises it as "N lines".
+    if defn.type is list:
         return make_list_editor(key)
     value = effective_value(key)
     if defn.choices:
