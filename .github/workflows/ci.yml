@@ -446,10 +446,19 @@ jobs:
       # generation on a loaded runner overruns the request timeout ("Couldn't
       # reach the provider ... or it timed out"). The warm-up calls pay the
       # load cost here, where nothing is timing the request.
+      # The serve log goes to a file, not /dev/null. ollama wires its
+      # llama-server subprocess's stdout and stderr to the daemon's stderr and
+      # already runs it at --log-verbosity 4, so this file carries the
+      # "load_backend: loaded CPU backend from libggml-cpu-<variant>.so" line
+      # printed at model load. That is the moment the warm-up segfaults, and
+      # discarding this log is why five previous attempts had to guess.
+      # OLLAMA_DEBUG=1 adds the launched binary path and the LD_LIBRARY_PATH
+      # ollama built for it, which settles the PATH and library-collision
+      # theories from a live run instead of from reading ollama's source.
       - name: Start Ollama (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > /dev/null 2>&1 &
+          OLLAMA_DEBUG=1 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > "${RUNNER_TEMP}/ollama-serve.log" 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS localhost:11434/api/version >/dev/null 2>&1 && break
             sleep 1
@@ -505,6 +514,51 @@ jobs:
           done
           echo "::error::Ollama warm-up failed after 3 attempts."
           exit 1
+
+      # Runs on step failure, not job failure, so a later green rerun cannot
+      # discard the evidence. The kernel line is the valuable one: it names the
+      # faulting library outright ("segfault at .. ip .. in libggml-cpu-<x>.so"),
+      # which no amount of reading the workflow can tell you. The host facts are
+      # here because the only established correlate is a degraded runner, not a
+      # CPU generation, so load and disk matter as much as lscpu.
+      - name: Collect diagnostics for the Ollama crash
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set +e
+          out="${RUNNER_TEMP}/ollama-diagnostics"
+          mkdir -p "${out}"
+          cp "${RUNNER_TEMP}/ollama-serve.log" "${out}/" 2>/dev/null
+          ollama -v > "${out}/ollama-version.txt" 2>&1
+          # uname, uptime and df exist on both; the rest differ by platform, so
+          # spell each one out rather than writing "command not found" into the
+          # bundle. Failures are Linux-only so far, but this step runs on macOS
+          # too and a useless file there would be mistaken for a captured fact.
+          {
+            uname -a
+            uptime
+            df -h
+          } > "${out}/host.txt" 2>&1
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            { nproc; free -g; } >> "${out}/host.txt" 2>&1
+            lscpu > "${out}/lscpu.txt" 2>&1
+            sudo dmesg | tail -50 > "${out}/dmesg.txt" 2>&1
+          else
+            { sysctl -n hw.model hw.ncpu hw.memsize; vm_stat; } >> "${out}/host.txt" 2>&1
+          fi
+          echo "--- kernel segfault lines, if any ---"
+          grep -i "segfault\|general protection" "${out}/dmesg.txt" 2>/dev/null || echo "none in dmesg"
+          echo "--- backend variant loaded by ollama ---"
+          grep -i "load_backend\|loaded CPU backend" "${out}/ollama-serve.log" 2>/dev/null || echo "no backend line captured"
+
+      - name: Upload the Ollama crash diagnostics
+        if: failure() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ollama-diagnostics-${{ runner.os }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/ollama-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Start Ollama (Windows)
         if: runner.os == 'Windows'
