@@ -8,6 +8,7 @@ to the same instance defined at module bottom.
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -45,6 +46,10 @@ log = logging.getLogger(__name__)
 # instance equal to this, so the model_validator can distinguish "user passed
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
+
+# A Tesseract language code: ISO 639 letters plus script or orientation suffixes
+# (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
+_TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
 # Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping);
 # hardcoded so config validation does not import lancedb.
@@ -1127,6 +1132,12 @@ class Config(BaseSettings):
             v = v.replace("+", ",").replace("\n", ",").split(",")
         items = v or []
         langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        for lang in langs:
+            if not _TESSERACT_LANGUAGE_CODE.fullmatch(lang):
+                raise ValueError(
+                    f"ocr_language: {lang!r} is not a Tesseract language code "
+                    "(examples: eng, deu, chi_sim, jpn_vert)"
+                )
         return langs or ["eng"]
 
     @field_validator("flash_attention", mode="before")
