@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Cut a beta release: bump the trailing counter (the .devNNN when the version has
 # one, else the bNNN), commit, tag, and push from main.
-# release-candidate.yml builds the artifacts, publishes to PyPI, and creates the
-# pre-release with generated notes. Once that pipeline is green run
-# `make release-promote` to rewrite the notes as headings and mark it latest.
+# Everything after the push is automatic. release-candidate.yml builds the
+# artifacts, publishes to PyPI and fans out to every channel; release-selfheal.yml
+# retries a failed build cell; release-watch.yml retries a failed publish leg; and
+# verify-release.yml promotes the tag once the assets pass a real-inference smoke.
+# `make release-promote` stays as the manual path for rewriting notes by hand.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -38,5 +40,6 @@ git tag "$tag"
 git push origin main
 git push origin "$tag"
 
-echo "release: pushed ${tag}; release-candidate.yml is building."
-echo "release: when the PyPI publish is green, run 'make release-promote'."
+echo "release: pushed ${tag}. The pipeline takes it from here: it builds, publishes"
+echo "release: every channel, retries a leg that flakes, and promotes the tag itself."
+echo "release: a red 'Watch ${tag}' run is the only thing that wants your attention."

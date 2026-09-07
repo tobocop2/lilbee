@@ -94,7 +94,7 @@ jobs:
           {
             echo "Failed cells:"
             echo
-            echo "${failed}" | sed 's/^/- /'
+            echo "${failed}" | awk '{ print "- " $0 }'
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 

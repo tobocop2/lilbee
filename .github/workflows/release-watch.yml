@@ -1,0 +1,68 @@
+name: Release watch
+
+run-name: Watch ${{ github.event.workflow_run.head_branch || inputs.tag }}
+
+# Every dispatched publish leg gets watched and healed. The logic is
+# scripts/release_watch.sh so it can be read, shellchecked, tested with bats and
+# run by hand; this file only supplies the trigger and the environment.
+#
+# There is no alerting by design: green is silence, and a red run here is the
+# signal, delivered by GitHub's own failed-workflow notification.
+
+on:
+  workflow_run:
+    workflows: ["Release candidate"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to watch (e.g. v0.6.90b434)."
+        required: true
+      dry_run:
+        description: "Report what would be rerun or re-dispatched, and change nothing."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read   # check out the script; read the release to confirm it promoted
+  actions: write   # rerun a failed leg, re-issue a lost dispatch
+
+# Keyed on the tag and cancelling, unlike every other release workflow here.
+# release-selfheal reruns the candidate, which emits a second completion and
+# would start a second watcher. Two watchers racing the same legs spend the
+# two-attempt budget in one pass, so the newest view of the release wins.
+concurrency:
+  group: release-watch-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    # Only a tag push. A workflow_dispatch candidate skips create-prerelease and
+    # the whole dispatch cascade by design, so there would be no legs to watch
+    # and this would go red on a build that was correct.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    # verify-release waits up to 180 minutes for the channel artifacts and
+    # publish-flatpak up to 90 for the variant binaries, so the watch spans
+    # both. Stays under the 360-minute job ceiling.
+    timeout-minutes: 300
+    steps:
+      # The default branch, never the tag. The watcher should always run the
+      # newest logic, and a bare checkout resolves against the run's pinned sha,
+      # which hard-fails once a tag is force-moved.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Watch every dispatched leg to a conclusion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.workflow_run.head_branch || inputs.tag }}
+          RC_RUN_ID: ${{ github.event.workflow_run.id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: bash scripts/release_watch.sh

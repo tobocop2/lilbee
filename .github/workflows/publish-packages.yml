@@ -1,4 +1,5 @@
 name: Publish Packages
+run-name: Publish Packages ${{ inputs.tag }}
 
 # Updates the Homebrew formula, AUR PKGBUILD, and Nix flake to pin a tag's
 # GH-release binaries, and publishes the npm launcher packages. Dispatched by

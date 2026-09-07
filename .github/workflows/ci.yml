@@ -20,8 +20,9 @@ on:
       - 'tools/wheel-build/**'
       - 'packaging/tools/**'
       - 'scripts/qa/**'
-      - '.github/workflows/ci.yml'
-      - '.github/actions/restore-ci-models/**'
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - 'scripts/*.sh'
   pull_request:
     paths: *ci-paths
   workflow_call:
@@ -61,6 +62,37 @@ jobs:
 
       - name: Check imports resolve
         run: make imports-check
+
+  # Shell is a first-class part of the release path: scripts/release_watch.sh
+  # heals the publish fan-out, and actionlint runs shellcheck over every inline
+  # `run:` block in .github as well.
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install actionlint and bats
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          BATS_VERSION: "1.14.0"
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin actionlint
+          npm install -g "bats@${BATS_VERSION}"
+
+      # make lint-shell skips a missing tool so it stays usable on a laptop.
+      # Assert them here so a runner image that drops one fails loudly instead.
+      - name: Every tool the shell gate needs is present
+        run: shellcheck --version && actionlint --version && bats --version
+
+      - run: make lint-shell
+      - run: make test-shell
 
   npm-launcher:
     runs-on: ubuntu-latest

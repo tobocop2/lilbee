@@ -53,6 +53,7 @@ scripts/*
 !scripts/release.sh
 !scripts/release_notes.sh
 !scripts/promote_release.sh
+!scripts/release_watch.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py
