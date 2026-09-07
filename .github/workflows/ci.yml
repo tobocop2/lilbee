@@ -204,10 +204,8 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      # Pin ollama so a bad release cannot land mid-run; bump deliberately
-      # after checking a release is stable. Never below 0.32.2: earlier builds
-      # segfault in the Sapphire Rapids CPU backend on the first inference
-      # (ollama#17205).
+      # Never below 0.32.2: earlier builds segfault in the Sapphire Rapids CPU
+      # backend on the first inference (ollama#17205).
       OLLAMA_PIN: "0.33.3"
     strategy:
       fail-fast: false
@@ -445,12 +443,10 @@ jobs:
       # generation on a loaded runner overruns the request timeout ("Couldn't
       # reach the provider ... or it timed out"). The warm-up calls pay the
       # load cost here, where nothing is timing the request.
-      # ollama wires its llama-server subprocess's stdout and stderr to the
-      # daemon's stderr and already runs it at --log-verbosity 4, so this file
-      # carries the "load_backend: loaded CPU backend from
-      # libggml-cpu-<variant>.so" line printed at model load, which is when the
-      # warm-up crashes. OLLAMA_DEBUG=1 adds the launched binary path and the
-      # LD_LIBRARY_PATH ollama built for it.
+      # ollama runs its llama-server subprocess at --log-verbosity 4 and wires its
+      # output to the daemon's stderr, so this file carries the "load_backend:
+      # loaded CPU backend from libggml-cpu-<variant>.so" line. OLLAMA_DEBUG=1 adds
+      # the launched binary path and the LD_LIBRARY_PATH ollama built for it.
       - name: Start Ollama (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
@@ -511,10 +507,8 @@ jobs:
           echo "::error::Ollama warm-up failed after 3 attempts."
           exit 1
 
-      # Runs on step failure, not job failure, so a later green rerun cannot
-      # discard the evidence. dmesg names the faulting library outright
-      # ("segfault at .. ip .. in libggml-cpu-<x>.so"); load and disk are here
-      # because a crash correlates with a degraded runner, not a CPU model.
+      # On step failure, not job failure, so a later green rerun cannot discard
+      # the evidence.
       - name: Collect diagnostics for the Ollama crash
         if: failure() && runner.os != 'Windows'
         shell: bash
@@ -524,9 +518,7 @@ jobs:
           mkdir -p "${out}"
           cp "${RUNNER_TEMP}/ollama-serve.log" "${out}/" 2>/dev/null
           ollama -v > "${out}/ollama-version.txt" 2>&1
-          # uname, uptime and df exist on both; the rest differ by platform.
-          # Spelled out per OS so the bundle never contains "command not found"
-          # where a captured fact should be.
+          # Spelled out per OS: only uname, uptime and df exist on both.
           {
             uname -a
             uptime
