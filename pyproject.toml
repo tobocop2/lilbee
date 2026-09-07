@@ -40,7 +40,7 @@ dependencies = [
     # shard-adoption path, which that hardware cannot reach.
     "lancedb[pylance] ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "lancedb ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "xberg>=1.0.4",
+    "xberg>=1.1.0",
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
     "filelock<3.33",
