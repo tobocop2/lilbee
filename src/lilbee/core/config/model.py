@@ -286,6 +286,11 @@ class Config(BaseSettings):
     table_model: TableModel = ConfigField(
         default=TableModel.SLANET_AUTO, writable=True, reindex=True
     )
+    # Wall-clock cap per file for one xberg extraction, seconds. 0 = no cap.
+    # xberg's own default is 600s and applies on its batch path, so leaving this
+    # unset drops a slow file at ten minutes with no lilbee knob to raise it.
+    # Zero matches the uncapped single-file path, and ingest is background work.
+    extraction_timeout: int = ConfigField(default=0, ge=0, writable=True)
     # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
