@@ -91,9 +91,36 @@ make format-check  # verify formatting without changing files
 
 See [`AGENTS.md`](AGENTS.md) for the complete set of rules (DRY, layering, TUI conventions, cross-cutting-change checklist, self-review checklist).
 
-## Commits and PRs
+## Commit messages
 
-- Keep commits focused and descriptive. No "Phase N" numbering, no `Co-Authored-By` lines.
+lilbee follows [the seven rules of a great commit message](https://cbea.ms/git-commit/):
+
+1. Separate subject from body with a blank line
+2. Limit the subject line to 50 characters
+3. Capitalize the subject line
+4. Do not end the subject line with a period
+5. Use the imperative mood in the subject line
+6. Wrap the body at 72 characters
+7. Use the body to explain what and why, not how
+
+A `subsystem: summary` prefix is fine, as the Linux kernel uses. lilbee does not
+use Conventional Commits: nothing here consumes the prefixes, and they push
+subjects into lowercase.
+
+The body states what changed and the mechanism that makes it work: the flag, the
+ordering constraint, the invariant, the root cause. It does not narrate how the
+work was reached, list files, or restate the diff. Keep sentences under about 25
+words, in the active voice and the present tense.
+
+No em dashes. No `Phase N` numbering. No ticket ids in the subject. No
+`Co-Authored-By` lines for tools.
+
+[`committed`](https://github.com/crate-ci/committed) enforces the mechanical
+rules through a `commit-msg` hook and in CI. It reads `committed.toml`. The
+`uv run pre-commit install` step above installs the hook.
+
+## Pull requests
+
 - PR descriptions are short and human-readable: a `## Problem` and `## Solution` paragraph. No implementation dumps, internal names, or test-plan sections.
 - Run the full `make check` gate before every push.
 
