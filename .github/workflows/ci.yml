@@ -38,6 +38,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history: the commit-message check needs a merge base.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -62,6 +65,14 @@ jobs:
 
       - name: Check imports resolve
         run: make imports-check
+
+      - name: Check commit messages
+        if: github.event_name == 'pull_request'
+        # Check the branch's own commits. HEAD is the synthetic merge commit
+        # that GitHub builds for the event, and it is not ours to lint.
+        run: |
+          uvx --from committed committed \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
 
   shell:
     runs-on: ubuntu-latest

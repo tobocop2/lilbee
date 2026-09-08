@@ -1,0 +1,11 @@
+# Commit-message rules, per CONTRIBUTING.md.
+# Check a range with: committed origin/main..HEAD
+subject_length = 50
+line_length = 72
+subject_capitalized = true
+subject_not_punctuated = true
+imperative_subject = true
+no_fixup = true
+no_wip = true
+merge_commit = false
+style = "none"
