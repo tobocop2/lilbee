@@ -52,5 +52,5 @@ runs:
           exit 0
         fi
         git commit -m "${COMMIT_MESSAGE}"
-        # scoop and the CUDA/compat flake jobs commit to this same branch in parallel.
+        # The CUDA and compat flake jobs commit to this same branch in parallel.
         bash "${GITHUB_WORKSPACE}/tools/ci/git_push_retry.sh"
