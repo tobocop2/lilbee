@@ -204,12 +204,9 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      # Pin ollama instead of installing latest every run. The warm-up
-      # ('ollama run qwen3:0.6b') intermittently segfaults in ollama's own
-      # runner on the unpinned latest (0.32.x); pin to the last 0.31 stable so
-      # the version stops drifting and a bad release can't land mid-run. Bump
-      # deliberately after checking a release is stable.
-      OLLAMA_PIN: "0.31.2"
+      # Never below 0.32.2: earlier builds segfault in the Sapphire Rapids CPU
+      # backend on the first inference (ollama#17205).
+      OLLAMA_PIN: "0.33.3"
     strategy:
       fail-fast: false
       matrix:
@@ -446,10 +443,14 @@ jobs:
       # generation on a loaded runner overruns the request timeout ("Couldn't
       # reach the provider ... or it timed out"). The warm-up calls pay the
       # load cost here, where nothing is timing the request.
+      # ollama runs its llama-server subprocess at --log-verbosity 4 and wires its
+      # output to the daemon's stderr, so this file carries the "load_backend:
+      # loaded CPU backend from libggml-cpu-<variant>.so" line. OLLAMA_DEBUG=1 adds
+      # the launched binary path and the LD_LIBRARY_PATH ollama built for it.
       - name: Start Ollama (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > /dev/null 2>&1 &
+          OLLAMA_DEBUG=1 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > "${RUNNER_TEMP}/ollama-serve.log" 2>&1 &
           for _ in $(seq 1 30); do
             curl -fsS localhost:11434/api/version >/dev/null 2>&1 && break
             sleep 1
@@ -505,6 +506,44 @@ jobs:
           done
           echo "::error::Ollama warm-up failed after 3 attempts."
           exit 1
+
+      # On step failure, not job failure, so a later green rerun cannot discard
+      # the evidence.
+      - name: Collect diagnostics for the Ollama crash
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set +e
+          out="${RUNNER_TEMP}/ollama-diagnostics"
+          mkdir -p "${out}"
+          cp "${RUNNER_TEMP}/ollama-serve.log" "${out}/" 2>/dev/null
+          ollama -v > "${out}/ollama-version.txt" 2>&1
+          # Spelled out per OS: only uname, uptime and df exist on both.
+          {
+            uname -a
+            uptime
+            df -h
+          } > "${out}/host.txt" 2>&1
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            { nproc; free -g; } >> "${out}/host.txt" 2>&1
+            lscpu > "${out}/lscpu.txt" 2>&1
+            sudo dmesg | tail -50 > "${out}/dmesg.txt" 2>&1
+          else
+            { sysctl -n hw.model hw.ncpu hw.memsize; vm_stat; } >> "${out}/host.txt" 2>&1
+          fi
+          echo "--- kernel segfault lines, if any ---"
+          grep -i "segfault\|general protection" "${out}/dmesg.txt" 2>/dev/null || echo "none in dmesg"
+          echo "--- backend variant loaded by ollama ---"
+          grep -i "load_backend\|loaded CPU backend" "${out}/ollama-serve.log" 2>/dev/null || echo "no backend line captured"
+
+      - name: Upload the Ollama crash diagnostics
+        if: failure() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ollama-diagnostics-${{ runner.os }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/ollama-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Start Ollama (Windows)
         if: runner.os == 'Windows'
