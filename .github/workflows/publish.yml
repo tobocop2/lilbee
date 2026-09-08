@@ -1,4 +1,5 @@
 name: Publish to PyPI
+run-name: Publish to PyPI ${{ inputs.tag }}
 
 # Pure PyPI publish: finds the release-candidate.yml run for this tag, downloads
 # its default wheels + sdist, uploads them to PyPI. Auto-dispatched by
