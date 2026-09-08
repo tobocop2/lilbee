@@ -145,6 +145,29 @@ class TestHealth:
         mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
         assert (await handlers.health()).chat_status == "error"
 
+    async def test_chat_status_is_not_started_when_a_finished_warm_is_stale(self, mock_svc):
+        """An engine that loaded and was then swapped out must not read as loading.
+
+        The tracker keeps its terminal READY snapshot after an idle eviction, so
+        classifying on 'not ERROR' reported loading forever for an engine that was
+        down and would only come back on the next request.
+        """
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.READY)
+        result = await handlers.health()
+        assert result.chat_status == "not_started"
+        assert result.chat_error is None
+
+    async def test_chat_status_loading_covers_every_in_flight_phase(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = False
+        for phase in (WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE):
+            mock_svc.provider.warm_progress.return_value = WarmProgress(phase=phase)
+            assert (await handlers.health()).chat_status == "loading"
+
     async def test_chat_error_carries_the_warm_failure_reason(self, mock_svc):
         """A failed warm (e.g. a wedged GPU probe) names its cause in health, so a
         polling client reports why instead of retrying forever (bb-0yf0)."""

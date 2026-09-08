@@ -16,7 +16,7 @@ from lilbee.providers.fleet.planning import (
     resolve_placement_plan,
 )
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
 _PLACEMENT_KEY = "placement"
 
@@ -27,9 +27,6 @@ _PLACEMENT_KEY = "placement"
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
-_ACTIVE_WARM_PHASES = frozenset(
-    {WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE}
-)
 
 
 @dataclass(frozen=True)
@@ -216,11 +213,6 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
 
 
-def warm_is_reporting(snapshot: WarmProgress | None) -> bool:
-    """Whether *snapshot* is a warm that is actively loading, rather than idle or done."""
-    return snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
-
-
 def wait_chat_ready(
     timeout_s: float = _CHAT_READY_TIMEOUT_S,
     *,
@@ -256,7 +248,7 @@ def wait_chat_ready(
         snapshot = provider.warm_progress()
         # A requested warm counts as in flight before it stamps a phase: the fleet
         # spawns and health-checks llama-swap first, which takes seconds.
-        if warm_is_reporting(snapshot):
+        if is_active_warm(snapshot):
             if on_progress is not None and snapshot is not None:
                 on_progress(snapshot)
             grace_deadline = time.monotonic() + _CHAT_READY_GRACE_S
@@ -312,7 +304,7 @@ def active_chat_warm_progress() -> WarmProgress | None:
         return None
     provider = services.provider
     snapshot = provider.warm_progress()
-    if not warm_is_reporting(snapshot):
+    if not is_active_warm(snapshot):
         return None
     return None if provider.role_ready(WorkerRole.CHAT) else snapshot
 
