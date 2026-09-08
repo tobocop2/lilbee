@@ -40,10 +40,11 @@ def _ollama_reachable() -> bool:
         return False
 
 
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(not _ollama_reachable(), reason="Ollama not running"),
-]
+pytestmark = [pytest.mark.slow]
+
+# Per class, not per module: TestSdkFactory asserts config-boundary behaviour
+# and opens no socket, so it must run whether or not a daemon is reachable.
+requires_ollama = pytest.mark.skipif(not _ollama_reachable(), reason="Ollama not running")
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +58,7 @@ def _isolate_cfg():
         setattr(cfg, name, val)
 
 
+@requires_ollama
 class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
         """Real embedding via Ollama returns float vectors."""
@@ -79,6 +81,7 @@ class TestSdkEmbed:
         assert all(len(v) > 0 for v in result)
 
 
+@requires_ollama
 class TestSdkChat:
     def test_chat_returns_response(self) -> None:
         """Real chat completion via Ollama returns non-empty text."""
@@ -123,6 +126,7 @@ class TestSdkChat:
         assert len(result.text) > 0
 
 
+@requires_ollama
 class TestSdkModelManagement:
     def test_list_models(self) -> None:
         """list_models returns models from Ollama."""
