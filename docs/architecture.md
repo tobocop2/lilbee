@@ -1064,7 +1064,7 @@ Two query-time effects:
   - Top 3 results: 70% fusion / 30% rerank (these were already ranked high by fusion for good reason)
   - Positions 4-10: 50% / 50% (equal influence)
   - Positions 11+: 30% fusion / 70% rerank (reranker has more opportunity to rescue misranked items)
-- **Blending rationale**: derived from learning-to-rank literature (Burges et al. 2005, "[Learning to Rank using Gradient Descent](https://icml.cc/imls/conferences/2005/proceedings/papers/012_Learning_BurgesEtAl.pdf)"). Top positions already have strong signal, so the reranker provides diminishing returns there.
+- **Blending rationale**: derived from learning-to-rank literature (Burges et al. 2005, "[Learning to Rank using Gradient Descent](https://dl.acm.org/doi/10.1145/1102351.1102363)"). Top positions already have strong signal, so the reranker provides diminishing returns there.
 - **BM25 protection**: if the rank-1 result has a BM25 score above the expansion skip threshold, it is protected from demotion. This prevents the neural reranker from pushing down obvious exact keyword matches.
 - **Context selection**: reranked results carry their blended score (`rerank_score`) and the reranked order decides which chunks become LLM context, taking the top `max_context_sources` directly instead of the set-cover pass below.
 - **Cost**: depends on model and candidate count. ~200-500ms for 20 candidates with a small cross-encoder.

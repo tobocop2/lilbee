@@ -456,7 +456,7 @@ lilbee is also the retrieval backend for AI coding agents. Wire it into any
 agent that speaks MCP (Claude Code, opencode, Cursor, anything else) and the
 agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can
 quote back. Your files, the embeddings, and the index stay on your computer.
-See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for the full MCP
+See the [`lilbee-mcp` skill](../src/lilbee/skills/lilbee_mcp/SKILL.md) for the full MCP
 tool list and workflows. Non-MCP agents can use the [JSON CLI
 fallback](#json-cli-fallback) below.
 

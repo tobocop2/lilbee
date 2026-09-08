@@ -25,7 +25,7 @@ set -euo pipefail
 BACKEND="${BACKEND:-cu124}"
 WORKSPACE="${WORKSPACE:-/workspace}"
 REPO_DIR="${REPO_DIR:-$WORKSPACE/lilbee}"
-BRANCH="${BRANCH:-feat/local-model-api}"
+BRANCH="${BRANCH:-main}"
 ENGINE_CACHE="$WORKSPACE/engine-cache/$BACKEND"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/root/lilbee_venv}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/root/uvcache}"
