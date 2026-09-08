@@ -445,6 +445,63 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
+    def test_hybrid_failure_is_reported_as_a_health_warning(self, store):
+        """A corpus-wide FTS breakage drops every query to vector-only recall.
+        The log line alone never reached the user, so the store reports it."""
+        from lilbee.core.health_warnings import WarningCode
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        assert store.health_warnings() == []
+
+        with mock.patch.object(
+            type(store), "_hybrid_search", side_effect=RuntimeError("fts index gone")
+        ):
+            store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
+
+        codes = [w.code for w in store.health_warnings()]
+        assert WarningCode.FTS_UNAVAILABLE in codes
+
+    def test_an_index_that_never_builds_is_reported(self, store):
+        """A create_index failure leaves keyword search off for every query. The
+        hybrid arm never runs, so the failure has to be reported from readiness."""
+        from lilbee.core.health_warnings import WarningCode
+
+        store.add_chunks(_make_records())
+        with mock.patch.object(type(store), "ensure_fts_index"):
+            store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
+
+        codes = [w.code for w in store.health_warnings()]
+        assert WarningCode.FTS_UNAVAILABLE in codes
+
+    def test_an_emptied_corpus_reports_no_keyword_warning(self, store):
+        """A store whose chunks are all gone keeps the table and cannot index it.
+        There is nothing to degrade, so the warning must not fire."""
+        store.add_chunks(_make_records())
+        for record in _make_records():
+            store.delete_by_source(record["source"])
+        with mock.patch.object(type(store), "ensure_fts_index"):
+            store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
+
+        assert store.health_warnings() == []
+
+    def test_hybrid_recovery_clears_the_health_warning(self, store):
+        """The warning names a remedy, so running it must clear the warning.
+        A latching flag would train the user to ignore the banner."""
+        from lilbee.core.health_warnings import WarningCode
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        with mock.patch.object(
+            type(store), "_hybrid_search", side_effect=RuntimeError("fts index gone")
+        ):
+            store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
+        assert WarningCode.FTS_UNAVAILABLE in [w.code for w in store.health_warnings()]
+
+        # Index healthy again: the next query reports the current state.
+        store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
+        assert store.health_warnings() == []
+
     def test_optimize_failure_keeps_hybrid_ready(self, store):
         """An optimize() crash on an already-built index (a LanceDB encoding
         bug bites large corpora) must not disable hybrid search: the index
@@ -832,6 +889,37 @@ class TestEnsureScalarIndexes:
             store.search([0.5] * test_config.embedding_dim, top_k=1)
         warned = [r for r in caplog.records if "document prefixes" in r.message]
         assert len(warned) == 1
+
+    def test_pre_prefix_store_reports_a_health_warning(self, store, test_config):
+        """The rebuild advice was log-only, so a user whose retrieval was quietly
+        degraded never saw it. The store reports it for the health endpoint."""
+        from lilbee.core.health_warnings import WarningCode
+
+        test_config.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/n.gguf"
+        store.add_chunks(_make_records())
+        old_meta = {**store.get_meta(), "schema_version": 1}
+        with mock.patch.object(type(store), "get_meta", return_value=old_meta):
+            store.search([0.5] * test_config.embedding_dim, top_k=1)
+            codes = [w.code for w in store.health_warnings()]
+
+        assert WarningCode.EMBEDDING_PREFIX_MISMATCH in codes
+
+    def test_rebuild_in_another_process_clears_the_prefix_warning(self, store, test_config):
+        """`lilbee rebuild` is the remedy the warning names and it runs in its own
+        process, so the server cannot report the verdict its query path cached."""
+        from lilbee.core.health_warnings import WarningCode
+
+        test_config.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/n.gguf"
+        store.add_chunks(_make_records())
+        old_meta = {**store.get_meta(), "schema_version": 1}
+        with mock.patch.object(type(store), "get_meta", return_value=old_meta):
+            store.search([0.5] * test_config.embedding_dim, top_k=1)
+            assert WarningCode.EMBEDDING_PREFIX_MISMATCH in [
+                w.code for w in store.health_warnings()
+            ]
+
+        # Meta now reads at the current schema version, as after a rebuild.
+        assert store.health_warnings() == []
 
     def test_blocking_index_builds_propagate_lock_timeouts(self, store, test_config):
         """Ingest-path callers keep the old contract: a lock timeout raises."""

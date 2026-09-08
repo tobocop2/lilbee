@@ -27,6 +27,7 @@ from lilbee.core.config import (
     WIKI_MENTIONS_TABLE,
     Config,
 )
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
@@ -265,6 +266,9 @@ class Store:
         self._fts_ready: bool = False
         self._title_fts_ready: bool = False
         self._doc_prefix_warned: bool = False
+        # Degradations the health endpoint reports; set where they are detected.
+        self._fts_degraded: bool = False
+        self._doc_prefix_mismatch: bool = False
         # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
         # store builds them lazily from the search path.
         self._scalar_ready: bool = False
@@ -408,6 +412,9 @@ class Store:
                 }
             ]
         )
+        # A rebuild is the remedy the prefix warning names, so the next query
+        # re-decides instead of logging a mismatch this write just resolved.
+        self._doc_prefix_warned = False
 
     def _has_chunks(self) -> bool:
         """Return True when the chunks table exists and has at least one row."""
@@ -475,25 +482,64 @@ class Store:
             current_dim=current_dim,
         )
 
+    def _doc_prefix_is_stale(self) -> bool:
+        """Whether the stored documents predate the embedding family's document prefix."""
+        meta = self.get_meta()
+        if meta is None:
+            return False
+        profile = resolve_embedding_profile(self._config.embedding_model)
+        return bool(profile.doc_prefix) and meta["schema_version"] < profile.doc_prefix_since
+
     def _warn_stale_doc_prefix(self) -> None:
         """Warn once when the embedding family's document prefix postdates this store.
 
         Queries would carry the family prefix while stored documents do not;
-        the mismatch degrades quality silently until a rebuild re-embeds.
+        the mismatch degrades quality silently until a rebuild re-embeds. The
+        check reads the metadata row, which the query path cannot pay per search.
         """
         if self._doc_prefix_warned:
             return
         self._doc_prefix_warned = True
-        meta = self.get_meta()
-        if meta is None:
+        if not self._doc_prefix_is_stale():
             return
-        profile = resolve_embedding_profile(self._config.embedding_model)
-        if profile.doc_prefix and meta["schema_version"] < profile.doc_prefix_since:
-            log.warning(
-                "This index predates '%s' document prefixes: queries are prefixed "
-                "but stored documents are not. Run `lilbee rebuild` to re-embed.",
-                self._config.embedding_model,
+        self._doc_prefix_mismatch = True
+        log.warning(
+            "This index predates '%s' document prefixes: queries are prefixed "
+            "but stored documents are not. Run `lilbee rebuild` to re-embed.",
+            self._config.embedding_model,
+        )
+
+    def health_warnings(self) -> list[HealthWarning]:
+        """Silent retrieval degradations this store has hit since it opened."""
+        warnings: list[HealthWarning] = []
+        if self._fts_degraded:
+            warnings.append(
+                HealthWarning(
+                    code=WarningCode.FTS_UNAVAILABLE,
+                    message=(
+                        "Keyword search is unavailable, so answers are drawn from "
+                        "vector similarity alone and exact terms may be missed."
+                    ),
+                    remedy="Run `lilbee rebuild` to rebuild the search index.",
+                )
             )
+        if self._doc_prefix_mismatch and not self._doc_prefix_is_stale():
+            # The remedy is `lilbee rebuild`, which usually runs in another
+            # process, so the query path's cached verdict outlives the fix.
+            self._doc_prefix_mismatch = False
+        if self._doc_prefix_mismatch:
+            warnings.append(
+                HealthWarning(
+                    code=WarningCode.EMBEDDING_PREFIX_MISMATCH,
+                    message=(
+                        f"This index predates '{self._config.embedding_model}' document "
+                        "prefixes: queries are prefixed but stored documents are not, "
+                        "so retrieval is less accurate."
+                    ),
+                    remedy="Run `lilbee rebuild` to re-embed the documents.",
+                )
+            )
+        return warnings
 
     def assert_embedding_compatible(self) -> None:
         """Run the full embedding-identity gate (legacy init, canonicalize, check).
@@ -1016,20 +1062,12 @@ class Store:
             # built; without them the source/chunk_type prefilters full-scan.
             self.ensure_scalar_indexes(blocking=False)
 
-        if query_text and not self._fts_ready:
-            self.ensure_fts_index(blocking=False)
-        if query_text and self._config.title_search and not self._title_fts_ready:
-            self.ensure_title_fts_index(blocking=False)
-
-        if query_text and self._fts_ready:
-            try:
-                return self._hybrid_search(
-                    table, query_text, query_vector, top_k, max_distance, chunk_type
-                )
-            except Exception:
-                # Falling back changes recall characteristics for the query;
-                # a corpus-wide FTS breakage must not present as silence.
-                log.warning("Hybrid search failed, falling back to vector-only", exc_info=True)
+        if query_text:
+            hits = self._keyword_arm(
+                table, query_text, query_vector, top_k, max_distance, chunk_type
+            )
+            if hits is not None:
+                return hits
 
         rows = self._vector_arm(
             table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
@@ -1049,6 +1087,43 @@ class Store:
             )
             for r in results
         ]
+
+    def _keyword_arm(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        query_vector: Vector,
+        top_k: int,
+        max_distance: float,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk] | None:
+        """Hybrid results, or None when keyword search cannot serve this query and
+        the caller must fall back to vector-only.
+
+        Owns the keyword-search health the endpoint reports. An index that will
+        not build and an index that fails mid-query drop every query to vector
+        recall alike, so both stamp the flag, and a working index clears it.
+        """
+        if not self._fts_ready:
+            self.ensure_fts_index(blocking=False)
+        if self._config.title_search and not self._title_fts_ready:
+            self.ensure_title_fts_index(blocking=False)
+        if not self._fts_ready:
+            # An empty corpus has nothing to index and nothing to degrade.
+            self._fts_degraded = self._has_chunks()
+            return None
+        try:
+            hits = self._hybrid_search(
+                table, query_text, query_vector, top_k, max_distance, chunk_type
+            )
+        except Exception:
+            # Falling back changes recall characteristics for the query;
+            # a corpus-wide FTS breakage must not present as silence.
+            self._fts_degraded = True
+            log.warning("Hybrid search failed, falling back to vector-only", exc_info=True)
+            return None
+        self._fts_degraded = False
+        return hits
 
     def _vector_arm(
         self,

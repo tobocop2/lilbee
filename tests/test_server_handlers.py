@@ -145,6 +145,24 @@ class TestHealth:
         mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
         assert (await handlers.health()).chat_status == "error"
 
+    async def test_health_reports_silent_retrieval_degradations(self, mock_svc):
+        """Vector-only fallback and a prefix-mismatched index both answer and look
+        healthy. Health carries them so a client can say the answers are degraded."""
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        mock_svc.store.health_warnings.return_value = [
+            HealthWarning(
+                code=WarningCode.FTS_UNAVAILABLE, message="keyword search is down", remedy="rebuild"
+            )
+        ]
+        result = await handlers.health()
+        assert [w.code for w in result.warnings] == [WarningCode.FTS_UNAVAILABLE]
+        assert result.warnings[0].remedy == "rebuild"
+
+    async def test_health_reports_no_warnings_on_a_clean_store(self, mock_svc):
+        mock_svc.store.health_warnings.return_value = []
+        assert (await handlers.health()).warnings == []
+
     async def test_chat_status_is_not_started_when_a_finished_warm_is_stale(self, mock_svc):
         """An engine that loaded and was then swapped out must not read as loading.
 
