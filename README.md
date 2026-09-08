@@ -30,7 +30,7 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-c4a7e7?logo=nixos&logoColor=c4a7e7&style=flat-square&labelColor=191724" alt="Nix flake"></a>
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-908caa?logo=windows&logoColor=908caa&style=flat-square&labelColor=191724" alt="Scoop bucket"></a>
   <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-9ccfd8?logo=docker&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Docker image on GHCR"></a>
-  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-9ccfd8?logo=flatpak&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Flatpak repo"></a>
+  <a href="https://github.com/tobocop2/flatpak-lilbee"><img src="https://img.shields.io/badge/Flatpak-repo-9ccfd8?logo=flatpak&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Flatpak repo"></a>
   <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-f6c177?logo=snapcraft&logoColor=f6c177&style=flat-square&labelColor=191724" alt="Snap package"></a>
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-9ccfd8?logo=pypi&logoColor=9ccfd8&style=flat-square&labelColor=191724" alt="Install from PyPI"></a>
   <a href="https://www.npmjs.com/package/lilbee"><img src="https://img.shields.io/npm/v/lilbee?label=npm&logo=npm&logoColor=ebbcba&style=flat-square&labelColor=191724&color=ebbcba" alt="lilbee on npm"></a>
@@ -619,7 +619,7 @@ https://github.com/user-attachments/assets/a578dfd1-61a5-4008-b9bf-e94539003b6e
 
 https://github.com/user-attachments/assets/702975d8-5c1f-4fa7-92a6-bf594ef9d2e3
 
-Every reel on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
+Every reel on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) with long-form captions. Tape sources are in [`demos-src/`](https://github.com/tobocop2/lilbee/tree/gh-pages/demos-src) on the `gh-pages` branch. For commands and settings, see the [usage guide](docs/usage.md).
 
 ## HTTP Server
 
