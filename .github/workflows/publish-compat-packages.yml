@@ -1,4 +1,5 @@
 name: Publish compat packages
+run-name: Publish compat packages ${{ inputs.tag }}
 
 # Pins a tag's pre-Haswell Linux binary into the lilbee-compat channels: the
 # Homebrew lilbee-compat formula, the AUR lilbee-compat PKGBUILD, the Nix flake

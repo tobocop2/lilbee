@@ -1,0 +1,60 @@
+name: Release watch
+
+run-name: Watch ${{ github.event.workflow_run.head_branch || inputs.tag }}
+
+# No alerting: a red run here is the signal, via GitHub's failed-workflow notification.
+
+on:
+  workflow_run:
+    workflows: ["Release candidate"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to watch (e.g. v0.6.90b434)."
+        required: true
+      dry_run:
+        description: "Report what would be rerun or re-dispatched, and change nothing."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read   # check out the script; read the release to confirm it promoted
+  actions: write   # rerun a failed leg, re-issue a lost dispatch
+
+# Cancelling, unlike the other release workflows: release-selfheal's rerun emits
+# a second candidate completion, and two watchers racing the same legs would
+# spend the two-attempt budget in one pass.
+concurrency:
+  group: release-watch-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    # Only a tag push: a workflow_dispatch candidate skips create-prerelease and
+    # the whole dispatch cascade, so there are no legs to watch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    # verify-release waits up to 180 minutes for the channel artifacts and
+    # publish-flatpak up to 90 for the variant binaries, so the watch spans
+    # both. Stays under the 360-minute job ceiling.
+    timeout-minutes: 300
+    steps:
+      # The default branch, never the tag: a bare checkout resolves the run's
+      # pinned sha, which hard-fails once a tag is force-moved.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Watch every dispatched leg to a conclusion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.workflow_run.head_branch || inputs.tag }}
+          RC_RUN_ID: ${{ github.event.workflow_run.id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: bash scripts/release_watch.sh
