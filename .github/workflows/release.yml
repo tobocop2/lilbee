@@ -167,7 +167,8 @@ jobs:
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
-          # Pre-Haswell-safe Windows build for the scoop lilbee-compat manifest.
+          # Pre-Haswell-safe Windows build. The lilbee-compat Scoop manifest in
+          # tobocop2/scoop-lilbee pins it.
           # Same soft, self-contained model as the Linux compat cell; MSVC's default
           # baseline is already conservative, so no -march override is needed here.
           - os: windows-latest

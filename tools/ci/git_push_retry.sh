@@ -2,7 +2,7 @@
 # Push the current branch, rebasing onto whatever landed first when a sibling job
 # beat us to the remote.
 #
-# The package fan-out runs homebrew / scoop / nix-flake / flatpak in parallel, and
+# The package fan-out runs homebrew / nix-flake / flatpak in parallel, and
 # the regular, CUDA and compat workflows run at the same time as each other. Several
 # of those jobs commit to the same branch of the same repository, so whoever loses
 # the race gets a non-fast-forward rejection and the channel silently goes unpublished
