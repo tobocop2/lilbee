@@ -175,6 +175,16 @@ def _effective_enable_ocr() -> bool | None:
     return active_config().enable_ocr if override is None else override
 
 
+def _extraction_timeout_secs() -> int | None:
+    """``cfg.extraction_timeout`` as xberg's per-file cap; None when uncapped.
+
+    xberg defaults this to 600s. Passing lilbee's own value on every call keeps
+    the cap something a user can see and raise instead of an inherited default.
+    """
+    timeout = active_config().extraction_timeout
+    return timeout if timeout > 0 else None
+
+
 def _effective_ocr_timeout() -> float:
     """``cfg.ocr_timeout`` unless a per-request OCR timeout override is active."""
     override = _ocr_timeout_override.get()
@@ -301,6 +311,7 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
             ocr=ocr,
             force_ocr=force_ocr,
             pdf_options=_pdf_options(),
+            extraction_timeout_secs=_extraction_timeout_secs(),
         )
         # The layout fields keep xberg's defaults when layout detection is off.
         layout = _layout_config()
@@ -312,6 +323,7 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
         output_format=MARKDOWN_OUTPUT,
         ocr=ocr,
         force_ocr=force_ocr,
+        extraction_timeout_secs=_extraction_timeout_secs(),
     )
 
 

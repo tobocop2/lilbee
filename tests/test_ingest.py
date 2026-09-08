@@ -3387,6 +3387,39 @@ class TestExtractionConfig:
         # set an explicit default to preserve 4.x behavior (regression guard).
         assert config.ocr.language == ["eng"]
 
+    def test_extraction_is_uncapped_by_default(self):
+        """Shipped defaults leave no per-file cap on extraction.
+
+        Unset, xberg applies its own 600s limit, and a long file dies at ten
+        minutes with no lilbee setting able to raise it.
+        """
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        for mode in (ExtractMode.PAGINATED, ExtractMode.MARKDOWN):
+            assert extraction_config(mode).extraction_timeout_secs is None
+
+    def test_extraction_timeout_from_config(self, monkeypatch):
+        """cfg.extraction_timeout sets xberg's per-file extraction cap.
+
+        Left unset, xberg applies its own 600s default and no lilbee surface can
+        reach it, so a long file dies at ten minutes with nothing to tune.
+        """
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "extraction_timeout", 45)
+        for mode in (ExtractMode.PAGINATED, ExtractMode.MARKDOWN):
+            assert extraction_config(mode).extraction_timeout_secs == 45
+
+    def test_extraction_timeout_zero_lifts_the_cap(self, monkeypatch):
+        """0 means no cap, matching ocr_timeout and tesseract_timeout."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "extraction_timeout", 0)
+        for mode in (ExtractMode.PAGINATED, ExtractMode.MARKDOWN):
+            assert extraction_config(mode).extraction_timeout_secs is None
+
     def test_tesseract_ocr_language_from_config(self, monkeypatch):
         from lilbee.core.config import cfg
         from lilbee.data.ingest import ExtractMode, extraction_config

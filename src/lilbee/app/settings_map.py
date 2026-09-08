@@ -142,6 +142,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
+    "extraction_timeout": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Wall-clock seconds one file gets to extract before ingest gives up"
+            " on it (0 = no limit)"
+        ),
+    ),
     "ingest_workers": SettingDef(
         int,
         nullable=False,
