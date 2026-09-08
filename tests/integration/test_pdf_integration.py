@@ -152,6 +152,41 @@ class TestTesseractOcrFallback:
         not shutil.which("tesseract"),
         reason="Tesseract not installed",
     )
+    async def test_tesseract_reads_the_numbered_list_as_a_list(self, monkeypatch):
+        """The scanned list stays a list, and its text appears once.
+
+        xberg 1.1.0 read the numbered list on this page as a three-column table
+        and put the page text in the document twice. Both are fixed in 1.1.2,
+        so lilbee's shipped OCR config carries no output_format workaround.
+        """
+        from lilbee.data.extract.xberg import aextract_document
+        from lilbee.data.ingest import ExtractMode, extraction_config
+        from lilbee.data.types import OcrBackendName
+
+        # The Tesseract branch is the subject: a configured vision model would
+        # route this page to lilbee's own backend instead.
+        monkeypatch.setattr(cfg, "vision_model", "")
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.ocr.backend == OcrBackendName.TESSERACT
+
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        page = doc.pages[0].content
+        assert "| --- |" not in page, f"Page read as a markdown table: {page}"
+        assert not doc.tables, f"List page reported {len(doc.tables)} tables"
+        repeated = [
+            line for line in page.split("\n") if line.strip() and doc.content.count(line) > 1
+        ]
+        assert not repeated, f"Page lines repeated in document content: {repeated}"
+
+    @pytest.mark.skipif(
+        not shutil.which("tesseract"),
+        reason="Tesseract not installed",
+    )
     async def test_tesseract_extracts_known_phrases(self):
         """Tesseract OCR captures key phrases from the scanned document."""
         from xberg import ExtractionConfig, OcrConfig

@@ -26,7 +26,6 @@ from lilbee.data.store import (
 PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
-PLAIN_OUTPUT = "plain"
 MARKDOWN_MIME = "text/markdown"
 
 
