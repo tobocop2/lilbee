@@ -1,0 +1,22 @@
+# Enforces the commit-message rules in CONTRIBUTING.md.
+# Check a range with: uv run gitlint --commits origin/main..HEAD
+[general]
+ignore-merge-commits=true
+ignore-fixup-commits=true
+ignore-squash-commits=true
+regex-style-search=true
+# A trivial change does not need a body. Rule 7 governs bodies that exist.
+ignore=body-is-missing,body-min-length
+
+[title-max-length]
+line-length=50
+
+[body-max-line-length]
+line-length=72
+
+[title-must-not-contain-word]
+words=wip,phase
+
+[ignore-body-lines]
+# Trailers and indented blocks (squash lists, pasted output) are exempt.
+regex=^(Co-authored-by|Signed-off-by|Squashed from|  )

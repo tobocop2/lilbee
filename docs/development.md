@@ -68,3 +68,10 @@ uv run pytest   # Full suite including RAG accuracy
 ## License
 
 MIT
+
+## Repository history
+
+The commit history was consolidated to keep the repository small. Commit
+guidelines are now in place to avoid the need to do this again. The original
+history up to `v0.6.90b435` (2026-09-08) lives at
+[tobocop2/lilbee-archive](https://github.com/tobocop2/lilbee-archive).

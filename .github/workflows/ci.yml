@@ -63,6 +63,12 @@ jobs:
       - name: Check imports resolve
         run: make imports-check
 
+      - name: Check commit messages
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=200 origin "${{ github.base_ref }}"
+          uvx --from gitlint-core==0.19.1 gitlint --commits "origin/${{ github.base_ref }}..HEAD"
+
   shell:
     runs-on: ubuntu-latest
     timeout-minutes: 10
