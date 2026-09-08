@@ -37,11 +37,9 @@ ConfirmDialog #confirm-buttons {
     height: 1;
 }
 
-ConfirmDialog Button {
+ConfirmDialog ConfirmPill {
     width: auto;
-    min-width: 0;
     height: 1;
-    border: none;
     padding: 0 2;
     margin: 0 1;
     background: $boost;
@@ -52,19 +50,14 @@ ConfirmDialog Button {
 
 ConfirmDialog #confirm-yes {
     background: $primary 20%;
-    color: $text;
 }
 
+/* $boost is the contrast text at 4% alpha and cannot mark focus. Per id
+ * because #confirm-yes's resting colour outranks a type selector. */
 ConfirmDialog #confirm-yes:focus,
-ConfirmDialog #confirm-yes:hover {
-    background: $primary 40%;
-    color: $text;
-    text-style: bold;
-}
-
+ConfirmDialog #confirm-yes:hover,
 ConfirmDialog #confirm-no:focus,
 ConfirmDialog #confirm-no:hover {
-    background: $boost;
+    background: $accent;
     color: $text;
-    text-style: bold;
 }
