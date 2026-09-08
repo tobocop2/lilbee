@@ -17,6 +17,10 @@ on:
       tag:
         description: "Existing tag to publish (e.g. v0.6.66b469)."
         required: true
+      rc_run_id:
+        description: "Release-candidate run id to publish from. Only needed when neither the tag nor the commit finds the right run."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -63,17 +67,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          RC_RUN_ID: ${{ inputs.rc_run_id }}
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           echo "${TAG} -> ${SHA}"
-          # Most recent push-triggered RC run for this commit -- any status; we
-          # only need its default wheels + sdist, which land well before the
-          # executables / CUDA matrix / QA finish.
-          RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&per_page=50" \
-            --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
+          # Resolve by tag, which is what the run was triggered on and stays
+          # correct even if the tag is later moved to another commit. head_sha
+          # is the fallback, and an explicit run id overrides both. Any status
+          # will do: we need the default wheels + sdist, which land well before
+          # the executables / CUDA matrix / QA finish.
+          runs_for () {
+            gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?$1&event=push&per_page=50" \
+              --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty'
+          }
+          RC_ID="${RC_RUN_ID}"
+          [ -n "${RC_ID}" ] || RC_ID=$(runs_for "branch=${TAG}")
+          [ -n "${RC_ID}" ] || RC_ID=$(runs_for "head_sha=${SHA}")
           if [ -z "${RC_ID}" ]; then
-            echo "no 'Release candidate' run for ${SHA}; push the tag first" >&2
+            echo "no 'Release candidate' run for tag ${TAG} or commit ${SHA}; push the tag first, or pass rc_run_id" >&2
             exit 1
           fi
           echo "release-candidate run = ${RC_ID}"
