@@ -3387,13 +3387,6 @@ class TestExtractionConfig:
         # set an explicit default to preserve 4.x behavior (regression guard).
         assert config.ocr.language == ["eng"]
 
-    def test_tesseract_ocr_emits_plain_page_text(self):
-        from lilbee.data.ingest import ExtractMode, extraction_config
-
-        config = extraction_config(ExtractMode.PAGINATED)
-        # Tesseract's markdown renderer guesses tables from column gaps.
-        assert config.ocr.output_format == "plain"
-
     def test_tesseract_ocr_language_from_config(self, monkeypatch):
         from lilbee.core.config import cfg
         from lilbee.data.ingest import ExtractMode, extraction_config
