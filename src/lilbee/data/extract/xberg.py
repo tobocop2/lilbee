@@ -42,11 +42,16 @@ def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractI
 
 
 def _first(result: ExtractionResult) -> ExtractedDocument:
-    """Return the single extracted document, or raise on an extraction error."""
+    """Return the single extracted document, or raise on an extraction error.
+
+    The error item carries the reason in ``message``; it has no ``__str__``, so
+    formatting the item itself would hand the caller an object repr instead of
+    the timeout or unsupported-format it is reporting.
+    """
     if result.results:
         return result.results[0]
     if result.errors:
-        raise RuntimeError(str(result.errors[0]))
+        raise RuntimeError(result.errors[0].message)
     raise RuntimeError("xberg extraction returned no document")
 
 
