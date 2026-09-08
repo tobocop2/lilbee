@@ -8,7 +8,7 @@
 
 set -euxo pipefail
 
-BRANCH="${LILBEE_BRANCH:-feat/local-model-api}"
+BRANCH="${LILBEE_BRANCH:-main}"
 FAMILIES="${1:-}"
 WORK_DIR="${HOME}/lilbee"
 

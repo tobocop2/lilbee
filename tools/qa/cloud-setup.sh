@@ -4,19 +4,19 @@
 # Fresh SSH session -> running QA matrix in one command.
 #
 # Usage on the cloud box:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/tobocop2/lilbee/feat/local-model-api/tools/qa/cloud-setup.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/tobocop2/lilbee/main/tools/qa/cloud-setup.sh)
 #
 # Or if you've already cloned the repo:
 #   cd lilbee && bash tools/qa/cloud-setup.sh
 #
 # Optional env:
-#   LILBEE_BRANCH=feat/local-model-api  (default)
+#   LILBEE_BRANCH=main  (default)
 #   LLAMA_CUDA=cu124                    (cu121..cu125 - engine build backend; match the box's nvidia-smi CUDA version)
 #   HF_TOKEN=hf_xxx                     (only if pulling gated repos; the default matrix cells are all public)
 
 set -euxo pipefail
 
-BRANCH="${LILBEE_BRANCH:-feat/local-model-api}"
+BRANCH="${LILBEE_BRANCH:-main}"
 CUDA="${LLAMA_CUDA:-cu124}"
 REPO_URL="https://github.com/tobocop2/lilbee.git"
 WORK_DIR="${HOME}/lilbee"
