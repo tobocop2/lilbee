@@ -141,6 +141,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `chunk_size` | `LILBEE_CHUNK_SIZE` | `int` | `512` | yes | yes | yes | no | Document chunk size in tokens (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | Vision OCR for scanned PDFs (empty = auto-detect from vision_model). |
 | `entity_extraction` | `LILBEE_ENTITY_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Extract typed entities automatically at sync (schema induced on first run). |
+| `extraction_timeout` | `LILBEE_EXTRACTION_TIMEOUT` | `int` | `0` | yes | yes | yes | no | Wall-clock seconds one file gets to extract before ingest gives up on it (0 = no limit). |
 | `ingest_processes` | `LILBEE_INGEST_PROCESSES` | `int` | `0` | yes | yes | yes | no | Ingest worker processes, one GPU each (0 = auto, one per card). Used once the corpus is big enough to pay for them; 1 keeps ingest in this process. |
 | `ingest_workers` | `LILBEE_INGEST_WORKERS` | `int` | `0` | yes | yes | yes | no | Workers for discovering and hashing files (0 = auto, all available cores). |
 | `layout_detection` | `LILBEE_LAYOUT_DETECTION` | `bool` | `false` | yes | yes | yes | no | Layout-aware PDF extraction: reading order plus header/footer stripping (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |

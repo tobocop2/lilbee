@@ -15,14 +15,27 @@ class _FakeResult:
         self.errors = list(errors)
 
 
+class _FakeError:
+    def __init__(self, index, message):
+        self.index = index
+        self.message = message
+
+
 def test_first_returns_single_document():
     doc = object()
     assert xberg_extract._first(_FakeResult([doc])) is doc
 
 
-def test_first_raises_on_extraction_error():
-    with pytest.raises(RuntimeError, match="boom"):
-        xberg_extract._first(_FakeResult([], errors=["boom"]))
+def test_first_raises_with_the_error_message():
+    """The failure reason reaches the caller, not the error object's repr.
+
+    xberg's ExtractionErrorItem has no ``__str__``, so formatting the item
+    itself yields ``<builtins.ExtractionErrorItem object at 0x...>`` and the
+    real reason (a timeout, an unsupported format) never reaches the user.
+    """
+    err = _FakeError(0, "Extraction timed out after 601000ms (limit: 600000ms)")
+    with pytest.raises(RuntimeError, match="timed out after 601000ms"):
+        xberg_extract._first(_FakeResult([], errors=[err]))
 
 
 def test_first_raises_when_no_document():
@@ -42,12 +55,6 @@ async def test_extract_document_offloads_when_a_loop_is_running():
     with mock.patch("xberg.extract", fake_extract):
         out = xberg_extract.extract_document(b"data", "text/plain", config=mock.MagicMock())
     assert out is doc
-
-
-class _FakeError:
-    def __init__(self, index, message):
-        self.index = index
-        self.message = message
 
 
 def _items(n):
