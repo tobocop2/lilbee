@@ -5384,6 +5384,86 @@ class TestModelCardBuildStatusDownloads:
 
 
 class TestConfirmDialog:
+    @pytest.mark.parametrize("block_glyphs", [True, False])
+    async def test_pills_keep_a_row_for_their_labels(self, block_glyphs: bool) -> None:
+        """A pill carries no framework chrome, so its one row stays the label's.
+
+        Both glyph modes: the app sheets rail a focused Button top and bottom,
+        which is two rows a one-row control does not have.
+        """
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"))
+
+        with mock.patch("lilbee.cli.tui.app.draws_block_glyphs", return_value=block_glyphs):
+            app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            for pill_id in ("#confirm-yes", "#confirm-no"):
+                pill = app.screen.query_one(pill_id, ConfirmPill)
+                assert pill.content_size.height >= 1, pill_id
+
+    async def test_focus_highlights_the_pill_it_lands_on(self) -> None:
+        """Focus has to repaint the pill it moves to, or the cursor is invisible."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"))
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            yes = app.screen.query_one("#confirm-yes", ConfirmPill)
+            no = app.screen.query_one("#confirm-no", ConfirmPill)
+            for key, pill in (("right", no), ("left", yes)):
+                resting = pill.styles.background
+                await pilot.press(key)
+                await pilot.pause()
+                assert pill.has_focus
+                assert pill.styles.background != resting, pill.id
+
+    async def test_arrows_walk_the_pill_row(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"))
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            yes = app.screen.query_one("#confirm-yes", ConfirmPill)
+            no = app.screen.query_one("#confirm-no", ConfirmPill)
+            assert yes.has_focus
+            await pilot.press("right")
+            await pilot.pause()
+            assert no.has_focus
+            await pilot.press("left")
+            await pilot.pause()
+            assert yes.has_focus
+
+    async def test_longest_message_leaves_room_for_the_pills(self) -> None:
+        """The dialog grows with its message; the pill row must stay inside it."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
+
+        class _App(LilbeeAppHost):
+            def on_mount(self):
+                self.push_screen(
+                    ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE)
+                )
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            dialog = app.screen.query_one("ConfirmDialog > Vertical")
+            for pill_id in ("#confirm-yes", "#confirm-no"):
+                pill = app.screen.query_one(pill_id, ConfirmPill)
+                assert pill.region.bottom <= dialog.content_region.bottom, pill_id
+
     async def test_confirm_with_y_key(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
