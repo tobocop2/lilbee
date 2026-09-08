@@ -1,0 +1,31 @@
+"""Degradations a running server can report to a client.
+
+Each subsystem owns the state behind its own warnings and exposes them; the
+health handler aggregates. Nothing here holds state, so there is no registry to
+keep in sync with the components that produce it.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel
+
+
+class WarningCode(StrEnum):
+    """Stable identifier for a degradation, so a client can branch on it."""
+
+    FTS_UNAVAILABLE = "fts_unavailable"
+    """Keyword search failed and queries fall back to vector-only recall."""
+    EMBEDDING_PREFIX_MISMATCH = "embedding_prefix_mismatch"
+    """Queries are prefixed but stored documents are not; retrieval is degraded."""
+
+
+class HealthWarning(BaseModel):
+    """One active degradation, with the remedy the user can act on."""
+
+    code: WarningCode
+    message: str
+    """User-facing description of what is degraded."""
+    remedy: str | None = None
+    """The action that clears it, when there is one."""

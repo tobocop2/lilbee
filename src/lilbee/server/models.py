@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import WorkerRole
@@ -240,6 +241,11 @@ class HealthResponse(BaseModel):
     chat_prefill_total: int | None = None
     """Prompt tokens the in-flight chat prefill will process in total. None when
     no prefill is running."""
+    warnings: list[HealthWarning] = []
+    """Degradations that answer correctly but worse, so a client can say so.
+
+    Retrieval falling back to vector-only, or an index whose documents predate
+    the embedder's prefixes, both return results and look healthy."""
 
 
 class CompactionInfo(BaseModel):
