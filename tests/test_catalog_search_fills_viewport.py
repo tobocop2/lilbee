@@ -13,8 +13,9 @@ import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, pump_until
 
 # Terminal the assertions are calibrated against: 40 rows total, of which the
 # catalog body gets 32 after the top and bottom bars.
@@ -134,6 +135,13 @@ async def _open_catalog_chat_grid(app, pilot):
     screen._active_tab_id_cache = "chat"
     screen._activation_settled = True
     await pilot.pause()
+    # _remount_grid_sections mounts the first section and defers the rest through
+    # call_after_refresh. Pilot.pause waits only on widgets that existed when it
+    # was called, so a bare pause returns while the grid is still empty.
+    # region.height is 0 until the layout pass runs.
+    assert await pump_until(
+        pilot, lambda: any(g.region.height for g in screen._grid_container.query(ModelGrid))
+    ), "the deferred grid sections never mounted and laid out"
     return screen
 
 
@@ -172,7 +180,6 @@ async def test_search_matches_fill_the_viewport(_mock_resolve):
     """
     from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     with _mock_catalog_deps(_featured_families(3)), _mock_remote_models():
         app = LilbeeApp()
@@ -189,6 +196,19 @@ async def test_search_matches_fill_the_viewport(_mock_resolve):
             await _type_search(pilot, "searchme")
 
             container = screen._grid_container
+            # The filter pass replaces the grouped sections with one flat grid
+            # through the same deferred mount chain. Counting before it lands
+            # sums two grids' partial regions instead of one settled grid.
+            assert await pump_until(
+                pilot,
+                lambda: (
+                    len(container.query(ModelGrid)) == 1
+                    and all(g.region.height for g in container.query(ModelGrid))
+                ),
+            ), (
+                "the flat result set never replaced the pre-search sections "
+                f"(grids={len(container.query(ModelGrid))})"
+            )
             grids = list(container.query(ModelGrid))
             headings = list(container.query(".section-heading"))
             # One heading is the only chrome the matches pay for, so every card
@@ -217,6 +237,13 @@ async def test_search_after_scrolling_starts_at_the_top(_mock_resolve):
         async with app.run_test(size=_TERMINAL_SIZE) as pilot:
             screen = await _open_catalog_chat_grid(app, pilot)
             container = screen._grid_container
+            # scroll_to clamps against max_scroll_y at call time and never
+            # re-applies the target when the content later grows, so scrolling
+            # before the sections are tall enough parks the viewport at 0 for good.
+            assert await pump_until(pilot, lambda: container.max_scroll_y > 0), (
+                "the unfiltered grid never grew taller than the viewport "
+                f"(max_scroll_y={container.max_scroll_y})"
+            )
             container.scroll_to(y=100, animate=False)
             await pilot.pause()
             assert container.scroll_y > 0
