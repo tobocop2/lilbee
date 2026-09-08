@@ -22,7 +22,7 @@ from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.agent_config import agent_config, agent_config_index
 from lilbee.server.handlers.config import (
@@ -117,11 +117,11 @@ def _chat_status(
     if provider.role_ready(WorkerRole.CHAT):
         return "ready", None
     snapshot = provider.warm_progress()
-    if snapshot is None:
-        return "not_started", None
-    if snapshot.phase is WarmPhase.ERROR:
+    if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
         return "error", snapshot.error
-    return "loading", None
+    if is_active_warm(snapshot):
+        return "loading", None
+    return "not_started", None
 
 
 async def health() -> HealthResponse:

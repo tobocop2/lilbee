@@ -44,6 +44,21 @@ class WarmProgress(BaseModel):
     elapsed_s: float = 0.0
 
 
+ACTIVE_WARM_PHASES = frozenset(
+    {WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE}
+)
+"""Phases in which a load is still in flight. READY and ERROR are terminal."""
+
+
+def is_active_warm(snapshot: WarmProgress | None) -> bool:
+    """Whether *snapshot* is a load still in flight, rather than absent or finished.
+
+    A terminal snapshot outlives the engine it describes: the tracker is not
+    cleared when a role is swapped out, so READY can survive an eviction.
+    """
+    return snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
+
+
 class WarmProgressTracker:
     """Thread-safe warm-state holder: the warm thread writes, handlers read.
 
