@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI, driven by files under $FIXTURE. Only the calls
+# scripts/release_watch.sh makes are implemented; anything else is a loud
+# failure so a new call site cannot pass a test silently.
+set -uo pipefail
+
+log() { echo "$*" >> "${FIXTURE}/actions.log"; }
+
+sub="$1"; shift
+
+case "${sub}" in
+  api)
+    [ -f "${FIXTURE}/fail_api" ] && { echo "stub gh: simulated API failure" >&2; exit 1; }
+    # --paginate applies the -q filter per page, so a count comes back as
+    # "0\n0" and the caller's numeric test errors. Fail loudly if it returns.
+    paginate=no
+    for arg in "$@"; do
+      [ "${arg}" = "--paginate" ] && paginate=yes
+    done
+    target="$1"; shift
+    jqexpr=""
+    while [ $# -gt 0 ]; do
+      case "$1" in -q|--jq) jqexpr="$2"; shift 2 ;; *) shift ;; esac
+    done
+    case "${target}" in
+      */jobs*)
+        case "${jqexpr}" in
+          *length*)
+            [ "${paginate}" = "yes" ] && { echo "stub gh: --paginate with a jq count returns one line per page" >&2; exit 1; }
+            grep -c . < "${FIXTURE}/rc_failed" || true
+            ;;
+          *) cat "${FIXTURE}/rc_failed" ;;
+        esac
+        ;;
+      */actions/runs/*)
+        run_id="${target##*/}"
+        case "${jqexpr}" in
+          *run_attempt*conclusion*)
+            echo "$(cat "${FIXTURE}/attempts/${run_id}") $(cat "${FIXTURE}/conclusions/${run_id}")"
+            ;;
+          *)
+            cat "${FIXTURE}/attempts/${run_id}"
+            ;;
+        esac
+        ;;
+      *) echo "stub gh: unhandled api ${target}" >&2; exit 1 ;;
+    esac
+    ;;
+
+  run)
+    case "$1" in
+      list)
+        [ -f "${FIXTURE}/fail_run_list" ] && { echo "stub gh: simulated list failure" >&2; exit 1; }
+        wf=""; jqexpr=""; prev=""
+        for arg in "$@"; do
+          case "${arg}" in --workflow=*) wf="${arg#--workflow=}" ;; esac
+          [ "${prev}" = "--jq" ] && jqexpr="${arg}"
+          prev="${arg}"
+        done
+        f="${FIXTURE}/runs/${wf}.json"
+        [ -f "${f}" ] || f="${FIXTURE}/empty.json"
+        # Real gh emits the whole array when --jq is absent. The script relies on
+        # its exit status to tell an API error from an empty result.
+        if [ -n "${jqexpr}" ]; then jq -c "${jqexpr}" < "${f}"; else cat "${f}"; fi
+        ;;
+      rerun)
+        run_id="$2"
+        log "rerun ${run_id}"
+        echo "$(( $(cat "${FIXTURE}/attempts/${run_id}") + 1 ))" > "${FIXTURE}/attempts/${run_id}"
+        # A rerun heals the run unless the fixture says this failure is a defect.
+        if [ ! -f "${FIXTURE}/no_heal_${run_id}" ]; then
+          # An unmatched glob stays literal, so guard on the file existing.
+          for f in "${FIXTURE}"/runs/*.json; do
+            [ -f "${f}" ] || continue
+            jq -c --argjson id "${run_id}" \
+              'map(if .databaseId == $id then .conclusion = "success" else . end)' \
+              "${f}" > "${f}.tmp" && mv "${f}.tmp" "${f}"
+          done
+        fi
+        exit 0
+        ;;
+      *) echo "stub gh: unhandled run $1" >&2; exit 1 ;;
+    esac
+    ;;
+
+  workflow)
+    # gh workflow run <file> --repo R -f tag=T
+    log "dispatch $2"
+    [ -f "${FIXTURE}/appear_on_dispatch" ] && cp "${FIXTURE}/appear_on_dispatch" "${FIXTURE}/runs/$2.json"
+    ;;
+
+  release)
+    cat "${FIXTURE}/prerelease"
+    ;;
+
+  *) echo "stub gh: unhandled ${sub}" >&2; exit 1 ;;
+esac

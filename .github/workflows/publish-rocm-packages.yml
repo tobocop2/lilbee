@@ -1,4 +1,5 @@
 name: Publish ROCm Packages
+run-name: Publish ROCm Packages ${{ inputs.tag }}
 
 # Updates the Homebrew lilbee-rocm formula, AUR lilbee-rocm PKGBUILD, and the Nix
 # flake ROCm entry to pin a tag's GH-release ROCm Linux binary, and builds the

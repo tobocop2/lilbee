@@ -1,4 +1,5 @@
 name: Publish CUDA Packages
+run-name: Publish CUDA Packages ${{ inputs.tag }}
 
 # Updates the Homebrew lilbee-cuda formula, AUR lilbee-cuda PKGBUILD, and the
 # Nix flake CUDA entry to pin a tag's GH-release CUDA Linux binary. Runs
