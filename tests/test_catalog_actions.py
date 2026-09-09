@@ -1250,7 +1250,7 @@ class TestForYouByRole:
     """Discover's For You rail: one runnable pick per role, in role order."""
 
     @staticmethod
-    def _row(name, task, *, compat, fit_level, featured=True):
+    def _row(name, task, *, compat, fit_level, featured=True, downloads=1_000_000):
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
         from lilbee.runtime.hardware import FitChip
 
@@ -1263,7 +1263,7 @@ class TestForYouByRole:
             downloads="1M",
             featured=featured,
             installed=False,
-            sort_downloads=1_000_000,
+            sort_downloads=downloads,
             sort_size=4.6,
             ref=f"a/{name}-GGUF",
             compat=compat,
@@ -1315,19 +1315,96 @@ class TestForYouByRole:
         rows = [self._row("NoSize", "chat", compat=ModelCompat.SUPPORTED, fit_level=None)]
         assert for_you_by_role(rows) == []
 
-    def test_non_pick_rows_are_skipped(self) -> None:
+    def test_a_role_whose_featured_rows_cannot_run_backfills(self) -> None:
+        """A misfit is replaced by a model that runs, not dropped."""
         from lilbee.catalog.types import ModelCompat
         from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
         from lilbee.runtime.hardware import FitLevel
 
         rows = [
             self._row(
-                "Browse",
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row(
+                "ChatSpare",
                 "chat",
                 compat=ModelCompat.SUPPORTED,
                 fit_level=FitLevel.FITS,
                 featured=False,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "ChatSpare"
+        assert pick.fit is not None
+        assert pick.fit.level is FitLevel.FITS
+
+    def test_the_backfill_takes_the_most_downloaded_row_that_runs(self) -> None:
+        """Popularity separates the substitutes.
+
+        Ordered so the expected pick is wrong under the two orders it could be
+        confused with: input order yields Middle, fit-then-name yields Aardvark.
+        """
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.runtime.hardware import FitLevel
+
+        def spare(name, fit_level, downloads):
+            return self._row(
+                name,
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=fit_level,
+                featured=False,
+                downloads=downloads,
             )
+
+        rows = [
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            spare("Middle", FitLevel.TIGHT, 500),
+            spare("Aardvark", FitLevel.FITS, 10),
+            spare("Zebra", FitLevel.FITS, 900),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "Zebra"
+
+    def test_a_featured_row_that_runs_is_never_replaced(self) -> None:
+        """The rail does not reach past a featured row that already fits."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.runtime.hardware import FitLevel
+
+        rows = [
+            self._row("Zeta", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+            self._row(
+                "Alpha",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "Zeta"
+
+    def test_a_role_with_nothing_runnable_yields_no_pick(self) -> None:
+        """An empty role is a legitimate outcome, not an error."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.runtime.hardware import FitLevel
+
+        rows = [
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row(
+                "ChatBad",
+                "chat",
+                compat=ModelCompat.UNSUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+            ),
         ]
         assert for_you_by_role(rows) == []
 

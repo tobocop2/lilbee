@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
@@ -14,6 +14,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_list import ModelListSection
+from lilbee.runtime.hardware import FitLevel
 
 
 @dataclass
@@ -40,40 +41,53 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
     return (row.name, row.installed)
 
 
+def _is_runnable_pick(row: LocalCatalogRow) -> bool:
+    """Whether the engine supports the row and the machine can hold it.
+
+    Rows with no fit chip are excluded: an unknown size cannot be promised.
+    """
+    return (
+        row.compat is ModelCompat.SUPPORTED
+        and row.fit is not None
+        and row.fit.level is not FitLevel.WONT_RUN
+    )
+
+
+def _backfill_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
+    """Rank a backfilled Discover pick: most downloaded first, then alphabetical.
+
+    Every candidate already runs here, so popularity separates them rather
+    than fit.
+    """
+    return (-row.sort_downloads, row.name.lower())
+
+
 def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
     """Runnable picks grouped by role: chat, embedding, vision, rerank.
 
-    A row qualifies only when the engine supports its architecture and the
-    machine can hold it, so every card in the rail is installable as-is.
-    Rows with no fit chip are excluded: an unknown size cannot be promised.
+    Featured rows lead, best fit first. A role whose featured rows cannot run
+    backfills with the most downloaded row that does, so a card that does not
+    fit is replaced rather than dropped. A role with nothing runnable yields
+    no pick.
     """
-    from lilbee.catalog.types import ModelCompat, ModelTask
-    from lilbee.runtime.hardware import FitLevel
-
-    runnable = [
-        r
-        for r in rows
-        if r.featured
-        and r.compat is ModelCompat.SUPPORTED
-        and r.fit is not None
-        and r.fit.level is not FitLevel.WONT_RUN
-    ]
+    runnable = [r for r in rows if _is_runnable_pick(r)]
     out: list[LocalCatalogRow] = []
-    for task in (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK):
-        for row in sorted((r for r in runnable if r.task == task), key=for_you_sort_key):
-            out.append(row)
-            break
+    for task in TASK_BUCKET_ORDER:
+        candidates = [r for r in runnable if r.task == task]
+        featured = [r for r in candidates if r.featured]
+        if featured:
+            out.append(min(featured, key=for_you_sort_key))
+        elif candidates:
+            out.append(min(candidates, key=_backfill_sort_key))
     return out
 
 
 def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
     """Rank Discover 'For You' rows: best fit first, then alphabetical.
 
-    Fit rank: FITS=0, TIGHT=1, WONT_RUN=2, no chip=3. Featured-only
-    callers already filtered, so featured isn't in the key.
+    Fit rank: FITS=0, TIGHT=1, WONT_RUN=2, no chip=3. Curation is applied
+    before the sort, so featured isn't in the key.
     """
-    from lilbee.runtime.hardware import FitLevel
-
     if row.fit is None:
         rank = 3
     elif row.fit.level is FitLevel.FITS:
