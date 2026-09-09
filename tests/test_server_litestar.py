@@ -982,6 +982,22 @@ class TestModelsCatalogRoute:
         resp = client.get("/api/models/catalog?task=bogus&featured=true")
         assert resp.status_code == 422
 
+    def test_invalid_max_fit_returns_422(self, client):
+        """An unknown fit level must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?max_fit=roomy&featured=true")
+        assert resp.status_code == 422
+
+    def test_max_fit_reaches_the_handler(self, client):
+        """The route forwards the fit threshold instead of dropping it."""
+        with mock.patch(
+            "lilbee.server.handlers.models_catalog",
+            new_callable=AsyncMock,
+            return_value={"total": 0, "limit": 20, "offset": 0, "models": []},
+        ) as mock_cat:
+            resp = client.get("/api/models/catalog?max_fit=fits&featured=true")
+        assert resp.status_code == 200
+        assert mock_cat.call_args.kwargs["max_fit"] == "fits"
+
 
 class TestModelsInstalledRoute:
     @mock.patch(

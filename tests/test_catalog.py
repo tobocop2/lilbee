@@ -65,6 +65,7 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
+from lilbee.runtime.hardware import FitLevel, fit_for_size, make_fit_filter
 
 _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 
@@ -718,6 +719,89 @@ class TestGetCatalog:
     def test_filter_size_unknown_bucket_matches_nothing(self) -> None:
         """An unrecognized bucket filters everything out rather than raising."""
         assert get_catalog(size="gigantic").total == 0  # type: ignore[arg-type]
+
+    def test_largest_first_page_is_all_rows_the_host_cannot_load(self) -> None:
+        """The control for the fit filter: this is the page a client has to fix itself."""
+        result = get_catalog(
+            task=ModelTask.CHAT, featured=True, sort=CatalogSort.SIZE_DESC, limit=3
+        )
+        assert [m.size_gb for m in result.models] == [68.6, 40.0, 19.4]
+        assert all(fit_for_size(m.size_gb, 8 * 1024**3) is FitLevel.WONT_RUN for m in result.models)
+
+    def test_fit_filter_applies_before_the_page_window(self) -> None:
+        """A limited request comes back full, not short by the rows the filter dropped."""
+        result = get_catalog(
+            task=ModelTask.CHAT,
+            featured=True,
+            sort=CatalogSort.SIZE_DESC,
+            limit=3,
+            fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+        )
+        assert [m.size_gb for m in result.models] == [4.6, 1.8, 0.6]
+
+    def test_fit_filter_totals_only_the_matching_rows(self) -> None:
+        """A page smaller than the match count still reports how many rows match."""
+        result = get_catalog(
+            task=ModelTask.CHAT,
+            featured=True,
+            sort=CatalogSort.SIZE_DESC,
+            limit=2,
+            fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+        )
+        assert [m.size_gb for m in result.models] == [4.6, 1.8]
+        assert result.total == 3
+
+    def test_fit_filter_narrows_a_browse_page_without_ending_paging(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Browse pages are narrowed, not truncated.
+
+        Every fitting row of the upstream page survives, and ``has_more`` still
+        tells the client to ask for the next one.
+        """
+        upstream = [make_test_catalog_model(name=f"Big{i}", size_gb=80.0) for i in range(3)] + [
+            make_test_catalog_model(name=f"Small{i}", size_gb=2.0) for i in range(2)
+        ]
+        monkeypatch.setattr(
+            get_services().hf_client,
+            "fetch_models",
+            lambda **kw: HfPage(models=upstream, has_more=True),
+        )
+        result = get_catalog(
+            task=ModelTask.CHAT,
+            featured=False,
+            limit=5,
+            fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+        )
+        assert [m.hf_repo for m in result.models] == ["test/Small0", "test/Small1"]
+        assert result.total == 2
+        assert result.has_more is True
+
+    def test_fit_filter_totals_every_row_it_keeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An untruncated page and its total are the same set, fail-open rows included.
+
+        A row with no measurable size is kept because the host cannot prove it
+        won't run, so it has to be counted too.
+        """
+        upstream = [
+            make_test_catalog_model(name="Small", size_gb=2.0),
+            make_test_catalog_model(name="Big", size_gb=80.0),
+            make_test_catalog_model(name="Unmeasured", size_gb=0.0),
+        ]
+        monkeypatch.setattr(
+            get_services().hf_client,
+            "fetch_models",
+            lambda **kw: HfPage(models=upstream, has_more=False),
+        )
+        result = get_catalog(
+            task=ModelTask.CHAT,
+            featured=False,
+            limit=50,
+            fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+        )
+        assert sorted(m.hf_repo for m in result.models) == ["test/Small", "test/Unmeasured"]
+        assert result.total == len(result.models)
+        assert result.has_more is False
 
     def test_filter_featured_true(self) -> None:
         result = get_catalog(featured=True)

@@ -100,11 +100,16 @@ async def models_catalog_route(
     size: FromQuery[str | None] = None,
     installed: FromQuery[bool | None] = None,
     featured: FromQuery[bool | None] = None,
+    max_fit: FromQuery[str | None] = None,
     sort: FromQuery[str] = "featured",
     limit: Annotated[int, QueryParameter(ge=1, le=1000)] = 20,
     offset: Annotated[int, QueryParameter(ge=0)] = 0,
 ) -> ModelsCatalogResponse:
-    """Browse the model catalog with optional filters."""
+    """Browse the model catalog with optional filters.
+
+    ``max_fit`` is the worst hardware fit to return: ``fits``, ``tight``, or
+    ``wont_run``.
+    """
     try:
         return await handlers.models_catalog(
             task=task,
@@ -112,6 +117,7 @@ async def models_catalog_route(
             size=size,
             installed=installed,
             featured=featured,
+            max_fit=max_fit,
             sort=sort,
             limit=limit,
             offset=offset,

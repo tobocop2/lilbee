@@ -2684,6 +2684,47 @@ class TestModelsCatalog:
         assert resp.has_more is False
 
     @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_untruncated_page_and_total_are_the_same_set(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        """A mixed page of native and hosted rows totals every row it returns."""
+        import lilbee.server.handlers.models as h
+        from conftest import make_test_catalog_model
+        from lilbee.catalog import CatalogResult
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        natives = [
+            make_test_catalog_model(name="Small", size_gb=2.0),
+            make_test_catalog_model(name="Unmeasured", size_gb=0.0),
+        ]
+        mock_get_catalog.return_value = CatalogResult(
+            total=len(natives), limit=20, offset=0, models=natives, has_more=False
+        )
+        mock_svc.registry.list_installed.return_value = []
+        h._hosted_cache.clear()
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name=name,
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                    for name in ("gemini-2.0-flash", "gemini-2.0-pro")
+                ]
+            },
+        )
+        resp = await handlers.models_catalog(task="chat", max_fit="fits")
+        assert len(resp.models) == 4
+        assert resp.total == len(resp.models)
+        assert resp.has_more is False
+
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_featured_filter(
         self, mock_get_catalog, mock_svc, monkeypatch
     ):
@@ -2929,6 +2970,7 @@ class TestModelsCatalog:
             size=CatalogSize.SMALL,
             installed=True,
             featured=True,
+            fit_filter=None,
             sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
@@ -3126,6 +3168,32 @@ class TestModelsCatalog:
         mock_svc.registry.list_installed.return_value = []
         result = await handlers.models_catalog()
         assert result.models[0].fit is None
+
+    @patch("lilbee.server.handlers.models.available_memory_for_fit", return_value=8 * 1024**3)
+    async def test_max_fit_returns_a_full_page_of_rows_that_run_here(self, _mock_mem, mock_svc):
+        """The filter runs before the page window, so a limited request is not short."""
+        from lilbee.runtime.hardware import FitLevel
+
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog(
+            task="chat", featured=True, sort="size_desc", max_fit="fits", limit=3
+        )
+        assert [m.size_gb for m in result.models] == [4.6, 1.8, 0.6]
+        assert result.total == 3
+        assert all(m.fit is FitLevel.FITS for m in result.models)
+
+    @patch("lilbee.server.handlers.models.available_memory_for_fit", return_value=8 * 1024**3)
+    async def test_max_fit_tight_keeps_the_rows_that_only_just_fit(self, _mock_mem, mock_svc):
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog(
+            task="chat", featured=True, sort="size_desc", max_fit="tight", limit=4
+        )
+        assert [m.size_gb for m in result.models] == [7.4, 4.6, 1.8, 0.6]
+        assert result.total == 4
+
+    async def test_unknown_max_fit_is_rejected(self, mock_svc):
+        with pytest.raises(ValueError):
+            await handlers.models_catalog(max_fit="roomy")
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_fit_none_when_size_unknown(self, mock_get_catalog, mock_svc):

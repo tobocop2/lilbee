@@ -83,19 +83,14 @@ def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
 
 
 def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
-    """Rank Discover 'For You' rows: best fit first, then alphabetical.
+    """Rank Discover 'For You' rows: best fit first, unknown fit last, then alphabetical.
 
-    Fit rank: FITS=0, TIGHT=1, WONT_RUN=2, no chip=3. Curation is applied
-    before the sort, so featured isn't in the key.
+    Curation is applied before the sort, so featured isn't in the key.
     """
-    if row.fit is None:
-        rank = 3
-    elif row.fit.level is FitLevel.FITS:
-        rank = 0
-    elif row.fit.level is FitLevel.TIGHT:
-        rank = 1
-    else:
-        rank = 2
+    from lilbee.runtime.hardware import FIT_RANK
+
+    unknown_fit_rank = len(FIT_RANK)
+    rank = unknown_fit_rank if row.fit is None else FIT_RANK[row.fit.level]
     return (rank, row.name.lower())
 
 

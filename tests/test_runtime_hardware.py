@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from conftest import make_test_catalog_model
 from lilbee.catalog.models import ModelFamily, ModelVariant
 from lilbee.runtime.hardware import (
     FitLevel,
@@ -9,6 +10,8 @@ from lilbee.runtime.hardware import (
     available_memory_for_fit,
     compute_fit,
     family_size_variants,
+    fit_for_size,
+    make_fit_filter,
 )
 
 _GB = 1024**3
@@ -53,6 +56,51 @@ def test_chip_is_immutable() -> None:
     except dataclasses.FrozenInstanceError:
         return
     raise AssertionError("FitChip should be frozen")
+
+
+def test_fit_for_size_classifies_a_footprint_against_the_budget() -> None:
+    assert fit_for_size(4.0, 8 * _GB) is FitLevel.FITS
+    assert fit_for_size(7.5, 8 * _GB) is FitLevel.TIGHT
+    assert fit_for_size(10.0, 8 * _GB) is FitLevel.WONT_RUN
+
+
+def test_fit_for_size_is_unknown_without_a_budget() -> None:
+    assert fit_for_size(4.0, None) is None
+
+
+def test_fit_for_size_is_unknown_without_a_size() -> None:
+    assert fit_for_size(0.0, 8 * _GB) is None
+
+
+def test_make_fit_filter_returns_no_predicate_without_a_threshold() -> None:
+    assert make_fit_filter(None, 8 * _GB) is None
+
+
+def test_fit_filter_keeps_rows_no_worse_than_the_threshold() -> None:
+    keep = make_fit_filter(FitLevel.TIGHT, 8 * _GB)
+    assert keep is not None
+    assert keep(make_test_catalog_model(size_gb=4.0)) is True
+    assert keep(make_test_catalog_model(size_gb=7.5)) is True
+    assert keep(make_test_catalog_model(size_gb=10.0)) is False
+
+
+def test_fit_filter_at_fits_drops_a_tight_row() -> None:
+    keep = make_fit_filter(FitLevel.FITS, 8 * _GB)
+    assert keep is not None
+    assert keep(make_test_catalog_model(size_gb=7.5)) is False
+
+
+def test_fit_filter_keeps_a_row_whose_size_is_unknown() -> None:
+    """An unmeasurable row is kept: the host cannot prove it will not run."""
+    keep = make_fit_filter(FitLevel.FITS, 8 * _GB)
+    assert keep is not None
+    assert keep(make_test_catalog_model(size_gb=0.0)) is True
+
+
+def test_fit_filter_keeps_every_row_when_the_memory_probe_failed() -> None:
+    keep = make_fit_filter(FitLevel.FITS, None)
+    assert keep is not None
+    assert keep(make_test_catalog_model(size_gb=500.0)) is True
 
 
 def test_available_memory_for_fit_sums_whole_fleet(monkeypatch) -> None:

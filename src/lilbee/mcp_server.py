@@ -1116,22 +1116,28 @@ def catalog_browse(
     size: str = "",
     installed: bool | None = None,
     featured: bool | None = None,
+    max_fit: str = "",
     sort: str = "featured",
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Browse the lilbee model catalog. ``task``: chat/embedding/vision/rerank.
+    """Browse the model catalog. ``task``: chat/embedding/vision/rerank.
     ``size``: small/medium/large/huge, by parameter count.
+    ``max_fit``: fits/tight/wont_run, worst fit to keep.
     ``sort``: featured/downloads/name/size_asc/size_desc."""
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+    from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 
     try:
         parsed_task = ModelTask(task) if task else None
         parsed_size = CatalogSize(size) if size else None
         parsed_sort = CatalogSort(sort)
+        parsed_max_fit = FitLevel(max_fit) if max_fit else None
     except ValueError as exc:
         return _error(str(exc))
+    # The host probe costs a GPU query, so only run it when a fit was asked for.
+    available_bytes = available_memory_for_fit() if parsed_max_fit is not None else None
     try:
         result = get_catalog(
             task=parsed_task,
@@ -1139,6 +1145,7 @@ def catalog_browse(
             size=parsed_size,
             installed=installed,
             featured=featured,
+            fit_filter=make_fit_filter(parsed_max_fit, available_bytes),
             sort=parsed_sort,
             limit=limit,
             offset=offset,
