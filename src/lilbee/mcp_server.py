@@ -68,6 +68,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -1127,7 +1128,6 @@ def catalog_browse(
     ``sort``: featured/downloads/name/size_asc/size_desc."""
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
-    from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 
     try:
         parsed_task = ModelTask(task) if task else None

@@ -2142,14 +2142,19 @@ class TestCatalogBrowseMcp:
 
     def test_browse_max_fit_pages_only_rows_that_run_here(self, isolated_env, mock_svc):
         """The agent surface filters by host fit before the page window, like the route."""
-        with mock.patch(
-            "lilbee.runtime.hardware.available_memory_for_fit", return_value=8 * 1024**3
-        ):
+        with mock.patch("lilbee.mcp_server.available_memory_for_fit", return_value=8 * 1024**3):
             result = catalog_browse(
                 task="chat", featured=True, sort="size_desc", max_fit="fits", limit=3
             )
         assert [m["size_gb"] for m in result["models"]] == [4.6, 1.8, 0.6]
         assert result["total"] == 3
+
+    def test_browse_skips_host_probe_without_max_fit(self, isolated_env, mock_svc):
+        """The agent surface reads host memory only when a fit was asked for."""
+        with mock.patch("lilbee.mcp_server.available_memory_for_fit") as probe:
+            result = catalog_browse(task="chat", featured=True)
+        probe.assert_not_called()
+        assert result["total"] > 0
 
     def test_browse_omits_chat_model_when_filtered_to_chat_only_role(self, isolated_env, mock_svc):
         """task=rerank never returns chat models even with no other filters."""
