@@ -2688,11 +2688,8 @@ class TestModelsCatalog:
         self, mock_get_catalog, mock_svc, monkeypatch
     ):
         """A mixed page of native and hosted rows totals every row it returns."""
-        import lilbee.server.handlers.models as h
         from conftest import make_test_catalog_model
         from lilbee.catalog import CatalogResult
-        from lilbee.catalog.types import ModelTask
-        from lilbee.modelhub.model_manager.types import RemoteModel
 
         natives = [
             make_test_catalog_model(name="Small", size_gb=2.0),
@@ -2702,23 +2699,7 @@ class TestModelsCatalog:
             total=len(natives), limit=20, offset=0, models=natives, has_more=False
         )
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache.clear()
-        monkeypatch.setattr(
-            h,
-            "discover_api_models",
-            lambda: {
-                "Gemini": [
-                    RemoteModel(
-                        name=name,
-                        task=ModelTask.CHAT,
-                        family="",
-                        parameter_size="",
-                        provider="Gemini",
-                    )
-                    for name in ("gemini-2.0-flash", "gemini-2.0-pro")
-                ]
-            },
-        )
+        self._stub_frontier(monkeypatch, "gemini-2.0-flash", "gemini-2.0-pro")
         resp = await handlers.models_catalog(task="chat", max_fit="fits")
         assert len(resp.models) == 4
         assert resp.total == len(resp.models)
@@ -2756,7 +2737,9 @@ class TestModelsCatalog:
         assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
-    async def test_hosted_skipped_on_later_page(self, mock_get_catalog, mock_svc, monkeypatch):
+    async def test_later_page_omits_hosted_rows_but_total_counts_them(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
         import lilbee.server.handlers.models as h
         from lilbee.catalog import CatalogResult
         from lilbee.catalog.types import ModelSource, ModelTask
