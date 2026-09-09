@@ -1136,7 +1136,7 @@ def catalog_browse(
         parsed_max_fit = FitLevel(max_fit) if max_fit else None
     except ValueError as exc:
         return _error(str(exc))
-    # The host probe costs a GPU query, so only run it when a fit was asked for.
+    # The rows here carry no fit chip; only the filter needs the uncached GPU probe.
     available_bytes = available_memory_for_fit() if parsed_max_fit is not None else None
     try:
         result = get_catalog(
