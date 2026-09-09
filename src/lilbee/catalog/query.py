@@ -1,12 +1,13 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.app.services import get_services
-from lilbee.catalog.models import CatalogModel, CatalogResult
+from lilbee.catalog.models import CatalogModel, CatalogResult, HfPage, PageWindow, page_window
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
@@ -64,67 +65,95 @@ def get_catalog(
     offset: int = 0,
     model_manager: Any = None,
 ) -> CatalogResult:
-    """Get paginated, filtered catalog of models."""
-    picks = get_picks()
-    # Picks only on the first page
-    all_models = list(picks) if offset == 0 else []
-    hf_has_more = False
+    """Get paginated, filtered catalog of models.
 
-    # Optionally fetch from HF API
-    if not featured:
-        hf_task, hf_library = task_to_pipeline(task)
-        hf_page = get_services().hf_client.fetch_models(
-            pipeline_tag=hf_task,
-            limit=limit,
-            offset=offset,
-            library=hf_library,
+    The picks lead the listing and the HuggingFace rows follow them, so one
+    page window covers both: the HuggingFace request is shifted by the picks
+    that precede it, and a window that ends inside the picks makes no request.
+    """
+    picks = get_picks()
+    installed_filter = _installed_filter(installed, model_manager)
+
+    def keep(models: list[CatalogModel]) -> list[CatalogModel]:
+        return _filter_models(
+            models,
+            task=task,
             search=search,
+            size=size,
+            installed_filter=installed_filter,
+            featured=featured,
         )
-        hf_has_more = hf_page.has_more
+
+    leading = _sort_models(keep(list(picks)), sort)
+    window = page_window(len(leading), offset, limit)
+    page = leading[offset : offset + limit]
+    hf_models: list[CatalogModel] = []
+    if featured:
+        has_more = offset + limit < len(leading)
+    elif window.rest_limit == 0:
+        has_more = True  # the HuggingFace rows start on the next page
+    else:
+        hf_page = _fetch_hf_page(task, search, window)
         # Deduplicate: skip HF models already shown as a pick
         pick_repos = {m.hf_repo for m in picks}
-        hf_models = [m for m in hf_page.models if m.hf_repo not in pick_repos]
-        all_models.extend(hf_models)
-
-    # Filter by task
-    if task:
-        all_models = [m for m in all_models if m.task == task]
-
-    # Filter by search. Single join+lower per model per keystroke instead
-    # of four separate lowers + substring checks; the no-match path
-    # (the common case) runs four times fewer ``str.lower()`` calls.
-    if search:
-        search_lower = search.lower()
-        all_models = [m for m in all_models if search_lower in _search_blob(m)]
-
-    # Filter by size
-    if size is not None:
-        all_models = [m for m in all_models if size_bucket(m.params) == size]
-
-    # A repo is "installed" if any of its quants has a manifest.
-    if installed is not None and model_manager is not None:
-        installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
-        if installed:
-            all_models = [m for m in all_models if m.hf_repo in installed_repos]
-        else:
-            all_models = [m for m in all_models if m.hf_repo not in installed_repos]
-
-    # Filter by featured status
-    if featured is not None:
-        all_models = [m for m in all_models if m.featured == featured]
-
-    # Sort
-    all_models = _sort_models(all_models, sort)
-
-    total = len(all_models)
-
-    # When HF API pagination is active (offset passed to API), skip local slicing
-    # to avoid double-applying the offset. Only slice for featured-only requests.
-    paginated = all_models[offset : offset + limit] if featured else all_models[:limit]
+        hf_models = keep([m for m in hf_page.models if m.hf_repo not in pick_repos])
+        page.extend(_sort_models(hf_models, sort))
+        has_more = hf_page.has_more
 
     return CatalogResult(
-        total=total, limit=limit, offset=offset, models=paginated, has_more=hf_has_more
+        total=len(leading) + len(hf_models),
+        limit=limit,
+        offset=offset,
+        models=page,
+        has_more=has_more,
     )
+
+
+def _fetch_hf_page(task: ModelTask | None, search: str, window: PageWindow) -> HfPage:
+    """The HuggingFace rows that fill the rest of *window*."""
+    hf_task, hf_library = task_to_pipeline(task)
+    return get_services().hf_client.fetch_models(
+        pipeline_tag=hf_task,
+        limit=window.rest_limit,
+        offset=window.rest_offset,
+        library=hf_library,
+        search=search,
+    )
+
+
+def _installed_filter(
+    installed: bool | None, model_manager: Any
+) -> Callable[[CatalogModel], bool] | None:
+    """Row predicate for the installed filter, or None when it is off."""
+    if installed is None or model_manager is None:
+        return None
+    # A repo is installed if any of its quants has a manifest.
+    installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
+    return lambda m: (m.hf_repo in installed_repos) == installed
+
+
+def _filter_models(
+    models: list[CatalogModel],
+    *,
+    task: ModelTask | None,
+    search: str,
+    size: CatalogSize | None,
+    installed_filter: Callable[[CatalogModel], bool] | None,
+    featured: bool | None,
+) -> list[CatalogModel]:
+    """The rows of *models* that pass every requested filter."""
+    if task:
+        models = [m for m in models if m.task == task]
+    if search:
+        search_lower = search.lower()
+        models = [m for m in models if search_lower in _search_blob(m)]
+    if size is not None:
+        models = [m for m in models if size_bucket(m.params) == size]
+    if installed_filter is not None:
+        models = [m for m in models if installed_filter(m)]
+    if featured is not None:
+        models = [m for m in models if m.featured == featured]
+    return models
 
 
 def task_to_pipeline(task: ModelTask | None) -> tuple[str, str | None]:

@@ -2679,10 +2679,9 @@ class TestModelsCatalog:
         frontier = [m for m in resp.models if m.source == ModelSource.FRONTIER]
         assert frontier and frontier[0].display_name == "gemini-2.0-flash"
         assert frontier[0].key_status == "ready"
-        # total describes the paginated native listing only. Counting the
-        # first-page-only hosted overlay into it made page 1 report a larger
-        # total than page 2 of the same listing.
-        assert resp.total == 0
+        # An untruncated page and its total are the same set.
+        assert resp.total == len(resp.models) == 1
+        assert resp.has_more is False
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_featured_filter(
@@ -2713,6 +2712,7 @@ class TestModelsCatalog:
         )
         resp = await handlers.models_catalog(task="chat", featured=True)
         assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
+        assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_on_later_page(self, mock_get_catalog, mock_svc, monkeypatch):
@@ -2741,6 +2741,100 @@ class TestModelsCatalog:
         )
         resp = await handlers.models_catalog(task="chat", offset=20)
         assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
+        # The row rides page one only, but the total counts it on every page.
+        assert resp.total == 1
+        assert resp.offset == 20
+
+    @staticmethod
+    def _stub_frontier(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+        """Discover one Gemini chat row per name in *names*."""
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        h._hosted_cache.clear()
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name=name,
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                    for name in names
+                ]
+            },
+        )
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_rows_count_against_the_page_limit(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        """A page never returns more rows than its limit, hosted rows included."""
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=0, limit=0, offset=0, models=[], has_more=True
+        )
+        mock_svc.registry.list_installed.return_value = []
+        self._stub_frontier(monkeypatch, "g1", "g2", "g3")
+        resp = await handlers.models_catalog(task="chat", limit=2)
+        assert [m.display_name for m in resp.models] == ["g1", "g2"]
+        assert mock_get_catalog.call_args.kwargs["limit"] == 0
+        assert mock_get_catalog.call_args.kwargs["offset"] == 0
+        assert resp.limit == 2
+        assert resp.offset == 0
+        assert resp.total == 3
+        assert resp.has_more is True
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_rows_shift_the_native_window(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        """The native rows start after the hosted rows on page one and continue on page two."""
+        from conftest import make_test_catalog_model
+        from lilbee.catalog import CatalogResult
+
+        natives = [make_test_catalog_model(name=f"N{i}") for i in range(17)]
+        mock_get_catalog.return_value = CatalogResult(
+            total=17, limit=17, offset=0, models=natives, has_more=True
+        )
+        mock_svc.registry.list_installed.return_value = []
+        self._stub_frontier(monkeypatch, "g1", "g2", "g3")
+
+        first = await handlers.models_catalog(task="chat", limit=20, offset=0)
+        assert len(first.models) == 20
+        assert [m.display_name for m in first.models[:3]] == ["g1", "g2", "g3"]
+        assert mock_get_catalog.call_args.kwargs["limit"] == 17
+        assert mock_get_catalog.call_args.kwargs["offset"] == 0
+        assert first.total == 20
+
+        second = await handlers.models_catalog(task="chat", limit=20, offset=20)
+        assert not [m for m in second.models if m.provider]
+        assert mock_get_catalog.call_args.kwargs["limit"] == 20
+        assert mock_get_catalog.call_args.kwargs["offset"] == 17
+        assert second.offset == 20
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_rows_straddle_a_page_boundary(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        """A window that starts inside the hosted rows takes the rest of them first."""
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=0, limit=1, offset=0, models=[], has_more=False
+        )
+        mock_svc.registry.list_installed.return_value = []
+        self._stub_frontier(monkeypatch, "g1", "g2", "g3")
+        resp = await handlers.models_catalog(task="chat", limit=2, offset=2)
+        assert [m.display_name for m in resp.models] == ["g3"]
+        assert mock_get_catalog.call_args.kwargs["limit"] == 1
+        assert mock_get_catalog.call_args.kwargs["offset"] == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_installed_false(
@@ -2771,6 +2865,7 @@ class TestModelsCatalog:
         )
         resp = await handlers.models_catalog(task="chat", installed=False)
         assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
+        assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
