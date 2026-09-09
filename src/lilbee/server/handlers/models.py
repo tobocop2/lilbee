@@ -18,6 +18,7 @@ from lilbee.catalog import (
     get_catalog,
     get_families,
     get_picks,
+    page_window,
     picks_for,
 )
 from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
@@ -450,6 +451,14 @@ async def models_catalog(
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
+
+    # Hosted rows (frontier + ollama) lead the listing; none for featured-only
+    # or installed=False.
+    hosted: list[CatalogEntryResponse] = []
+    if not featured and installed is not False:
+        hosted = await _collect_hosted_entries(task=parsed_task, search=search)
+    window = page_window(len(hosted), offset, limit)
+
     # get_catalog resolves the picks, which is HTTP on the first call.
     result = await asyncio.to_thread(
         get_catalog,
@@ -459,8 +468,8 @@ async def models_catalog(
         installed=installed,
         featured=featured,
         sort=parsed_sort,
-        limit=limit,
-        offset=offset,
+        limit=window.rest_limit,
+        offset=window.rest_offset,
         model_manager=get_services().model_manager,
     )
 
@@ -475,20 +484,13 @@ async def models_catalog(
         _build_catalog_entry(e, available_bytes=available_bytes, families_by_repo=families_by_repo)
         for e in enriched
     ]
-    # Hosted rows (frontier + ollama) are selectable and download-free, shown
-    # on the first page only and skipped for featured-only / installed=False.
-    # They stay out of ``total``: as an unpaginated overlay they made page 1
-    # report a larger total than page 2 of the same listing.
-    hosted_rows: list[CatalogEntryResponse] = []
-    if offset == 0 and not featured and installed is not False:
-        hosted_rows = await _collect_hosted_entries(task=parsed_task, search=search)
 
     return ModelsCatalogResponse(
-        total=result.total,
-        limit=result.limit,
-        offset=result.offset,
+        total=len(hosted) + result.total,
+        limit=limit,
+        offset=offset,
         has_more=result.has_more,
-        models=hosted_rows + native_rows,
+        models=hosted[offset : offset + limit] + native_rows,
     )
 
 

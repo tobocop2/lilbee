@@ -172,6 +172,20 @@ class CatalogResult:
 
 
 @dataclass(frozen=True)
+class PageWindow:
+    """The part of a page left for the rows paged after the ones held locally."""
+
+    rest_offset: int
+    rest_limit: int
+
+
+def page_window(leading_count: int, offset: int, limit: int) -> PageWindow:
+    """The window left of ``[offset, offset + limit)`` after *leading_count* local rows."""
+    covered = min(offset + limit, leading_count) - min(offset, leading_count)
+    return PageWindow(rest_offset=max(0, offset - leading_count), rest_limit=limit - covered)
+
+
+@dataclass(frozen=True)
 class HfPage:
     """One page of HuggingFace API results."""
 

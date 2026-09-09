@@ -13,7 +13,14 @@ import httpx
 import pytest
 from huggingface_hub.hf_api import RepoSibling
 
-from conftest import PICKS_CHAT, PICKS_EMBEDDING, PICKS_RERANK, PICKS_VISION, SAMPLE_PICKS
+from conftest import (
+    PICKS_CHAT,
+    PICKS_EMBEDDING,
+    PICKS_RERANK,
+    PICKS_VISION,
+    SAMPLE_PICKS,
+    make_test_catalog_model,
+)
 from lilbee import catalog
 from lilbee.app.services import get_services
 from lilbee.catalog import (
@@ -574,6 +581,81 @@ class TestGetCatalog:
         repos1 = {m.hf_repo for m in r1.models}
         repos2 = {m.hf_repo for m in r2.models}
         assert repos1.isdisjoint(repos2)
+
+    @staticmethod
+    def _record_hf_pages(
+        monkeypatch: pytest.MonkeyPatch, rows: list[CatalogModel], *, has_more: bool = True
+    ) -> list[dict[str, Any]]:
+        """Stub the HF page with *rows*, honoring ``limit``, and record each fetch's arguments."""
+        calls: list[dict[str, Any]] = []
+
+        def _fetch(**kwargs: Any) -> HfPage:
+            calls.append(kwargs)
+            return HfPage(models=rows[: kwargs["limit"]], has_more=has_more)
+
+        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
+        return calls
+
+    def test_picks_count_against_the_page_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The first browse page holds the picks and only as many HF rows as fit after them."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
+        calls = self._record_hf_pages(monkeypatch, upstream)
+        result = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
+        assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT] + [
+            "test/Hf0",
+            "test/Hf1",
+        ]
+        assert [(c["offset"], c["limit"]) for c in calls] == [(0, 2)]
+
+    def test_second_page_starts_where_the_first_ended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Page two asks HF for the rows after the ones page one showed, not after the limit."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
+        calls = self._record_hf_pages(monkeypatch, upstream)
+        result = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        assert not [m for m in result.models if m.featured]
+        assert [(c["offset"], c["limit"]) for c in calls] == [(10 - len(PICKS_CHAT), 10)]
+        assert result.total == len(PICKS_CHAT) + len(upstream)
+        assert result.has_more is True
+
+    def test_page_inside_the_picks_fetches_no_hf_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A window that ends inside the picks needs no HF request and still has more."""
+        calls = self._record_hf_pages(monkeypatch, [])
+        result = get_catalog(task=ModelTask.CHAT, limit=3, offset=2)
+        assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT[2:5]]
+        assert calls == []
+        assert result.has_more is True
+
+    def test_page_ending_at_the_last_pick_still_has_more(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The HF rows start on the next page, so the client is told to ask for it."""
+        calls = self._record_hf_pages(monkeypatch, [])
+        result = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
+        assert len(result.models) == len(PICKS_CHAT)
+        assert calls == []
+        assert result.has_more is True
+
+    def test_featured_listing_pages_past_the_first(self) -> None:
+        """A featured-only listing pages through the picks with an exact has_more."""
+        first = get_catalog(task=ModelTask.CHAT, featured=True, limit=3, offset=3)
+        last = get_catalog(task=ModelTask.CHAT, featured=True, limit=4, offset=4)
+        assert [m.hf_repo for m in first.models] == [m.hf_repo for m in PICKS_CHAT[3:6]]
+        assert first.has_more is True
+        assert [m.hf_repo for m in last.models] == [m.hf_repo for m in PICKS_CHAT[4:8]]
+        assert last.has_more is False
+
+    def test_zero_width_window_returns_no_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A page of no rows reports the picks total and leaves the HF rows to the next page."""
+        calls = self._record_hf_pages(monkeypatch, [])
+        result = get_catalog(task=ModelTask.CHAT, limit=0, offset=0)
+        assert result.models == []
+        assert result.total == len(PICKS_CHAT)
+        assert calls == []
+        assert result.has_more is True
 
     def test_filter_by_task_chat(self) -> None:
         result = get_catalog(task=ModelTask.CHAT)

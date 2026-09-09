@@ -34,6 +34,8 @@ from lilbee.catalog.models import (
     DownloadProgress,
     ModelFamily,
     ModelVariant,
+    PageWindow,
+    page_window,
 )
 from lilbee.catalog.picks import (
     find_pick,
@@ -61,6 +63,7 @@ __all__ = [
     "EnrichedModel",
     "ModelFamily",
     "ModelVariant",
+    "PageWindow",
     "ProgressCallback",
     "agent_model_id",
     "build_adhoc_entry",
@@ -78,6 +81,7 @@ __all__ = [
     "get_picks",
     "is_rerank_ref",
     "make_download_callback",
+    "page_window",
     "picks_for",
     "quant_tier",
     "reset_picks",
