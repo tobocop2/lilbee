@@ -2073,8 +2073,9 @@ class CatalogScreen(Screen[None]):
         """Push three curated row slices into the Discover landing.
 
         - For You: one runnable pick per role, in role order. Only rows the
-          engine can load and the machine can hold, so every card is a
-          one-click install rather than a coin flip.
+          engine can load and the host cannot prove will not run, measured
+          rows first, so every card is a one-click install rather than a
+          coin flip.
         - Your Collection: every installed local row + every activated
           cloud API. Mirrors the Library tab's spirit but capped to a
           single rail-friendly slice.
