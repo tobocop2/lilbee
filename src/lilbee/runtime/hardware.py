@@ -21,8 +21,7 @@ class FitLevel(StrEnum):
     WONT_RUN = "wont_run"
 
 
-# Fit is an ordered notion, best first. Callers rank against it instead of
-# spelling the order out again.
+# Fit levels in rank order, best first.
 FIT_RANK: dict[FitLevel, int] = {
     FitLevel.FITS: 0,
     FitLevel.TIGHT: 1,
