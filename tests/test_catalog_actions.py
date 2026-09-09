@@ -10,15 +10,20 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
-from lilbee.catalog.models import CatalogResult
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.models import CatalogResult, ModelFamily, ModelVariant
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
-from lilbee.cli.tui.screens.catalog_grouping import for_you_sort_key, row_cache_signature
+from lilbee.cli.tui.screens.catalog_grouping import (
+    for_you_by_role,
+    for_you_sort_key,
+    row_cache_signature,
+)
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
 )
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -450,6 +455,30 @@ def test_stamp_fit_no_op_without_probe() -> None:
     # Should not raise; row.fit stays None.
     screen._stamp_fit(rows)
     assert rows[0].fit is None
+
+
+async def test_discover_rail_fills_when_the_probe_failed() -> None:
+    """A failed memory probe leaves every fit None; the For You rail still shows a pick."""
+    variant = ModelVariant(
+        hf_repo="a/Llama-GGUF",
+        filename="llama.gguf",
+        param_count="8B",
+        quant="Q4_K_M",
+        size_mb=4600,
+        compat=ModelCompat.SUPPORTED,
+    )
+    family = ModelFamily(
+        slug="llama", name="Llama", task=ModelTask.CHAT, description="x", variants=(variant,)
+    )
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._available_memory_bytes = None
+        screen._families = [family]
+        screen._family_rows_cache = None
+        screen._populate_discover_rails()
+        grid = screen.query_one("#discover-grid-for-you", ModelGrid)
+        assert [r.name for r in grid.rows] == ["Llama 8B"]
 
 
 async def test_action_select_tab_idempotent_when_already_active() -> None:
@@ -1307,13 +1336,77 @@ class TestForYouByRole:
 
         assert "ChatHuge" not in [r.name for r in for_you_by_role(self._rows())]
 
-    def test_a_row_with_no_fit_chip_is_skipped(self) -> None:
-        """An unknown size cannot be promised to fit."""
-        from lilbee.catalog.types import ModelCompat
-        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+    def test_a_row_with_no_fit_chip_is_kept_behind_a_measured_row(self) -> None:
+        """The host cannot prove an unmeasured row will not run, so it stays a candidate."""
+        rows = [
+            self._row("Alpha", "chat", compat=ModelCompat.SUPPORTED, fit_level=None),
+            self._row("Zeta", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+        ]
+        assert [r.name for r in for_you_by_role(rows)] == ["Zeta"]
+        assert [r.name for r in for_you_by_role(rows[:1])] == ["Alpha"]
 
-        rows = [self._row("NoSize", "chat", compat=ModelCompat.SUPPORTED, fit_level=None)]
+    def test_a_failed_probe_still_yields_one_pick_per_role(self) -> None:
+        """Every row keeps a null fit when the probe fails; the rail still fills."""
+        rows = [
+            self._row(name, task, compat=ModelCompat.SUPPORTED, fit_level=None)
+            for name, task in (
+                ("Rerank", "rerank"),
+                ("Chat", "chat"),
+                ("Embed", "embedding"),
+                ("Vision", "vision"),
+            )
+        ]
+        assert [r.task for r in for_you_by_role(rows)] == [
+            "chat",
+            "embedding",
+            "vision",
+            "rerank",
+        ]
+
+    def test_a_row_the_machine_cannot_hold_is_excluded_when_others_are_unmeasured(
+        self,
+    ) -> None:
+        """A measured misfit is still dropped; only an unknown fit is forgiven."""
+        rows = [
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row("ChatUnknown", "chat", compat=ModelCompat.SUPPORTED, fit_level=None),
+        ]
+        assert [r.name for r in for_you_by_role(rows)] == ["ChatUnknown"]
+
+    def test_an_unsupported_architecture_is_excluded_even_with_no_fit_chip(self) -> None:
+        """A null fit does not forgive an engine that cannot load the row."""
+        rows = [self._row("ChatBad", "chat", compat=ModelCompat.UNSUPPORTED, fit_level=None)]
         assert for_you_by_role(rows) == []
+
+    def test_the_backfill_prefers_a_measured_row_over_a_more_popular_unmeasured_one(
+        self,
+    ) -> None:
+        """Fit is known before popularity in the backfill order."""
+        rows = [
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row(
+                "Popular",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                featured=False,
+                downloads=900,
+            ),
+            self._row(
+                "Measured",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.TIGHT,
+                featured=False,
+                downloads=10,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "Measured"
 
     def test_a_role_whose_featured_rows_cannot_run_backfills(self) -> None:
         """A misfit is replaced by a model that runs, not dropped."""

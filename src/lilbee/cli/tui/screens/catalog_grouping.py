@@ -42,33 +42,29 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
 
 
 def _is_runnable_pick(row: LocalCatalogRow) -> bool:
-    """Whether the engine supports the row and the machine can hold it.
-
-    Rows with no fit chip are excluded: an unknown size cannot be promised.
-    """
-    return (
-        row.compat is ModelCompat.SUPPORTED
-        and row.fit is not None
-        and row.fit.level is not FitLevel.WONT_RUN
+    """Whether the engine supports the row and the host cannot prove it will not run."""
+    return row.compat is ModelCompat.SUPPORTED and (
+        row.fit is None or row.fit.level is not FitLevel.WONT_RUN
     )
 
 
-def _backfill_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
-    """Rank a backfilled Discover pick: most downloaded first, then alphabetical.
+def _unknown_fit_rank(row: LocalCatalogRow) -> int:
+    """0 for a row with a fit chip, 1 for a row without one, so measured rows lead."""
+    return 0 if row.fit is not None else 1
 
-    Every candidate already runs here, so popularity separates them rather
-    than fit.
-    """
-    return (-row.sort_downloads, row.name.lower())
+
+def _backfill_sort_key(row: LocalCatalogRow) -> tuple[int, int, str]:
+    """Rank a backfilled Discover pick: known fit first, most downloaded, then alphabetical."""
+    return (_unknown_fit_rank(row), -row.sort_downloads, row.name.lower())
 
 
 def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
     """Runnable picks grouped by role: chat, embedding, vision, rerank.
 
-    Featured rows lead, best fit first. A role whose featured rows cannot run
-    backfills with the most downloaded row that does, so a card that does not
-    fit is replaced rather than dropped. A role with nothing runnable yields
-    no pick.
+    Featured rows lead, known fit first. A role whose featured rows cannot run
+    backfills with the most downloaded row the host cannot rule out, so a card
+    that does not fit is replaced rather than dropped. A role with nothing
+    runnable yields no pick.
     """
     runnable = [r for r in rows if _is_runnable_pick(r)]
     out: list[LocalCatalogRow] = []
@@ -82,14 +78,10 @@ def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
     return out
 
 
-def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
-    """Rank Discover 'For You' rows: best fit first, unknown fit last, then alphabetical.
-
-    Curation is applied before the sort, so featured isn't in the key.
-    """
-    unknown_fit_rank = len(FIT_RANK)
-    rank = unknown_fit_rank if row.fit is None else FIT_RANK[row.fit.level]
-    return (rank, row.name.lower())
+def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, int, str]:
+    """Rank Discover 'For You' rows: known fit first, best fit next, then alphabetical."""
+    level_rank = 0 if row.fit is None else FIT_RANK[row.fit.level]
+    return (_unknown_fit_rank(row), level_rank, row.name.lower())
 
 
 def group_frontier_rows(
