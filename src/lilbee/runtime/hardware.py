@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import BaseModel
 
-from lilbee.catalog.models import ModelFamily
+from lilbee.catalog.models import CatalogModel, ModelFamily
 from lilbee.core.config import cfg
 
 _BYTES_PER_GB = 1024**3
@@ -18,6 +19,15 @@ class FitLevel(StrEnum):
     FITS = "fits"
     TIGHT = "tight"
     WONT_RUN = "wont_run"
+
+
+# Fit is an ordered notion, best first. Callers rank against it instead of
+# spelling the order out again.
+FIT_RANK: dict[FitLevel, int] = {
+    FitLevel.FITS: 0,
+    FitLevel.TIGHT: 1,
+    FitLevel.WONT_RUN: 2,
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,32 @@ def compute_fit(model_size_bytes: int, available_bytes: int) -> FitChip:
     else:
         level = FitLevel.WONT_RUN
     return FitChip(level=level, headroom_gb=headroom_gb)
+
+
+def fit_for_size(size_gb: float, available_bytes: int | None) -> FitLevel | None:
+    """Fit level for a *size_gb* footprint, or None when it cannot be measured."""
+    if available_bytes is None or size_gb <= 0:
+        return None
+    return compute_fit(int(size_gb * _BYTES_PER_GB), available_bytes).level
+
+
+def make_fit_filter(
+    worst: FitLevel | None, available_bytes: int | None
+) -> Callable[[CatalogModel], bool] | None:
+    """Row predicate for a *worst* acceptable fit, or None when no fit was asked for.
+
+    A row whose fit cannot be measured is kept: the host cannot prove it will
+    not run.
+    """
+    if worst is None:
+        return None
+    worst_rank = FIT_RANK[worst]
+
+    def keep(model: CatalogModel) -> bool:
+        level = fit_for_size(model.size_gb, available_bytes)
+        return level is None or FIT_RANK[level] <= worst_rank
+
+    return keep
 
 
 def available_memory_for_fit() -> int | None:

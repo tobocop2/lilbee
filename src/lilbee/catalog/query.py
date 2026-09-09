@@ -60,6 +60,7 @@ def get_catalog(
     size: CatalogSize | None = None,
     installed: bool | None = None,
     featured: bool | None = None,
+    fit_filter: Callable[[CatalogModel], bool] | None = None,
     sort: CatalogSort = CatalogSort.FEATURED,
     limit: int = 20,
     offset: int = 0,
@@ -81,6 +82,7 @@ def get_catalog(
             search=search,
             size=size,
             installed_filter=installed_filter,
+            fit_filter=fit_filter,
             featured=featured,
         )
 
@@ -139,6 +141,7 @@ def _filter_models(
     search: str,
     size: CatalogSize | None,
     installed_filter: Callable[[CatalogModel], bool] | None,
+    fit_filter: Callable[[CatalogModel], bool] | None,
     featured: bool | None,
 ) -> list[CatalogModel]:
     """The rows of *models* that pass every requested filter."""
@@ -151,6 +154,8 @@ def _filter_models(
         models = [m for m in models if size_bucket(m.params) == size]
     if installed_filter is not None:
         models = [m for m in models if installed_filter(m)]
+    if fit_filter is not None:
+        models = [m for m in models if fit_filter(m)]
     if featured is not None:
         models = [m for m in models if m.featured == featured]
     return models

@@ -35,8 +35,9 @@ from lilbee.runtime.hardware import (
     FitLevel,
     SizeVariantInfo,
     available_memory_for_fit,
-    compute_fit,
     family_size_variants,
+    fit_for_size,
+    make_fit_filter,
 )
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
@@ -296,18 +297,11 @@ def _parse_source(source: str) -> ModelSource:
     return ModelSource(source)
 
 
-_BYTES_PER_GB = 1024**3
-
-
 def _row_fit(enriched: EnrichedModel, available_bytes: int | None) -> FitLevel | None:
     """Fit level for *enriched*, or None when host memory or row size can't be measured."""
-    if available_bytes is None:
-        return None
     if enriched.source != ModelSource.NATIVE.value:
         return None
-    if enriched.size_gb <= 0:
-        return None
-    return compute_fit(int(enriched.size_gb * _BYTES_PER_GB), available_bytes).level
+    return fit_for_size(enriched.size_gb, available_bytes)
 
 
 def _families_by_repo() -> dict[str, ModelFamily]:
@@ -441,6 +435,7 @@ async def models_catalog(
     size: str | None = None,
     installed: bool | None = None,
     featured: bool | None = None,
+    max_fit: str | None = None,
     sort: str = "featured",
     limit: int = 20,
     offset: int = 0,
@@ -451,6 +446,7 @@ async def models_catalog(
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
+    parsed_max_fit = FitLevel(max_fit) if max_fit else None
 
     # Hosted rows (frontier + ollama) lead the listing; none for featured-only
     # or installed=False.
@@ -459,6 +455,7 @@ async def models_catalog(
         hosted = await _collect_hosted_entries(task=parsed_task, search=search)
     window = page_window(len(hosted), offset, limit)
 
+    available_bytes = available_memory_for_fit()
     # get_catalog resolves the picks, which is HTTP on the first call.
     result = await asyncio.to_thread(
         get_catalog,
@@ -467,6 +464,7 @@ async def models_catalog(
         size=parsed_size,
         installed=installed,
         featured=featured,
+        fit_filter=make_fit_filter(parsed_max_fit, available_bytes),
         sort=parsed_sort,
         limit=window.rest_limit,
         offset=window.rest_offset,
@@ -477,7 +475,6 @@ async def models_catalog(
     installed_refs = {m.ref for m in registry.list_installed()}
     enriched = enrich_catalog(result, installed_refs)
 
-    available_bytes = available_memory_for_fit()
     families_by_repo = _families_by_repo()
 
     native_rows = [

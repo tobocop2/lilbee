@@ -82,7 +82,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_model_list(source, task)` | Locally-installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
 | `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
-| `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the model picks + Hugging Face. Use before `lilbee_model_pull` to pick what to install. Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. |
+| `lilbee_catalog_browse(task, search, size, installed, featured, max_fit, sort, limit, offset)` | Browse the model picks + Hugging Face. Use before `lilbee_model_pull` to pick what to install. `max_fit` is the worst hardware fit to return (`fits` / `tight` / `wont_run`). Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. |
 | `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. Groups: `Models`, `Retrieval`, `Generation`, `Ingest`, `Wiki`, `Memory`, `Crawling`, `Local-Servers`, `API-Keys`, `Display`, `System`, `General`. |
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
