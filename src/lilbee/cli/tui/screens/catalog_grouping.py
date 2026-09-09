@@ -14,7 +14,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_list import ModelListSection
-from lilbee.runtime.hardware import FitLevel
+from lilbee.runtime.hardware import FIT_RANK, FitLevel
 
 
 @dataclass
@@ -87,8 +87,6 @@ def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
 
     Curation is applied before the sort, so featured isn't in the key.
     """
-    from lilbee.runtime.hardware import FIT_RANK
-
     unknown_fit_rank = len(FIT_RANK)
     rank = unknown_fit_rank if row.fit is None else FIT_RANK[row.fit.level]
     return (rank, row.name.lower())
