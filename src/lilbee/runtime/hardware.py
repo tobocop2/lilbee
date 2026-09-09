@@ -66,8 +66,7 @@ def make_fit_filter(
 ) -> Callable[[CatalogModel], bool] | None:
     """Row predicate for a *worst* acceptable fit, or None when no fit was asked for.
 
-    A row whose fit cannot be measured is kept: the host cannot prove it will
-    not run.
+    A row whose fit cannot be measured is kept.
     """
     if worst is None:
         return None

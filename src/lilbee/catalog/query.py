@@ -66,11 +66,9 @@ def get_catalog(
     offset: int = 0,
     model_manager: Any = None,
 ) -> CatalogResult:
-    """Get paginated, filtered catalog of models.
+    """One catalog page: the picks lead and the HuggingFace rows fill the rest of the window.
 
-    The picks lead the listing and the HuggingFace rows follow them, so one
-    page window covers both: the HuggingFace request is shifted by the picks
-    that precede it, and a window that ends inside the picks makes no request.
+    A window that ends inside the picks makes no HuggingFace request.
     """
     picks = get_picks()
     installed_filter = _installed_filter(installed, model_manager)
