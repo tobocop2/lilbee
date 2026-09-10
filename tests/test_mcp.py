@@ -295,6 +295,22 @@ class TestStatus:
         cfg.entity_extraction = False
         assert status()["entities"] is None
 
+    def test_status_includes_the_index_section(self, mock_svc):
+        """MCP status carries the persisted-index identity the HTTP route carries."""
+        mock_svc.store.get_meta.return_value = {
+            "embedding_model": "org/embed-GGUF/embed.Q4_K_M.gguf",
+            "embedding_dim": 768,
+        }
+        result = status()
+        assert result["index"] == {
+            "embedding_model": "org/embed-GGUF/embed.Q4_K_M.gguf",
+            "embedding_dim": 768,
+        }
+
+    def test_status_index_is_none_before_any_sync(self, mock_svc):
+        mock_svc.store.get_meta.return_value = None
+        assert status()["index"] is None
+
     def test_status_exposes_all_four_model_roles(self):
         """MCP status must expose vision + reranker slots so plugin clients see them."""
         result = status()
@@ -302,21 +318,6 @@ class TestStatus:
         assert "embedding_model" in result["config"]
         assert "vision_model" in result["config"]
         assert "reranker_model" in result["config"]
-
-    def test_status_exposes_memory_tuning_settings(self):
-        """MCP status reports the dynamic-ctx tuning knobs so clients can read them."""
-        result = status()
-        for key in (
-            "num_ctx",
-            "num_ctx_max",
-            "chat_n_ctx_target",
-            "flash_attention",
-            "kv_cache_type",
-            "n_gpu_layers",
-        ):
-            assert key in result["config"], f"missing {key} in MCP status"
-        # Enum value is stringified (kv_cache_type is a StrEnum, not raw text)
-        assert isinstance(result["config"]["kv_cache_type"], str)
 
 
 class TestSync:

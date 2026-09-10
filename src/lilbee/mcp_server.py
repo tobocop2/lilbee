@@ -290,42 +290,9 @@ def search(
 @_tool
 def status() -> dict[str, Any]:
     """Show indexed documents, configuration, and chunk counts."""
-    sources = get_services().store.get_sources()
-    return {
-        "config": {
-            "documents_dir": str(cfg.documents_dir),
-            "data_dir": str(cfg.data_dir),
-            "chat_model": cfg.chat_model,
-            "embedding_model": cfg.embedding_model,
-            "vision_model": cfg.vision_model,
-            "reranker_model": cfg.reranker_model,
-            "enable_ocr": cfg.enable_ocr,
-            "num_ctx": cfg.num_ctx,
-            "num_ctx_max": cfg.num_ctx_max,
-            "chat_n_ctx_target": cfg.chat_n_ctx_target,
-            "flash_attention": cfg.flash_attention,
-            "kv_cache_type": cfg.kv_cache_type.value,
-            "n_gpu_layers": cfg.n_gpu_layers,
-            "cpu_moe": cfg.cpu_moe,
-            "n_cpu_moe": cfg.n_cpu_moe,
-            "main_gpu": cfg.main_gpu,
-            "gpu_devices": cfg.gpu_devices,
-        },
-        "sources": [
-            {"filename": s["filename"], "chunk_count": s["chunk_count"]}
-            for s in sorted(sources, key=lambda x: x["filename"])
-        ],
-        "total_chunks": sum(s["chunk_count"] for s in sources),
-        "entities": _entity_status_dict(),
-    }
+    from lilbee.app.status import gather_status
 
-
-def _entity_status_dict() -> dict[str, Any] | None:
-    """Entity types + extracted rows, mirroring the HTTP status section."""
-    from lilbee.app.status import entity_status
-
-    section = entity_status()
-    return section.model_dump() if section is not None else None
+    return gather_status().model_dump()
 
 
 @contextmanager
