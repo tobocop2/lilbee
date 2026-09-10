@@ -456,32 +456,40 @@ class Store:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
             return True
 
-    def _ensure_embedding_compat(self) -> None:
-        """Raise when the persisted embedding identity drifts from cfg.
+    def index_mismatch(self) -> EmbeddingModelMismatchError | None:
+        """The drift between the persisted embedding identity and cfg, or None.
 
-        Pure check, no side effects. Migration of legacy stores (chunks present,
-        no ``_meta``) is the caller's responsibility via ``initialize_meta_if_legacy``;
-        rewriting a legacy bare-repo ``_meta`` row to the canonical full ref is
-        the caller's responsibility via ``canonicalize_meta_if_legacy``. This
-        method stays safe to call from inside an existing ``write_lock()`` (no
-        recursive lock attempt). cfg fields are snapshotted at entry so the
-        comparison is coherent even if another thread mutates them mid-call.
+        Pure check, no side effects, and the one verdict search, ingest, the
+        embedding setter, sync and health all read. Migration of legacy stores
+        (chunks present, no ``_meta``) is the caller's responsibility via
+        ``initialize_meta_if_legacy``; rewriting a legacy bare-repo ``_meta`` row
+        to the canonical full ref is the caller's responsibility via
+        ``canonicalize_meta_if_legacy``. Safe to call from inside an existing
+        ``write_lock()`` (no recursive lock attempt). cfg fields are snapshotted
+        at entry so the comparison is coherent even if another thread mutates
+        them mid-call.
         """
         current_model = self._config.embedding_model
         current_dim = self._config.embedding_dim
         meta = self.get_meta()
         if meta is None:
-            return
+            return None
         if refs_compatible(
             meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
         ):
-            return
-        raise EmbeddingModelMismatchError(
+            return None
+        return EmbeddingModelMismatchError(
             persisted_model=meta["embedding_model"],
             persisted_dim=meta["embedding_dim"],
             current_model=current_model,
             current_dim=current_dim,
         )
+
+    def _ensure_embedding_compat(self) -> None:
+        """Raise when the persisted embedding identity drifts from cfg."""
+        mismatch = self.index_mismatch()
+        if mismatch is not None:
+            raise mismatch
 
     def _doc_prefix_is_stale(self) -> bool:
         """Whether the stored documents predate the embedding family's document prefix."""
@@ -510,9 +518,29 @@ class Store:
             self._config.embedding_model,
         )
 
+    def _index_mismatch_warning(self) -> HealthWarning | None:
+        """The stale-index degradation, from the same verdict search refuses on."""
+        mismatch = self.index_mismatch()
+        if mismatch is None:
+            return None
+        return HealthWarning(
+            code=WarningCode.INDEX_EMBEDDING_MISMATCH,
+            message=(
+                f"The index was built with embedding model '{mismatch.persisted_model}' "
+                f"({mismatch.persisted_dim} dims), but '{mismatch.current_model}' "
+                f"({mismatch.current_dim} dims) is configured, so search refuses it."
+            ),
+            remedy=(
+                f"Rebuild the index under '{mismatch.current_model}', or switch the "
+                f"embedding model back to '{mismatch.persisted_model}'."
+            ),
+        )
+
     def health_warnings(self) -> list[HealthWarning]:
-        """Silent retrieval degradations this store has hit since it opened."""
+        """Retrieval degradations a client should know about before it searches."""
         warnings: list[HealthWarning] = []
+        if (stale := self._index_mismatch_warning()) is not None:
+            warnings.append(stale)
         if self._fts_degraded:
             warnings.append(
                 HealthWarning(

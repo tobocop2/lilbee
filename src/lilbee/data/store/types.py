@@ -369,6 +369,21 @@ class StoreMeta(TypedDict):
     updated_at: str
 
 
+class IndexMismatch(BaseModel):
+    """The embedder drift between a persisted index and the configured model.
+
+    ``adoptable`` is true when the dimensions agree, so switching the embedding
+    model back to ``persisted_model`` makes the index searchable without a rebuild.
+    """
+
+    persisted_model: str
+    persisted_dim: int
+    current_model: str
+    current_dim: int
+    adoptable: bool
+    message: str
+
+
 class EmbeddingModelMismatchError(RuntimeError):
     """Raised when stored vectors were built with a different embedder than ``cfg``.
 
@@ -394,6 +409,17 @@ class EmbeddingModelMismatchError(RuntimeError):
     def dims_match(self) -> bool:
         """True when the index is adoptable by switching embedder alone (same dim)."""
         return self.persisted_dim == self.current_dim
+
+    def describe(self) -> IndexMismatch:
+        """The drift as a serializable record for sync results and status payloads."""
+        return IndexMismatch(
+            persisted_model=self.persisted_model,
+            persisted_dim=self.persisted_dim,
+            current_model=self.current_model,
+            current_dim=self.current_dim,
+            adoptable=self.dims_match,
+            message=str(self),
+        )
 
     def _build_message(self) -> str:
         if self.dims_match:

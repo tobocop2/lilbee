@@ -14,6 +14,7 @@ from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     ConceptRecords,
+    IndexMismatch,
     PageTextRecord,
     SourceMeta,
     SourceStat,
@@ -153,6 +154,9 @@ class SyncResult(BaseModel):
     # Chunks whose text exceeded the embedder's char budget and were truncated
     # before embedding. Non-zero means some tail content did not reach the index.
     truncated: int = 0
+    # Set when the index was built with another embedder than the one configured:
+    # the sync left it as it is, and search refuses it until a rebuild or a switch back.
+    index_mismatch: IndexMismatch | None = None
 
     def __str__(self) -> str:
         lines = [
@@ -161,6 +165,8 @@ class SyncResult(BaseModel):
             f"Removed: {len(self.removed)}",
             f"Unchanged: {self.unchanged}",
         ]
+        if self.index_mismatch is not None:
+            lines.append(f"[red]Index mismatch:[/red] {self.index_mismatch.message}")
         if self.relocated:
             lines.append(f"Relocated: {len(self.relocated)}")
         lines += [

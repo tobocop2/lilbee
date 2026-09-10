@@ -83,6 +83,7 @@ from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
     ConceptRecords,
+    IndexMismatch,
     PageTextRecord,
     SourceMeta,
     SourceRecord,
@@ -896,6 +897,20 @@ def _persist_skip_reasons(markers: dict[str, str], reasons: dict[str, str]) -> N
     write_skip_reasons(data_root, {name: why for name, why in merged.items() if name in markers})
 
 
+def _report_index_mismatch(store: Store) -> IndexMismatch | None:
+    """Name an index built with another embedder than cfg; the sync leaves it as it is.
+
+    An unchanged corpus never reaches the write gate that refuses such an index,
+    so without this a sync finishes green over an index search refuses. Wiping
+    it is the caller's decision, never the sync's.
+    """
+    mismatch = store.index_mismatch()
+    if mismatch is None:
+        return None
+    log.warning("Sync left the index as it is: %s", mismatch)
+    return mismatch.describe()
+
+
 def _force_rebuild_store(store: Any) -> None:
     """Drop the store and re-embed the preserved memories table (blocking).
 
@@ -1162,9 +1177,10 @@ async def sync(
         await to_ingest_thread(_force_rebuild_store, _store)
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
+    index_mismatch = _report_index_mismatch(_store)
 
     if shard is None and (specs := plan_fanout()):
-        return await _sync_across_workers(
+        merged = await _sync_across_workers(
             specs,
             _store,
             prune_ignored=prune_ignored,
@@ -1177,6 +1193,7 @@ async def sync(
             on_progress=on_progress,
             cancel=cancel,
         )
+        return merged.model_copy(update={"index_mismatch": index_mismatch})
 
     rules = IgnoreRules.for_corpus()
     scan = discover_corpus(shard, rules)
@@ -1301,6 +1318,7 @@ async def sync(
         skipped=list(skipped),
         held_out=describe_skips(config.data_root, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
+        index_mismatch=index_mismatch,
     )
     on_progress(
         EventType.DONE,

@@ -88,6 +88,8 @@ def mock_svc():
     store.remove_documents.side_effect = _remove_documents
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
+    store.get_meta.return_value = None
+    store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
@@ -274,6 +276,31 @@ class TestSync:
 
         result = await sync()
         assert result == SyncResult()
+
+    async def test_sync_reports_an_index_built_with_another_embedder(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """An unchanged corpus never reaches the write gate, so the sync used to
+        finish green over an index search refuses. The result names the drift
+        and the index is left as it is: a rebuild is the caller's call."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        mock_svc.store.index_mismatch.return_value = EmbeddingModelMismatchError(
+            persisted_model="old/embed-GGUF/old.gguf",
+            persisted_dim=768,
+            current_model="new/embed-GGUF/new.gguf",
+            current_dim=384,
+        )
+
+        result = await sync()
+
+        assert result.index_mismatch is not None
+        assert result.index_mismatch.persisted_model == "old/embed-GGUF/old.gguf"
+        assert result.index_mismatch.current_model == "new/embed-GGUF/new.gguf"
+        assert result.index_mismatch.adoptable is False
+        assert "old/embed-GGUF/old.gguf" in str(result)
+        mock_svc.store.drop_all.assert_not_called()
 
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
@@ -1739,6 +1766,33 @@ class TestSkipMarkerLifecycle:
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
+
+
+class TestStatusExposesTheIndexEmbedder:
+    """A client can tell a stale index from the configured model before the
+    first search refuses it."""
+
+    def test_status_exposes_the_embedder_that_built_the_index(self, mock_svc):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = {
+            "embedding_model": "old/embed-GGUF/old.gguf",
+            "embedding_dim": 768,
+            "schema_version": 2,
+            "updated_at": "2026-09-09T00:00:00+00:00",
+        }
+
+        status = gather_status()
+
+        assert status.index is not None
+        assert status.index.embedding_model == "old/embed-GGUF/old.gguf"
+        assert status.index.embedding_dim == 768
+
+    def test_status_has_no_index_section_before_the_first_sync(self, mock_svc):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        assert gather_status().index is None
 
 
 class TestStatusReportsHeldOutFiles:

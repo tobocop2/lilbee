@@ -336,6 +336,30 @@ class TestStatus:
             result = await handlers.status()
         assert result.sources == []
         assert result.total_chunks == 0
+        assert result.index is None
+
+    async def test_status_carries_the_index_section(self):
+        """The embedder that built the index must reach the HTTP surface, or a
+        client cannot tell a stale index from the configured model."""
+        from lilbee.app.status import IndexStatus, StatusConfig, StatusResult
+
+        mock_status = StatusResult(
+            document_count=1,
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="new:latest",
+            ),
+            sources=[],
+            total_chunks=3,
+            index=IndexStatus(embedding_model="old:latest", embedding_dim=768),
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert result.index is not None
+        assert result.index.embedding_model == "old:latest"
+        assert result.index.embedding_dim == 768
 
     async def test_status_carries_entities_section(self):
         """The entity section must survive the StatusResponse mapping; a
@@ -3884,14 +3908,16 @@ class TestSetEmbeddingModel:
         self, mock_svc, mock_boundary_svc
     ):
         """Switching to a model different from the one that built the store flags rebuild."""
+        from lilbee.data.store import EmbeddingModelMismatchError
+
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         mock_boundary_svc.return_value = mock_svc.return_value
-        mock_svc.return_value.store.get_meta.return_value = {
-            "embedding_model": "previous-model:v1",
-            "embedding_dim": 768,
-            "schema_version": 1,
-            "updated_at": "2026-04-25T00:00:00+00:00",
-        }
+        mock_svc.return_value.store.index_mismatch.return_value = EmbeddingModelMismatchError(
+            persisted_model="previous-model:v1",
+            persisted_dim=768,
+            current_model=_EMBED_REF,
+            current_dim=768,
+        )
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.model == _EMBED_REF
         assert result.reindex_required is True
@@ -3902,7 +3928,7 @@ class TestSetEmbeddingModel:
         """A store with no _meta row (fresh install) does not need a rebuild."""
         mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        mock_svc.return_value.store.get_meta.return_value = None
+        mock_svc.return_value.store.index_mismatch.return_value = None
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
@@ -3912,12 +3938,7 @@ class TestSetEmbeddingModel:
         """Re-setting the same model that already built the store does not need a rebuild."""
         mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        mock_svc.return_value.store.get_meta.return_value = {
-            "embedding_model": _EMBED_REF,
-            "embedding_dim": 768,
-            "schema_version": 1,
-            "updated_at": "2026-04-25T00:00:00+00:00",
-        }
+        mock_svc.return_value.store.index_mismatch.return_value = None
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
@@ -3934,13 +3955,7 @@ class TestSetEmbeddingModel:
         """
         mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        bare_repo = _EMBED_REF.rsplit("/", 1)[0]
-        mock_svc.return_value.store.get_meta.return_value = {
-            "embedding_model": bare_repo,
-            "embedding_dim": 768,
-            "schema_version": 1,
-            "updated_at": "2026-04-25T00:00:00+00:00",
-        }
+        mock_svc.return_value.store.index_mismatch.return_value = None
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
         # Migration helper must be called so the meta row is rewritten silently.
