@@ -1163,13 +1163,9 @@ class Store:
         not build and an index that fails mid-query drop every query to vector
         recall alike, so both stamp the flag, and a working index clears it.
         """
+        self.ensure_scalar_indexes(blocking=False)
         if not self._fts_ready:
             self.ensure_fts_index(blocking=False)
-            # A dangling scalar index fails the prefilter alongside a missing
-            # FTS index; rebuild both before the query runs.
-            self.ensure_scalar_indexes(blocking=False)
-            # The maintenance pass may have created or replaced the index; the
-            # caller's handle still resolves the registration it opened with.
             table.checkout_latest()
         if self._config.title_search and not self._title_fts_ready:
             self.ensure_title_fts_index(blocking=False)

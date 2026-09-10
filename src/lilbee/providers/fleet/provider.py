@@ -2187,15 +2187,7 @@ class FleetProvider:
                 self._warm_tracker.fail(self._chat_load_failure())
 
     def _reset_warm_if_stale(self) -> None:
-        """Start a fresh warm cycle when the chat role was evicted.
-
-        The tracker keeps its terminal READY/ERROR snapshot after llama-swap
-        idle-unloads the model, so a request that finds the role cold must begin
-        a fresh warm; otherwise health reads ``not_started`` and the warm stream
-        answers at once with the stale terminal phase. Only the first of several
-        concurrent requests resets; siblings see the warm already in flight and
-        skip. A snapshot that is terminal or absent means no load is in flight.
-        """
+        """Begin a fresh warm when the chat role was evicted and none is in flight."""
         if self.role_ready(WorkerRole.CHAT):
             return
         if self.warm_pending() or self._lazy_warming:
