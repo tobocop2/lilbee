@@ -695,10 +695,7 @@ class Store:
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                     if self._fts_index_dangling(table):
-                        # optimize() prunes versioned index files; a legacy FTS
-                        # index can lose its directory while its manifest
-                        # registration survives. Rebuild in the same step so the
-                        # registration and the files never diverge.
+                        # optimize() can prune a legacy FTS index's files; rebuild to match.
                         self._rebuild_fts(table, "optimize() pruned its files")
                         return
                 except Exception as exc:
