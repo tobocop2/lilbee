@@ -22,7 +22,7 @@ _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
 # one probe. The TTL bounds how long a live change (a model loaded or unloaded
 # by another process) takes to reach the fit chip.
 _AVAILABLE_MEMORY_TTL_S = 60.0
-_AVAILABLE_MEMORY_CACHE: dict[str, object] = {}  # fraction -> (monotonic_at, budget)
+_AVAILABLE_MEMORY_CACHE: dict[str, tuple[float, int]] = {}
 
 
 class FitLevel(StrEnum):
