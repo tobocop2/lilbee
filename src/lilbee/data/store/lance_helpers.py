@@ -145,6 +145,28 @@ def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> b
     return False
 
 
+def _fts_index_dangling(
+    table: lancedb.table.Table, lancedb_dir: Path, column: str = _CHUNK_COLUMN
+) -> bool:
+    """True when an FTS index on *column* is registered but its files are gone.
+
+    LanceDB keeps the registration in the manifest after the index directory
+    under ``_indices`` is removed, and every query on it then fails on a
+    missing file. ``optimize()`` and ``index_stats()`` do not notice; only the
+    directory does.
+    """
+    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
+    try:
+        return any(
+            idx.index_type == "FTS"
+            and column in idx.columns
+            and not (indices_dir / idx.index_uuid).is_dir()
+            for idx in table.list_indices()
+        )
+    except Exception:
+        return False
+
+
 def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
     """Return True when a scalar index on *column* already exists.
 
