@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -13,6 +14,32 @@ from lilbee.core.config import cfg
 
 _BYTES_PER_GB = 1024**3
 _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
+
+
+# GPU memory is hardware; the probe is expensive (nvidia-smi subprocess up to
+# 5s without pynvml), and the catalog stamps a fit chip on every page. Cache
+# the budget keyed on gpu_memory_fraction so repeated catalog requests share
+# one probe. The TTL bounds how long a live change (a model loaded or unloaded
+# by another process) takes to reach the fit chip.
+class _AvailableMemoryCache:
+    """TTL cache for the GPU-memory probe, keyed on gpu_memory_fraction."""
+
+    _TTL_S = 60.0
+    _entry: tuple[float, float, int] | None = None  # (fraction, monotonic_at, budget)
+
+    @classmethod
+    def get(cls, fraction: float) -> int | None:
+        entry = cls._entry
+        if entry is None:
+            return None
+        cached_fraction, cached_at, budget = entry
+        if cached_fraction != fraction or time.monotonic() - cached_at >= cls._TTL_S:
+            return None
+        return budget
+
+    @classmethod
+    def set(cls, fraction: float, budget: int) -> None:
+        cls._entry = (fraction, time.monotonic(), budget)
 
 
 class FitLevel(StrEnum):
@@ -90,13 +117,23 @@ def available_memory_for_fit() -> int | None:
     Single entry point so the TUI and the HTTP catalog handler classify fit
     against the same number; otherwise the same model would chip differently in
     each surface.
+
+    Result is cached briefly keyed on gpu_memory_fraction: the underlying probe
+    is expensive (an nvidia-smi subprocess with a 5s timeout when pynvml is
+    absent) and the catalog stamps a fit chip on every page, so an uncached
+    probe repeats that cost per request.
     """
     try:
         from lilbee.providers.model_cache import get_available_memory
 
-        budget = get_available_memory(cfg.gpu_memory_fraction, total=True)
+        fraction = cfg.gpu_memory_fraction
+        cached = _AvailableMemoryCache.get(fraction)
+        if cached is not None:
+            return cached
+        budget = get_available_memory(fraction, total=True)
     except Exception:
         return None
+    _AvailableMemoryCache.set(fraction, budget)
     return budget + _expert_offload_headroom()
 
 
