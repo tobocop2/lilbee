@@ -21,25 +21,8 @@ _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
 # the budget keyed on gpu_memory_fraction so repeated catalog requests share
 # one probe. The TTL bounds how long a live change (a model loaded or unloaded
 # by another process) takes to reach the fit chip.
-class _AvailableMemoryCache:
-    """TTL cache for the GPU-memory probe, keyed on gpu_memory_fraction."""
-
-    _TTL_S = 60.0
-    _entry: tuple[float, float, int] | None = None  # (fraction, monotonic_at, budget)
-
-    @classmethod
-    def get(cls, fraction: float) -> int | None:
-        entry = cls._entry
-        if entry is None:
-            return None
-        cached_fraction, cached_at, budget = entry
-        if cached_fraction != fraction or time.monotonic() - cached_at >= cls._TTL_S:
-            return None
-        return budget
-
-    @classmethod
-    def set(cls, fraction: float, budget: int) -> None:
-        cls._entry = (fraction, time.monotonic(), budget)
+_AVAILABLE_MEMORY_TTL_S = 60.0
+_AVAILABLE_MEMORY_CACHE: dict[str, object] = {}  # fraction -> (monotonic_at, budget)
 
 
 class FitLevel(StrEnum):
@@ -127,13 +110,16 @@ def available_memory_for_fit() -> int | None:
         from lilbee.providers.model_cache import get_available_memory
 
         fraction = cfg.gpu_memory_fraction
-        cached = _AvailableMemoryCache.get(fraction)
+        now = time.monotonic()
+        cached = _AVAILABLE_MEMORY_CACHE.get(str(fraction))
         if cached is not None:
-            return cached
+            cached_at, budget = cached
+            if now - cached_at < _AVAILABLE_MEMORY_TTL_S:
+                return budget
         budget = get_available_memory(fraction, total=True)
     except Exception:
         return None
-    _AvailableMemoryCache.set(fraction, budget)
+    _AVAILABLE_MEMORY_CACHE[str(fraction)] = (now, budget)
     return budget + _expert_offload_headroom()
 
 
