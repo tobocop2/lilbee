@@ -323,6 +323,21 @@ def _playwright_browsers_root(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _clear_gpu_memory_cache():
+    """Clear the GPU memory probe cache so each test starts uncached.
+
+    The cache is module-global and keyed on gpu_memory_fraction; without this,
+    a test that mocks the probe can hit a stale entry from a previous test and
+    never exercise the mock.
+    """
+    from lilbee.runtime import hardware
+
+    hardware._AvailableMemoryCache._entry = None
+    yield
+    hardware._AvailableMemoryCache._entry = None
+
+
+@pytest.fixture(autouse=True)
 def _isolate_playwright_browsers_path(_playwright_browsers_root, monkeypatch):
     """Keep the browser cache out of the developer's real Playwright directory.
 
