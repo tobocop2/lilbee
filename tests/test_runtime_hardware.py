@@ -203,7 +203,7 @@ def test_available_memory_for_fit_caches_within_ttl(monkeypatch) -> None:
     from lilbee.runtime import hardware
 
     cfg.gpu_memory_fraction = 0.5
-    hardware._AvailableMemoryCache._entry = None
+    hardware._AVAILABLE_MEMORY_CACHE.clear()
     calls = {"n": 0}
 
     def fake(fraction: float, *, total: bool = False) -> int:
@@ -224,7 +224,7 @@ def test_available_memory_for_fit_invalidates_on_fraction_change(monkeypatch) ->
     from lilbee.runtime import hardware
 
     cfg.gpu_memory_fraction = 0.5
-    hardware._AvailableMemoryCache._entry = None
+    hardware._AVAILABLE_MEMORY_CACHE.clear()
     calls = {"n": 0}
 
     def fake(fraction: float, *, total: bool = False) -> int:
