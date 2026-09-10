@@ -167,6 +167,29 @@ def _fts_index_dangling(
         return False
 
 
+def _scalar_index_dangling(table: lancedb.table.Table, lancedb_dir: Path) -> list[str]:
+    """Column names whose scalar (BITMAP/BTree) index is registered but its files are gone.
+
+    LanceDB keeps the registration in the manifest after the index directory
+    under ``_indices`` is removed, and every prefilter on the column then fails
+    on a missing file. Returns the dangling column names, empty when none.
+    """
+    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
+    dangling: list[str] = []
+    try:
+        for idx in table.list_indices():
+            if (
+                idx.index_type.lower() in ("bitmap", "btree")
+                and not (indices_dir / idx.index_uuid).is_dir()
+            ):
+                for column in idx.columns:
+                    if column not in dangling:
+                        dangling.append(column)
+    except Exception:
+        return []
+    return dangling
+
+
 def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
     """Return True when a scalar index on *column* already exists.
 

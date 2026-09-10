@@ -1100,6 +1100,68 @@ class TestEnsureScalarIndexes:
         assert store._scalar_ready is True
 
 
+class TestScalarIndexDangling:
+    """A registered scalar index whose directory is gone must be detected and
+    reported as SCALAR_INDEX_UNAVAILABLE, not misattributed to FTS."""
+
+    def _remove_scalar_index_files(self, test_config):
+        import shutil
+
+        from lilbee.core.config import CHUNKS_TABLE
+
+        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
+        if not indices_dir.is_dir():
+            return
+        for index_dir in indices_dir.iterdir():
+            shutil.rmtree(index_dir)
+
+    def test_dangling_scalar_reports_scalar_warning_not_fts(self, store, test_config):
+        from lilbee.core.health_warnings import WarningCode
+
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+
+        self._remove_scalar_index_files(test_config)
+
+        codes = [w.code for w in store.health_warnings()]
+        assert WarningCode.SCALAR_INDEX_UNAVAILABLE in codes
+        assert WarningCode.FTS_UNAVAILABLE not in codes
+
+    def test_search_rebuilds_a_dangling_scalar_index(self, store, test_config):
+        from lilbee.core.config import CHUNKS_TABLE
+
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+
+        self._remove_scalar_index_files(test_config)
+        fresh = Store(test_config)
+        # Force the _keyword_arm rebuild path: scalar is "ready" so search()
+        # skips its own ensure_scalar_indexes, but FTS is not ready so
+        # _keyword_arm runs and must rebuild the dangling scalar index.
+        fresh._scalar_ready = True
+        fresh._fts_ready = False
+
+        hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+
+        assert hits
+        from lilbee.data.store.lance_helpers import _scalar_index_dangling
+
+        table = fresh.open_table(CHUNKS_TABLE)
+        assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
+
+    def test_dangling_probe_returns_empty_on_list_indices_error(self, store, test_config):
+        """An unreadable manifest is not evidence of missing files."""
+        from lilbee.data.store.lance_helpers import _scalar_index_dangling
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
+
+
 class TestEnsureVectorIndex:
     """Small vaults stay on exact flat search; large ones get an ANN index."""
 
