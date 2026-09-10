@@ -194,3 +194,45 @@ def test_expert_offload_headroom_is_capacity_not_free_right_now(monkeypatch) -> 
     monkeypatch.setattr(model_cache, "free_system_memory", lambda: 1 * 10**9)
 
     assert hardware._expert_offload_headroom() == 32 * 10**9
+
+
+def test_available_memory_for_fit_caches_within_ttl(monkeypatch) -> None:
+    """Repeated calls within the TTL share one probe instead of re-running it."""
+    import lilbee.providers.model_cache as mc
+    from lilbee.core.config import cfg
+    from lilbee.runtime import hardware
+
+    cfg.gpu_memory_fraction = 0.5
+    hardware._AvailableMemoryCache._entry = None
+    calls = {"n": 0}
+
+    def fake(fraction: float, *, total: bool = False) -> int:
+        calls["n"] += 1
+        return int(64 * _GB * fraction)
+
+    monkeypatch.setattr(mc, "get_available_memory", fake)
+    first = available_memory_for_fit()
+    second = available_memory_for_fit()
+    assert first == second
+    assert calls["n"] == 1
+
+
+def test_available_memory_for_fit_invalidates_on_fraction_change(monkeypatch) -> None:
+    """A config change invalidates the cache and re-probes."""
+    import lilbee.providers.model_cache as mc
+    from lilbee.core.config import cfg
+    from lilbee.runtime import hardware
+
+    cfg.gpu_memory_fraction = 0.5
+    hardware._AvailableMemoryCache._entry = None
+    calls = {"n": 0}
+
+    def fake(fraction: float, *, total: bool = False) -> int:
+        calls["n"] += 1
+        return int(64 * _GB * fraction)
+
+    monkeypatch.setattr(mc, "get_available_memory", fake)
+    available_memory_for_fit()
+    cfg.gpu_memory_fraction = 0.8
+    available_memory_for_fit()
+    assert calls["n"] == 2
