@@ -680,6 +680,43 @@ class TestEnsureFtsIndex:
         with mock.patch.object(type(table), "search", side_effect=RuntimeError("boom")):
             assert store.bm25_probe("text") == []
 
+    def test_a_registered_index_whose_files_are_gone_is_rebuilt(self, store, test_config):
+        """LanceDB keeps the registration when the index directory vanishes, and
+        every keyword query then fails on a missing file. The maintenance pass
+        rebuilds such an index instead of optimizing it."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        _remove_index_files(test_config)
+
+        store.ensure_fts_index()
+
+        hits = store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+        assert hits
+        assert store.health_warnings() == []
+
+    def test_the_search_path_rebuilds_a_dangling_index_instead_of_latching_ready(
+        self, store, test_config
+    ):
+        """The read path marks an existing index ready before taking the lock; a
+        dangling one must not count as existing, or every query tracebacks."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        _remove_index_files(test_config)
+        fresh = Store(test_config)
+
+        hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+
+        assert hits
+        assert fresh.health_warnings() == []
+
+
+def _remove_index_files(test_config):
+    """Delete every index directory under the chunks table, leaving the registrations."""
+    import shutil
+
+    for index_dir in (test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices").iterdir():
+        shutil.rmtree(index_dir)
+
 
 class TestSearchChunkScoreAlias:
     @staticmethod
@@ -1103,6 +1140,18 @@ class TestHasFtsIndex:
         assert table is not None
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
             assert _has_fts_index(table) is False
+
+    def test_dangling_probe_reports_false_on_list_indices_error(self, store, test_config):
+        """An unreadable manifest is not evidence of missing files; the maintenance
+        pass then takes its usual create-or-optimize route."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        from lilbee.data.store.lance_helpers import _fts_index_dangling
+
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _fts_index_dangling(table, test_config.lancedb_dir) is False
 
 
 class TestFtsIndexStaleFlag:

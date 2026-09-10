@@ -36,6 +36,7 @@ from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_si
 from .lance_helpers import (
     _CHUNK_COLUMN,
     _chunk_type_predicate,
+    _fts_index_dangling,
     _has_fts_index,
     _has_scalar_index,
     _has_vector_index,
@@ -624,7 +625,7 @@ class Store:
         probe = self.open_table(CHUNKS_TABLE)
         if probe is None:
             return
-        if _has_fts_index(probe):
+        if _has_fts_index(probe) and not self._fts_index_dangling(probe):
             self._fts_ready = True
         try:
             with self._index_build_lock(blocking):
@@ -642,6 +643,9 @@ class Store:
         try:
             if _has_fts_index(table):
                 self._fts_ready = True
+                if self._fts_index_dangling(table):
+                    self._rebuild_fts(table, "its files are missing")
+                    return
                 try:
                     # One optimize folds new rows into every index on the table.
                     table.optimize()
@@ -650,7 +654,7 @@ class Store:
                     if _is_fts_position_overflow(exc):
                         # Positional indexes overflow on optimize(); rebuild
                         # positionless once.
-                        self._rebuild_fts_positionless(table)
+                        self._rebuild_fts(table, "a positional index overflowed on optimize()")
                     else:
                         log.warning(
                             "FTS optimize() failed; the existing index still serves hybrid search",
@@ -712,18 +716,23 @@ class Store:
                 raise
             log.debug("Skipped title FTS build; another process holds the write lock")
 
-    def _rebuild_fts_positionless(self, table: lancedb.table.Table) -> None:
-        """Replace positional FTS indexes with positionless ones. Caller holds the lock.
+    def _fts_index_dangling(self, table: lancedb.table.Table) -> bool:
+        """True when the registered chunk FTS index has no files on disk."""
+        return _fts_index_dangling(table, self._config.lancedb_dir)
 
-        The one-shot remediation for a store whose index was built
-        ``with_position=True`` and now overflows on every ``optimize()``. The
-        title index is rebuilt too when the title arm is enabled.
+    def _rebuild_fts(self, table: lancedb.table.Table, reason: str) -> None:
+        """Replace the FTS indexes with fresh positionless ones. Caller holds the lock.
+
+        The one-shot remediation for an index that cannot serve: built
+        ``with_position=True`` and overflowing on every ``optimize()``, or
+        registered while its files are gone. The title index is rebuilt too
+        when the title arm is enabled.
         """
         try:
             table.create_index(_CHUNK_COLUMN, config=self._fts_config(), replace=True)
             if self._config.title_search and _TITLE_COLUMN in table.schema.names:
                 table.create_index(_TITLE_COLUMN, config=self._fts_config(), replace=True)
-            log.warning("Rebuilt the FTS index positionless after a positional-index overflow")
+            log.warning("Rebuilt the FTS index because %s", reason)
         except Exception:
             log.warning(
                 "Positionless FTS rebuild failed; the existing index still serves",
@@ -1106,6 +1115,9 @@ class Store:
         """
         if not self._fts_ready:
             self.ensure_fts_index(blocking=False)
+            # The maintenance pass may have created or replaced the index; the
+            # caller's handle still resolves the registration it opened with.
+            table.checkout_latest()
         if self._config.title_search and not self._title_fts_ready:
             self.ensure_title_fts_index(blocking=False)
         if not self._fts_ready:
