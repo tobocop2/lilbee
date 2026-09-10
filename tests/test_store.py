@@ -445,6 +445,33 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
+    def test_optimize_rebuilds_fts_when_pruned(self, store, test_config):
+        """optimize() can prune a legacy FTS index's files while its
+        registration survives; rebuild in the same step."""
+        import shutil
+
+        from lilbee.core.config import CHUNKS_TABLE
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+
+        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
+
+        def _optimize_then_prune():
+            # Simulate what a real optimize() prune does: drop the index dirs.
+            for d in indices_dir.iterdir():
+                shutil.rmtree(d)
+
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=_optimize_then_prune),
+            mock.patch.object(type(store), "_rebuild_fts") as rebuild_spy,
+        ):
+            store.ensure_fts_index()
+
+        rebuild_spy.assert_called_once()
+
     def test_hybrid_failure_is_reported_as_a_health_warning(self, store):
         """A corpus-wide FTS breakage drops every query to vector-only recall.
         The log line alone never reached the user, so the store reports it."""
