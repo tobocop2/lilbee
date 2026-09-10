@@ -769,3 +769,71 @@ class TestCredentialsAreMaskable:
 
         leaked = self._write_only_fields() & set(PUBLIC_CONFIG_FIELDS)
         assert not leaked, f"credentials returned by GET /api/config: {sorted(leaked)}"
+
+
+class TestEmbedReindexRequired:
+    """The setter's answer comes from the same verdict search refuses on."""
+
+    _OTHER = "acme/other-GGUF/other.gguf"
+
+    @pytest.fixture()
+    def real_store(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.data.store import Store
+
+        monkeypatch.setattr(appset.cfg, "lancedb_dir", tmp_path / "lancedb")
+        monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
+        monkeypatch.setattr(appset.cfg, "embedding_dim", 4)
+        store = Store(appset.cfg)
+        services = mock.MagicMock(store=store)
+        with mock.patch("lilbee.app.services.get_services", return_value=services):
+            yield store
+
+    @staticmethod
+    def _index_one_chunk(store):
+        store.add_chunks(
+            [
+                {
+                    "source": "doc.md",
+                    "content_type": "text",
+                    "chunk_type": "raw",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "text",
+                    "chunk_index": 0,
+                    "vector": [0.5, 0.5, 0.5, 0.5],
+                }
+            ]
+        )
+
+    def test_no_index_needs_no_reindex(self, real_store):
+        from lilbee.app import settings as appset
+
+        assert appset._embed_reindex_required() is False
+
+    def test_a_name_change_requires_reindex(self, real_store, monkeypatch):
+        from lilbee.app import settings as appset
+
+        self._index_one_chunk(real_store)
+        monkeypatch.setattr(appset.cfg, "embedding_model", self._OTHER)
+        assert appset._embed_reindex_required() is True
+
+    def test_a_dimension_change_requires_reindex(self, real_store, monkeypatch):
+        """The persisted width is compared against the new model's, so a same-name
+        embedder of another width is not mistaken for the one that built the index."""
+        from lilbee.app import settings as appset
+
+        self._index_one_chunk(real_store)
+        monkeypatch.setattr(appset.cfg, "embedding_dim", 8)
+        assert appset._embed_reindex_required() is True
+
+    def test_switching_back_to_the_building_model_needs_no_reindex(self, real_store, monkeypatch):
+        from lilbee.app import settings as appset
+
+        self._index_one_chunk(real_store)
+        monkeypatch.setattr(appset.cfg, "embedding_model", self._OTHER)
+        assert appset._embed_reindex_required() is True
+        monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
+        assert appset._embed_reindex_required() is False

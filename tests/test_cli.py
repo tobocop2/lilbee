@@ -75,6 +75,9 @@ def mock_svc():
     store.add_chunks.return_value = 0
     # No entity schema induced unless a test persists one.
     store.entity_schema_state.return_value = None
+    # No index identity persisted unless a test writes one.
+    store.get_meta.return_value = None
+    store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.return_value = []

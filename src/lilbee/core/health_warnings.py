@@ -19,6 +19,8 @@ class WarningCode(StrEnum):
     """Keyword search failed and queries fall back to vector-only recall."""
     EMBEDDING_PREFIX_MISMATCH = "embedding_prefix_mismatch"
     """Queries are prefixed but stored documents are not; retrieval is degraded."""
+    INDEX_EMBEDDING_MISMATCH = "index_embedding_mismatch"
+    """The index was built with another embedding model; search refuses until they agree."""
 
 
 class HealthWarning(BaseModel):

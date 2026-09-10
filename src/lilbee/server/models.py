@@ -13,7 +13,7 @@ from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigF
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.health_warnings import HealthWarning
-from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
+from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
@@ -184,6 +184,13 @@ class StatusEntityInfo(BaseModel):
     rows: int
 
 
+class StatusIndexInfo(BaseModel):
+    """The embedder that built the persisted index."""
+
+    embedding_model: str
+    embedding_dim: int
+
+
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
 
@@ -192,6 +199,9 @@ class StatusResponse(BaseModel):
     sources: list[StatusSourceInfo]
     document_count: int
     total_chunks: int
+    index: StatusIndexInfo | None = None
+    """The embedder that built the index; absent before the first sync. Compare it
+    with ``config.embedding_model`` to tell a stale index before a search refuses it."""
     entities: StatusEntityInfo | None = None
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
@@ -430,6 +440,7 @@ class SyncSummary(BaseModel):
     skipped: list[str] = []
     held_out: list[SkippedSource] = []
     truncated: int = 0
+    index_mismatch: IndexMismatch | None = None
 
 
 class AddSummary(BaseModel):

@@ -539,6 +539,9 @@ def _default_store_mock():
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []
     store.add_chunks.side_effect = len
+    # No index identity persisted unless a test writes one.
+    store.get_meta.return_value = None
+    store.index_mismatch.return_value = None
     return store
 
 

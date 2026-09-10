@@ -93,6 +93,13 @@ class StatusConfig(BaseModel):
     enable_ocr: bool | None = None
 
 
+class IndexStatus(BaseModel):
+    """The embedder that built the persisted index."""
+
+    embedding_model: str
+    embedding_dim: int
+
+
 class SourceInfo(BaseModel):
     """A single indexed source in a status response."""
 
@@ -117,10 +124,20 @@ class StatusResult(BaseModel):
     sources: list[SourceInfo]
     document_count: int
     total_chunks: int
+    index: IndexStatus | None = None
+    """The embedder that built the index; None before the first sync."""
     entities: EntityStatus | None = None
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
+
+
+def _index_status() -> IndexStatus | None:
+    """The persisted index identity, or None when nothing has been indexed."""
+    meta = get_services().store.get_meta()
+    if meta is None:
+        return None
+    return IndexStatus(embedding_model=meta["embedding_model"], embedding_dim=meta["embedding_dim"])
 
 
 def gather_status() -> StatusResult:
@@ -130,6 +147,7 @@ def gather_status() -> StatusResult:
     total_chunks = sum(s["chunk_count"] for s in sources)
     skipped, skipped_total = held_out_sources()
     return StatusResult(
+        index=_index_status(),
         config=StatusConfig(
             documents_dir=str(cfg.documents_dir),
             data_dir=str(cfg.data_dir),

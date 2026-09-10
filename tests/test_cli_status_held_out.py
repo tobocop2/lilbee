@@ -53,3 +53,17 @@ def test_the_held_out_summary_names_what_the_cap_hid() -> None:
 def test_nothing_held_out_prints_no_table() -> None:
     tables, _strings = _texts(_status())
     assert not any(t.title == "Held out of the index" for t in tables)
+
+
+def test_the_embedder_that_built_the_index_is_shown() -> None:
+    from lilbee.app.status import IndexStatus
+
+    status = _status()
+    status.index = IndexStatus(embedding_model="old:latest", embedding_dim=768)
+    _tables, strings = _texts(status)
+    assert any("old:latest" in s and "768" in s for s in strings)
+
+
+def test_no_index_line_before_the_first_sync() -> None:
+    _tables, strings = _texts(_status())
+    assert not any("Index built with" in s for s in strings)

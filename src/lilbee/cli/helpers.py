@@ -99,6 +99,11 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {status.config.data_dir}"
     yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {status.config.chat_model}"
     yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {status.config.embedding_model}"
+    if status.index is not None:
+        yield (
+            f"[{theme.LABEL}]Index built with:[/{theme.LABEL}] {status.index.embedding_model} "
+            f"({status.index.embedding_dim} dims)"
+        )
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
     yield f"[{theme.LABEL}]Vision:[/{theme.LABEL}]     {vision}"

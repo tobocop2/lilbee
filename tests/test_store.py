@@ -718,6 +718,75 @@ def _remove_index_files(test_config):
         shutil.rmtree(index_dir)
 
 
+class TestIndexMismatch:
+    """The one verdict search, the embedding setter, sync and health share."""
+
+    def test_no_index_reports_no_mismatch(self, store):
+        assert store.index_mismatch() is None
+
+    def test_same_embedder_reports_no_mismatch(self, store):
+        store.add_chunks(_make_records())
+        assert store.index_mismatch() is None
+
+    def test_another_model_name_is_a_mismatch(self, store, test_config):
+        store.add_chunks(_make_records())
+        built_with = test_config.embedding_model
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+
+        mismatch = store.index_mismatch()
+
+        assert mismatch is not None
+        assert mismatch.persisted_model == built_with
+        assert mismatch.current_model == "acme/other-GGUF/other.gguf"
+        assert mismatch.dims_match
+
+    def test_another_dimension_is_a_mismatch_even_with_the_same_name(self, store, test_config):
+        store.add_chunks(_make_records())
+        test_config.embedding_dim = test_config.embedding_dim // 2
+
+        mismatch = store.index_mismatch()
+
+        assert mismatch is not None
+        assert not mismatch.dims_match
+
+    def test_switching_back_to_the_building_model_clears_the_mismatch(self, store, test_config):
+        store.add_chunks(_make_records())
+        built_with = test_config.embedding_model
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+        assert store.index_mismatch() is not None
+
+        test_config.embedding_model = built_with
+
+        assert store.index_mismatch() is None
+
+    def test_an_index_built_with_another_model_is_a_health_warning(self, store, test_config):
+        """Search refuses such an index with a 409, but a client that has not
+        searched yet sees a green health; the warning carries both refs."""
+        from lilbee.core.health_warnings import WarningCode
+
+        store.add_chunks(_make_records())
+        built_with = test_config.embedding_model
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+
+        warnings = store.health_warnings()
+
+        assert [w.code for w in warnings] == [WarningCode.INDEX_EMBEDDING_MISMATCH]
+        assert built_with in warnings[0].message
+        assert "acme/other-GGUF/other.gguf" in warnings[0].message
+        assert warnings[0].remedy is not None
+        assert built_with in warnings[0].remedy
+
+    def test_the_warning_clears_once_the_embedder_agrees_again(self, store, test_config):
+        store.add_chunks(_make_records())
+        built_with = test_config.embedding_model
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+        assert store.health_warnings()
+
+        test_config.embedding_model = built_with
+
+        assert store.health_warnings() == []
+
+
 class TestSearchChunkScoreAlias:
     @staticmethod
     def _row(**extra):

@@ -421,7 +421,7 @@ def apply_settings_update(
     _invalidate_caches(set(effective_updates))
     reindex_required = bool(REINDEX_FIELDS & set(updates))
     if embed_in_batch:
-        reindex_required = reindex_required or _embed_reindex_required(updates["embedding_model"])
+        reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
         updated=sorted(updates),
         reindex_required=reindex_required,
@@ -489,19 +489,17 @@ def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
         cfg.embedding_dim = dim
 
 
-def _embed_reindex_required(new_ref: str) -> bool:
-    """Compare *new_ref* to the persisted store meta; True if rebuild needed."""
+def _embed_reindex_required() -> bool:
+    """True when the persisted index was built with another embedder than cfg now names.
+
+    Runs after the swap is applied, so the store compares its meta row against
+    the new ref and the new model's width: the same verdict search refuses on.
+    """
     from lilbee.app.services import get_services
-    from lilbee.data.store.lance_helpers import refs_compatible
 
     store = get_services().store
     store.canonicalize_meta_if_legacy()
-    meta = store.get_meta()
-    if meta is None:
-        return False
-    return not refs_compatible(
-        meta["embedding_model"], new_ref, meta["embedding_dim"], meta["embedding_dim"]
-    )
+    return store.index_mismatch() is not None
 
 
 def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> SettingsUpdateResult:
