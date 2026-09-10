@@ -68,7 +68,12 @@ from lilbee.providers.fleet.swap_manager import (
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
-from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
+from lilbee.providers.warm_progress import (
+    ACTIVE_WARM_PHASES,
+    WarmPhase,
+    WarmProgress,
+    WarmProgressTracker,
+)
 from lilbee.runtime.engine_lock import (
     ENGINE_DIR_ENV,
     UserLockHold,
@@ -938,6 +943,9 @@ class FleetProvider:
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
         self._warming = False
+        # Request-triggered lazy-warm single-flight: one request begins the warm
+        # cycle, concurrent siblings share it instead of each resetting.
+        self._lazy_warming = False
         # Single-flight guard for the off-thread reload: a second reload_role
         # while one is in flight sets the pending flag instead of dispatching,
         # and the in-flight thread re-runs the plan loop once per pending flag.
@@ -1677,6 +1685,7 @@ class FleetProvider:
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
+        self._reset_warm_if_stale()
         self._require_clients(WorkerRole.CHAT)
         messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
         # Translate options exactly as the in-process path did (validate via
@@ -1688,19 +1697,23 @@ class FleetProvider:
             # The first frame is pulled eagerly so a dead proxy fails inside
             # _with_rediscover; a failure past the first frame surfaces to the
             # caller as a retry error, and rediscovery covers the next call.
-            return self._with_rediscover(
-                lambda: _primed_stream(
-                    _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_stream_items(
-                        messages, tools=tools, tool_choice=tool_choice, options=server_options
-                    )
+            return self._finalize_lazy_warm_after(
+                lambda: self._with_rediscover(
+                    lambda: _primed_stream(
+                        _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_stream_items(
+                            messages, tools=tools, tool_choice=tool_choice, options=server_options
+                        )
+                    ),
+                    role=WorkerRole.CHAT,
+                )
+            )
+        return self._finalize_lazy_warm_after(
+            lambda: self._with_rediscover(
+                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
+                    messages, tools=tools, tool_choice=tool_choice, options=server_options
                 ),
                 role=WorkerRole.CHAT,
             )
-        return self._with_rediscover(
-            lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
-                messages, tools=tools, tool_choice=tool_choice, options=server_options
-            ),
-            role=WorkerRole.CHAT,
         )
 
     def chat_with_tools(
@@ -1716,14 +1729,17 @@ class FleetProvider:
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
+        self._reset_warm_if_stale()
         self._require_clients(WorkerRole.CHAT)
         messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
         server_options = chat_options_to_kwargs(options) or None
-        return self._with_rediscover(
-            lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_tools(
-                messages, tools=tools, tool_choice=tool_choice, options=server_options
-            ),
-            role=WorkerRole.CHAT,
+        return self._finalize_lazy_warm_after(
+            lambda: self._with_rediscover(
+                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_tools(
+                    messages, tools=tools, tool_choice=tool_choice, options=server_options
+                ),
+                role=WorkerRole.CHAT,
+            )
         )
 
     def _fit_chat_context(
@@ -2169,6 +2185,49 @@ class FleetProvider:
                 self._warm_tracker.ready()
             else:
                 self._warm_tracker.fail(self._chat_load_failure())
+
+    def _reset_warm_if_stale(self) -> None:
+        """Start a fresh warm cycle when the chat role was evicted.
+
+        The tracker keeps its terminal READY/ERROR snapshot after llama-swap
+        idle-unloads the model, so a request that finds the role cold must begin
+        a fresh warm; otherwise health reads ``not_started`` and the warm stream
+        answers at once with the stale terminal phase. Only the first of several
+        concurrent requests resets; siblings see the warm already in flight and
+        skip. A snapshot that is terminal or absent means no load is in flight.
+        """
+        if self.role_ready(WorkerRole.CHAT):
+            return
+        if self.warm_pending() or self._lazy_warming:
+            return
+        snapshot = self._warm_tracker.snapshot()
+        if snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES:
+            return
+        with self._lock:
+            if self._lazy_warming:
+                return
+            self._lazy_warming = True
+        self._warm_tracker.begin(str(cfg.chat_model))
+
+    def _finalize_lazy_warm(self, error: str | None = None) -> None:
+        """Mark a request-triggered lazy warm ready or failed and clear the flag."""
+        if not self._lazy_warming:
+            return
+        if error:
+            self._warm_tracker.fail(error)
+        else:
+            self._warm_tracker.ready()
+        self._lazy_warming = False
+
+    def _finalize_lazy_warm_after(self, call: Callable[[], _T]) -> _T:
+        """Run *call* and finalize a request-triggered lazy warm around it."""
+        try:
+            result = call()
+        except Exception as exc:
+            self._finalize_lazy_warm(str(exc))
+            raise
+        self._finalize_lazy_warm()
+        return result
 
     def _chat_load_failure(self) -> str:
         """The engine's own reason the chat model did not load, when it gave one."""

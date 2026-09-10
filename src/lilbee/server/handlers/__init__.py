@@ -177,7 +177,12 @@ async def warm_stream() -> AsyncGenerator[str, None]:
             yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.STARTING).model_dump())
         else:
             yield sse_event(SseEvent.WARM, snapshot.model_dump())
-            if snapshot.phase in (WarmPhase.READY, WarmPhase.ERROR):
+            # A READY snapshot only ends the stream if the role is actually
+            # loaded; a stale READY after eviction must not short-circuit while
+            # the model is gone (the next request begins a fresh warm).
+            if snapshot.phase is WarmPhase.READY and provider.role_ready(WorkerRole.CHAT):
+                break
+            if snapshot.phase is WarmPhase.ERROR:
                 break
         await asyncio.sleep(_WARM_POLL_INTERVAL_S)
     yield sse_done({})
