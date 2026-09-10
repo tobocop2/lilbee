@@ -1149,6 +1149,21 @@ class TestScalarIndexDangling:
         from lilbee.data.store.lance_helpers import _scalar_index_dangling
 
         table = fresh.open_table(CHUNKS_TABLE)
+        # The rebuild must have recreated the scalar index files. Verify at the
+        # filesystem level: the scalar index directories must exist. This is
+        # independent of _scalar_index_dangling (which would trivially pass if
+        # that helper were gutted to return []).
+        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
+        scalar_uuids = {
+            idx.index_uuid
+            for idx in table.list_indices()
+            if idx.index_type.lower() in ("bitmap", "btree")
+        }
+        assert scalar_uuids, "scalar indexes must be registered"
+        for uuid in scalar_uuids:
+            assert (indices_dir / uuid).is_dir(), (
+                f"scalar index dir {uuid} must exist after rebuild"
+            )
         assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
 
     def test_dangling_probe_returns_empty_on_list_indices_error(self, store, test_config):
@@ -1160,6 +1175,29 @@ class TestScalarIndexDangling:
         assert table is not None
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
             assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
+
+    def test_search_rebuilds_dangling_scalar_when_fts_is_ready(self, store, test_config):
+        """A dangling scalar index must be rebuilt even when FTS is ready."""
+        from lilbee.core.config import CHUNKS_TABLE
+
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+
+        self._remove_scalar_index_files(test_config)
+        fresh = Store(test_config)
+        # Both readiness flags are True: the scalar indexes are dangling but
+        # FTS is fine. The keyword path must still rebuild the scalar indexes.
+        fresh._scalar_ready = True
+        fresh._fts_ready = True
+
+        hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+
+        assert hits
+        from lilbee.data.store.lance_helpers import _scalar_index_dangling
+
+        table = fresh.open_table(CHUNKS_TABLE)
+        assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
 
 
 class TestEnsureVectorIndex:

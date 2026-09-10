@@ -287,19 +287,36 @@ def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
 
 
 def test_reset_warm_skips_via_early_guard_when_flag_set() -> None:
-    """bb-v53z2: the pre-lock guard returns when a sibling already began."""
+    """bb-v53z2: the pre-lock guard returns when a warm is already in flight.
+
+    The early guard checks warm_pending() (boot/reload warm) OR _lazy_warming.
+    The lock double-check only covers _lazy_warming, so this test exercises
+    the warm_pending() branch that the double-check cannot reach."""
     from lilbee.providers.warm_progress import WarmPhase
 
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     p._warm_tracker.begin("stale-model")
     p._warm_tracker.ready()
-    p._lazy_warming = True  # sibling already began
+    # A boot/reload warm is in flight: warm_pending() returns True. The early
+    # guard must bail before reading the snapshot or acquiring the lock.
+    p._warming = True
+
+    # Spy on begin() so the test verifies the guard bails before calling it.
+    begins: list[str] = []
+    real_begin = p._warm_tracker.begin
+
+    def _record_begin(model_ref, *args, **kw):
+        begins.append(model_ref)
+        return real_begin(model_ref, *args, **kw)
+
+    p._warm_tracker.begin = _record_begin  # type: ignore[method-assign]
 
     p._reset_warm_if_stale()
 
     assert p._warm_tracker.snapshot().phase is WarmPhase.READY
     assert p._warm_tracker.snapshot().model_ref == "stale-model"
+    assert begins == [], "early guard must bail before begin()"
 
 
 def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
@@ -322,10 +339,22 @@ def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
 
     monkeypatch.setattr(p._warm_tracker, "snapshot", _snapshot_then_set_flag)
 
+    # Spy on begin() so the test verifies the inner check bails before calling
+    # it, not just that the tracker state is unchanged (which holds for a no-op).
+    begins: list[str] = []
+    real_begin = p._warm_tracker.begin
+
+    def _record_begin(model_ref, *args, **kw):
+        begins.append(model_ref)
+        return real_begin(model_ref, *args, **kw)
+
+    p._warm_tracker.begin = _record_begin  # type: ignore[method-assign]
+
     p._reset_warm_if_stale()
 
     # begin() must NOT have been called: the inner check bailed.
     assert p._warm_tracker.snapshot().model_ref == "stale-model"
+    assert begins == [], "lock double-check must bail before begin()"
 
 
 def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
@@ -345,6 +374,42 @@ def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert snap.error == "engine exploded"
+    assert not p._lazy_warming
+
+
+def test_chat_with_tools_resets_stale_tracker_after_eviction() -> None:
+    """bb-v53z2: chat_with_tools also resets the stale tracker on eviction."""
+    from lilbee.providers.base import ChatToolResult
+    from lilbee.providers.warm_progress import WarmPhase
+
+    client = _fake_client()
+    client.chat_tools.return_value = ChatToolResult(content="ok", tool_calls=())
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+    assert not p.role_ready(WorkerRole.CHAT)
+
+    begins: list[str] = []
+    real_begin = p._warm_tracker.begin
+
+    def _record_begin(model_ref, *args, **kw):
+        begins.append(model_ref)
+        return real_begin(model_ref, *args, **kw)
+
+    p._warm_tracker.begin = _record_begin  # type: ignore[method-assign]
+
+    from lilbee.providers.base import ChatMessage
+
+    result = p.chat_with_tools(
+        [ChatMessage(role="user", content="hi")],
+        tools=[{"type": "function", "function": {"name": "calc"}}],
+    )
+
+    assert result.content == "ok"
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.READY
+    assert begins == [str(cfg.chat_model)]
     assert not p._lazy_warming
 
 
