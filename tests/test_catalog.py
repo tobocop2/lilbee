@@ -2190,6 +2190,14 @@ class TestHfSearchValue:
     def test_whitespace_split_collapses_into_single_string(self) -> None:
         assert _hf_client._hf_search_value("qwen3 8b  instruct") == "GGUF qwen3 8b instruct"
 
+    def test_owner_repo_splits_on_slash_and_dash(self) -> None:
+        """An exact owner/repo reaches the API as matchable tokens.
+
+        'Qwen/Qwen3-8B-GGUF' must not be sent as the single unsplit substring
+        'GGUF Qwen/Qwen3-8B-GGUF', which the HF API cannot match against a repo id.
+        """
+        assert _hf_client._hf_search_value("Qwen/Qwen3-8B-GGUF") == "GGUF Qwen Qwen3 8B GGUF"
+
 
 class TestFetchHfModelsSearchForwarding:
     pytestmark = pytest.mark.real_hf_client
@@ -2206,6 +2214,19 @@ class TestFetchHfModelsSearchForwarding:
         monkeypatch.setattr(httpx, "get", capture_get)
         get_services().hf_client.fetch_models(search="qwen3 8b")
         assert captured_params[0].get_list("search") == ["GGUF qwen3 8b"]
+
+    def test_owner_repo_is_tokenized_for_the_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An exact owner/repo must reach the API as slash/dash-split tokens."""
+        captured_params: list[httpx.QueryParams] = []
+        mock_resp = httpx.Response(200, json=[])
+
+        def capture_get(url: str, **kwargs: Any) -> httpx.Response:
+            captured_params.append(kwargs["params"])
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        get_services().hf_client.fetch_models(search="Qwen/Qwen3-8B-GGUF")
+        assert captured_params[0].get_list("search") == ["GGUF Qwen Qwen3 8B GGUF"]
 
     def test_empty_search_still_sends_gguf_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured_params: list[httpx.QueryParams] = []

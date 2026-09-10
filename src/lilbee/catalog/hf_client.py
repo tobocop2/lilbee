@@ -6,6 +6,7 @@ import fnmatch
 import functools
 import logging
 import os
+import re
 import threading
 import time
 from http import HTTPStatus
@@ -116,8 +117,15 @@ def hf_headers() -> dict[str, str]:
 
 
 def _hf_search_value(search: str) -> str:
-    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
-    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined.
+
+    The user's query is split on whitespace, "/", and "-" as well as case, so an
+    exact owner/repo like "Qwen/Qwen3-8B-GGUF" reaches the API as the matchable
+    tokens "GGUF Qwen Qwen3 8B GGUF" instead of the single unsplit substring
+    "GGUF Qwen/Qwen3-8B-GGUF" (which the API cannot match against a repo id).
+    """
+    parts = re.split(r"[\s/\-]+", search.strip())
+    tokens = [_HF_GGUF_SEARCH_TERM, *(p for p in parts if p)]
     return " ".join(tokens)
 
 
