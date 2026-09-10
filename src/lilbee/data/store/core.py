@@ -41,6 +41,7 @@ from .lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _safe_delete_unlocked,
+    _scalar_index_dangling,
     _sources_search_filter,
     ensure_table,
     escape_sql_string,
@@ -552,6 +553,21 @@ class Store:
                     remedy="Run `lilbee rebuild` to rebuild the search index.",
                 )
             )
+        table = self.open_table(CHUNKS_TABLE)
+        if table is not None:
+            dangling_scalar = _scalar_index_dangling(table, self._config.lancedb_dir)
+            if dangling_scalar:
+                warnings.append(
+                    HealthWarning(
+                        code=WarningCode.SCALAR_INDEX_UNAVAILABLE,
+                        message=(
+                            "The scalar index on "
+                            + ", ".join(dangling_scalar)
+                            + " is missing its files, so filtered search is degraded."
+                        ),
+                        remedy="Run `lilbee rebuild` to rebuild the search index.",
+                    )
+                )
         if self._doc_prefix_mismatch and not self._doc_prefix_is_stale():
             # The remedy is `lilbee rebuild`, which usually runs in another
             # process, so the query path's cached verdict outlives the fix.
@@ -794,7 +810,12 @@ class Store:
                 complete = False
                 continue
             names = table.schema.names
-            if any(c in names and not _has_scalar_index(table, c) for c, _ in columns):
+            dangling = _scalar_index_dangling(table, self._config.lancedb_dir)
+            needs_build = any(
+                c in names and (not _has_scalar_index(table, c) or c in dangling)
+                for c, _ in columns
+            )
+            if needs_build:
                 pending.append((name, columns))
         if not pending:
             self._scalar_ready = complete
@@ -823,11 +844,12 @@ class Store:
             return
         names = table.schema.names
         fail_level = logging.WARNING if table.count_rows() > 0 else logging.DEBUG
+        dangling = _scalar_index_dangling(table, self._config.lancedb_dir)
         for column, index_type in columns:
-            if column not in names or _has_scalar_index(table, column):
+            if column not in names or (_has_scalar_index(table, column) and column not in dangling):
                 continue
             try:
-                table.create_scalar_index(column, index_type=index_type, replace=False)
+                table.create_scalar_index(column, index_type=index_type, replace=column in dangling)
                 log.debug("Scalar (%s) index created on '%s.%s'", index_type, table_name, column)
             except Exception:
                 log.log(
@@ -1143,6 +1165,9 @@ class Store:
         """
         if not self._fts_ready:
             self.ensure_fts_index(blocking=False)
+            # A dangling scalar index fails the prefilter alongside a missing
+            # FTS index; rebuild both before the query runs.
+            self.ensure_scalar_indexes(blocking=False)
             # The maintenance pass may have created or replaced the index; the
             # caller's handle still resolves the registration it opened with.
             table.checkout_latest()

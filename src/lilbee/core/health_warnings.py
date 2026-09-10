@@ -21,6 +21,8 @@ class WarningCode(StrEnum):
     """Queries are prefixed but stored documents are not; retrieval is degraded."""
     INDEX_EMBEDDING_MISMATCH = "index_embedding_mismatch"
     """The index was built with another embedding model; search refuses until they agree."""
+    SCALAR_INDEX_UNAVAILABLE = "scalar_index_unavailable"
+    """A scalar index is registered but its files are gone; filtered search is degraded."""
 
 
 class HealthWarning(BaseModel):
