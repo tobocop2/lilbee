@@ -316,6 +316,32 @@ class TestWarmStream:
         assert all(e["phase"] == WarmPhase.STARTING for e in events)
         assert "event: done" in chunks[-1]
 
+    async def test_stale_ready_does_not_short_circuit_stream(self, mock_svc):
+        """bb-v53z2: a stale READY snapshot after eviction must not end the
+        warm stream at once while the role is unloaded."""
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        # Before the fix, a single READY snapshot ended the stream on the
+        # first poll; the done event followed immediately. After the fix the
+        # stream keeps polling because the role is not actually loaded.
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.READY)
+        mock_svc.provider.role_ready.return_value = False
+        calls = {"n": 0}
+
+        def _fake_monotonic() -> float:
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 4 else 99.0
+
+        with (
+            patch("lilbee.server.handlers._WARM_POLL_INTERVAL_S", 0),
+            patch("lilbee.server.handlers._WARM_STREAM_TIMEOUT_S", 5.0),
+            patch("lilbee.server.handlers.time.monotonic", _fake_monotonic),
+        ):
+            chunks = [chunk async for chunk in handlers.warm_stream()]
+        events = _parse_warm_events(chunks)
+        warm_count = sum(1 for e in events if e["phase"] == WarmPhase.READY)
+        assert warm_count > 1, "stale READY must not end the stream at once"
+
 
 class TestStatus:
     async def test_returns_config_and_sources(self):

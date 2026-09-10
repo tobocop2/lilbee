@@ -224,6 +224,169 @@ def test_least_in_flight_picks_minimum() -> None:
     assert _least_in_flight([busy, idle]) is idle
 
 
+def test_chat_resets_stale_tracker_after_eviction(monkeypatch) -> None:
+    """bb-v53z2: after idle eviction, a chat request must reset the stale
+    READY snapshot to STARTING, then mark READY once the response arrives."""
+    from lilbee.providers.base import ChatResult, FinishReason
+    from lilbee.providers.warm_progress import WarmPhase
+
+    client = _fake_client()
+    client.chat_result.return_value = ChatResult(
+        text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+    )
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    # Simulate eviction: tracker holds a terminal READY for a different model,
+    # role reports not loaded.
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+    assert p._warm_tracker.snapshot().model_ref == "stale-model"
+    # The fake swap reports the role as not ready (no `ready` set).
+    assert not p.role_ready(WorkerRole.CHAT)
+
+    # Spy on begin() so the test observes the reset directly: a stale snapshot
+    # that _reset_warm_if_stale clears by beginning a fresh warm. Without the
+    # reset, begin() is not called again after the initial stale one.
+    begins: list[str] = []
+    real_begin = p._warm_tracker.begin
+
+    def _record_begin(model_ref, *args, **kw):
+        begins.append(model_ref)
+        return real_begin(model_ref, *args, **kw)
+
+    monkeypatch.setattr(p._warm_tracker, "begin", _record_begin)
+
+    p.chat([{"role": "user", "content": "hi"}])
+
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.READY
+    # The reset fired: a fresh begin() ran with the configured model ref, not
+    # the stale one. Without _reset_warm_if_stale, begins stays empty.
+    assert begins == [str(cfg.chat_model)]
+    assert snap.model_ref == cfg.chat_model
+    assert not p._lazy_warming
+
+
+def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
+    """bb-v53z2: _reset_warm_if_stale calls begin() when the role is unloaded."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    # Simulate eviction: terminal READY snapshot, role reports not loaded.
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+    assert not p.role_ready(WorkerRole.CHAT)
+
+    p._reset_warm_if_stale()
+
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.STARTING
+    assert p._lazy_warming
+
+
+def test_reset_warm_skips_via_early_guard_when_flag_set() -> None:
+    """bb-v53z2: the pre-lock guard returns when a sibling already began."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+    p._lazy_warming = True  # sibling already began
+
+    p._reset_warm_if_stale()
+
+    assert p._warm_tracker.snapshot().phase is WarmPhase.READY
+    assert p._warm_tracker.snapshot().model_ref == "stale-model"
+
+
+def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
+    """bb-v53z2: the under-lock check returns if a sibling set the flag after
+    the pre-lock guard passed but before the lock was acquired."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+
+    # The pre-lock guard reads _lazy_warming as False. Then snapshot() is
+    # called; we use it as the injection point to flip the flag, simulating a
+    # sibling that began the warm in the gap between the guard and the lock.
+    # The inner check under the lock must then see True and bail.
+    real_snapshot = p._warm_tracker.snapshot
+
+    def _snapshot_then_set_flag():
+        p._lazy_warming = True
+        return real_snapshot()
+
+    monkeypatch.setattr(p._warm_tracker, "snapshot", _snapshot_then_set_flag)
+
+    p._reset_warm_if_stale()
+
+    # begin() must NOT have been called: the inner check bailed.
+    assert p._warm_tracker.snapshot().model_ref == "stale-model"
+
+
+def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
+    """bb-v53z2: a failed lazy warm reports the reason via the tracker."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    client = _fake_client()
+    client.chat_result.side_effect = RuntimeError("engine exploded")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._warm_tracker.begin("old-model")
+    p._warm_tracker.ready()
+
+    with pytest.raises(RuntimeError, match="engine exploded"):
+        p.chat([{"role": "user", "content": "hi"}])
+
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert snap.error == "engine exploded"
+    assert not p._lazy_warming
+
+
+def test_reset_warm_is_noop_when_role_ready() -> None:
+    """bb-v53z2: no reset when the chat role is already loaded."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    group = SwapGroup(WorkerRole.CHAT.value)
+    p._role_group = {WorkerRole.CHAT: group}
+    swap = _FakeSwap()
+    swap.ready.add(WorkerRole.CHAT)  # role_ready returns True
+    p._swaps = {group: swap}
+    p._clients = {WorkerRole.CHAT: [_fake_client()]}
+    p._warm_tracker.begin("m")
+    p._warm_tracker.ready()
+
+    p._reset_warm_if_stale()
+
+    assert p._warm_tracker.snapshot().phase is WarmPhase.READY
+    assert not p._lazy_warming
+
+
+def test_reset_warm_is_noop_when_warm_in_flight() -> None:
+    """bb-v53z2: no reset when a warm is already active (boot/reload warm)."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    group = SwapGroup(WorkerRole.CHAT.value)
+    p._role_group = {WorkerRole.CHAT: group}
+    p._swaps = {group: _FakeSwap()}  # role_ready False (empty ready set)
+    p._clients = {WorkerRole.CHAT: [_fake_client()]}
+    p._warm_tracker.begin("m")
+    p._warm_tracker.loading_engine()
+
+    p._reset_warm_if_stale()
+
+    # Tracker unchanged: still mid-warm, no second begin().
+    assert p._warm_tracker.snapshot().phase is WarmPhase.LOADING_ENGINE
+    assert not p._lazy_warming
+
+
 def test_chat_routes_to_chat_server() -> None:
     from lilbee.providers.base import ChatResult, FinishReason
 
