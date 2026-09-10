@@ -225,7 +225,7 @@ def test_least_in_flight_picks_minimum() -> None:
 
 
 def test_chat_resets_stale_tracker_after_eviction(monkeypatch) -> None:
-    """bb-v53z2: after idle eviction, a chat request must reset the stale
+    """after idle eviction, a chat request must reset the stale
     READY snapshot to STARTING, then mark READY once the response arrives."""
     from lilbee.providers.base import ChatResult, FinishReason
     from lilbee.providers.warm_progress import WarmPhase
@@ -268,7 +268,7 @@ def test_chat_resets_stale_tracker_after_eviction(monkeypatch) -> None:
 
 
 def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
-    """bb-v53z2: _reset_warm_if_stale calls begin() when the role is unloaded."""
+    """_reset_warm_if_stale calls begin() when the role is unloaded."""
     from lilbee.providers.warm_progress import WarmPhase
 
     client = _fake_client()
@@ -287,7 +287,7 @@ def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
 
 
 def test_reset_warm_skips_via_early_guard_when_flag_set() -> None:
-    """bb-v53z2: the pre-lock guard returns when a warm is already in flight.
+    """the pre-lock guard returns when a warm is already in flight.
 
     The early guard checks warm_pending() (boot/reload warm) OR _lazy_warming.
     The lock double-check only covers _lazy_warming, so this test exercises
@@ -320,7 +320,7 @@ def test_reset_warm_skips_via_early_guard_when_flag_set() -> None:
 
 
 def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
-    """bb-v53z2: the under-lock check returns if a sibling set the flag after
+    """the under-lock check returns if a sibling set the flag after
     the pre-lock guard passed but before the lock was acquired."""
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
@@ -358,7 +358,7 @@ def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
 
 
 def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
-    """bb-v53z2: a failed lazy warm reports the reason via the tracker."""
+    """a failed lazy warm reports the reason via the tracker."""
     from lilbee.providers.warm_progress import WarmPhase
 
     client = _fake_client()
@@ -378,7 +378,7 @@ def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
 
 
 def test_chat_with_tools_resets_stale_tracker_after_eviction() -> None:
-    """bb-v53z2: chat_with_tools also resets the stale tracker on eviction."""
+    """chat_with_tools also resets the stale tracker on eviction."""
     from lilbee.providers.base import ChatToolResult
     from lilbee.providers.warm_progress import WarmPhase
 
@@ -414,7 +414,7 @@ def test_chat_with_tools_resets_stale_tracker_after_eviction() -> None:
 
 
 def test_reset_warm_is_noop_when_role_ready() -> None:
-    """bb-v53z2: no reset when the chat role is already loaded."""
+    """no reset when the chat role is already loaded."""
     from lilbee.providers.warm_progress import WarmPhase
 
     p = FleetProvider()
@@ -434,7 +434,7 @@ def test_reset_warm_is_noop_when_role_ready() -> None:
 
 
 def test_reset_warm_is_noop_when_warm_in_flight() -> None:
-    """bb-v53z2: no reset when a warm is already active (boot/reload warm)."""
+    """no reset when a warm is already active (boot/reload warm)."""
     from lilbee.providers.warm_progress import WarmPhase
 
     p = FleetProvider()
