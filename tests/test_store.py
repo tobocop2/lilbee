@@ -1128,28 +1128,44 @@ class TestScalarIndexDangling:
         assert WarningCode.SCALAR_INDEX_UNAVAILABLE in codes
         assert WarningCode.FTS_UNAVAILABLE not in codes
 
-    def test_search_rebuilds_a_dangling_scalar_index(self, store, test_config):
+    def _scalar_index_dirs_exist(self, test_config) -> bool:
         from lilbee.core.config import CHUNKS_TABLE
 
+        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
+        return indices_dir.is_dir() and any(indices_dir.iterdir())
+
+    def test_search_rebuilds_a_dangling_scalar_index(self, store, test_config):
         store.add_chunks(_make_records())
         store.ensure_scalar_indexes()
         store.ensure_fts_index()
+        assert self._scalar_index_dirs_exist(test_config)
 
         self._remove_scalar_index_files(test_config)
         fresh = Store(test_config)
-        # Force the _keyword_arm rebuild path: scalar is "ready" so search()
-        # skips its own ensure_scalar_indexes, but FTS is not ready so
-        # _keyword_arm runs and must rebuild the dangling scalar index.
         fresh._scalar_ready = True
         fresh._fts_ready = False
 
         hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
 
         assert hits
-        from lilbee.data.store.lance_helpers import _scalar_index_dangling
+        assert self._scalar_index_dirs_exist(test_config)
 
-        table = fresh.open_table(CHUNKS_TABLE)
-        assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
+    def test_search_rebuilds_dangling_scalar_when_fts_is_ready(self, store, test_config):
+        """A dangling scalar is rebuilt even when FTS is healthy."""
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+        assert self._scalar_index_dirs_exist(test_config)
+
+        self._remove_scalar_index_files(test_config)
+        fresh = Store(test_config)
+        fresh._scalar_ready = True
+        fresh._fts_ready = True
+
+        hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+
+        assert hits
+        assert self._scalar_index_dirs_exist(test_config)
 
     def test_dangling_probe_returns_empty_on_list_indices_error(self, store, test_config):
         """An unreadable manifest is not evidence of missing files."""

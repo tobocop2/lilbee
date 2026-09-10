@@ -317,7 +317,7 @@ class TestWarmStream:
         assert "event: done" in chunks[-1]
 
     async def test_stale_ready_does_not_short_circuit_stream(self, mock_svc):
-        """bb-v53z2: a stale READY snapshot after eviction must not end the
+        """a stale READY snapshot after eviction must not end the
         warm stream at once while the role is unloaded."""
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
