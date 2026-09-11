@@ -6,7 +6,6 @@ import fnmatch
 import functools
 import logging
 import os
-import re
 import threading
 import time
 from http import HTTPStatus
@@ -117,9 +116,8 @@ def hf_headers() -> dict[str, str]:
 
 
 def _hf_search_value(search: str) -> str:
-    """Build the HF ``search=`` value: GGUF plus the user's slash/dash-split tokens."""
-    parts = re.split(r"[\s/\-]+", search.strip())
-    tokens = [_HF_GGUF_SEARCH_TERM, *(p for p in parts if p)]
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
+    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
     return " ".join(tokens)
 
 
