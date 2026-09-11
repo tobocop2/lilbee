@@ -100,6 +100,8 @@ class ModelGrid(Widget, can_focus=True):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("left", "cursor_left", "Left", show=False),
         Binding("right", "cursor_right", "Right", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
         Binding("enter", "select", "Select", show=False),
     ]
 

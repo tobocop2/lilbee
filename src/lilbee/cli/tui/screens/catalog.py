@@ -225,6 +225,8 @@ class CatalogScreen(Screen[None]):
         Binding("i", "show_info", "Info", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("h", "cursor_left", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("l", "cursor_right", "Nav", show=False, group=_SCROLL_GROUP),
         # Arrows move the card cursor too (auto-scrolls into view) so
         # the highlight follows the visible region. Decoupling them
         # into pure viewport scroll left a stale highlight on the
@@ -2515,6 +2517,18 @@ class CatalogScreen(Screen[None]):
                 grid.action_cursor_up()
         else:
             self._nudge_list(-1)
+
+    def action_cursor_left(self) -> None:
+        if self._search_focused or not self._grid_view:
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_left()
+
+    def action_cursor_right(self) -> None:
+        if self._search_focused or not self._grid_view:
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_right()
 
     def _first_grid_or_none(self) -> ModelGrid | None:
         """Return the first non-empty ModelGrid in the active tab's container."""
