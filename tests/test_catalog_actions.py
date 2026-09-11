@@ -1153,6 +1153,65 @@ async def test_action_cursor_down_stays_on_active_tab() -> None:
             assert any(focused is g for g in screen.query("#grid-chat ModelGrid"))
 
 
+async def test_screen_action_cursor_right_delegates_to_focused_grid() -> None:
+    """Screen-level action_cursor_right delegates to the focused grid."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._grid_view = True
+        grid = ModelGrid()
+        grid._rows = [_row("A"), _row("B"), _row("C")]
+        grid.highlighted = 0
+        screen._focused_grid = lambda: grid  # type: ignore[method-assign]
+        screen.action_cursor_right()
+        assert grid.highlighted == 1
+        screen.action_cursor_left()
+        assert grid.highlighted == 0
+
+
+async def test_screen_action_cursor_left_right_no_op_when_search_focused() -> None:
+    """Screen-level h/l do not move the cursor while search owns focus."""
+    from unittest.mock import PropertyMock, patch
+    from textual.screen import Screen
+
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._grid_view = True
+        grid = ModelGrid()
+        grid._rows = [_row("A"), _row("B")]
+        grid.highlighted = 1
+        screen._focused_grid = lambda: grid  # type: ignore[method-assign]
+        with patch.object(Screen, "focused", new_callable=PropertyMock, return_value=Input()):
+            screen.action_cursor_left()
+            screen.action_cursor_right()
+        assert grid.highlighted == 1
+
+
+async def test_screen_action_cursor_left_right_no_op_in_list_view() -> None:
+    """Screen-level h/l are a no-op when the list view is active."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._grid_view = False
+        grid = ModelGrid()
+        grid._rows = [_row("A"), _row("B")]
+        grid.highlighted = 0
+        screen._focused_grid = lambda: grid  # type: ignore[method-assign]
+        screen.action_cursor_left()
+        screen.action_cursor_right()
+        assert grid.highlighted == 0
+
+
 async def test_apply_search_filter_no_op_on_discover() -> None:
     """Search filter on the Discover tab is a no-op (rails are curated)."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
