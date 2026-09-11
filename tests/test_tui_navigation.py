@@ -501,7 +501,10 @@ async def test_hl_move_cursor_on_task_tab_grid() -> None:
         await pilot.press("n")  # load rows
         await pilot.pause()
 
-        grid = app.screen.query_one("#grid-chat ModelGrid")
+        grids = app.screen.query("#grid-chat ModelGrid")
+        assert grids, "Chat tab has no ModelGrid mounted"
+        grid = grids.first()
+        assert isinstance(grid, ModelGrid)
         grid.focus()
         await pilot.pause()
         await pilot.press("l")
