@@ -23,7 +23,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
 )
-from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -459,6 +458,8 @@ def test_stamp_fit_no_op_without_probe() -> None:
 
 async def test_discover_rail_fills_when_the_probe_failed() -> None:
     """A failed memory probe leaves every fit None; the For You rail still shows a pick."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
     variant = ModelVariant(
         hf_repo="a/Llama-GGUF",
         filename="llama.gguf",

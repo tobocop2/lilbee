@@ -445,6 +445,76 @@ async def test_grid_cursor_survives_dataset_refresh():
         assert grid.highlighted == 3, "cursor teleported after refresh"
 
 
+async def test_hl_move_cursor_on_discover_rail_grid() -> None:
+    """h/l must move the cursor on a Discover rail grid, same as arrows."""
+    from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+        screen = app.screen
+        assert isinstance(screen, CatalogScreen)
+
+        def _seed_rails() -> None:
+            rails = screen.query_one("#discover-rails", DiscoverRails)
+            rails.set_rails(
+                for_you=[_discover_row("Alpha"), _discover_row("Beta")],
+                collection=[_discover_row("Gamma", installed=True)],
+                fresh=[_discover_row("Delta"), _discover_row("Epsilon")],
+            )
+
+        screen._populate_discover_rails = _seed_rails  # type: ignore[method-assign]
+        await pilot.press("1")  # Discover tab
+        await pilot.pause()
+        _seed_rails()
+        await pilot.pause()
+
+        rails = screen.query_one("#discover-rails", DiscoverRails)
+        for_you = rails.query_one("#discover-grid-for-you", ModelGrid)
+        for_you.focus()
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert for_you.highlighted == 1, "l should move cursor right"
+        await pilot.press("h")
+        await pilot.pause()
+        assert for_you.highlighted == 0, "h should move cursor left"
+
+
+async def test_hl_move_cursor_on_task_tab_grid() -> None:
+    """h/l must move the cursor on a task tab (Chat) grid, same as arrows."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await _wait_for_screen(app, pilot, CatalogScreen)
+
+        await pilot.press("2")  # Chat tab
+        await pilot.pause()
+        await pilot.press("n")  # load rows
+        await pilot.pause()
+
+        grid = app.screen.query_one("#grid-chat ModelGrid")
+        grid.focus()
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert grid.highlighted == 1
+        await pilot.press("l")
+        await pilot.pause()
+        assert grid.highlighted == 2
+        await pilot.press("h")
+        await pilot.pause()
+        assert grid.highlighted == 1
+
+
 async def test_footer_present_on_screens():
     """Every screen should have a Footer widget."""
     app = LilbeeApp()
