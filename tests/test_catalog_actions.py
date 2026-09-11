@@ -1175,6 +1175,7 @@ async def test_screen_action_cursor_right_delegates_to_focused_grid() -> None:
 async def test_screen_action_cursor_left_right_no_op_when_search_focused() -> None:
     """Screen-level h/l do not move the cursor while search owns focus."""
     from unittest.mock import PropertyMock, patch
+
     from textual.screen import Screen
 
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
