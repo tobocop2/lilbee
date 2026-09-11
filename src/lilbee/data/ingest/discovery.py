@@ -124,11 +124,6 @@ def archive_content_types() -> frozenset[str]:
     )
 
 
-def member_content_type(path: str, mime: str) -> str:
-    """content_type of an archive member: by MIME type, then extension, then MIME subtype."""
-    return _content_type_for(Path(path).suffix.lower(), mime) or mime.partition("/")[2]
-
-
 @cache
 def supported_extension_map() -> dict[str, str]:
     """Extension -> content_type for every format lilbee ingests.

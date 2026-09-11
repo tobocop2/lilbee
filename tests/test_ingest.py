@@ -2479,20 +2479,6 @@ class TestExcludedFormats:
         assert excluded_extension_reasons()[suffix] == ExclusionReason.NEEDS_TRANSCRIPTION
         assert suffix not in supported_extension_map()
 
-    @pytest.mark.parametrize(
-        ("path", "mime", "expected"),
-        [
-            ("folder/report.pdf", "application/pdf", "pdf"),
-            ("scan.PNG", "image/png", "image"),
-            ("notes.txt", "text/plain", "txt"),
-            ("README", "text/plain", "plain"),
-        ],
-    )
-    def test_member_content_type_follows_mime_then_extension(self, path, mime, expected):
-        from lilbee.data.ingest.discovery import member_content_type
-
-        assert member_content_type(path, mime) == expected
-
     def test_scan_keeps_archives_and_refuses_drawings(self, isolated_env):
         from lilbee.data.ingest.discovery import ExclusionReason, discover_corpus
 
@@ -5590,6 +5576,39 @@ class TestIngestArchive:
 
         with pytest.raises(ChunkLimitError, match=r"^docs.zip/big.txt: 3 chunks exceed"):
             await ingest_archive(f, "docs.zip", "zip")
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_members_pass_the_same_extension_gate_as_files_on_disk(
+        self, mock_kf, isolated_env, mock_svc, caplog
+    ):
+        """A member discovery would not pick up from disk is not chunked from an archive."""
+        import logging
+
+        from lilbee.data.extract.document import ingest_archive
+
+        mock_kf.return_value = _make_archive_result(
+            [
+                _member("run.rerank.trec", "text/plain", _make_xberg_result(num_chunks=5)),
+                _member("logo.svg", "image/svg+xml", _make_xberg_result(num_chunks=1)),
+                _member("README", "text/plain", _make_xberg_result(num_chunks=1)),
+                _member("tool.py", "text/x-python", _make_xberg_result(num_chunks=1)),
+                _member("notes.txt", "text/plain", _make_xberg_result(num_chunks=1)),
+            ]
+        )
+        f = isolated_env / "runs.gz"
+        f.write_bytes(b"\x1f\x8b")
+
+        with caplog.at_level(logging.INFO, logger="lilbee.data.extract.document"):
+            members = await ingest_archive(f, "runs.gz", "gz")
+
+        assert [(m.name, m.content_type) for m in members] == [
+            ("runs.gz/tool.py", "code"),
+            ("runs.gz/notes.txt", "txt"),
+        ]
+        skipped = [r.getMessage() for r in caplog.records if "runs.gz" in r.getMessage()]
+        assert skipped == [
+            "Skipped 3 member(s) of runs.gz, unsupported format: README, logo.svg, run.rerank.trec"
+        ]
 
 
 class TestFlushArchiveMembers:
