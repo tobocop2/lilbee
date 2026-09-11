@@ -51,7 +51,9 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
     chunk the chunker can emit: size the context to it and embed-time
     truncation becomes impossible. Token-dense text (numeric tables, dense
     identifiers) otherwise reaches ~2x chunk_size tokens against a 1x cap and
-    silently loses its tail at embed time."""
+    silently loses its tail at embed time. A trained context below that budget
+    caps the window instead, and the chunker bounds itself to the served cap
+    (see :func:`embed_token_cap`)."""
     from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)

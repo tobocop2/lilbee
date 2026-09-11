@@ -92,6 +92,19 @@ def _engine_id(launch: InstanceLaunch) -> str:
     return f"{launch.binary} (build {engine_build_id()}, backend {backend}, devices: {names})"
 
 
+def warn_when_embed_window_below_chunk(launch: InstanceLaunch) -> None:
+    """Log when the embed engine's input cap is below the configured chunk budget.
+
+    Runs at engine adoption so the serving process's own log names the window
+    it serves; the health route carries the same warning for clients.
+    """
+    if launch.token_cap is None:
+        return
+    warning = engine_params.embed_window_warning(launch.token_cap)
+    if warning is not None:
+        log.warning("%s %s", warning.message, warning.remedy)
+
+
 def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
     """Log when a chat engine's granted shape ends below the requested one.
 
