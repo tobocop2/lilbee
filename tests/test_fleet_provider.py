@@ -2758,31 +2758,32 @@ class TestEmbedTokenCap:
 
 
 class TestRoutingProviderEmbedCap:
-    def test_delegates_to_the_local_engine_for_a_local_embedder(self, monkeypatch) -> None:
+    @staticmethod
+    def _routing_over_a_capped_engine(monkeypatch, embedding_model: str):
+        """A RoutingProvider whose local engine would report a cap and a warning."""
         from lilbee.providers.routing_provider import RoutingProvider
 
-        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", embedding_model)
         routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
         local.health_warnings.return_value = ["warned"]
         routing._local = local
+        return routing
+
+    def test_delegates_to_the_local_engine_for_a_local_embedder(self, monkeypatch) -> None:
+        routing = self._routing_over_a_capped_engine(monkeypatch, "org/repo/e.gguf")
         assert routing.embed_token_cap() == 504
         assert routing.health_warnings() == ["warned"]
 
     def test_reports_nothing_for_a_remote_embedder(self, monkeypatch) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider()
+        """The local engine's cap is not the remote embedder's, so it is not reported."""
+        routing = self._routing_over_a_capped_engine(monkeypatch, "openai/text-embedding-3-small")
         assert routing.embed_token_cap() is None
         assert routing.health_warnings() == []
 
     def test_reports_nothing_with_no_embedder_configured(self, monkeypatch) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        monkeypatch.setattr(cfg, "embedding_model", "")
-        routing = RoutingProvider()
+        routing = self._routing_over_a_capped_engine(monkeypatch, "")
         assert routing.embed_token_cap() is None
         assert routing.health_warnings() == []
 

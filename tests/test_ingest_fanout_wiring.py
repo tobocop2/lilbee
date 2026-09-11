@@ -200,11 +200,27 @@ class TestSyncAcrossWorkers:
             for index, error in enumerate(errors)
         ]
 
+    def _one_verdict(self, result):
+        return [fanout.ShardDone(kind="done", index=0, result=result, error=None)]
+
     async def _run(
-        self, specs, monkeypatch, verdicts, *, cancel=None, merged, store=None, prune_ignored=False
+        self,
+        specs,
+        monkeypatch,
+        verdicts,
+        *,
+        cancel=None,
+        merged,
+        passes=None,
+        store=None,
+        prune_ignored=False,
     ):
         async def fake_run_workers(*args, **kwargs):
             return verdicts
+
+        async def fake_passes(store, **kwargs):
+            if passes is not None:
+                passes.append(kwargs)
 
         monkeypatch.setattr(pipeline_mod, "run_workers", fake_run_workers)
         monkeypatch.setattr(
@@ -212,9 +228,7 @@ class TestSyncAcrossWorkers:
             "_merge_worker_shards",
             lambda store, specs, touched: merged.append(touched),
         )
-        monkeypatch.setattr(
-            pipeline_mod, "_run_post_ingest_passes", lambda *a, **k: asyncio.sleep(0)
-        )
+        monkeypatch.setattr(pipeline_mod, "_run_post_ingest_passes", fake_passes)
         events = []
         result = await pipeline_mod._sync_across_workers(
             specs,
@@ -235,6 +249,25 @@ class TestSyncAcrossWorkers:
         assert sorted(result.added) == ["f0.txt", "f1.txt"]
         assert merged == [{"f0.txt", "f1.txt"}]
         assert EventType.DONE in events
+
+    async def test_a_removal_only_run_rebuilds_the_clusters(self, specs, monkeypatch):
+        """A removed source leaves stale concept nodes behind unless Leiden runs again."""
+        passes = []
+        verdicts = self._one_verdict(SyncResult(removed=["gone.txt"]))
+        await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
+        [kwargs] = passes
+        assert kwargs["clusters_stale"] is True
+        assert kwargs["indexed_anything"] is False
+
+    async def test_a_relocation_only_run_leaves_the_clusters_alone(self, specs, monkeypatch):
+        """A move changes no concept co-occurrence, so Leiden has nothing new to see."""
+        passes = []
+        verdicts = self._one_verdict(SyncResult(relocated=["moved.txt"]))
+        await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
+        [kwargs] = passes
+        assert kwargs["clusters_stale"] is False
+        assert kwargs["indexed_anything"] is True
+        assert kwargs["touched"] == {"moved.txt"}
 
     async def test_the_parent_drops_what_an_ignore_pattern_now_excludes(
         self, specs, monkeypatch, tmp_path
