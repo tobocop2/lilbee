@@ -261,6 +261,10 @@ class HealthResponse(BaseModel):
     chat_prefill_total: int | None = None
     """Prompt tokens the in-flight chat prefill will process in total. None when
     no prefill is running."""
+    embed_token_cap: int | None = None
+    """Tokens the embedding engine truncates one input to. The chunker bounds its
+    budget to this, so it is the largest chunk that reaches the index whole. None
+    when no managed embedder is configured."""
     warnings: list[HealthWarning] = []
     """Degradations that answer correctly but worse, so a client can say so.
 

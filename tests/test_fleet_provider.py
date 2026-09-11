@@ -2695,6 +2695,81 @@ class TestChatCapacityAndCtxGetters:
         assert p.served_chat_slots() == 2
 
 
+class TestEmbedTokenCap:
+    """The chunker bounds to the served embed cap, or the planned one before the engine is up."""
+
+    def test_reads_the_served_embed_launch_when_up(self, monkeypatch) -> None:
+        p = FleetProvider()
+        launch = _fake_launch(WorkerRole.EMBED, ctx=512)
+        launch.token_cap = 504
+        p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+        p._launches = {SwapGroup.EMBED: (launch,)}
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 8184)
+        assert p.embed_token_cap() == 504
+
+    def test_plans_the_cap_from_the_configured_embedder_before_the_engine_is_up(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")
+        seen: list[str] = []
+
+        def _planned(ref: str) -> int:
+            seen.append(ref)
+            return 8184
+
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", _planned)
+        assert FleetProvider().embed_token_cap() == 8184
+        assert seen == ["org/repo/e.gguf"]
+
+    def test_health_warns_when_the_cap_is_below_the_chunk_budget(self, monkeypatch) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 504)
+        codes = [w.code for w in FleetProvider().health_warnings()]
+        assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
+
+    def test_health_is_clean_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 2048)
+        assert FleetProvider().health_warnings() == []
+
+    def test_health_is_clean_with_no_resolvable_embedder(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: None)
+        assert FleetProvider().health_warnings() == []
+
+
+class TestRoutingProviderEmbedCap:
+    def test_delegates_to_the_local_engine_for_a_local_embedder(self, monkeypatch) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")
+        routing = RoutingProvider()
+        local = MagicMock()
+        local.embed_token_cap.return_value = 504
+        local.health_warnings.return_value = ["warned"]
+        routing._local = local
+        assert routing.embed_token_cap() == 504
+        assert routing.health_warnings() == ["warned"]
+
+    def test_reports_nothing_for_a_remote_embedder(self, monkeypatch) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
+        routing = RoutingProvider()
+        assert routing.embed_token_cap() is None
+        assert routing.health_warnings() == []
+
+    def test_reports_nothing_with_no_embedder_configured(self, monkeypatch) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        routing = RoutingProvider()
+        assert routing.embed_token_cap() is None
+        assert routing.health_warnings() == []
+
+
 class _FakeReplica:
     """A minimal client double with real health/in-flight state for routing tests."""
 

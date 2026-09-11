@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from lilbee.app.services import get_services
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     ChatResult,
@@ -347,6 +348,23 @@ class RoutingProvider(LLMProvider):
         if self._local is None:
             return None
         return self._local.served_chat_slots()
+
+    def _local_embedder(self) -> LLMProvider | None:
+        """The local engine when it serves the configured embedder, else None."""
+        ref = cfg.embedding_model
+        if not ref or parse_model_ref(ref).is_remote:
+            return None
+        return self._get_local()
+
+    def embed_token_cap(self) -> int | None:
+        """Embed token cap of the local engine; None for a remote or unset embedder."""
+        local = self._local_embedder()
+        return None if local is None else local.embed_token_cap()
+
+    def health_warnings(self) -> list[HealthWarning]:
+        """Serving degradations of the local engine; none for a remote or unset embedder."""
+        local = self._local_embedder()
+        return [] if local is None else local.health_warnings()
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """Chat prefill progress of the local engine, or None when none exists."""
