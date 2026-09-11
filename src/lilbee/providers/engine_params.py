@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import (
     CONTEXT_WINDOW_MARGIN_TOKENS,
     GENERATION_RESERVE_TOKENS,
@@ -55,6 +56,35 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
 
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
     return min(train_ctx, cfg.chunk_size * CHARS_PER_TOKEN + _EMBED_CTX_MARGIN)
+
+
+def embed_token_cap(ctx: int) -> int:
+    """Tokens an embed server truncates one input to, given its per-slot context."""
+    return max(1, ctx - _EMBED_CTX_MARGIN)
+
+
+def embed_window_warning(cap: int) -> HealthWarning | None:
+    """The degradation when *cap* is below the configured chunk budget, else None."""
+    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+
+    # token_sizing budgets in tokens; the character chunkers budget in chars.
+    per_token = 1 if cfg.token_sizing else CHARS_PER_TOKEN
+    unit = "tokens" if cfg.token_sizing else "characters"
+    budget = cfg.chunk_size * per_token
+    if cap >= budget:
+        return None
+    remedy = f"Set chunk_size to {cap // per_token} to match the window"
+    if not cfg.token_sizing:
+        remedy += ", or turn on token_sizing to size chunks in the embedder's own tokens"
+    return HealthWarning(
+        code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+        message=(
+            f"The embedding model accepts {cap} tokens per input, below the configured "
+            f"chunk_size of {cfg.chunk_size} tokens ({budget} {unit}). Chunks are cut "
+            f"at {cap} {unit} so none loses text at embedding time."
+        ),
+        remedy=f"{remedy}.",
+    )
 
 
 _LLM_RERANK_HEADROOM = 512

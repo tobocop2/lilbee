@@ -23,10 +23,24 @@ _HEADING_MARK = "#"
 _BREADCRUMB_SEPARATOR = " > "
 
 
+def _embed_token_cap() -> int | None:
+    """Tokens the embedder truncates one input to; None when it has no fixed cap."""
+    # circular: chunk -> app.services -> retrieval.embedder -> chunk via CHARS_PER_TOKEN
+    from lilbee.app.services import get_services
+
+    return get_services().provider.embed_token_cap()
+
+
+def _bounded(budget: int) -> int:
+    """*budget* cut to the embed token cap: N characters are at most N tokens."""
+    cap = _embed_token_cap()
+    return budget if cap is None else min(budget, cap)
+
+
 def _char_budget() -> tuple[int, int]:
     """Return (max_chars, max_overlap) in characters from the token-based cfg."""
     config = active_config()
-    max_chars = config.chunk_size * CHARS_PER_TOKEN
+    max_chars = _bounded(config.chunk_size * CHARS_PER_TOKEN)
     max_overlap = min(config.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
     return max_chars, max_overlap
 
@@ -43,9 +57,10 @@ def _size_params() -> tuple[int, int, ChunkSizing | str]:
     if config.token_sizing:
         from xberg import ChunkSizing
 
-        overlap = min(config.chunk_overlap, config.chunk_size // 2)
+        max_tokens = _bounded(config.chunk_size)
+        overlap = min(config.chunk_overlap, max_tokens // 2)
         return (
-            config.chunk_size,
+            max_tokens,
             overlap,
             ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE),
         )

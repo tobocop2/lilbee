@@ -27,8 +27,10 @@ import httpx
 
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers import engine_params
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
     ProviderError,
@@ -1446,6 +1448,22 @@ class FleetProvider:
         """Batching slots the chat server runs with, or None if not up."""
         with self._lock:
             return self._chat_slots if WorkerRole.CHAT in self._role_group else None
+
+    def embed_token_cap(self) -> int | None:
+        """The served embed launch's token cap, or the planned one before it is up."""
+        with self._lock:
+            launches = self._role_launches(WorkerRole.EMBED)
+        if launches:
+            return launches[0].token_cap
+        return planning.planned_embed_token_cap(cfg.embedding_model)
+
+    def health_warnings(self) -> list[HealthWarning]:
+        """Serving degradations: an embed window below the configured chunk budget."""
+        cap = self.embed_token_cap()
+        if cap is None:
+            return []
+        warning = engine_params.embed_window_warning(cap)
+        return [] if warning is None else [warning]
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """``(processed, total)`` of a chat prefill in flight, or None when idle."""

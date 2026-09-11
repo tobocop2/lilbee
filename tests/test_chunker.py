@@ -13,6 +13,18 @@ import pytest
 
 from lilbee.data.extract.chunk import chunk_text
 from tests._mock_effects import repeat_last
+from tests.conftest import make_mock_services
+
+
+@pytest.fixture(autouse=True)
+def mock_services():
+    """Mock services for every chunker test: the budget reads the provider's embed cap."""
+    import lilbee.app.services as svc_mod
+
+    services = make_mock_services()
+    svc_mod.set_services(services)
+    yield services
+    svc_mod.set_services(None)
 
 
 @dataclass
@@ -166,6 +178,48 @@ class TestBuildChunkingConfig:
         max_chars, max_overlap = _char_budget()
         assert max_chars == 256 * CHARS_PER_TOKEN
         assert max_overlap == 40 * CHARS_PER_TOKEN
+
+
+class TestChunkBudgetBoundedByEmbedCap:
+    """A chunk of N characters is at most N tokens, so a budget at the engine's token
+    cap is the largest one the embedder can never truncate."""
+
+    def test_char_budget_is_cut_to_the_served_cap(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import _char_budget
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        mock_services.provider.embed_token_cap.return_value = 504
+        assert _char_budget() == (504, 252)
+
+    def test_char_budget_stays_configured_under_a_wide_window(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _char_budget
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        mock_services.provider.embed_token_cap.return_value = 512 * CHARS_PER_TOKEN
+        assert _char_budget() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
+
+    def test_char_budget_is_unbounded_without_a_managed_embedder(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _char_budget
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        mock_services.provider.embed_token_cap.return_value = None
+        assert _char_budget()[0] == 512 * CHARS_PER_TOKEN
+
+    def test_token_sizing_budget_is_cut_to_the_served_cap(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import _size_params
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 300)
+        mock_services.provider.embed_token_cap.return_value = 504
+        max_size, overlap, _sizing = _size_params()
+        assert (max_size, overlap) == (504, 252)
 
 
 _TOKENIZER_SIZING = '{"type":"tokenizer","model":"lilbee"}'

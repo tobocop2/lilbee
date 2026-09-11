@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 
 from pydantic import BaseModel
 
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.vectors import Vector
 from lilbee.providers.roles import WorkerRole
 
@@ -563,6 +564,18 @@ class LLMProvider(Protocol):
         from "no engine yet".
         """
         return None
+
+    def embed_token_cap(self) -> int | None:
+        """Tokens the embedder truncates one input to, or None when it has no fixed cap.
+
+        The chunker bounds its budget to this so no chunk loses text at embedding
+        time. Default ``None``: a remote embedder advertises no window.
+        """
+        return None
+
+    def health_warnings(self) -> list[HealthWarning]:
+        """Serving degradations a client should know about. Default: none."""
+        return []
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """``(processed, total)`` prompt tokens of a chat prefill in flight, or None.

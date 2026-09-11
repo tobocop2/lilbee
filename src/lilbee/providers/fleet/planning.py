@@ -1318,6 +1318,23 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
     )
 
 
+def planned_embed_token_cap(ref: str) -> int | None:
+    """The token cap an embed launch of *ref* gets, or None when *ref* cannot be read.
+
+    Computed from the model's metadata the way the launch is, so the chunker can
+    bound itself to the cap before the engine is up.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    try:
+        path = engine_params.resolve_model_path(ref)
+        meta = read_gguf_metadata(path)
+    except (ProviderError, OSError, ValueError):
+        return None
+    return engine_params.embed_token_cap(_role_ctx(WorkerRole.EMBED, path, meta))
+
+
 def _ref_is_moe(ref: str) -> bool:
     """Whether *ref*'s GGUF declares routed experts; False when it cannot be read."""
     from lilbee.providers.base import ProviderError
@@ -1738,7 +1755,7 @@ def _launch_for(
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
-        token_cap=max(1, ctx - engine_params._EMBED_CTX_MARGIN) if cross_encoder_pooled else None,
+        token_cap=engine_params.embed_token_cap(ctx) if cross_encoder_pooled else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
         weights_bytes=weights_bytes,
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.

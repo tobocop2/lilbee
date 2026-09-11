@@ -327,3 +327,39 @@ def test_apply_vulkan_loader_safety_disables_layers_and_icds(monkeypatch) -> Non
         == gpu_env._VK_LOADER_LAYERS_DISABLE_VALUE
     )
     assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "/etc/vulkan/icd.d/other.json"
+
+
+class TestEmbedTokenCap:
+    def test_cap_sits_one_margin_below_the_window(self) -> None:
+        assert ep.embed_token_cap(512) == 512 - ep._EMBED_CTX_MARGIN
+
+    def test_cap_never_drops_below_one(self) -> None:
+        assert ep.embed_token_cap(1) == 1
+
+    def test_no_warning_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+
+    def test_warning_names_the_cap_and_the_chunk_size_that_fits(self, monkeypatch) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        warning = ep.embed_window_warning(504)
+        assert warning is not None
+        assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
+        assert "504" in warning.message and "512" in warning.message
+        assert "504 characters" in warning.message
+        assert warning.remedy is not None
+        assert "chunk_size to 126" in warning.remedy
+        assert "token_sizing" in warning.remedy
+
+    def test_warning_counts_in_tokens_under_token_sizing(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        assert ep.embed_window_warning(512) is None
+        warning = ep.embed_window_warning(504)
+        assert warning is not None
+        assert "504 tokens so" in warning.message
+        assert warning.remedy == "Set chunk_size to 504 to match the window."

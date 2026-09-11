@@ -1274,6 +1274,24 @@ class TestBuildFleetWiring:
         launch = self._launch_for_role(tmp_path, monkeypatch, role)
         assert launch.token_cap is None
 
+    def test_planned_embed_token_cap_matches_the_launch(self, tmp_path, monkeypatch) -> None:
+        """The cap the chunker bounds to is the cap the embed launch will serve."""
+        from lilbee.providers import engine_params
+
+        launch = self._launch_for_role(tmp_path, monkeypatch, WorkerRole.EMBED, ctx=512)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _r: tmp_path / "m.gguf")
+        assert planning_mod.planned_embed_token_cap("org/repo/m.gguf") == launch.token_cap == 504
+
+    def test_planned_embed_token_cap_is_none_for_an_unresolvable_ref(self, monkeypatch) -> None:
+        from lilbee.providers import engine_params
+        from lilbee.providers.base import ProviderError
+
+        def _missing(_ref: str) -> Path:
+            raise ProviderError("not installed", provider="llama-server")
+
+        monkeypatch.setattr(engine_params, "resolve_model_path", _missing)
+        assert planning_mod.planned_embed_token_cap("org/repo/missing.gguf") is None
+
     def test_launch_for_vision_leaves_the_thread_count_to_the_engine(
         self, tmp_path, monkeypatch
     ) -> None:

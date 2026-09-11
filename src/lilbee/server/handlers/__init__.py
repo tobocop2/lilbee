@@ -140,7 +140,8 @@ async def health() -> HealthResponse:
         chat_slots=provider.served_chat_slots(),
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
-        warnings=services.store.health_warnings(),
+        embed_token_cap=provider.embed_token_cap(),
+        warnings=[*services.store.health_warnings(), *provider.health_warnings()],
     )
 
 
