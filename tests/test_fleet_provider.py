@@ -244,7 +244,7 @@ def test_chat_resets_stale_tracker_after_eviction(monkeypatch) -> None:
     assert not p.role_ready(WorkerRole.CHAT)
 
     # Spy on begin() so the test observes the reset directly: a stale snapshot
-    # that _reset_warm_if_stale clears by beginning a fresh warm. Without the
+    # that the lazy-warm scope clears by beginning a fresh warm. Without the
     # reset, begin() is not called again after the initial stale one.
     begins: list[str] = []
     real_begin = p._warm_tracker.begin
@@ -261,14 +261,14 @@ def test_chat_resets_stale_tracker_after_eviction(monkeypatch) -> None:
     assert snap is not None
     assert snap.phase is WarmPhase.READY
     # The reset fired: a fresh begin() ran with the configured model ref, not
-    # the stale one. Without _reset_warm_if_stale, begins stays empty.
+    # the stale one. Without the lazy-warm scope, begins stays empty.
     assert begins == [str(cfg.chat_model)]
     assert snap.model_ref == cfg.chat_model
     assert not p._lazy_warming
 
 
-def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
-    """_reset_warm_if_stale calls begin() when the role is unloaded."""
+def test_begin_lazy_warm_owns_a_fresh_warm_when_evicted() -> None:
+    """_begin_lazy_warm calls begin() and returns ownership when the role is unloaded."""
     from lilbee.providers.warm_progress import WarmPhase
 
     client = _fake_client()
@@ -278,7 +278,7 @@ def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
     p._warm_tracker.ready()
     assert not p.role_ready(WorkerRole.CHAT)
 
-    p._reset_warm_if_stale()
+    assert p._begin_lazy_warm() is True
 
     snap = p._warm_tracker.snapshot()
     assert snap is not None
@@ -286,14 +286,64 @@ def test_reset_warm_begins_fresh_warm_when_evicted() -> None:
     assert p._lazy_warming
 
 
-def test_reset_warm_skips_via_early_guard_when_warming(monkeypatch) -> None:
-    """The pre-lock guard returns when a boot/reload warm is already in flight."""
+def test_chat_ends_the_lazy_warm_when_the_pool_check_refuses(monkeypatch) -> None:
+    """A refusal before the engine call still ends the warm, with the refusal as the reason."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
+
+    def _refuse(role):
+        raise ProviderError("the planner refused the launch", provider="fleet")
+
+    monkeypatch.setattr(p, "_require_clients", _refuse)
+    with pytest.raises(ProviderError, match="refused"):
+        p.chat([{"role": "user", "content": "hi"}])
+
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert snap.error == "the planner refused the launch"
+    assert not p._lazy_warming
+    # The next request may begin a fresh warm instead of bailing on a leaked flag.
+    assert p._begin_lazy_warm() is True
+
+
+def test_chat_marks_tracker_ready_when_the_request_fails_but_the_role_loaded(
+    monkeypatch,
+) -> None:
+    """A request-side error after a successful load is not a warm failure."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.warm_progress import WarmPhase
+
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     p._warm_tracker.begin("stale-model")
     p._warm_tracker.ready()
-    # warm_pending() returns True when _warming is set; the pre-lock guard
-    # bails on warm_pending() before reaching the lock double-check.
+    swap = next(iter(p._swaps.values()))
+
+    def _load_then_reject(*args, **kwargs):
+        swap.ready.add(WorkerRole.CHAT)
+        raise ProviderError("bad tool schema", provider="fleet")
+
+    client.chat_result.side_effect = _load_then_reject
+    with pytest.raises(ProviderError, match="bad tool schema"):
+        p.chat([{"role": "user", "content": "hi"}])
+
+    snap = p._warm_tracker.snapshot()
+    assert snap is not None
+    assert snap.phase is WarmPhase.READY
+    assert not p._lazy_warming
+
+
+def test_begin_lazy_warm_skips_when_a_boot_warm_is_in_flight(monkeypatch) -> None:
+    """The first guard returns when a boot/reload warm is already in flight."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._warm_tracker.begin("stale-model")
+    p._warm_tracker.ready()
     p._warming = True
 
     begins: list[str] = []
@@ -305,12 +355,12 @@ def test_reset_warm_skips_via_early_guard_when_warming(monkeypatch) -> None:
 
     monkeypatch.setattr(p._warm_tracker, "begin", _record_begin)
 
-    p._reset_warm_if_stale()
+    assert p._begin_lazy_warm() is False
 
     assert begins == []
 
 
-def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
+def test_begin_lazy_warm_skips_via_lock_double_check(monkeypatch) -> None:
     """The under-lock check returns if a sibling set the flag after the guard."""
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
@@ -334,7 +384,7 @@ def test_reset_warm_skips_via_lock_double_check(monkeypatch) -> None:
 
     monkeypatch.setattr(p._warm_tracker, "snapshot", _snapshot_then_set_flag)
 
-    p._reset_warm_if_stale()
+    assert p._begin_lazy_warm() is False
 
     assert begins == []
 
@@ -359,7 +409,7 @@ def test_chat_marks_tracker_failed_on_error(monkeypatch) -> None:
     assert not p._lazy_warming
 
 
-def test_reset_warm_is_noop_when_role_ready() -> None:
+def test_begin_lazy_warm_is_noop_when_role_ready() -> None:
     """no reset when the chat role is already loaded."""
     from lilbee.providers.warm_progress import WarmPhase
 
@@ -373,13 +423,13 @@ def test_reset_warm_is_noop_when_role_ready() -> None:
     p._warm_tracker.begin("m")
     p._warm_tracker.ready()
 
-    p._reset_warm_if_stale()
+    assert p._begin_lazy_warm() is False
 
     assert p._warm_tracker.snapshot().phase is WarmPhase.READY
     assert not p._lazy_warming
 
 
-def test_reset_warm_is_noop_when_warm_in_flight() -> None:
+def test_begin_lazy_warm_is_noop_when_warm_in_flight() -> None:
     """no reset when a warm is already active (boot/reload warm)."""
     from lilbee.providers.warm_progress import WarmPhase
 
@@ -391,7 +441,7 @@ def test_reset_warm_is_noop_when_warm_in_flight() -> None:
     p._warm_tracker.begin("m")
     p._warm_tracker.loading_engine()
 
-    p._reset_warm_if_stale()
+    assert p._begin_lazy_warm() is False
 
     # Tracker unchanged: still mid-warm, no second begin().
     assert p._warm_tracker.snapshot().phase is WarmPhase.LOADING_ENGINE

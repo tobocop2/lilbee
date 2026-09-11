@@ -196,14 +196,10 @@ def test_expert_offload_headroom_is_capacity_not_free_right_now(monkeypatch) -> 
     assert hardware._expert_offload_headroom() == 32 * 10**9
 
 
-def test_available_memory_for_fit_caches_within_ttl(monkeypatch) -> None:
-    """Repeated calls within the TTL share one probe instead of re-running it."""
+def _count_probes(monkeypatch) -> dict[str, int]:
+    """Replace the memory probe with a counter returning 64 GB scaled by the fraction."""
     import lilbee.providers.model_cache as mc
-    from lilbee.core.config import cfg
-    from lilbee.runtime import hardware
 
-    cfg.gpu_memory_fraction = 0.5
-    hardware._available_memory_cache.clear()
     calls = {"n": 0}
 
     def fake(fraction: float, *, total: bool = False) -> int:
@@ -211,28 +207,51 @@ def test_available_memory_for_fit_caches_within_ttl(monkeypatch) -> None:
         return int(64 * _GB * fraction)
 
     monkeypatch.setattr(mc, "get_available_memory", fake)
+    return calls
+
+
+def test_available_memory_for_fit_caches_within_ttl(monkeypatch) -> None:
+    """Repeated calls within the TTL share one probe and add the headroom every time."""
+    from lilbee.core.config import cfg
+    from lilbee.runtime import hardware
+
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.5)
+    monkeypatch.setattr(hardware, "_expert_offload_headroom", lambda: 3 * _GB)
+    calls = _count_probes(monkeypatch)
+
     first = available_memory_for_fit()
     second = available_memory_for_fit()
-    assert first == second
+
+    assert first == second == 32 * _GB + 3 * _GB
     assert calls["n"] == 1
 
 
 def test_available_memory_for_fit_invalidates_on_fraction_change(monkeypatch) -> None:
     """A config change invalidates the cache and re-probes."""
-    import lilbee.providers.model_cache as mc
     from lilbee.core.config import cfg
-    from lilbee.runtime import hardware
 
-    cfg.gpu_memory_fraction = 0.5
-    hardware._available_memory_cache.clear()
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.5)
+    calls = _count_probes(monkeypatch)
+
+    available_memory_for_fit()
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.8)
+    available_memory_for_fit()
+
+    assert calls["n"] == 2
+
+
+def test_available_memory_for_fit_does_not_cache_a_failed_probe(monkeypatch) -> None:
+    """A probe failure reports None and the next call probes again."""
+    import lilbee.providers.model_cache as mc
+
     calls = {"n": 0}
 
-    def fake(fraction: float, *, total: bool = False) -> int:
+    def failing(fraction: float, *, total: bool = False) -> int:
         calls["n"] += 1
-        return int(64 * _GB * fraction)
+        raise RuntimeError("nvidia-smi timed out")
 
-    monkeypatch.setattr(mc, "get_available_memory", fake)
-    available_memory_for_fit()
-    cfg.gpu_memory_fraction = 0.8
-    available_memory_for_fit()
+    monkeypatch.setattr(mc, "get_available_memory", failing)
+
+    assert available_memory_for_fit() is None
+    assert available_memory_for_fit() is None
     assert calls["n"] == 2

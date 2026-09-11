@@ -319,6 +319,24 @@ class TestStatus:
         assert "vision_model" in result["config"]
         assert "reranker_model" in result["config"]
 
+    def test_status_exposes_memory_tuning_settings(self):
+        """MCP status reports the dynamic-ctx tuning knobs so clients can read them."""
+        result = status()
+        for key in (
+            "num_ctx",
+            "num_ctx_max",
+            "chat_n_ctx_target",
+            "flash_attention",
+            "kv_cache_type",
+            "n_gpu_layers",
+            "cpu_moe",
+            "n_cpu_moe",
+            "main_gpu",
+            "gpu_devices",
+        ):
+            assert key in result["config"], f"missing {key} in MCP status"
+        assert isinstance(result["config"]["kv_cache_type"], str)
+
 
 class TestSync:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
