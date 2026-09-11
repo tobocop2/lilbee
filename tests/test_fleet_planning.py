@@ -1282,6 +1282,20 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _r: tmp_path / "m.gguf")
         assert planning_mod.planned_embed_token_cap("org/repo/m.gguf") == launch.token_cap == 504
 
+    def test_planned_embed_token_cap_follows_a_recorded_downshift(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The retry after a load OOM halves the embed window, and so does the planned cap."""
+        from lilbee.providers import engine_params
+        from lilbee.providers.engine_params import _EMBED_CTX_MARGIN
+
+        monkeypatch.setattr(planning_mod, "_ctx_downshift_store", planning_mod._CtxDownshiftStore())
+        assert planning_mod.record_ctx_downshift(WorkerRole.EMBED)
+        launch = self._launch_for_role(tmp_path, monkeypatch, WorkerRole.EMBED, ctx=8192)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _r: tmp_path / "m.gguf")
+        planned = planning_mod.planned_embed_token_cap("org/repo/m.gguf")
+        assert planned == launch.token_cap == 4096 - _EMBED_CTX_MARGIN
+
     def test_planned_embed_token_cap_is_none_for_an_unresolvable_ref(self, monkeypatch) -> None:
         from lilbee.providers import engine_params
         from lilbee.providers.base import ProviderError
