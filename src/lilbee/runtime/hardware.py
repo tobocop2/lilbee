@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from cachetools import TTLCache
 from pydantic import BaseModel
 
 from lilbee.catalog.models import CatalogModel, ModelFamily
@@ -15,13 +15,12 @@ from lilbee.core.config import cfg
 _BYTES_PER_GB = 1024**3
 _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
 
-
 # GPU memory is hardware; the probe is expensive (nvidia-smi subprocess up to
 # 5s without pynvml), and the catalog stamps a fit chip on every page. Cache
 # the budget keyed on gpu_memory_fraction so repeated catalog requests share
-# one probe. The TTL bounds how long a live change (a model loaded or unloaded
-# by another process) takes to reach the fit chip.
-_available_memory_cache = TTLCache(maxsize=8, ttl=60.0)
+# one probe. The TTL bounds how long a live change takes to reach the fit chip.
+_AVAILABLE_MEMORY_TTL_S = 60.0
+_available_memory_cache: dict[float, tuple[float, int]] = {}
 
 
 class FitLevel(StrEnum):
@@ -111,11 +110,13 @@ def available_memory_for_fit() -> int | None:
         fraction = cfg.gpu_memory_fraction
         cached = _available_memory_cache.get(fraction)
         if cached is not None:
-            return cached
+            cached_at, budget = cached
+            if time.monotonic() - cached_at < _AVAILABLE_MEMORY_TTL_S:
+                return budget
         budget = get_available_memory(fraction, total=True)
     except Exception:
         return None
-    _available_memory_cache[fraction] = budget
+    _available_memory_cache[fraction] = (time.monotonic(), budget)
     return budget + _expert_offload_headroom()
 
 
